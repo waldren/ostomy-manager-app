@@ -1,14 +1,17 @@
-# Software Requirements Specification — Ostomy Patient Management Application (v2.0)
+# Software Requirements Specification — Ostomy Patient Management Application (v2.1)
 
 Prepared by: Steven E. Waldren, MD, MS
 Supersedes: `Ostomy_App_Specification_v1.pdf` (v1.0), which is retained only as a historical reference — this document is fully self-contained and does not require consulting the v1.0 PDF.
-Status: all three discussion phases complete.
+Status: all four discussion phases complete.
 
 | Phase | Topic | Status |
 |---|---|---|
 | 1 | User Functionality | ✅ Approved 2026-09-04 |
 | 2 | Non-Functional Requirements (Performance, Security, Availability, Usability/Accessibility) | ✅ Approved 2026-09-04 |
 | 3 | Technical Architecture | ✅ Approved 2026-09-04 |
+| 4 | v1 Scope Additions (urine output, data validation, suggested ranges, onboarding & preferences, administration console) | ✅ Approved 2026-09-04 |
+
+**Phase 4 scope change:** v1 now targets **colostomy and ileostomy only**. Urostomy support is deferred — see Appendix A for the rationale.
 
 Sections below are updated as each phase is completed. Sections not yet revisited are carried forward from v1.0 unchanged and marked as such.
 
@@ -25,15 +28,19 @@ This application is a dual-platform (Mobile & Web) patient-facing diary designed
 - **Cross-Platform Availability:** The application must be fully functional and accessible via a native/hybrid mobile application (iOS and Android) as well as a standard web browser.
 - **Offline-First Architecture:** Because patients will track data on-the-go (e.g., in public restrooms or while traveling), the application must utilize a local database (e.g., SQLite or Realm) to allow continuous data entry and historical review without an active internet connection. Data will automatically synchronize with the central secure cloud server once connectivity is restored.
 
-## 3. Core Features & Patient Workflows (User Functionality)
-*(Phase 1 — approved 2026-09-04)*
+## 3. Core Features & Workflows (User Functionality)
+*(Phase 1 — approved 2026-09-04; Sections 3.7–3.11 added in Phase 4)*
+
+Sections 3.0–3.10 are patient-facing. Section 3.11 describes the internal administration console.
 
 ### 3.0 Onboarding & Profile Setup — NEW
-- **Ostomy Type Selection:** During onboarding, the patient selects their ostomy type (colostomy, ileostomy, or urostomy). This drives clinically appropriate default expected-output ranges rather than a one-size-fits-all baseline.
-- **Surgery/Ostomy Creation Date:** Captured to contextualize the elevated-output risk typical of the early post-operative period.
-- **Physician-Set Target Ranges:** The patient can enter (or a future physician portal can set) target ranges for daily output, net fluid balance, and anomaly thresholds. These personalize the anomaly-highlighting feature (Section 3.5) to the patient's actual care plan rather than generic population defaults. The patient may edit these, but edits that diverge from a physician-entered default are flagged.
+*(Phase 1; minimum-required-fields rule added in Phase 4)*
+- **Ostomy Type Selection:** During onboarding, the patient selects their ostomy type — **colostomy or ileostomy** (v1 scope; urostomy deferred, see Appendix A). This drives clinically appropriate default expected-output ranges rather than a one-size-fits-all baseline.
+- **Surgery/Ostomy Creation Date:** Captured to contextualize the elevated-output risk typical of the early post-operative period, and used as the lower timestamp bound for entry validation (Section 3.8).
+- **Minimum Required Before First Entry (Phase 4):** Only three fields are mandatory before the patient can log — ostomy type, surgery date, and units preference. Each drives something that cannot be safely defaulted: expected-range selection, post-op context, and every volume display respectively. All remaining steps are offered during onboarding but skippable, with contextual prompts to complete them later (Section 3.10). This matters because a newly discharged patient may be setting the app up in a hospital bed; a long mandatory setup flow is where they abandon it.
+- **Physician-Set Target Ranges:** The patient can enter (or a future physician portal can set) target ranges for daily output, net fluid balance, and anomaly thresholds. These personalize the anomaly-highlighting feature (Section 3.5) to the patient's actual care plan rather than generic population defaults. Fields are pre-filled from the suggested ranges in Section 3.9 rather than presented blank. The patient may edit these, but edits that diverge from a physician-entered default are flagged.
 - **Units Preference:** Patient selects mL or oz; all logging and display respect this preference.
-- **Baseline Appliance Type:** Optional, seeds default appliance-change reminder cadence (Section 3.4).
+- **Baseline Appliance Type:** Optional and deferrable, seeds default appliance-change reminder cadence (Section 3.4).
 
 ### 3.1 Data Entry: Intake, Output, and Meals
 *(carried forward from v1.0, unchanged)*
@@ -63,6 +70,7 @@ This application is a dual-platform (Mobile & Web) patient-facing diary designed
 *(carried forward from v1.0, extended)*
 - **Daily Net Fluid Balance:** Total fluid intake minus total stoma output (and other recorded losses), prominently displayed to highlight dehydration trends.
 - **Chronological Correlation Visuals:** Data visualized across time periods (Morning, Afternoon, Evening, Night); line/bar graphs overlay medication administration times and fluid intake against stoma output volumes. **Extended:** appliance-change and skin-condition events are now overlaid on the same timeline so a physician can correlate a leak or irritation flare with intake/output/medication patterns.
+- **Urine Output Adequacy (Phase 4):** The daily voided-urine total is displayed as its own hydration indicator alongside net fluid balance — deliberately not folded into it (Section 3.7) — and its events are overlaid on the same chronological timeline.
 - **Outlier & Anomaly Highlighting:** Automatically flags anomalies (e.g., output exceeding 1,000 mL/day while intake remains low), now using the patient's personalized target ranges from Section 3.0 where available, falling back to generic defaults otherwise.
 
 ### 3.6 Data Management & History — NEW
@@ -70,12 +78,90 @@ This application is a dual-platform (Mobile & Web) patient-facing diary designed
 - **Filter/Search History:** By category (output, intake, meds, meals, appliance, skin).
 - **Full History Export:** A complete personal-record export, distinct from the physician-summary export.
 
+### 3.7 Urine Output & Hydration Tracking — NEW
+*(Phase 4)*
+
+Rationale: for colostomy and especially high-output ileostomy patients, a falling urine output is often the earliest objective sign of dehydration — it frequently precedes symptoms and shows up before net fluid balance alone makes the problem obvious.
+
+- **Voided Urine Logging:** Volume in mL (or oz, per the Section 3.0 units preference), carrying the same mandatory Measured/Estimated toggle as every other volumetric entry (Section 3.1).
+- **Optional Color:** A standard pale-to-dark urine color scale as a practical hydration proxy for patients who will not measure volume. Each step carries a text label as well as a swatch — color must never be the sole carrier of meaning (Section 5.4).
+- **Excluded from Net Fluid Balance — deliberately:** Voided urine is *not* added to total output in the Section 3.5 Daily Net Fluid Balance. It is displayed as its own hydration-adequacy indicator. The two figures answer different clinical questions: net balance measures stoma losses against intake, while urine output independently indicates whether the kidneys are being adequately perfused. Folding urine into total output would let a reassuring-looking net balance mask a dangerously low urine output — exactly the signal this feature exists to surface.
+- **Quick-Add Eligible:** Urine entries participate in the dynamic Quick-Add widget logic (Section 3.1).
+- **Trend View:** Daily urine output over time, plotted against the suggested or physician-set adequacy range (Section 3.9), in both the patient dashboard and the physician-focused view.
+
+### 3.8 Data Validation — NEW
+*(Phase 4)*
+
+A two-tier model. The governing principle is that the app may refuse structurally impossible data, but must never refuse a patient's account of what actually happened.
+
+**Tier 1 — Hard Block (cannot be saved):**
+- Non-numeric or negative volumes, and zero where a positive value is required.
+- Timestamps in the future, beyond a small allowance for device clock skew.
+- Entry timestamps earlier than the recorded surgery/ostomy creation date (Section 3.0).
+- A missing mandatory Measured/Estimated selection (existing acceptance criterion, Section 7).
+- Values above an absolute physiological ceiling configured per entry type (Section 3.11).
+
+**Tier 2 — Soft Warning (implausible but possible; always overridable):**
+- Single-entry volumes above the configured warning threshold — the existing >2,000 mL rule is one instance of this class, not a special case.
+- Daily totals falling far outside the patient's suggested or physician-set range (Section 3.9).
+- Warning copy states plainly what looks unusual and asks for confirmation. It never blocks and never scolds — a genuine 2,500 mL output day is precisely the data point the care team most needs to see.
+
+**Where validation runs:** Rules are defined once in `packages/core` and executed client-side — including offline on mobile — for immediate feedback, then re-enforced server-side on every write and on every synced operation. Client-side validation is a user-experience affordance, never the enforcement point: a payload arriving from an offline device is untrusted input like any other.
+
+**Thresholds are configuration, not code:** All numeric bounds come from the admin-managed tables in Section 3.11, so clinical tuning does not require a deploy.
+
+**Interaction with offline sync:** A queued offline operation that fails Tier 1 validation server-side is never silently dropped. It is surfaced to the patient for correction and retained locally until resolved, consistent with the Section 5.3 commitment that no logged data is lost.
+
+### 3.9 Suggested Ranges — NEW
+*(Phase 4)*
+
+The app proposes starting values for intake goals, expected output, excessive-output thresholds, urine output adequacy, and net fluid balance targets, so a new patient is not asked to invent clinical numbers they have no basis to choose.
+
+- **Seeded from clinical defaults:** Initial suggestions come from admin-managed default range tables (Section 3.11) keyed to ostomy type and time since surgery, so there is useful guidance from day one.
+- **Presented, not imposed:** A suggestion appears as a pre-filled value with its basis stated in plain language (e.g. "typical for an ileostomy about 3 months after surgery"). The patient accepts or edits it. No value becomes an active threshold without a human confirming it.
+- **Adaptation requires confirmation:** Once enough history accumulates to refine a range toward the patient's own rolling baseline, the app proposes the change and explains why; the patient accepts or keeps the current value. Adaptation is never silent — a threshold that quietly tracks a worsening baseline would normalize deterioration and suppress the very anomaly flags meant to catch it.
+- **Physician-set values are never auto-changed:** A physician-entered target is only ever flagged as diverging, consistent with Section 3.0.
+- **Precedence, highest first:** physician-set → patient-set → patient-confirmed suggestion → clinical default.
+- **Framing constraint:** Patient-facing copy describes suggestions descriptively — what is typical for people with a similar profile — rather than prescriptively. Suggested ranges are informational context for the patient and their care team; they are not a treatment recommendation, and copy must not present them as one.
+
+### 3.10 Preference Management — NEW
+*(Phase 4)*
+
+A persistent settings area, reachable at any time, covering everything onboarding collects plus what accumulates through use:
+
+- **Profile:** ostomy type and surgery date. Both are editable but audit-logged, since the surgery date is a validation boundary (Section 3.8) and the ostomy type drives range selection.
+- **Units:** mL or oz. Changing the preference re-renders historical data in the new unit; the stored canonical value is never rewritten.
+- **Target ranges and suggestion review:** current values, their source per the Section 3.9 precedence order, and any pending suggested adaptations awaiting confirmation.
+- **Notifications:** per-category enable/disable and quiet hours (Section 3.4).
+- **Appliance defaults:** baseline appliance type and reminder cadence.
+- **Quick-Add templates:** review, edit, pin, or remove the dynamically generated widgets (Section 3.1), so a patient is not stuck with a suggestion that no longer matches their routine.
+- **Accessibility:** text scaling and contrast options, honoring OS-level settings where the platform exposes them (Section 5.4).
+- **Data and privacy:** full history export (Section 3.6) and patient-initiated account/data deletion (Section 5.2).
+- **Deferred onboarding:** prompts to complete any step skipped under the Section 3.0 minimum-fields rule.
+
+Preferences synchronize across devices via the Section 4.5 pull-sync delta endpoint; preference changes made on mobile are queued like any other write.
+
+### 3.11 Administration Console — NEW
+*(Phase 4)*
+
+An internal tool for developers and clinical staff to manage the terminology and thresholds the application runs on, without requiring a code deploy for every clinical adjustment.
+
+- **Zero PHI access — an architectural boundary, not a policy:** The console has no route to patient data. It is a separate application backed by a separate identity pool (Section 4.6), so an admin credential cannot address a patient endpoint even if compromised. This keeps the console outside PHI scope by construction rather than by correct authorization logic alone.
+- **Manages clinical value sets:** output consistency, fluid types, meal quick-tags, leak suspected-cause tags, peristomal skin severity levels, appliance types, and the urine color scale (Section 3.7).
+- **Manages clinical default range tables:** the published defaults keyed to ostomy type and post-operative period that seed Section 3.9 suggestions.
+- **Manages validation rule thresholds:** the numeric bounds behind the Section 3.8 warn and block tiers, including the soft-warning volume threshold and the absolute physiological ceilings.
+- **Explicitly not managed here:** patient-facing copy and terminology display labels. These stay in the externalized i18n string catalog (Section 5.4); routing them through the console would fork the localization pipeline into two systems.
+- **Retire, never delete:** Value-set members carry an active/retired status. Retiring a value removes it from pickers going forward while historical entries continue to resolve and render normally. No administrative action ever changes the meaning of previously recorded clinical data or leaves a blank in a patient's history.
+- **Audit logging:** Every change is logged with admin identity, timestamp, and before/after values, in the same append-only audit store as PHI actions (Section 5.2). These settings shape clinical thresholds, so they warrant equivalent rigor.
+- **Access control:** MFA mandatory on all admin accounts; least-privilege roles within the console.
+
 ### Appendix A: Functionality Considered and Deferred
 The following were discussed and deliberately excluded from v1/v2 scope, with rationale, so they remain a conscious decision rather than a silent omission:
 - **Wearable integration** (Apple Health / Google Fit auto-logging of fluid intake or weight) — deferred; adds a full integration surface, better suited to a post-launch release.
 - **Patient education/resource library** — deferred; this is content work rather than a data/workflow feature and can be scoped as its own initiative.
 - **Gamification (streaks, badges)** — deferred; risks undercutting the clinical seriousness of the tool unless designed carefully.
 - **Caregiver/provider portal accounts with ongoing live access** — deferred beyond the existing one-off read-only export/share-link; a full second user type is a materially larger scope and compliance surface.
+- **Urostomy support** — deferred from v1 in Phase 4; v1 targets colostomy and ileostomy only. A urostomy's stoma output *is* urine, which makes it a materially different data model rather than a third dropdown option: the stoma output becomes the hydration signal itself instead of a loss to be offset against intake, the expected ranges and anomaly thresholds are unrelated to those for fecal output, and the complication profile centers on urinary tract infection and crystal formation rather than the skin and leak concerns of Section 3.2. Supporting it properly is its own scope of work, not a variant of the existing flows.
 
 ## 4. Technical Architecture
 *(Phase 3 — approved 2026-09-04)*
@@ -87,13 +173,16 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 - **PostgreSQL database** — system-of-record for all patient data, schema designed to map cleanly to FHIR resource fields (Section 4.4).
 - **Object storage (S3)** — peristomal skin-condition photos (Section 3.2) and generated physician-view PDF exports (Section 3.5).
 - **Push notification delivery** — for reminders (Section 3.4), via Expo's push notification service (built on APNs/FCM), invoked by the backend on a schedule.
-- **Identity provider** — issues and validates OAuth 2.0/OIDC tokens for both clients; backs biometric login on mobile by unlocking a securely stored refresh token (device Keychain/Keystore via Expo SecureStore) rather than storing biometric data itself.
+- **Admin console** (React SPA, internal-only) — manages clinical value sets, default range tables, and validation thresholds (Section 3.11). Deployed separately from the patient web app, backed by its own identity pool, with no API route to PHI.
+- **Identity provider** — issues and validates OAuth 2.0/OIDC tokens for both patient clients (and, via a separate pool, for admin users); backs biometric login on mobile by unlocking a securely stored refresh token (device Keychain/Keystore via Expo SecureStore) rather than storing biometric data itself.
 
 ```
 [Mobile App] --local SQLite--> (offline-capable)
      |  sync (REST, delta + conflict resolution)
      v
 [Backend API (Node/TS)] <--REST (online-only)-- [Web App (React SPA)]
+     ^
+     +--REST /api/v1/admin (no PHI routes)-- [Admin Console (React SPA, internal)]
      |
      +--> [PostgreSQL] (FHIR-shaped schema)
      +--> [S3] (photos, PDF exports)
@@ -105,6 +194,7 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 ### 4.2 Frontend Architecture
 - **Mobile:** Expo (managed workflow) + React Native + TypeScript. Local persistence via `expo-sqlite`. Shared UI components and business logic consumed from `packages/ui` and `packages/core` (Section repo layout).
 - **Web:** React + TypeScript, built with Vite, served as a static single-page app. Shares `packages/ui` components with mobile where feasible (e.g. via React Native Web), and shares validation/business logic and FHIR-mapping types from `packages/core` directly (no local database to bridge).
+- **Admin console:** React + TypeScript + Vite — the same toolchain as the web app, deployed as a separate static SPA against an isolated `/api/v1/admin/...` surface. It shares presentational primitives from `packages/ui` but imports no patient data types, so there is no code path through which patient records could be rendered.
 - **State/data layer:** a typed API client generated from the backend's OpenAPI schema, shared as part of `packages/core`, used by both clients — keeps request/response shapes in sync with the backend automatically as the API evolves.
 
 ### 4.3 Backend Architecture
@@ -119,6 +209,9 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 - **Method attribute:** the "Estimated vs. Measured" flag (Section 3.1) is stored as an explicit `method` column, populated with the appropriate SNOMED CT code for "Estimation technique" when applicable — carried forward unchanged from v1.0.
 - **Medication data:** stored using RxNorm RXCUIs (carried forward from v1.0), in a `medication_administrations` table separate from the generic observations table, reflecting that medications are a distinct FHIR resource type (`MedicationAdministration`) from `Observation`.
 - **App-native tables** (appliance changes, leak events, peristomal skin condition, reminder configuration, Quick-Add templates — all Phase 1 additions) are modeled as ordinary relational tables without FHIR constraints, since they don't correspond to standard FHIR resources. This is the main trade-off of the Postgres-with-FHIR-shaped-schema approach versus a managed FHIR-native store: full flexibility for these app-specific data types, at the cost of the database not being FHIR-native itself.
+- **Urine observations (Phase 4):** voided urine (Section 3.7) is stored in the same `observations` table as other volumetric entries, distinguished by its observation code, so it inherits the FHIR `Observation` mapping and the Measured/Estimated `method` column unchanged. Optional urine color is stored as a coded observation component rather than a free-text field, so it is analyzable and value-set governed.
+- **Configuration tables (Phase 4):** clinical value sets, default range tables, and validation thresholds (Section 3.11) are configuration, not patient data, and live in their own tables outside the PHI boundary. Value-set members carry an active/retired status and are never hard-deleted; clinical records reference them by stable code, so a retired member still resolves when rendering historical entries.
+- **Suggested vs. effective ranges (Phase 4):** a patient's effective range is stored with its provenance — physician-set, patient-set, patient-confirmed suggestion, or clinical default (Section 3.9 precedence) — so the physician view can show not just the threshold but where it came from, and so an unconfirmed suggestion is never mistaken for a clinical target.
 - **FHIR export:** a dedicated export module in the backend assembles valid FHIR R4 `Bundle` resources on demand — from the FHIR-mappable tables — for the physician-view share-link/PDF export (Section 3.5) and for any future EHR integration, rather than the database storing FHIR resources natively.
 
 ### 4.5 Data Synchronization & Offline Architecture
@@ -134,6 +227,8 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 - **Object storage:** Amazon S3, server-side encrypted (SSE-KMS), for skin-condition photos and generated PDF exports; access via short-lived presigned URLs rather than public buckets.
 - **Web app hosting:** the React SPA build is served as static assets via S3 + CloudFront.
 - **Identity:** Amazon Cognito as the OAuth2/OIDC identity provider — AWS-native, HIPAA-eligible under a BAA, and reduces custom-built auth/security surface area compared to a self-hosted identity service.
+- **Identity (admin, Phase 4):** a Cognito user pool entirely separate from the patient pool. Admin and patient credentials are disjoint — an admin token cannot address a patient endpoint and a patient token cannot address the admin API — so the Section 3.11 zero-PHI boundary is enforced at the identity layer rather than resting solely on application authorization logic. MFA is mandatory for all admin accounts.
+- **Admin console hosting (Phase 4):** static assets via S3 + CloudFront like the patient web app, but network-restricted (private distribution or IP allowlist) rather than openly internet-facing.
 - **Secrets & keys:** AWS Secrets Manager for credentials/API keys, AWS KMS for encryption key management and rotation (Section 5.2).
 - **Networking:** API and database run in a private VPC subnet; only the load balancer/API Gateway edge is internet-facing.
 - **BAA coverage:** a Business Associate Agreement must be executed with AWS covering every HIPAA-eligible service actually used (RDS, S3, Fargate/ECS, Cognito, KMS, Secrets Manager) before any real PHI is stored — a legal/compliance action item, not an engineering one.
@@ -177,6 +272,7 @@ Carries forward and expands the v1.0 HIPAA baseline into a full compliance progr
 - **Breach Notification Process:** A documented incident-response and breach-notification procedure consistent with the HIPAA Breach Notification Rule, owned by a designated Security/Privacy Officer role.
 - **Periodic Penetration Testing & Vulnerability Scanning:** Third-party penetration testing at a defined cadence (e.g., annually and after major architecture changes), plus continuous automated dependency/vulnerability scanning in CI.
 - **Secrets & Key Management:** Managed secrets store (never committed to source control); defined encryption key rotation policy.
+- **Administrative Configuration Audit (Phase 4):** All administration console changes to value sets, default range tables, and validation thresholds are logged with admin identity, timestamp, and before/after values in the same append-only audit store as PHI actions. These settings determine clinical thresholds and the terminology patients are shown, so they carry audit rigor equivalent to PHI edits despite containing no PHI themselves.
 - **Third-Party Terminology Compliance:** Confirm RxNorm and SNOMED CT usage (Sections 3.3, 4) complies with their respective license terms as part of legal review.
 
 ### 5.3 Availability & Reliability
@@ -235,6 +331,7 @@ Ostomy patients skew older and post-surgical, which raises the stakes for access
 - As a new patient, I want to select my ostomy type during onboarding so the app applies clinically appropriate default output ranges.
 - As a patient, I want to enter my physician's target ranges so anomaly flags reflect my actual care plan rather than generic population defaults.
 - As a patient, I want to set my preferred units (mL or oz) so all logging matches how I think about volume.
+- As a newly discharged patient, I want to start logging after answering only a few essential questions so I can begin tracking immediately and finish setup later.
 
 ### Epic 8: Appliance & Peristomal Skin Health Tracking — NEW
 - As a patient, I want to log each appliance change with a timestamp so the app can track my average wear time.
@@ -259,9 +356,41 @@ Ostomy patients skew older and post-surgical, which raises the stakes for access
 - As a patient using a screen reader, I want the app to be fully navigable and readable so I can manage my care independently.
 - As a product owner, I need a documented breach-notification process and a defined backup/recovery target (RPO/RTO) so the organization can respond correctly to an incident.
 
+### Epic 12: Urine Output & Hydration Tracking — NEW
+- As a patient, I want to log the urine I pass so my care team can see whether I am staying adequately hydrated, not just how much is coming out of my stoma.
+- As a patient, I want to record a urine color instead of a volume when I cannot measure, so I can still capture a hydration signal without a measuring container.
+- As a physician, I want urine output shown as its own indicator rather than merged into net fluid balance, so a low urine output cannot be hidden by a normal-looking balance figure.
+- As a patient, I want to see my urine output trend against my expected range so I can tell when I need to drink more.
+
+### Epic 13: Data Validation — NEW
+- As a patient, I want the app to stop me from saving an impossible entry, such as a negative volume or a date before my surgery, so my record stays trustworthy.
+- As a patient, I want an unusual but real value to give me a confirmation prompt rather than a refusal, so the app never prevents me from recording what actually happened.
+- As a patient logging offline, I want the same validation feedback immediately, so I do not discover a problem with an entry days later when it finally syncs.
+- As a system, I need every validation rule re-checked server-side on write and on sync, so data arriving from a device is never trusted on the client's word alone.
+- As a clinical administrator, I want validation thresholds to be configuration rather than code, so a threshold can be adjusted without an engineering release.
+
+### Epic 14: Suggested Ranges — NEW
+- As a new patient, I want the app to suggest a sensible intake goal and expected output range for my ostomy type and time since surgery, so I am not asked to invent clinical numbers I have no basis to choose.
+- As a patient, I want to see plainly why a value was suggested and be able to change it, so I understand and control what my app is measuring me against.
+- As a patient, I want to be told when the app wants to adjust a range based on my own history, so a shifting baseline never quietly changes what counts as normal for me.
+- As a physician, I want my entered target to override any suggestion and never be silently changed, so my care plan remains the governing value.
+
+### Epic 15: Preference Management — NEW
+- As a patient, I want one place to change my units, targets, reminders, and accessibility settings so I do not have to hunt through the app.
+- As a patient, I want to switch between mL and oz and see my whole history re-rendered in that unit, so my past data stays meaningful to me.
+- As a patient, I want to manage or remove Quick-Add widgets so my dashboard reflects my current routine rather than an old one.
+- As a patient, I want my preferences to follow me across devices so I do not have to configure the app twice.
+
+### Epic 16: Administration Console — NEW
+- As a clinical administrator, I want to manage the value sets the app offers, such as output consistency options, so terminology can be corrected without a code release.
+- As a clinical administrator, I want to retire a value rather than delete it, so historical patient entries that used it still display correctly and their meaning never changes.
+- As a clinical administrator, I want to maintain the default range tables that seed patient suggestions, so clinical guidance can be updated centrally.
+- As a security officer, I need the admin console to have no access path to patient data whatsoever, so it stays outside PHI scope by design.
+- As a security officer, I need every administrative configuration change audit-logged with identity and before/after values, so clinical threshold changes are as traceable as PHI edits.
+
 ## 7. Detailed Acceptance Criteria
 
-Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full from v1.0 — the only epic v1.0 detailed to this level. Acceptance criteria for Epics 3–11 (including the Phase 1/2 additions) are not yet written and remain a backlog-refinement task, not part of this spec-revision discussion.
+Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full from v1.0 — the only epic v1.0 detailed to this level — plus Epics 12–14, added in Phase 4 because urine logging, validation, and suggested ranges are defined largely by their rules and are ambiguous without them. Acceptance criteria for Epics 3–11, 15, and 16 are not yet written and remain a backlog-refinement task.
 
 ### User Story 2.1: Log Stoma Output Volume
 
@@ -327,6 +456,84 @@ Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full fro
 - Given a user saves an output entry marked as "Estimated",
 - When the database writes the record,
 - Then it must correctly populate the FHIR `Observation.method` attribute using the appropriate SNOMED CT code for "Estimation technique".
+
+### User Story 12.1: Log Voided Urine
+
+**AC 1: Same Entry Contract as Other Volumes**
+- Given the user is on the "Add Urine" screen,
+- When they enter a volume,
+- Then the field accepts a volume in the user's preferred unit and requires the same Measured/Estimated selection as output and intake entries, enforced identically.
+
+**AC 2: Color Without Volume**
+- Given the user cannot measure a volume,
+- When they log a urine entry,
+- Then they may save a color-scale value with no volume, and the entry is retained as a valid hydration observation.
+
+**AC 3: Color Is Not Conveyed by Color Alone**
+- Given the user is selecting a urine color,
+- When the color scale is displayed,
+- Then each step carries a visible text label in addition to its swatch, and is announced distinguishably by a screen reader.
+
+**AC 4: Excluded From Net Fluid Balance**
+- Given a patient has logged both stoma output and voided urine for a day,
+- When the Daily Net Fluid Balance is calculated,
+- Then voided urine is excluded from the total output term, and urine output is displayed as a separate hydration indicator.
+
+### User Story 13.1: Hard-Block Validation
+
+**AC 1: Structurally Invalid Input Cannot Be Saved**
+- Given the user enters a negative or non-numeric volume,
+- When they attempt to save,
+- Then the system blocks the save and explains which value is invalid, in plain language.
+
+**AC 2: Timestamp Bounds**
+- Given the user edits an entry's date and time,
+- When they set a time in the future beyond the permitted clock-skew allowance, or a time earlier than their recorded surgery date,
+- Then the system blocks the save and states the permitted range.
+
+**AC 3: Server-Side Re-Enforcement**
+- Given an operation reaches the API, whether from a live client or a queued offline sync,
+- When the server processes it,
+- Then every Tier 1 rule is evaluated again server-side, and a failing operation is rejected regardless of having passed client-side validation.
+
+**AC 4: Rejected Sync Operations Are Not Lost**
+- Given a queued offline operation is rejected by server-side validation,
+- When the sync completes,
+- Then the operation is retained locally and surfaced to the patient for correction rather than discarded silently.
+
+### User Story 13.2: Soft-Warning Validation
+
+**AC 1: Warning Is Always Overridable**
+- Given the user enters a volume above the configured soft-warning threshold,
+- When they attempt to save,
+- Then the system shows a confirmation prompt describing what looks unusual, and saving proceeds unchanged if the user confirms.
+
+**AC 2: Thresholds Are Configuration**
+- Given an administrator changes a soft-warning threshold in the administration console,
+- When a patient next logs an entry,
+- Then the new threshold governs the warning, with no application release required.
+
+### User Story 14.1: Suggested Range Presentation
+
+**AC 1: Pre-Filled With Stated Basis**
+- Given a patient reaches a target-range field during onboarding or in preferences,
+- When the field is displayed,
+- Then it is pre-filled with the suggested value and accompanied by a plain-language statement of its basis, including ostomy type and time since surgery.
+
+**AC 2: Confirmation Required to Become a Threshold**
+- Given a suggested range has not been confirmed by the patient,
+- When anomaly detection runs,
+- Then the unconfirmed suggestion is not applied as an anomaly threshold, and the stored range records its provenance.
+
+**AC 3: Adaptation Is Proposed, Never Silent**
+- Given enough history exists to refine a patient's range,
+- When the app determines an adjustment is warranted,
+- Then it presents the proposed change with its rationale and applies it only on patient acceptance.
+
+**AC 4: Physician-Set Values Are Protected**
+- Given a target range was set by a physician,
+- When the app computes a refined suggestion that differs from it,
+- Then the physician-set value remains in force and the divergence is flagged rather than applied.
 
 
 ---
