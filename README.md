@@ -40,3 +40,11 @@ scripts/        # dev tooling scripts
 
 ## Getting started
 See `docs/getting-started.md`.
+
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later).
+
+Copyright (C) 2026 Steven E. Waldren.
+
+In short: anyone can use, modify, and redistribute this code, including commercially — but if someone runs a modified version as a network-accessible service, they must make that modified source available to its users. See `docs/license-header.md` for the header to add to new source files, and the `LICENSE` file for the full legal text.
