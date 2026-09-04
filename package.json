@@ -1,0 +1,10 @@
+{
+  "name": "ostomy-application",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Dual-platform (mobile + web) patient-facing app for ostomy care tracking.",
+  "scripts": {
+  },
+  "devDependencies": {
+  }
+}
