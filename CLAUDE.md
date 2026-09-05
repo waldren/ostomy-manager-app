@@ -37,6 +37,8 @@ From SRS_v2 Section 4 — treat these as settled unless the user reopens them:
 - The mandatory **"Measured vs. Estimated"** toggle on every volumetric entry is stored as `Observation.method`, populated with the SNOMED CT "Estimation technique" code when estimated. (The exact code is still an open question in `design-specs/data-model/fhir-rxnorm-integration.md`.)
 - Medications are a **separate** `medication_administrations` table (FHIR `MedicationAdministration`), keyed by RxNorm RXCUIs — not rows in the observations table. UI shows patient-friendly terms; the backend maps them to RXCUIs.
 - App-native entities (appliance changes, leak events, peristomal skin condition, reminders, Quick-Add templates) have no FHIR equivalent and are ordinary relational tables. This asymmetry is the accepted trade-off of the Postgres-over-FHIR-native decision.
+- Body weight also shares the `observations` table (LOINC 29463-7), with `method` left unpopulated — the Measured/Estimated toggle applies to volumetric entries only, since a weight is read off a scale. Observation codes are LOINC; SNOMED CT is used only for the `method` attribute.
+- There are **three hydration signals**: net fluid balance, urine output, and weight change. The patient dashboard shows one composite status with drill-down; the physician view keeps all three separate and uncombined. Don't combine them in the physician view, and don't show three bare numbers to the patient.
 - Voided urine shares the `observations` table with other volumetric entries, distinguished by observation code — it is not a separate table. It is **excluded from Daily Net Fluid Balance on purpose**: net balance measures stoma losses, while urine output independently signals renal perfusion, and merging them would let a normal-looking balance hide a dangerously low urine output. Don't "fix" this by summing them.
 - Value-set members are **retired, never deleted**. Clinical records reference them by stable code, so a retired value must still resolve when rendering history. No admin action may change what a past entry means.
 - A patient's effective range is stored with its provenance — physician-set, patient-set, patient-confirmed suggestion, or clinical default, in that precedence order. An unconfirmed suggestion is never an active anomaly threshold.
@@ -57,7 +59,22 @@ These come from the spec and apply to every feature, not just "compliance work":
 - **No real PHI outside production.** Dev and staging use synthetic or de-identified data.
 - **Accessibility is a hard target, not polish**: WCAG 2.1 AA across both clients. The patient population skews older and post-surgical — screen-reader support, scalable text, and touch-target sizes are requirements.
 - **No hardcoded user-facing strings.** v1 ships English-only, but all copy must be externalized and date/time/number/unit formatting must be locale-aware from day one. Patient-facing copy targets a 6th–8th grade reading level.
-- **Units**: patients choose mL or oz; all logging and display must respect that preference.
+- **Units**: a single metric/imperial preference governs both volume and weight (mL+kg or oz+lb). Mixed-system combinations must be impossible to select. All logging and display respect it; stored canonical values are never rewritten when it changes.
+
+## Development environment
+
+Development does **not** run on AWS. It is a single shared Docker Compose stack on an on-premise Ubuntu LTS server: API, PostgreSQL, MinIO in place of S3, a mock OIDC provider in place of Cognito, both SPAs as static builds. LAN-only, plain HTTP, synthetic data only. Deployed by a self-hosted GitHub Actions runner (outbound-only, so no inbound firewall rule). Database persists across deploys; migrations run automatically; `dev-reset` wipes and reseeds. Full methodology in `docs/deployment-development.md`.
+
+Two rules this imposes on application code:
+
+- **Never import a Cognito SDK into request handling.** The API takes a standard OIDC issuer, JWKS URI, audience, and claim mapping as configuration. Cognito-specific behavior goes behind a provider adapter.
+- **Never assume AWS-hosted S3.** Endpoint, region, credentials, and path-style addressing are configuration. MinIO requires path-style, so virtual-host-style URL assumptions break development outright.
+
+Push delivery sits behind the same kind of adapter (Expo in production, log-only in development).
+
+Nothing on this host may ever hold real PHI or a production credential — not temporarily, not to reproduce a bug. The runner's `docker` group membership means a host compromise is total, and the only defense that holds is that there is nothing valuable there.
+
+Staging is the parity gate. Fargate orchestration, TLS, real Cognito, and KMS are untested until staging exists; `docs/deployment-development.md` lists the deferred risks that staging must cover.
 
 ## Licensing
 

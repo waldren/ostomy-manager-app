@@ -16,4 +16,9 @@ High-level system architecture for the ostomy patient management app.
 - Medications keyed by RxNorm RXCUIs.
 - HIPAA compliance is a day-one requirement, not a later add-on (see `docs/security-hipaa.md`).
 
+## Environments
+- **Development** — on-premise Docker Compose, no AWS dependency. See `deployment-development.md`.
+- **Staging** — AWS, mirrors production; the parity gate for everything development cannot exercise.
+- **Production** — AWS, the only environment permitted to hold real PHI.
+
 _Expand with diagrams and sync/data-flow details as the architecture solidifies._
