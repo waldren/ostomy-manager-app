@@ -53,12 +53,13 @@ RUN pnpm --filter @ostomy/api build
 # `pnpm deploy` produces a pruned, hoisted, prod-only node_modules for a
 # single workspace — the "no dev dependencies in the runtime image" stage
 # from docs/deployment-development.md. It packs by the package's `files`
-# field (apps/api/package.json declares `"files": ["dist"]` for exactly this
-# reason: apps/api/.gitignore excludes dist/, and pnpm's packing rules follow
-# gitignore unless `files` overrides it), so `dist` must already exist from
-# the `build` stage before this runs. See the `//files` note next to that
-# field: P1.S3 must add `"prisma"` there once schema.prisma and
-# prisma/migrations/ exist, or they get silently packed out of /out and
+# field (apps/api/package.json declares `"files": ["dist", "prisma",
+# "prisma.config.ts"]` for exactly this reason: apps/api/.gitignore excludes
+# dist/, and pnpm's packing rules follow gitignore unless `files`
+# overrides it), so `dist` must already exist from the `build` stage before
+# this runs. `"prisma"` and `"prisma.config.ts"` were added at P1.S3 once
+# schema.prisma and prisma/migrations/ existed — if either is ever removed
+# from that list again, they get silently packed out of /out and
 # `prisma migrate deploy` fails inside this image at runtime.
 #
 # `--legacy`: pnpm 10's default deploy implementation requires every

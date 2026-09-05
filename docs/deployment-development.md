@@ -115,8 +115,22 @@ Lint, type-check, and unit tests run on the pull-request workflow (`pr.yml`) usi
 - **Two Postgres roles, not one.** `migrate` connects as the migration/owner role and can create and alter anything; `api` connects as a separate, deliberately unprivileged runtime role (`NOSUPERUSER`, `NOCREATEDB`, `NOINHERIT`) that can only do what it has been explicitly granted, table by table, in the migration that creates each one — no blanket default grant (ADR-0011). This is what makes limiting `audit_events` to `GRANT SELECT, INSERT` (the P1.S5 audit-immutability exit criterion) an enforceable database grant rather than a no-op against a superuser that bypasses every privilege check. See `infra/db/README.md` and `infra/db/bootstrap-roles.sql`.
 - **Migrations run automatically** as a one-shot `migrate` service that must exit successfully before `api` starts. Running them as a separate service rather than in the API entrypoint avoids concurrent migration attempts if the API is ever scaled to more than one replica.
 - **Reset is explicit.** A `scripts/dev-reset.sh` (or `pnpm dev:reset`) tears down the volume, recreates it, migrates, and reseeds. Nothing else may destroy data.
+- **Error log verbosity is `terse`, not the default.** `infra/docker-compose.yml`'s `postgres` service passes `-c log_error_verbosity=terse`. As of P1.S3 this database holds real PHI tables and CHECK constraints (`observations`'s value-positivity and canonical-unit checks, `value_set_members`'s code-immutability trigger's `RAISE EXCEPTION`, and so on); verified empirically that the default verbosity writes a constraint violation's full failing row — clinical values included — to a `DETAIL:` line on this container's stdout, and therefore into the `json-file` log driver, on every violation. `terse` suppresses that line. **This is a container-flag mitigation specific to this Compose stack, not a setting staging/production inherits automatically:** RDS has no `postgresql.conf` to edit directly — the equivalent control is the DB parameter group's `log_error_verbosity` parameter, and it must be set to `terse` there independently before RDS goes live with real PHI. Track this as a staging/production parity requirement, not something this file's existence already covers.
 
 Because the volume persists, migrations are continuously exercised against existing rows — which is the failure mode that matters, since a migration that only ever runs against an empty schema is untested.
+
+### Failed-migration recovery
+
+Prisma marks a migration that fails partway through as `failed` in its own `_prisma_migrations` bookkeeping table, and every subsequent `prisma migrate deploy` — including the automated one this stack runs on every deploy — refuses to proceed while a failed migration is recorded, on purpose: it cannot know whether the failed migration's DDL partially applied.
+
+Because deploys here are unattended (a self-hosted runner, not a human watching the output), a migration failure does not just fail one deploy — it wedges every deploy after it until someone intervenes by hand. Recovery:
+
+1. **Inspect what actually happened.** Connect as the owner role (`docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"`) and check which of the failed migration's statements committed — Postgres DDL is transactional per statement in a single `migration.sql` file run this way, so this requires reading the migration and checking table/column/role state by hand, not assuming all-or-nothing.
+2. **Manually finish or roll back** whatever the inspection above shows is incomplete.
+3. **Tell Prisma the outcome** with `prisma migrate resolve` (run against the owner DSN, the same one `migrate` uses): `--applied <migration_name>` if step 2 finished applying it, or `--rolled-back <migration_name>` if step 2 undid it. Only after this does `prisma migrate deploy` proceed again.
+4. **Redeploy.** The next `docker compose run --rm migrate` (or the automated pipeline's own invocation of it) now runs cleanly.
+
+There is deliberately no automated version of this runbook. An automated "just mark it resolved and move on" step would silently paper over exactly the kind of partial-DDL state step 1 above exists to catch by hand.
 
 ## Seed data
 
@@ -204,6 +218,10 @@ Each of these is a real gap, deferred to staging rather than solved here. Stagin
 - **No KMS, no SSE-KMS.** MinIO stands in for the S3 API surface, not for its encryption or key management.
 - **No Multi-AZ, backup, or DR rehearsal.** The §5.3 RPO/RTO targets cannot be exercised on a single host.
 - **No load or performance signal.** One box with synthetic volumes says nothing about the §5.1 targets.
+- **No RDS parameter-group parity.** This Compose stack's `postgres` service sets `log_error_verbosity=terse` as a container command-line flag (see "Database lifecycle" above); RDS has no equivalent flag, only a DB parameter group, which staging/production must configure independently before real PHI reaches it.
+- **No provisioning path for the runtime role's credentials.** Two gaps, both surfaced by the P1.S3 review and both landing at P9. They are recorded here rather than left to be rediscovered, because the pressure they create points at exactly the wrong answer.
+  - The migration creates `ostomy_runtime` `NOLOGIN` with no password, in **every** environment. Development's `db-roles` service then sets one from `.env`. There is no staging or production equivalent — nothing yet performs the `ALTER ROLE … LOGIN PASSWORD` from Secrets Manager, so the API simply cannot connect there. The tempting fix is to point the API at the master user, which is precisely the reflex [ADR-0011](../design-specs/decisions/0011-database-roles-and-audit-immutability.md) exists to prevent.
+  - The migration needs `CREATEROLE` on whichever role runs `prisma migrate deploy`, while ADR-0011 requires staging and production to use a **non-superuser owner**. A non-superuser owner without `CREATEROLE` cannot run this migration. Either the owner keeps `CREATEROLE` — considerably less dangerous on PostgreSQL 16+ thanks to the role-ownership model, and the mitigation to record if so — or the role is pre-provisioned out of band, which reintroduces the unverified-attributes hole the review found. Decide it when staging is built, not by discovering it.
 
 ## Open items
 

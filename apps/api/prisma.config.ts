@@ -28,7 +28,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // `pnpm --filter @ostomy/api exec prisma migrate dev` against a
 // developer's own Postgres) — it is a no-op, not a throw, when no `.env`
 // file exists, which is the normal case inside a container: the `migrate`
-// service in infra/docker-compose.yml sets DATABASE_URL as a real
+// service in infra/docker-compose.yml sets MIGRATION_DATABASE_URL as a real
 // environment variable and never mounts a `.env` file (see
 // infra/docker/api.Dockerfile's "No .env file" comment).
 import 'dotenv/config';
@@ -43,19 +43,34 @@ export default defineConfig({
     // The OWNER role's DSN (ADR-0011) — `migrate`/CI/Testcontainers only.
     // The runtime role never runs a CLI command against this config.
     //
-    // Deliberately `process.env.DATABASE_URL` here, not prisma/config's own
-    // `env()` helper: `env()` throws immediately if the variable is unset,
-    // and `prisma generate` (unlike `migrate`) never connects to a
-    // database — it only reads schema.prisma. `apps/api`'s `build` script
-    // runs `prisma generate` and the Docker build stage that runs it has
-    // no DATABASE_URL at all (that is only ever set on the `migrate`/`api`
-    // Compose services, not at image-build time — see
-    // infra/docker/api.Dockerfile's "build" stage). Requiring it there
+    // Deliberately its OWN environment variable, `MIGRATION_DATABASE_URL`
+    // — NOT `DATABASE_URL` (S12, P1.S3 review response; this file
+    // originally read `process.env.DATABASE_URL`, the same name
+    // `src/config/env.schema.ts` validates for the RUNTIME role's DSN).
+    // Two DSNs sharing one variable name, distinguished only by which
+    // process happens to read it, is exactly the setup that lets a root
+    // `.env` holding the owner DSN under `DATABASE_URL` (convenient for
+    // running a CLI command locally) get picked up SILENTLY by
+    // `pnpm --filter @ostomy/api start:dev` as well — which loads the same
+    // `.env` and would then run the entire API connected as the schema
+    // owner, with none of ADR-0011's grant restrictions in effect, no
+    // error, no warning. A structurally different name makes that
+    // impossible: copying one variable's value into the other requires
+    // deliberately typing the other variable's name.
+    //
+    // Deliberately `process.env.MIGRATION_DATABASE_URL` here, not
+    // prisma/config's own `env()` helper: `env()` throws immediately if the
+    // variable is unset, and `prisma generate` (unlike `migrate`) never
+    // connects to a database — it only reads schema.prisma. `apps/api`'s
+    // `build` script runs `prisma generate` and the Docker build stage
+    // that runs it has no `MIGRATION_DATABASE_URL` at all (that is only
+    // ever set on the `migrate` Compose service, not at image-build time —
+    // see infra/docker/api.Dockerfile's "build" stage). Requiring it there
     // would fail the image build for a command that does not need it. A
     // `migrate`/`db` command that genuinely needs a connection still fails
     // loudly — just from Postgres ("password authentication failed" /
     // connection refused) rather than from this file, once it tries to
     // actually connect with an empty string.
-    url: process.env.DATABASE_URL ?? '',
+    url: process.env.MIGRATION_DATABASE_URL ?? '',
   },
 });

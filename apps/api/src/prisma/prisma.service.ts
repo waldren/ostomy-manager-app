@@ -68,9 +68,69 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     // never logging credentials either, and `config.databaseUrl` is never
     // interpolated into a log line anywhere in this file.
     this.logger.debug('PrismaService constructed; connection is lazy (first query).');
+    //
+    // Deliberately NOT calling `assertRuntimeRoleIsNotOverPrivileged()`
+    // here (B4, P1.S3 review response) — see that method's own doc comment
+    // for what it does and why. Calling it from this hook would reintroduce
+    // exactly the eager-database-dependency problem the class doc comment
+    // above explains `$connect()` was kept out of: every test that boots
+    // `AppModule` would need a live, reachable Postgres just to construct
+    // the module graph, the same class of problem whether the eager call is
+    // `$connect()` or a query. Whichever future sprint imports
+    // `PrismaModule` into `AppModule` (P1.S5's audit/threshold module, or
+    // P2.S1a's observations module — see `PrismaModule`'s own comment) is
+    // responsible for calling `assertRuntimeRoleIsNotOverPrivileged()`
+    // explicitly and deliberately in `main.ts`'s bootstrap sequence, once
+    // there is a real connection to check and a real reason for every boot
+    // to need one.
   }
 
   async onModuleDestroy(): Promise<void> {
     await this.$disconnect();
+  }
+
+  /**
+   * Boot-time privilege self-check (B4, P1.S3 review response).
+   *
+   * Asserts a PROPERTY of the connected role, not its NAME: `SELECT
+   * has_table_privilege('audit_events', 'UPDATE') OR
+   * has_table_privilege('audit_events', 'DELETE')` is true only for a role
+   * that could defeat ADR-0011's audit-immutability guarantee. This is
+   * deliberately different from — and a strictly stronger check than —
+   * asserting the connected role's name is `'ostomy_runtime'`: a name check
+   * would pass for a role called `ostomy_runtime` that had somehow been
+   * granted `UPDATE`/`DELETE` (a future over-granting migration), or that
+   * had somehow become a superuser (B3's exact failure mode, which bypasses
+   * privilege checks including `has_table_privilege` itself — `false` is
+   * never returned to a superuser querying its own privileges, so this
+   * check also catches B3's failure mode as a side effect). It equally
+   * catches a wrong DSN pointing at the owner role, or a forgotten
+   * post-deploy `ALTER ROLE`, in every environment this ever runs in —
+   * including production, none of which the Testcontainers-based
+   * integration test (`prisma.integration.spec.ts`) exercises, since that
+   * test constructs its own ephemeral database and role from scratch every
+   * run.
+   *
+   * Throws rather than returning a boolean: a positive result here means
+   * the running process can silently defeat SRS §5.2's append-only audit
+   * requirement, which must fail the boot, not be logged and continued
+   * past.
+   *
+   * Not called from `onModuleInit` — see that method's comment for why.
+   */
+  async assertRuntimeRoleIsNotOverPrivileged(): Promise<void> {
+    const rows = await this.$queryRaw<Array<{ over_privileged: boolean }>>`
+      SELECT
+        has_table_privilege('audit_events', 'UPDATE')
+        OR has_table_privilege('audit_events', 'DELETE') AS over_privileged
+    `;
+    if (rows[0]?.over_privileged) {
+      throw new Error(
+        'Refusing to start: the connected database role can UPDATE or DELETE audit_events. ' +
+          'This defeats the append-only audit guarantee ADR-0011 requires (SRS §5.2). ' +
+          "Check DATABASE_URL is the runtime role's DSN, not the owner/migration role's, " +
+          'and that no migration has over-granted the runtime role.',
+      );
+    }
   }
 }

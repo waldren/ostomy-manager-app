@@ -70,6 +70,27 @@ services:
     container_name: ostomy-dev-postgres
     restart: unless-stopped
     logging: *default-logging
+    # `-c log_error_verbosity=terse` (P1.S3 review response, B2): as of
+    # P1.S3 this container hosts real PHI tables and CHECK constraints —
+    # the comment two lines below ("there is none [PHI] in this container")
+    # was true before this sprint and is false now, and this flag is what
+    # keeps it true again. Verified empirically: with the default verbosity
+    # (or `default`/`verbose`), a CHECK violation writes a `DETAIL:` line to
+    # this container's stdout (and therefore the `json-file` log driver
+    # above) containing the full failing row, e.g.
+    # `Failing row contains (…, p1, Observation, 79560-9, -500.2500, mL, …)`
+    # — clinical values and all. `terse` suppresses that `DETAIL:` line
+    # entirely (the error itself, and the offending `STATEMENT:` text
+    # sent over the wire, are unaffected — an application issuing
+    # non-parameterized SQL with a literal clinical value embedded in the
+    # query text would still leak it via `STATEMENT:`; this API always
+    # sends parameterized queries through Prisma, so that residual path is
+    # not currently reachable, but it is a property of how queries are
+    # issued, not of this flag). This is a development-stack mitigation
+    # only — see docs/deployment-development.md "Database lifecycle" for
+    # the equivalent RDS parameter-group requirement staging/production
+    # must set independently; nothing here configures RDS.
+    command: ["postgres", "-c", "log_error_verbosity=terse"]
     environment:
       # `:?` (Compose's required-variable syntax), not `:-`: an unset value
       # here becomes an empty string, not an absent one, and an empty
@@ -94,9 +115,15 @@ services:
       retries: 10
       start_period: 10s
     # Postgres's own server log is operational noise, not application-level
-    # PHI logging — the API's Pino redaction (docs/security-hipaa.md "Never
-    # log PHI") is what covers request/response and audit data, and there is
-    # none in this container.
+    # PHI logging in the sense the API's Pino redaction
+    # (docs/security-hipaa.md "Never log PHI") covers — that redaction is
+    # about request/response and audit data passing through the API
+    # process, and remains true of it. It is NOT true that this container
+    # holds no PHI-shaped data to leak on its own, as of P1.S3: this
+    # container's tables now hold real clinical rows, and a CHECK
+    # violation's error `DETAIL:` line is exactly that — see the
+    # `log_error_verbosity=terse` flag above (B2), which is what keeps this
+    # container's own log stream free of it.
 
   # One-shot: sets the runtime role's LOGIN password, every deploy, AFTER
   # `migrate` and BEFORE `api` ever connects. See infra/db/README.md and
@@ -281,7 +308,16 @@ services:
       # The owner DSN — connects as ${POSTGRES_USER}, a superuser, precisely
       # because migrations need to create and alter tables, roles, and
       # grants (ADR-0011). See infra/db/README.md.
-      DATABASE_URL: postgresql://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
+      #
+      # Named MIGRATION_DATABASE_URL, not DATABASE_URL (S12, P1.S3 review
+      # response) — see apps/api/prisma.config.ts's own comment on this
+      # variable for why: the `api` service below (and
+      # apps/api/src/config/env.schema.ts) reads `DATABASE_URL` for the
+      # RUNTIME role's DSN, and giving both DSNs the same variable name
+      # would let a root `.env` used for `pnpm --filter @ostomy/api
+      # start:dev` silently run the whole API as the schema owner if it
+      # ever held the owner DSN under that name for local CLI convenience.
+      MIGRATION_DATABASE_URL: postgresql://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
     command:
       - "node"
       - "node_modules/prisma/build/index.js"

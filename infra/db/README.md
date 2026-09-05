@@ -22,6 +22,19 @@ across two places:
   Testcontainers-based integration test gets the real grant model for
   free just by running `prisma migrate deploy`, closing exactly the gap
   this section used to describe as future work.
+- **The role's ATTRIBUTES are re-asserted unconditionally, every deploy**
+  (added in the P1.S3 review response, B1 in
+  `design-specs/data-model/p1-s3-schema-coverage.md`) — not only inside
+  the `IF NOT EXISTS` guard's `CREATE ROLE` branch above. Item 1 below,
+  "the shared dev host's `pgdata` volume already exists, provisioned
+  under the earlier single-superuser model," is exactly the scenario this
+  closes: a role that already existed before this migration ever ran (as
+  a superuser, under that earlier model) took the guard's untested
+  `ELSE` branch and kept whatever attributes it already had, making every
+  `GRANT` below decorative against it. An unconditional `ALTER ROLE
+  "ostomy_runtime" NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
+  NOREPLICATION NOBYPASSRLS;` immediately after the `DO` block now runs
+  every time, regardless of which branch was taken.
 - **This file's only remaining job is the password** — the one part of
   role setup that genuinely is a secret and therefore cannot live in a
   committed migration. It runs `ALTER ROLE ... WITH LOGIN PASSWORD ...`
