@@ -1,0 +1,24 @@
+# Normalise line endings on checkout.
+#
+# Prettier enforces endOfLine: 'lf' (packages/config/prettier). Without this
+# file, git checks out CRLF on Windows and `pnpm verify` fails locally on
+# every file in the repo — while CI passes, because it checks out on Linux.
+# A check that only fails on developer machines is worse than no check.
+#
+# Shell scripts must be LF regardless: scripts/*.sh runs in Linux containers.
+* text=auto eol=lf
+
+# Explicitly binary — never touch these.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+
+# Generated; keep out of diffs.
+pnpm-lock.yaml -diff linguist-generated
