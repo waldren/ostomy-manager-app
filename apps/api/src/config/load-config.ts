@@ -37,6 +37,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nodeEnv: env.NODE_ENV,
     port: env.PORT,
     logLevel: env.LOG_LEVEL,
+    oidcClockToleranceSeconds: env.OIDC_CLOCK_TOLERANCE_SECONDS,
     oidc: {
       issuer: env.OIDC_ISSUER,
       jwksUri: env.OIDC_JWKS_URI,
@@ -68,9 +69,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   // Reject silently-wrong-but-plausible config the schema cannot catch:
-  // the patient and admin surfaces must never resolve to the same issuer or
-  // audience, or the identity-layer boundary ADR-0008 requires is gone.
-  if (result.data.oidc.issuer === result.data.adminOidc.issuer) {
+  // the patient and admin surfaces must never resolve to the same issuer,
+  // audience, or JWKS endpoint, or the identity-layer boundary ADR-0008
+  // requires is gone.
+  //
+  // Issuer comparison is on the *normalised* URL, not the raw string:
+  // `https://idp/realms/x` and `https://idp/realms/x/` are the same issuer
+  // to any OIDC-compliant verifier, and raw string equality would let that
+  // trailing slash silently defeat this check.
+  if (normalizedUrl(result.data.oidc.issuer) === normalizedUrl(result.data.adminOidc.issuer)) {
     throw new ConfigValidationError(
       makeCrossFieldError(
         'adminOidc.issuer',
@@ -86,8 +93,42 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ),
     );
   }
+  // Identical JWKS endpoints mean identical signing key material even if
+  // the issuer and audience strings above happen to differ — i.e. one
+  // identity pool wearing two audience strings, not two disjoint pools.
+  if (normalizedUrl(result.data.oidc.jwksUri) === normalizedUrl(result.data.adminOidc.jwksUri)) {
+    throw new ConfigValidationError(
+      makeCrossFieldError(
+        'adminOidc.jwksUri',
+        'must differ from oidc.jwksUri — identical JWKS endpoints share signing key material (SRS_v2 §4.6, ADR-0008)',
+      ),
+    );
+  }
 
   return result.data;
+}
+
+/**
+ * Resolves an equivalent-but-differently-written URL (mismatched host
+ * casing, an explicit default port, a trailing slash) to a single canonical
+ * string, so two issuer/JWKS values a real OIDC verifier would treat as
+ * identical cannot slip past raw string equality.
+ *
+ * `new URL(v).href` alone normalises casing and default ports, but — unlike
+ * what its name suggests — does **not** collapse a trailing slash on a
+ * non-root path: `new URL('https://idp/x').href` and
+ * `new URL('https://idp/x/').href` are `https://idp/x` and `https://idp/x/`
+ * respectively, still unequal. That trailing slash is exactly the
+ * plausible-in-practice mistake this check exists to catch, so it is
+ * stripped explicitly (the bare root path `/` is left alone: `https://idp`
+ * and `https://idp/` are the same origin either way).
+ */
+function normalizedUrl(value: string): string {
+  const url = new URL(value);
+  if (url.pathname.length > 1 && url.pathname.endsWith('/')) {
+    url.pathname = url.pathname.slice(0, -1);
+  }
+  return url.href;
 }
 
 /** Builds a `ConfigValidationError`-compatible ZodError for a cross-field rule that `.safeParse` cannot express as a single-field check. */

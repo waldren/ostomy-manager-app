@@ -16,20 +16,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 /**
- * Defence-in-depth redaction paths for the Pino logger (docs/security-hipaa.md
- * "Never log PHI"). The primary control is `logging.module.ts`'s request/
- * response serializers, which never assemble a body or header object into
- * the log entry in the first place — there is no field for these paths to
- * redact in the common case. This list exists for the paths a future
- * `logger.info({...})` call elsewhere in the app might still construct by
- * hand, so a credential-shaped field is scrubbed even if someone bypasses the
- * serializer.
+ * Defence-in-depth redaction paths for the Pino logger. The primary control
+ * is `logging/serializers.ts`, whose request/response/error serializers
+ * name an exact, fixed field set and never assemble a request body, sync
+ * payload, or entity contents into a log entry in the first place — there is
+ * no field for these paths to redact in the common case.
  *
- * Extend this list rather than adding a second redaction mechanism — the
- * P1.S5 audit interceptor and any later Sentry `beforeSend` hook should read
- * from here, not maintain their own copy.
+ * This module is deliberately two separate lists, not one, because they were
+ * previously conflated under a single misleading name (`PHI_REDACTION_PATHS`)
+ * that contained no PHI paths — only credentials. Docs describing this file
+ * as a "PHI-scrubbing logger" were wrong for the same reason: nothing here
+ * scrubs PHI out of an assembled payload, because no PHI payload is ever
+ * assembled into a log line to begin with. Do not restore that framing.
+ *
+ * IMPORTANT — pino `redact` path wildcards are single-level: `*.token`
+ * matches `foo.token` but not `foo.bar.token`. That is fine for the fields
+ * the serializers might log by hand today, but it will not hold against an
+ * arbitrarily-nested sync payload (P2) if one is ever logged directly
+ * instead of through a typed serializer. This deny-list is a second line of
+ * defence, not the control to lean on for nested, attacker/client-shaped
+ * data — an allow-list (as `serializers.ts` already does for req/res/err) or
+ * a typed logger wrapper is the version of this that survives that case.
  */
-export const PHI_REDACTION_PATHS: readonly string[] = [
+
+/** Credential-shaped fields: API keys, tokens, and secrets. Never PHI. */
+export const CREDENTIAL_REDACTION_PATHS: readonly string[] = [
   'req.headers.authorization',
   'req.headers.cookie',
   'req.headers["set-cookie"]',
@@ -45,4 +56,24 @@ export const PHI_REDACTION_PATHS: readonly string[] = [
   '*.secretAccessKey',
   'clientSecret',
   '*.clientSecret',
+];
+
+/**
+ * PHI-shaped fields: request/response bodies, sync payloads, and verified
+ * JWT claims (which routinely carry email, phone_number, birthdate, and
+ * name — see `auth/patient-actor.ts` for why those never reach the request
+ * object in the first place; this is the second line of defence, not the
+ * first, for the same reason described above).
+ */
+export const PHI_SHAPED_REDACTION_PATHS: readonly string[] = [
+  'err.response',
+  'err.meta',
+  'err.query',
+  'err.params',
+  'body',
+  '*.body',
+  'payload',
+  '*.payload',
+  'claims',
+  '*.claims',
 ];

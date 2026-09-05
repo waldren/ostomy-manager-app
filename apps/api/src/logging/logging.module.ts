@@ -20,23 +20,28 @@ import { LoggerModule as PinoLoggerModule } from 'nestjs-pino';
 
 import { APP_CONFIG } from '../config/config.tokens';
 import type { AppConfig } from '../config/env.schema';
-import { PHI_REDACTION_PATHS } from './redaction';
+import { CREDENTIAL_REDACTION_PATHS, PHI_SHAPED_REDACTION_PATHS } from './redaction';
+import { errSerializer, reqSerializer, resSerializer } from './serializers';
 
 /**
  * The structured (Pino) logger, wired so that "never log PHI"
  * (docs/security-hipaa.md) is true by construction rather than by someone
  * remembering to filter a field later:
  *
- *  - `serializers.req`/`serializers.res` name the exact fields captured —
- *    method, url, status, request id. There is no `body` field to redact
- *    because one is never assembled. Request headers (which carry the
- *    Authorization bearer token and any cookies) are likewise never included.
- *  - `redact` is a second, defence-in-depth layer for the paths in
- *    `./redaction.ts`, in case a future handler logs an object by hand.
- *  - `autoLogging` covers every request/response pair structurally, so a
- *    later handler inherits safe logging without adding anything itself —
- *    this is the pattern the audit interceptor (P1.S5) and every PHI
- *    endpoint after it builds on.
+ *  - `serializers.req`/`serializers.res`/`serializers.err` (`./serializers.ts`)
+ *    each name an exact, fixed field set. There is no `body` field to redact
+ *    because one is never assembled, request headers (which carry the
+ *    Authorization bearer token and any cookies) are never included, and the
+ *    error serializer allow-lists rather than copying every own property of
+ *    an exception.
+ *  - `redact` is a second, defence-in-depth layer — a credential list and a
+ *    separate PHI-shaped-field list, see `./redaction.ts` for why they are
+ *    two lists and what "defence-in-depth" means given pino's single-level
+ *    wildcard limitation.
+ *  - `autoLogging` is set explicitly (rather than left to the library
+ *    default) so every request/response pair is covered structurally — this
+ *    is the pattern the audit interceptor (P1.S5) and every PHI endpoint
+ *    after it builds on.
  */
 @Module({
   imports: [
@@ -45,19 +50,15 @@ import { PHI_REDACTION_PATHS } from './redaction';
       useFactory: (config: AppConfig) => ({
         pinoHttp: {
           level: config.logLevel,
+          autoLogging: true,
           redact: {
-            paths: [...PHI_REDACTION_PATHS],
+            paths: [...CREDENTIAL_REDACTION_PATHS, ...PHI_SHAPED_REDACTION_PATHS],
             censor: '[REDACTED]',
           },
           serializers: {
-            req: (req: { id?: unknown; method: string; url: string }) => ({
-              id: req.id,
-              method: req.method,
-              url: req.url,
-            }),
-            res: (res: { statusCode: number }) => ({
-              statusCode: res.statusCode,
-            }),
+            req: reqSerializer,
+            res: resSerializer,
+            err: errSerializer,
           },
         },
       }),

@@ -55,12 +55,23 @@ describe('loadConfig', () => {
     delete env.PORT;
     delete env.LOG_LEVEL;
     delete env.NODE_ENV;
+    delete env.OIDC_CLOCK_TOLERANCE_SECONDS;
 
     const config = loadConfig(env);
 
     expect(config.port).toBe(3000);
     expect(config.logLevel).toBe('info');
     expect(config.nodeEnv).toBe('development');
+    expect(config.oidcClockToleranceSeconds).toBe(30);
+  });
+
+  it('parses an overridden clock tolerance', () => {
+    const env = validEnv();
+    env.OIDC_CLOCK_TOLERANCE_SECONDS = '60';
+
+    const config = loadConfig(env);
+
+    expect(config.oidcClockToleranceSeconds).toBe(60);
   });
 
   it('fails with a clear, field-naming message when a required variable is missing', () => {
@@ -91,6 +102,13 @@ describe('loadConfig', () => {
     expect(() => loadConfig(env)).toThrow(ConfigValidationError);
   });
 
+  it('fails when the patient and admin issuers are the same modulo a trailing slash — raw string equality must not be what this check relies on', () => {
+    const env = validEnv();
+    env.ADMIN_OIDC_ISSUER = `${env.OIDC_ISSUER}/`;
+
+    expect(() => loadConfig(env)).toThrow(ConfigValidationError);
+  });
+
   it('fails when the patient and admin audiences are the same', () => {
     const env = validEnv();
     env.ADMIN_OIDC_AUDIENCE = env.OIDC_AUDIENCE;
@@ -98,15 +116,28 @@ describe('loadConfig', () => {
     expect(() => loadConfig(env)).toThrow(ConfigValidationError);
   });
 
-  it('never includes a secret value in the thrown message', () => {
+  it('fails when the patient and admin JWKS endpoints are the same, even with different issuers and audiences — identical signing key material is one pool wearing two names', () => {
     const env = validEnv();
-    env.OBJECT_STORAGE_SECRET_ACCESS_KEY = '';
+    env.ADMIN_OIDC_JWKS_URI = env.OIDC_JWKS_URI;
+
+    expect(() => loadConfig(env)).toThrow(ConfigValidationError);
+  });
+
+  it('never includes a secret value in the thrown message, even when a different field is what actually failed validation', () => {
+    const env = validEnv();
+    // A distinctive, non-empty sentinel — not an empty string. The point of
+    // this test is that a *valid-looking* secret never leaks when some
+    // unrelated field fails; asserting on an empty string would trivially
+    // pass no matter how the error message were built.
+    const secretSentinel = 'sentinel-should-never-appear-nc7x9k2p';
+    env.OBJECT_STORAGE_SECRET_ACCESS_KEY = secretSentinel;
+    env.OIDC_ISSUER = 'not a valid url';
 
     try {
       loadConfig(env);
       expect.unreachable('loadConfig should have thrown');
     } catch (error) {
-      expect((error as Error).message).not.toContain('test-secret-key');
+      expect((error as Error).message).not.toContain(secretSentinel);
     }
   });
 });

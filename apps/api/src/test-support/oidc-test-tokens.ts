@@ -24,10 +24,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * matcher directly from an in-memory key, per the sprint requirement to test
  * with mocked JWKS only.
  */
-import { exportJWK, generateKeyPair, createLocalJWKSet, SignJWT, type JWTVerifyGetKey } from 'jose';
+import {
+  exportJWK,
+  generateKeyPair,
+  createLocalJWKSet,
+  SignJWT,
+  UnsecuredJWT,
+  type JWK,
+  type JWTVerifyGetKey,
+} from 'jose';
 
 export interface TestOidcIssuer {
   getKey: JWTVerifyGetKey;
+  /** The issuer's public JWK — exposed for algorithm-confusion tests, which need key *material* (not just a `getKey` resolver) to sign an HS256 token with the RS256 public key's bytes as a symmetric secret. */
+  publicJwk: JWK;
   /** Signs a token with this issuer's own key. `kid` matches the published JWK, so a real signature-verification path is exercised. */
   sign: (claims: {
     issuer: string;
@@ -35,6 +45,13 @@ export interface TestOidcIssuer {
     subject: string;
     subjectClaim?: string;
     expiresIn?: string;
+  }) => Promise<string>;
+  /** Signs a token with no `exp` claim at all — never call `.setExpirationTime()`. jose only checks `exp` `if (exp !== undefined)`, so a guard that doesn't pass `requiredClaims: ['exp', ...]` would accept this token forever. */
+  signWithoutExpiration: (claims: {
+    issuer: string;
+    audience: string;
+    subject: string;
+    subjectClaim?: string;
   }) => Promise<string>;
 }
 
@@ -51,6 +68,7 @@ export async function createTestOidcIssuer(): Promise<TestOidcIssuer> {
 
   return {
     getKey,
+    publicJwk: jwk,
     async sign({ issuer, audience, subject, subjectClaim = 'sub', expiresIn = '1h' }) {
       return new SignJWT({ [subjectClaim]: subject })
         .setProtectedHeader({ alg: 'RS256', kid: KEY_ID })
@@ -58,6 +76,14 @@ export async function createTestOidcIssuer(): Promise<TestOidcIssuer> {
         .setAudience(audience)
         .setIssuedAt()
         .setExpirationTime(expiresIn)
+        .sign(privateKey);
+    },
+    async signWithoutExpiration({ issuer, audience, subject, subjectClaim = 'sub' }) {
+      return new SignJWT({ [subjectClaim]: subject })
+        .setProtectedHeader({ alg: 'RS256', kid: KEY_ID })
+        .setIssuer(issuer)
+        .setAudience(audience)
+        .setIssuedAt()
         .sign(privateKey);
     },
   };
@@ -78,4 +104,42 @@ export async function signWithUnrelatedKey(claims: {
     .setIssuedAt()
     .setExpirationTime('1h')
     .sign(privateKey);
+}
+
+/** An unsecured (`alg: "none"`) JWT — no signature at all. A guard that doesn't restrict `algorithms` to `['RS256']` would accept whatever claims an attacker puts in this. */
+export function signWithNoneAlgorithm(claims: {
+  issuer: string;
+  audience: string;
+  subject: string;
+  subjectClaim?: string;
+}): string {
+  return new UnsecuredJWT({ [claims.subjectClaim ?? 'sub']: claims.subject })
+    .setIssuer(claims.issuer)
+    .setAudience(claims.audience)
+    .setIssuedAt()
+    .setExpirationTime('1h')
+    .encode();
+}
+
+/**
+ * The classic RS256-to-HS256 algorithm-confusion attack: an attacker who
+ * only has the (public, published) JWKS signs a token with HS256, using the
+ * public key's own bytes as the symmetric secret. A verifier that resolves
+ * its verification key generically — without pinning `algorithms: ['RS256']`
+ * — can be fooled into using that same public key material to *verify* an
+ * HMAC signature, since the attacker who wrote the message also knows the
+ * "secret" (because it isn't one).
+ */
+export async function signWithHs256UsingPublicKeyAsSecret(
+  claims: { issuer: string; audience: string; subject: string; subjectClaim?: string },
+  publicJwk: JWK,
+): Promise<string> {
+  const forgedSecret = new TextEncoder().encode(JSON.stringify(publicJwk));
+  return new SignJWT({ [claims.subjectClaim ?? 'sub']: claims.subject })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuer(claims.issuer)
+    .setAudience(claims.audience)
+    .setIssuedAt()
+    .setExpirationTime('1h')
+    .sign(forgedSecret);
 }

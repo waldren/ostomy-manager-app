@@ -19,6 +19,7 @@ import { Controller, Get, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 
+import { getAdminActor } from './admin-actor';
 import { AdminJwtAuthGuard } from './admin-jwt-auth.guard';
 
 /**
@@ -38,7 +39,7 @@ export class AdminStubController {
   @Get()
   @ApiBearerAuth('admin-oidc')
   @ApiOperation({ summary: 'Returns the authenticated admin subject. Stub only.' })
-  get(@Req() request: Request & { admin?: { id: string } }): { adminId: string | undefined } {
-    return { adminId: request.admin?.id };
+  get(@Req() request: Request): { adminId: string } {
+    return { adminId: getAdminActor(request).id };
   }
 }

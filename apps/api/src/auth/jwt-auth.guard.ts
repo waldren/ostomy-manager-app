@@ -28,6 +28,7 @@ import { jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { APP_CONFIG } from '../config/config.tokens';
 import type { AppConfig } from '../config/env.schema';
 import { PATIENT_JWKS_RESOLVER } from './patient-jwks-resolver.token';
+import type { PatientActor } from './patient-actor';
 
 /**
  * Patient-facing OIDC authentication guard.
@@ -65,7 +66,7 @@ export class JwtAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<PatientRequest>();
+    const request = context.switchToHttp().getRequest<Request>();
     const token = extractBearerToken(request.headers.authorization);
 
     if (!token) {
@@ -78,6 +79,16 @@ export class JwtAuthGuard implements CanActivate {
         issuer: this.config.oidc.issuer,
         audience: this.config.oidc.audience,
         algorithms: ['RS256'],
+        // A token minted without `exp` — a misconfigured mock OIDC provider,
+        // or a pool misconfiguration — verifies forever otherwise: jose only
+        // checks `exp` `if (exp !== undefined)`, and this system has no
+        // token-revocation path. `iat` is required for the same reason —
+        // both are structural, not merely conventional, claims.
+        requiredClaims: ['exp', 'iat'],
+        // Fargate and mobile-device clock drift, not zero (jose's default).
+        // Admin-manageable would be over-engineering for a value that isn't
+        // clinical; this is ordinary server configuration.
+        clockTolerance: this.config.oidcClockToleranceSeconds,
       });
       payload = verified.payload;
     } catch (error) {
@@ -90,13 +101,13 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException({ code: AUTH_ERROR_CODE.MISSING_SUBJECT_CLAIM });
     }
 
-    request.patient = { id: subject, claims: payload };
+    // Only the subject id, never the rest of `payload`: Cognito tokens
+    // routinely carry email, phone_number, birthdate, and name — four of
+    // the eighteen HIPAA identifiers — and nothing downstream uses `claims`.
+    const actor: PatientActor = { id: subject };
+    request.patient = actor;
     return true;
   }
-}
-
-interface PatientRequest extends Request {
-  patient?: { id: string; claims: Record<string, unknown> };
 }
 
 /** Field identifiers and rule codes only — never the token or claim values (docs/security-hipaa.md "Never log PHI"). */
@@ -106,6 +117,7 @@ export const AUTH_ERROR_CODE = {
   INVALID_SIGNATURE: 'AUTH_INVALID_SIGNATURE',
   INVALID_ISSUER: 'AUTH_INVALID_ISSUER',
   INVALID_AUDIENCE: 'AUTH_INVALID_AUDIENCE',
+  INVALID_ALGORITHM: 'AUTH_INVALID_ALGORITHM',
   TOKEN_EXPIRED: 'AUTH_TOKEN_EXPIRED',
   MISSING_SUBJECT_CLAIM: 'AUTH_MISSING_SUBJECT_CLAIM',
   VERIFICATION_FAILED: 'AUTH_VERIFICATION_FAILED',
@@ -130,6 +142,16 @@ function mapVerificationError(error: unknown): string {
   }
   if (code === 'ERR_JWT_EXPIRED') {
     return AUTH_ERROR_CODE.TOKEN_EXPIRED;
+  }
+  if (code === 'ERR_JOSE_ALG_NOT_ALLOWED') {
+    // Thrown by jose before it ever calls `getKey` — covers both an
+    // unsecured (`alg: none`) token and an algorithm-confusion attempt
+    // (e.g. an HS256 token signed with the RS256 public key's bytes as a
+    // symmetric secret). See jwt-auth.guard.spec.ts's "algorithm confusion"
+    // tests: this depends entirely on `algorithms: ['RS256']` above staying
+    // present — dropping it silently falls through to VERIFICATION_FAILED
+    // and, worse, actually accepts the forged token.
+    return AUTH_ERROR_CODE.INVALID_ALGORITHM;
   }
   if (
     code === 'ERR_JWS_SIGNATURE_VERIFICATION_FAILED' ||

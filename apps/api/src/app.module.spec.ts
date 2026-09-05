@@ -27,6 +27,7 @@ function testConfig(): AppConfig {
     nodeEnv: 'test',
     port: 3000,
     logLevel: 'silent',
+    oidcClockToleranceSeconds: 30,
     oidc: {
       issuer: 'https://mock-oidc.test/patient-issuer',
       jwksUri: 'https://mock-oidc.test/patient-issuer/jwks',

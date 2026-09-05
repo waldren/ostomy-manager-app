@@ -9,8 +9,36 @@
     // options are overridden here rather than in the shared base — see the
     // "type": "commonjs" note in package.json for why this workspace's module
     // system diverges from the monorepo default.
-    "module": "commonjs",
-    "moduleResolution": "node10",
+    //
+    // Not "node10": node10 cannot read a package's `exports` map at all, so
+    // it silently falls back to the package root — `jose` only still
+    // resolves under it because that package happens to ship a legacy
+    // top-level `main`. `packages/core` (P1.S4) is ESM; if its `exports` map
+    // ever ships without a legacy `main` (the normal shape for a modern
+    // package), node10 resolution fails typecheck outright, and if its entry
+    // graph has top-level await, a mismatched resolution mode can let
+    // `require(esm)` reach production and throw `ERR_REQUIRE_ASYNC_MODULE`
+    // at runtime with every test green (vitest transforms to ESM and never
+    // exercises the CJS `require` path).
+    //
+    // "nodenext", not the more obvious "node16": @nestjs/common@12 (and the
+    // rest of the v12 line) ships `"type": "module"` with no CJS entry point
+    // at all — pure ESM, no dual package. "node16" models Node 16's module
+    // behaviour, which predates Node's synchronous `require()` of ESM
+    // (stable since Node 22.12) and statically forbids requiring an ESM
+    // package from a CJS file (TS1479) — it fails typecheck on this
+    // workspace's own direct dependencies today, not hypothetically later.
+    // "nodenext" tracks the module resolution behaviour of whatever Node
+    // version is actually running (this repo targets Node 24, well past
+    // 22.12), so it correctly allows `require()`-ing @nestjs/* the way this
+    // workspace's CommonJS output actually does at runtime, while still
+    // reading `exports` maps correctly (fixing the node10 problem above) and
+    // still catching the real failure mode: TypeScript surfaces the same
+    // class of diagnostic nodenext would if a required ESM module had
+    // top-level await, since synchronous `require()` of such a module is
+    // exactly what throws `ERR_REQUIRE_ASYNC_MODULE` at runtime.
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
     // verbatimModuleSyntax requires emitted import/export syntax to match
     // what Node would treat the file as (ESM) — incompatible with plain
     // CommonJS `require`/`exports` output, which is what Nest and this

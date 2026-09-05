@@ -25,10 +25,21 @@ import {
 } from '../test-support/execution-context';
 import {
   createTestOidcIssuer,
+  signWithHs256UsingPublicKeyAsSecret,
+  signWithNoneAlgorithm,
   signWithUnrelatedKey,
   type TestOidcIssuer,
 } from '../test-support/oidc-test-tokens';
 import { AUTH_ERROR_CODE, JwtAuthGuard } from './jwt-auth.guard';
+
+// MIRRORING OBLIGATION: `admin-jwt-auth.guard.spec.ts` deliberately mirrors
+// every case in this file (issuer/audience/expiry/subject/algorithm/exp
+// requirement), one-for-one, against the admin guard. `JwtAuthGuard` and
+// `AdminJwtAuthGuard` intentionally share no implementation code (see the
+// guard files' own comments and ADR-0008), so these two test files are the
+// only thing keeping the two guards' behaviour in agreement. Adding a case
+// below without adding its mirror in the admin spec is a regression, even
+// though nothing will fail to compile.
 
 const ISSUER = 'https://mock-oidc.test/patient-issuer';
 const AUDIENCE = 'ostomy-patient-app';
@@ -38,6 +49,7 @@ function makeConfig(): AppConfig {
     nodeEnv: 'test',
     port: 3000,
     logLevel: 'silent',
+    oidcClockToleranceSeconds: 30,
     oidc: {
       issuer: ISSUER,
       jwksUri: 'https://unused.test/jwks',
@@ -67,8 +79,8 @@ describe('JwtAuthGuard — patient OIDC authentication', () => {
     issuer = await createTestOidcIssuer();
   });
 
-  function makeGuard(): JwtAuthGuard {
-    return new JwtAuthGuard(makeConfig(), issuer.getKey);
+  function makeGuard(config: AppConfig = makeConfig()): JwtAuthGuard {
+    return new JwtAuthGuard(config, issuer.getKey);
   }
 
   it('rejects a request with no token', async () => {
@@ -133,7 +145,7 @@ describe('JwtAuthGuard — patient OIDC authentication', () => {
       issuer: ISSUER,
       audience: AUDIENCE,
       subject: 'patient-123',
-      expiresIn: '-1s',
+      expiresIn: '-1h',
     });
     const context = createHttpExecutionContext(requestWithAuthHeader(`Bearer ${token}`));
 
@@ -166,6 +178,108 @@ describe('JwtAuthGuard — patient OIDC authentication', () => {
 
     await expect(guard.canActivate(context)).rejects.toMatchObject({
       response: { code: AUTH_ERROR_CODE.MISSING_SUBJECT_CLAIM },
+    });
+  });
+
+  // --- B1: a token with no `exp` must not verify forever -------------------
+
+  it('rejects a token with no expiration claim at all — jose only checks exp "if defined", so an unbounded token needs its own rejection', async () => {
+    const guard = makeGuard();
+    const token = await issuer.signWithoutExpiration({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      subject: 'patient-123',
+    });
+    const context = createHttpExecutionContext(requestWithAuthHeader(`Bearer ${token}`));
+
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  // --- B3: only the subject id is attached to the request, never the full
+  // claims payload (Cognito tokens routinely carry email, phone_number,
+  // birthdate, name — four of the eighteen HIPAA identifiers). ------------
+
+  it('attaches only { id }, never the verified claims payload', async () => {
+    const guard = makeGuard();
+    const token = await issuer.sign({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      subject: 'patient-123',
+    });
+    const request = requestWithAuthHeader(`Bearer ${token}`) as unknown as {
+      patient?: Record<string, unknown>;
+    };
+    const context = createHttpExecutionContext(request);
+
+    await guard.canActivate(context);
+
+    expect(request.patient).toEqual({ id: 'patient-123' });
+    expect(request.patient).not.toHaveProperty('claims');
+  });
+
+  // --- S3: algorithm confusion. Both cases are correctly rejected today
+  // because `algorithms: ['RS256']` is passed to jwtVerify — nothing here
+  // would fail if that option were ever dropped in a refactor, which is
+  // exactly why this needs its own test rather than relying on the
+  // wrong-signature test above to catch it incidentally. ------------------
+
+  it('rejects an unsecured ("alg": "none") token', async () => {
+    const guard = makeGuard();
+    const token = signWithNoneAlgorithm({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      subject: 'patient-123',
+    });
+    const context = createHttpExecutionContext(requestWithAuthHeader(`Bearer ${token}`));
+
+    await expect(guard.canActivate(context)).rejects.toMatchObject({
+      response: { code: AUTH_ERROR_CODE.INVALID_ALGORITHM },
+    });
+  });
+
+  it('rejects an HS256 token signed with the RS256 public key bytes as the "secret" (algorithm confusion)', async () => {
+    const guard = makeGuard();
+    const token = await signWithHs256UsingPublicKeyAsSecret(
+      { issuer: ISSUER, audience: AUDIENCE, subject: 'patient-123' },
+      issuer.publicJwk,
+    );
+    const context = createHttpExecutionContext(requestWithAuthHeader(`Bearer ${token}`));
+
+    await expect(guard.canActivate(context)).rejects.toMatchObject({
+      response: { code: AUTH_ERROR_CODE.INVALID_ALGORITHM },
+    });
+  });
+
+  // --- S8: clock tolerance is wired from config, not left at jose's
+  // zero-tolerance default. ------------------------------------------------
+
+  it('accepts a token expired by less than the configured clock tolerance', async () => {
+    const guard = makeGuard(makeConfig());
+    const token = await issuer.sign({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      subject: 'patient-123',
+      expiresIn: '-10s',
+    });
+    const context = createHttpExecutionContext(requestWithAuthHeader(`Bearer ${token}`));
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('rejects a token expired by more than the configured clock tolerance', async () => {
+    const config = makeConfig();
+    config.oidcClockToleranceSeconds = 5;
+    const guard = makeGuard(config);
+    const token = await issuer.sign({
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      subject: 'patient-123',
+      expiresIn: '-1h',
+    });
+    const context = createHttpExecutionContext(requestWithAuthHeader(`Bearer ${token}`));
+
+    await expect(guard.canActivate(context)).rejects.toMatchObject({
+      response: { code: AUTH_ERROR_CODE.TOKEN_EXPIRED },
     });
   });
 });

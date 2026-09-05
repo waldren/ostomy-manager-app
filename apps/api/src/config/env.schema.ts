@@ -69,6 +69,13 @@ export const rawEnvSchema = z.object({
   port: z.coerce.number().int().positive().default(3000),
   logLevel: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 
+  // jose defaults to zero clock-skew tolerance. Fargate host clocks and
+  // mobile-device clocks both drift; without this, `exp`/`iat`/`nbf` checks
+  // produce 401s that look random rather than a legitimate, boundable skew.
+  // Not admin-managed configuration (unlike clinical thresholds) — this is
+  // ordinary server tuning, not something a clinician needs to change.
+  oidcClockToleranceSeconds: z.coerce.number().int().nonnegative().default(30),
+
   oidc: oidcSchema,
   adminOidc: oidcSchema,
 

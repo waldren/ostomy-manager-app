@@ -44,6 +44,7 @@ function makeConfig(): AppConfig {
     nodeEnv: 'test',
     port: 3000,
     logLevel: 'silent',
+    oidcClockToleranceSeconds: 30,
     oidc: {
       issuer: PATIENT_ISSUER,
       jwksUri: 'https://unused.test/jwks',

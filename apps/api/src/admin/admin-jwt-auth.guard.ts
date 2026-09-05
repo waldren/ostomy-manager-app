@@ -28,6 +28,7 @@ import { jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { APP_CONFIG } from '../config/config.tokens';
 import type { AppConfig } from '../config/env.schema';
 import { ADMIN_JWKS_RESOLVER } from './admin-jwks-resolver.token';
+import type { AdminActor } from './admin-actor';
 
 /**
  * Admin-console OIDC authentication guard.
@@ -57,7 +58,7 @@ export class AdminJwtAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<AdminRequest>();
+    const request = context.switchToHttp().getRequest<Request>();
     const token = extractBearerToken(request.headers.authorization);
 
     if (!token) {
@@ -70,6 +71,11 @@ export class AdminJwtAuthGuard implements CanActivate {
         issuer: this.config.adminOidc.issuer,
         audience: this.config.adminOidc.audience,
         algorithms: ['RS256'],
+        // See JwtAuthGuard's identical option for why these are required,
+        // not merely conventional, claims — mirrored here per this file's
+        // own "no shared code, but tests and behaviour must agree" rule.
+        requiredClaims: ['exp', 'iat'],
+        clockTolerance: this.config.oidcClockToleranceSeconds,
       });
       payload = verified.payload;
     } catch (error) {
@@ -82,13 +88,13 @@ export class AdminJwtAuthGuard implements CanActivate {
       throw new UnauthorizedException({ code: ADMIN_AUTH_ERROR_CODE.MISSING_SUBJECT_CLAIM });
     }
 
-    request.admin = { id: subject, claims: payload };
+    // Only the subject id — see JwtAuthGuard's identical comment. The admin
+    // console has zero PHI access by design (SRS_v2 §3.11); it must not even
+    // incidentally carry admin PII past what identifies the actor.
+    const actor: AdminActor = { id: subject };
+    request.admin = actor;
     return true;
   }
-}
-
-interface AdminRequest extends Request {
-  admin?: { id: string; claims: Record<string, unknown> };
 }
 
 /** Field identifiers and rule codes only — never the token or claim values (docs/security-hipaa.md "Never log PHI"). */
@@ -98,6 +104,7 @@ export const ADMIN_AUTH_ERROR_CODE = {
   INVALID_SIGNATURE: 'ADMIN_AUTH_INVALID_SIGNATURE',
   INVALID_ISSUER: 'ADMIN_AUTH_INVALID_ISSUER',
   INVALID_AUDIENCE: 'ADMIN_AUTH_INVALID_AUDIENCE',
+  INVALID_ALGORITHM: 'ADMIN_AUTH_INVALID_ALGORITHM',
   TOKEN_EXPIRED: 'ADMIN_AUTH_TOKEN_EXPIRED',
   MISSING_SUBJECT_CLAIM: 'ADMIN_AUTH_MISSING_SUBJECT_CLAIM',
   VERIFICATION_FAILED: 'ADMIN_AUTH_VERIFICATION_FAILED',
@@ -122,6 +129,12 @@ function mapVerificationError(error: unknown): string {
   }
   if (code === 'ERR_JWT_EXPIRED') {
     return ADMIN_AUTH_ERROR_CODE.TOKEN_EXPIRED;
+  }
+  if (code === 'ERR_JOSE_ALG_NOT_ALLOWED') {
+    // See JwtAuthGuard's identical branch — covers `alg: none` and
+    // algorithm-confusion attempts, and depends on `algorithms: ['RS256']`
+    // above staying present.
+    return ADMIN_AUTH_ERROR_CODE.INVALID_ALGORITHM;
   }
   if (
     code === 'ERR_JWS_SIGNATURE_VERIFICATION_FAILED' ||

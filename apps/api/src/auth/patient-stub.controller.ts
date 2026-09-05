@@ -19,21 +19,28 @@ import { Controller, Get, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 
+import { getPatientActor } from './patient-actor';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
 /**
  * Proves the patient auth boundary end to end. No business logic — this
  * route and its guard are replaced by the first real patient-scoped endpoint
  * at P2.S1a, not extended in place.
+ *
+ * Convention for every controller added under `src/auth/**` from here on:
+ * apply `JwtAuthGuard` at the controller (class) level, never rely on a
+ * global guard, and never on a per-method basis on a controller that mixes
+ * guarded and unguarded routes — matches the admin surface's convention in
+ * `admin-stub.controller.ts`, so the two directories diff cleanly.
  */
 @ApiTags('auth')
 @Controller('auth-stub')
+@UseGuards(JwtAuthGuard)
 export class PatientStubController {
   @Get()
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('patient-oidc')
   @ApiOperation({ summary: 'Returns the authenticated patient subject. Stub only.' })
-  get(@Req() request: Request & { patient?: { id: string } }): { patientId: string | undefined } {
-    return { patientId: request.patient?.id };
+  get(@Req() request: Request): { patientId: string } {
+    return { patientId: getPatientActor(request).id };
   }
 }
