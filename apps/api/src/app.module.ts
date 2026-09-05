@@ -30,6 +30,16 @@ export class AppModule {
    * Takes the already-validated `AppConfig` as a value — see
    * `config/config.module.ts` for why config loading happens in `main.ts`
    * rather than inside this module graph.
+   *
+   * `PrismaModule` (../prisma/prisma.module.ts) is deliberately NOT
+   * imported here yet (P1.S3). This sprint proves the migration and the
+   * connection work via that module's own integration test; nothing in
+   * this application actually reads or writes the database yet. Importing
+   * it here now would give every test that boots `AppModule` — including
+   * `app.module.spec.ts`, which supplies a synthetic `databaseUrl` no
+   * container is listening on — a live-database dependency it does not
+   * need. Add the import in the same change that adds the first consumer
+   * (P1.S5's audit/threshold module, or P2.S1a's observations module).
    */
   static register(config: AppConfig): DynamicModule {
     return {

@@ -38,6 +38,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: env.PORT,
     logLevel: env.LOG_LEVEL,
     oidcClockToleranceSeconds: env.OIDC_CLOCK_TOLERANCE_SECONDS,
+    databaseUrl: env.DATABASE_URL,
     oidc: {
       issuer: env.OIDC_ISSUER,
       jwksUri: env.OIDC_JWKS_URI,

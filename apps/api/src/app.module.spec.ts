@@ -28,6 +28,12 @@ function testConfig(): AppConfig {
     port: 3000,
     logLevel: 'silent',
     oidcClockToleranceSeconds: 30,
+    // Deliberately unreachable — nothing in AppModule's current graph
+    // opens a database connection to construct (PrismaService is not
+    // imported here yet; see app.module.ts's comment), so this test never
+    // needs a live Postgres, only a syntactically valid DSN to satisfy
+    // AppConfig's type.
+    databaseUrl: 'postgresql://ostomy_runtime:unused@localhost:5432/unused',
     oidc: {
       issuer: 'https://mock-oidc.test/patient-issuer',
       jwksUri: 'https://mock-oidc.test/patient-issuer/jwks',

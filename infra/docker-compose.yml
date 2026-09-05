@@ -98,27 +98,28 @@ services:
     # log PHI") is what covers request/response and audit data, and there is
     # none in this container.
 
-  # One-shot: applies infra/db/bootstrap-roles.sql — the migration-owner /
-  # runtime-role split — every deploy, before `migrate` or `api` ever
-  # connect. See infra/db/README.md for the full rationale; in short:
+  # One-shot: sets the runtime role's LOGIN password, every deploy, AFTER
+  # `migrate` and BEFORE `api` ever connects. See infra/db/README.md and
+  # ADR-0011 for the full rationale; in short:
   #
   # - `postgres` above bootstraps ${POSTGRES_USER} as a superuser (the
   #   image's own behavior). That role is the "owner" migrations run as.
-  # - This service additionally creates/updates ${POSTGRES_RUNTIME_USER} —
-  #   NOSUPERUSER, NOCREATEDB, NOINHERIT — which is the ONLY role `api`
-  #   below ever connects as. Without that separation, a superuser bypasses
-  #   every privilege check, so a future `GRANT SELECT, INSERT ON
-  #   audit_events` with no UPDATE/DELETE grant ever added (P1.S5's
-  #   audit-immutability exit criterion, ADR-0011) would mean nothing had
-  #   `api` still connected as the same superuser that owns the table.
+  # - `migrate` below (running FIRST now — see that service's own comment
+  #   on why this service moved after it) creates ${POSTGRES_RUNTIME_USER}
+  #   as a NOSUPERUSER/NOCREATEDB/NOCREATEROLE/NOINHERIT/NOREPLICATION
+  #   role, NOLOGIN, with every table grant it will ever hold (ADR-0011).
+  #   This service does exactly one remaining thing: give that role a
+  #   password and LOGIN, so it can actually authenticate — the one part
+  #   of role setup that is a secret and therefore CANNOT live in a
+  #   committed migration. Without this step ${POSTGRES_RUNTIME_USER}
+  #   exists but nothing (including `api`) can connect as it.
   # - Deliberately its own service, not a docker-entrypoint-initdb.d script
   #   mounted on `postgres`: the Postgres image only ever runs initdb.d
   #   scripts once, against an empty data directory. This service re-runs
-  #   idempotently every deploy instead, which is what lets the role split
-  #   land against the shared host's ALREADY-provisioned `pgdata` volume
-  #   without a `dev-reset`. Generally, though: any future initdb.d script
-  #   added to this stack WILL be skipped on that same existing volume until
-  #   the next dev-reset — keep that in mind before reaching for one.
+  #   idempotently every deploy instead (rotating
+  #   POSTGRES_RUNTIME_PASSWORD in .env and redeploying is enough on its
+  #   own), which also lets it land against the shared host's
+  #   ALREADY-provisioned `pgdata` volume without a `dev-reset`.
   db-roles:
     image: postgres:17-alpine
     container_name: ostomy-dev-db-roles
@@ -130,8 +131,13 @@ services:
     networks:
       - ostomy-dev
     depends_on:
-      postgres:
-        condition: service_healthy
+      # Not just `postgres: service_healthy` — the role this script
+      # `ALTER`s does not exist until `migrate`'s first migration creates
+      # it (P1.S3). Running this before `migrate`, as it did before P1.S3,
+      # would now fail outright ("role does not exist") instead of the
+      # silent ordering coincidence that used to make it work.
+      migrate:
+        condition: service_completed_successfully
     command:
       - psql
       - -v
@@ -146,8 +152,6 @@ services:
       - runtime_role=${POSTGRES_RUNTIME_USER:?set in .env}
       - -v
       - runtime_password=${POSTGRES_RUNTIME_PASSWORD:?set in .env}
-      - -v
-      - db_name=${POSTGRES_DB:?set in .env}
       - -f
       - /bootstrap-roles.sql
 
@@ -247,73 +251,47 @@ services:
       retries: 10
       start_period: 10s
 
-  # One-shot: must exit 0 before `api` starts (docs/deployment-development.md
-  # "Database lifecycle"). Run as a separate service, never in the API's own
-  # entrypoint, so a future multi-replica `api` can never race two concurrent
-  # migration attempts.
+  # One-shot: must exit 0 before `db-roles` (and, transitively, `api`) starts
+  # (docs/deployment-development.md "Database lifecycle"). Run as a separate
+  # service, never in the API's own entrypoint, so a future multi-replica
+  # `api` can never race two concurrent migration attempts.
   #
-  # Runs twice per `docker compose up -d` deploy today: the explicit `run
-  # --rm migrate` step in the deploy workflow removes its own container on
-  # exit, so `up -d` immediately after starts a second one to satisfy its
-  # own `service_completed_successfully` condition on `api`. Harmless while
-  # this is a no-op placeholder and will stay harmless once P1.S3 lands real
-  # migrations, PROVIDED they stay idempotent (`prisma migrate deploy` is,
-  # by design) — re-check this the day a migration ever carries a one-time
-  # data backfill rather than only schema changes.
+  # Runs BEFORE `db-roles` now (P1.S3) — reversed from the pre-P1.S3
+  # ordering. The first migration
+  # (apps/api/prisma/migrations/20260905000000_init_schema_core) creates the
+  # runtime role itself (NOLOGIN, with every grant it will ever hold —
+  # ADR-0011); `db-roles` now does one remaining thing, setting that role's
+  # password, and it cannot `ALTER` a role that does not exist yet. See that
+  # service's comment and infra/db/README.md "The seam for P1.S3".
   #
-  # Placeholder until P1.S3 (Prisma schema does not exist yet): reuses the
-  # api image itself — its build is real today even though there is nothing
-  # to migrate — with the container command overridden. When P1.S3 lands,
-  # replace `command:` below with the real `prisma migrate deploy` (or
-  # equivalent) invocation; nothing else about this service's wiring
-  # changes, including DATABASE_URL below, which already carries the owner
-  # role's DSN Prisma will need.
+  # Runs `prisma migrate deploy` directly against the built image's own
+  # node_modules (no pnpm in the runtime stage — see
+  # infra/docker/api.Dockerfile — so this is `node` invoking the CLI's
+  # entry file, not `pnpm exec prisma`). Idempotent by design: a second run
+  # against an already-migrated database is a no-op, which is what makes
+  # this safe to run twice per `docker compose up -d` deploy (the deploy
+  # workflow's explicit `run --rm migrate` step removes its own container
+  # on exit, so `up -d` immediately after starts a second one to satisfy
+  # its own `service_completed_successfully` condition).
   migrate:
     <<: *api-image
     container_name: ostomy-dev-migrate
     logging: *default-logging
     environment:
-      # The owner DSN — connects as ${POSTGRES_USER}, which db-roles above
-      # has NOT restricted, precisely because migrations need to create and
-      # alter tables. Unused by today's placeholder command; present now so
-      # P1.S3 only has to read process.env.DATABASE_URL, not also design the
-      # DSN split. See infra/db/README.md.
+      # The owner DSN — connects as ${POSTGRES_USER}, a superuser, precisely
+      # because migrations need to create and alter tables, roles, and
+      # grants (ADR-0011). See infra/db/README.md.
       DATABASE_URL: postgresql://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
-    # Real connectivity check, not just a log line: opens a TCP connection to
-    # postgres:5432 with node's own `net` module (no new dependency — this
-    # placeholder has no business pulling in a Postgres client library
-    # before P1.S3 decides what that library is) and exits non-zero if it
-    # cannot connect within 5s. This is what actually exercises the
-    # `service_healthy -> service_completed_successfully` dependency chain
-    # below; a command that never touches Postgres would let that chain
-    # report success unconditionally, regardless of whether Postgres was
-    # ever reachable.
     command:
       - "node"
-      - "-e"
-      - |
-        const net = require('net');
-        const socket = net.createConnection({ host: 'postgres', port: 5432 }, () => {
-          console.log('[migrate] connected to postgres:5432 - no schema yet (P1.S3), placeholder migrate step, exiting 0');
-          socket.end();
-          process.exit(0);
-        });
-        socket.setTimeout(5000);
-        socket.on('timeout', () => {
-          console.error('[migrate] timed out connecting to postgres:5432');
-          process.exit(1);
-        });
-        socket.on('error', (err) => {
-          console.error('[migrate] failed to connect to postgres:5432:', err.message);
-          process.exit(1);
-        });
+      - "node_modules/prisma/build/index.js"
+      - "migrate"
+      - "deploy"
     networks:
       - ostomy-dev
     depends_on:
       postgres:
         condition: service_healthy
-      db-roles:
-        condition: service_completed_successfully
 
   api:
     <<: *api-image
@@ -331,11 +309,13 @@ services:
       OIDC_CLOCK_TOLERANCE_SECONDS: ${OIDC_CLOCK_TOLERANCE_SECONDS:-30}
 
       # The runtime DSN — connects as ${POSTGRES_RUNTIME_USER}, the role
-      # db-roles creates with NOSUPERUSER/NOCREATEDB/NOINHERIT. Not consumed
-      # by any code yet (no database module exists before P1.S3); present
-      # now precisely so the API never has the option of accidentally
-      # connecting as the migration owner once one does. See
-      # infra/db/README.md.
+      # `migrate`'s first migration creates (NOSUPERUSER/NOCREATEDB/
+      # NOCREATEROLE/NOINHERIT/NOREPLICATION) and `db-roles` gives a
+      # password to. Validated at boot by apps/api/src/config/load-config.ts
+      # (P1.S3) even though `PrismaService` is not part of `AppModule`'s
+      # graph yet — see that file's own comment on why. Present so the API
+      # never has the option of accidentally connecting as the migration
+      # owner once a consumer does exist. See infra/db/README.md.
       DATABASE_URL: postgresql://${POSTGRES_RUNTIME_USER:?set in .env}:${POSTGRES_RUNTIME_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
 
       # Patient OIDC. JWKS_URI uses compose-internal DNS: the JWKS content
@@ -376,6 +356,12 @@ services:
       mock-oidc:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+      # Not implied by depending on `migrate` alone (P1.S3): `db-roles` now
+      # runs AFTER `migrate` (it sets the password for the role `migrate`
+      # creates), so `api` must wait on it explicitly or it can start
+      # before the runtime role can actually authenticate.
+      db-roles:
         condition: service_completed_successfully
     # The Dockerfile's own HEALTHCHECK (curl against /api/v1/health) is
     # authoritative; not overridden here. It is liveness, not readiness —

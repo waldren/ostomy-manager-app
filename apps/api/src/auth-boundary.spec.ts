@@ -45,6 +45,7 @@ function makeConfig(): AppConfig {
     port: 3000,
     logLevel: 'silent',
     oidcClockToleranceSeconds: 30,
+    databaseUrl: 'postgresql://ostomy_runtime:unused@localhost:5432/unused',
     oidc: {
       issuer: PATIENT_ISSUER,
       jwksUri: 'https://unused.test/jwks',
