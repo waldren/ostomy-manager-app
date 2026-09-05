@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ostomy — Admin console (not yet scaffolded)</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 40rem;
+        margin: 4rem auto;
+        padding: 0 1.5rem;
+        line-height: 1.5;
+        color: #1a1a1a;
+      }
+      code {
+        background: #f0f0f0;
+        padding: 0.1rem 0.35rem;
+        border-radius: 0.25rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Ostomy — admin console</h1>
+    <p>
+      This container is a placeholder. <code>apps/admin</code> has not been scaffolded yet (see
+      <code>design-specs/planning/v1-implementation-plan.md</code>; the admin console has zero PHI
+      access by design — SRS_v2 §3.11, ADR-0008).
+    </p>
+    <p>
+      Once <code>apps/admin</code> exists, this service's build replaces
+      <code>infra/docker/admin.Dockerfile</code>'s single static-copy stage with the real
+      multi-stage pnpm build, built from a source tree that imports no patient data types.
+    </p>
+  </body>
+</html>

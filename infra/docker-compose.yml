@@ -1,0 +1,259 @@
+# Shared on-premise development stack. See docs/deployment-development.md for
+# the design this file implements — read that first; this file follows it,
+# it does not redesign it.
+#
+# Run from the repo root (paths below and .env.example are root-relative):
+#
+#   docker compose --env-file .env -f infra/docker-compose.yml up -d --build
+#
+# `--env-file .env` is explicit rather than relied-upon-by-default:
+# Compose's default `.env` lookup is relative to the compose file's
+# directory (infra/), not the repo root, and docs/deployment-development.md
+# is explicit that the committed template is `.env.example` at the repo
+# root. Passing --env-file avoids that mismatch entirely rather than
+# depending on --project-directory behaving as expected across Compose
+# versions.
+#
+# LAN-only, plain HTTP, synthetic data only (docs/deployment-development.md
+# "What this environment deliberately does not do"). Nothing here may ever
+# hold a production credential or real PHI — see CLAUDE.md and
+# docs/security-hipaa.md.
+
+name: ostomy-dev
+
+networks:
+  ostomy-dev:
+    name: ostomy-dev
+
+volumes:
+  pgdata:
+  miniodata:
+
+x-api-image: &api-image
+  build:
+    context: ..
+    dockerfile: infra/docker/api.Dockerfile
+  image: ostomy/api:dev-latest
+
+# Bounded log rotation, not a PHI control: the default `json-file` driver
+# would otherwise grow without limit, and docs/deployment-development.md
+# "Host baseline" flags a full disk as the most likely way this environment
+# breaks. What ends up *in* those logs — never PHI — is enforced by the
+# API's own Pino redaction (docs/security-hipaa.md "Never log PHI"); this
+# only bounds how much of it is kept.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ostomy-dev-postgres
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - ostomy-dev
+    # Postgres stays off the LAN by default (docs/deployment-development.md
+    # "Network and access"). Uncomment only to point a GUI client at it
+    # temporarily, and revert afterward:
+    # ports:
+    #   - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # Postgres's own server log is operational noise, not application-level
+    # PHI logging — the API's Pino redaction (docs/security-hipaa.md "Never
+    # log PHI") is what covers request/response and audit data, and there is
+    # none in this container.
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
+    container_name: ostomy-dev-minio
+    restart: unless-stopped
+    logging: *default-logging
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - miniodata:/data
+    networks:
+      - ostomy-dev
+    ports:
+      # Console only (docs/deployment-development.md "Network and access"
+      # table: MinIO API stays compose-network-only; the console is the LAN
+      # row). The S3 API port (9000) is reachable from other containers as
+      # http://minio:9000 but is intentionally not published to the host.
+      - "9001:9001"
+    healthcheck:
+      # No wget or curl in this image (verified against
+      # minio/minio:RELEASE.2025-04-08T15-41-24Z) — only its own `mc` client
+      # binary, which ships a purpose-built readiness subcommand.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  mock-oidc:
+    # navikt/mock-oauth2-server — the choice recorded as an open item in
+    # docs/deployment-development.md, settled here. It creates an issuer
+    # lazily for any path segment on first request (verified empirically:
+    # GET /<any-path>/.well-known/openid-configuration "just works" with no
+    # config file), each with its own distinct RSA signing key, so the
+    # patient (`patient-issuer`) and admin (`admin-issuer`) paths used by
+    # apps/api/.env.example are disjoint issuers with disjoint JWKS by
+    # construction — no JSON_CONFIG needed to satisfy SRS_v2 §4.6's
+    # two-pool separation. Every token it issues carries `iat`, `exp`,
+    # `nbf`, matching the guards' `requiredClaims: ['exp', 'iat']`.
+    #
+    # IMPORTANT — read before changing DEV_HOST_ADDRESS or issuer URLs:
+    # this image derives the `iss` claim from the Host header of whatever
+    # request minted the token, not from a fixed config value. See the
+    # DEV_HOST_ADDRESS comment in .env.example.
+    image: ghcr.io/navikt/mock-oauth2-server:latest
+    container_name: ostomy-dev-mock-oidc
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      LOG_LEVEL: INFO
+    networks:
+      - ostomy-dev
+    ports:
+      - "8090:8080"
+    healthcheck:
+      # Not `wget --spider`: this server responds 405 to HEAD requests
+      # (verified against ghcr.io/navikt/mock-oauth2-server:latest), which is
+      # what --spider sends — a real GET is required.
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--output-document=-",
+          "http://localhost:8080/default/.well-known/openid-configuration",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # One-shot: must exit 0 before `api` starts (docs/deployment-development.md
+  # "Database lifecycle"). Run as a separate service, never in the API's own
+  # entrypoint, so a future multi-replica `api` can never race two concurrent
+  # migration attempts.
+  #
+  # Placeholder until P1.S3 (Prisma schema does not exist yet): reuses the
+  # api image itself — its build is real today even though there is nothing
+  # to migrate — with the container command overridden. When P1.S3 lands,
+  # replace `command:` below with the real `prisma migrate deploy` (or
+  # equivalent) invocation; nothing else about this service's wiring changes.
+  migrate:
+    <<: *api-image
+    container_name: ostomy-dev-migrate
+    logging: *default-logging
+    command:
+      [
+        "node",
+        "-e",
+        "console.log('[migrate] no schema yet (P1.S3) - placeholder migrate step, exiting 0'); process.exit(0);",
+      ]
+    networks:
+      - ostomy-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *api-image
+    container_name: ostomy-dev-api
+    restart: unless-stopped
+    logging: *default-logging
+    # Swagger UI + openapi.json are gated on `NODE_ENV !== 'production'`
+    # (see apps/api/src/main.ts). Deliberately left on for this LAN,
+    # synthetic-data-only host — there is no PHI for it to expose, and it is
+    # the only place to browse the API surface before apps/web exists.
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OIDC_CLOCK_TOLERANCE_SECONDS: ${OIDC_CLOCK_TOLERANCE_SECONDS:-30}
+
+      # Patient OIDC. JWKS_URI uses compose-internal DNS: the JWKS content
+      # mock-oauth2-server serves for a given issuer path is independent of
+      # the Host header used to fetch it (verified empirically), so this is
+      # safe even though ISSUER below must be reachable at DEV_HOST_ADDRESS.
+      OIDC_ISSUER: http://${DEV_HOST_ADDRESS}:8090/patient-issuer
+      OIDC_JWKS_URI: http://mock-oidc:8080/patient-issuer/jwks
+      OIDC_AUDIENCE: ostomy-patient-app
+      OIDC_SUBJECT_CLAIM: sub
+
+      # Admin OIDC — a structurally separate issuer path, never sharing an
+      # issuer, audience, or JWKS URI with the patient block above
+      # (SRS_v2 §4.6, ADR-0008; apps/api/src/config/load-config.ts rejects
+      # startup otherwise).
+      ADMIN_OIDC_ISSUER: http://${DEV_HOST_ADDRESS}:8090/admin-issuer
+      ADMIN_OIDC_JWKS_URI: http://mock-oidc:8080/admin-issuer/jwks
+      ADMIN_OIDC_AUDIENCE: ostomy-admin-console
+      ADMIN_OIDC_SUBJECT_CLAIM: sub
+
+      # Object storage: MinIO stands in for S3. Path-style addressing is
+      # mandatory for MinIO (CLAUDE.md "Never assume AWS-hosted S3") — do
+      # not change OBJECT_STORAGE_FORCE_PATH_STYLE to "false" here.
+      OBJECT_STORAGE_ENDPOINT: http://minio:9000
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+    networks:
+      - ostomy-dev
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mock-oidc:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # The Dockerfile's own HEALTHCHECK (curl against /api/v1/health) is
+    # authoritative; not overridden here.
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/docker/web.Dockerfile
+    image: ostomy/web:dev-latest
+    container_name: ostomy-dev-web
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ostomy-dev
+    ports:
+      - "8080:80"
+
+  admin:
+    build:
+      context: ..
+      dockerfile: infra/docker/admin.Dockerfile
+    image: ostomy/admin:dev-latest
+    container_name: ostomy-dev-admin
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - ostomy-dev
+    ports:
+      - "8081:80"
