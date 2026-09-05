@@ -7,5 +7,8 @@ build/
 *.log
 .DS_Store
 .vscode/
-.claude/
+# Claude Code: share project agents and settings; keep personal overrides local
+.claude/*
+!.claude/agents/
+!.claude/settings.json
 

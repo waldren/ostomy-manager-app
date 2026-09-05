@@ -12,11 +12,19 @@ Consequences for any work here:
 
 ## The source of truth: SRS_v2.md
 
-`design-specs/requirements/SRS_v2.md` (currently v2.1) is the single authoritative spec. It is self-contained and supersedes `Ostomy_App_Specification_v1.pdf` (historical reference only — do not consult the PDF to answer architecture questions). All four spec phases — user functionality, non-functional requirements, technical architecture, and v1 scope additions — are approved as of 2026-09-04.
+`design-specs/requirements/SRS_v2.md` (currently v2.3) is the single authoritative spec. It is self-contained and supersedes `Ostomy_App_Specification_v1.pdf` (historical reference only — do not consult the PDF to answer architecture questions). All six spec phases — user functionality, non-functional requirements, technical architecture, v1 scope additions, weight tracking & composite hydration status, and resting heart rate & signal concordance — are approved, the most recent on 2026-09-05.
+
+**When a spec phase is approved, update this file in the same change.** A stale pointer here is worse than no pointer, because sessions read it and trust it. Check three things: the version number above, the phase list, and any rule below that the new phase changes.
 
 **v1 covers colostomy and ileostomy only.** Urostomy was deliberately cut in Phase 4 (Appendix A) because a urostomy's stoma output *is* urine, making it a different data model rather than a third enum value. Do not reintroduce it as an ostomy type.
 
 Read it before making architectural or data-model decisions. Section 4 in particular contains decisions that are already made, not open questions.
+
+## Decisions made since the spec: design-specs/decisions/
+
+Architecture decision records live in `design-specs/decisions/`, indexed in its README. **An accepted ADR can supersede SRS_v2.md** — check the index before treating a spec statement as final, and read any ADR touching the area you are working in.
+
+Record significant new decisions there using `0000-template.md`: choices that are expensive to reverse, that a future contributor would otherwise re-litigate, or that look arbitrary without their context. Routine implementation choices belong in the code, not an ADR. An ADR that changes something the spec states must update the spec — and this file, where it changes a rule below — in the same change, or the repo ends up with two answers to the same question.
 
 ## Architecture decisions already locked in
 
