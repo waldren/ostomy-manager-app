@@ -64,7 +64,18 @@ PRs exist here for two reasons that survive having only one human reviewer:
 
 - The **sprint ID** and its one-sentence goal.
 - The **acceptance criteria** covered, by ID (`AC 13.1 AC3`). Where no spec AC exists — Epics 3–11, 15, 16 — say so explicitly and state what "done" meant instead.
-- **Which reviewer agents ran, and their verdict.** A PR that touches PHI paths, auth, audit logging, logging/error tracking, seed data, infrastructure, or the admin boundary without a `hipaa-compliance-reviewer` pass is not ready. Same for user-facing UI or copy without `accessibility-copy-reviewer`.
+- **Which reviewer agents ran, their verdict, and what happened to each finding** — applied, or waived with a reason.
+
+### When a reviewer is blocking
+
+`code-reviewer` runs on every PR. The other two run whenever they are relevant, and on these sprints they are **blocking**: the PR does not merge until every finding is applied, or explicitly waived in the PR body with a reason.
+
+| Reviewer | Blocking on |
+|---|---|
+| `hipaa-compliance-reviewer` | P1.S5, P2.S1, P3.S3, P5.S3, P8.S1, and all of P9 |
+| `accessibility-copy-reviewer` | P2.S2b, P2.S3, P3.S2, P6.S2, P7.S3 |
+
+Elsewhere they are advisory: run them, record the verdict, and use judgement. A PR that touches PHI paths, auth, audit logging, logging or error tracking, seed data, infrastructure, or the admin boundary without a `hipaa-compliance-reviewer` pass is not ready regardless of sprint.
 - Any **ADR** this change implements or supersedes.
 
 ### Sizing rule

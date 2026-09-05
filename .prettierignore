@@ -6,7 +6,10 @@ coverage/
 pnpm-lock.yaml
 *.min.js
 LICENSE
-design-specs/requirements/*.pdf
+# design-specs/ holds the spec, the ADRs, and design mockups exported from
+# other tools. None of it is source we format, and reformatting a mockup
+# would produce a diff against a file its author regenerates elsewhere.
+design-specs/
 
 # Prettier formats code, not prose.
 #

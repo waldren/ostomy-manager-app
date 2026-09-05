@@ -11,7 +11,7 @@
     "pnpm": ">=10.0.0"
   },
   "scripts": {
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test",
@@ -19,7 +19,7 @@
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "check:env": "bash scripts/check-no-committed-env.sh",
-    "verify": "pnpm run check:env && pnpm run lint && pnpm run typecheck && pnpm run test"
+    "verify": "pnpm run check:env && pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test"
   },
   "devDependencies": {
     "@ostomy/config": "workspace:*",

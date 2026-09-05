@@ -28,11 +28,24 @@ there, write "No spec AC — Epic N" and state below what "done" meant instead.
 
 Reviewers are read-only by design: they report, this PR applies the fixes.
 
-| Agent                                                                                                                           | Ran     | Verdict |
-| ------------------------------------------------------------------------------------------------------------------------------- | ------- | ------- |
-| `code-reviewer` — **required on every PR**                                                                                      | ☐       |         |
-| `hipaa-compliance-reviewer` — PHI paths, audit logging, auth, logging/error tracking, seed data, infrastructure, admin boundary | ☐ / n-a |         |
-| `accessibility-copy-reviewer` — any user-facing UI or strings                                                                   | ☐ / n-a |         |
+- [ ] `code-reviewer` — **required on every PR**
+- [ ] `hipaa-compliance-reviewer` — PHI paths, audit logging, auth, logging/error tracking, seed data, infrastructure, admin boundary. **Blocking** on P1.S5, P2.S1, P3.S3, P5.S3, P8.S1 and all of P9.
+- [ ] `accessibility-copy-reviewer` — any user-facing UI or strings. **Blocking** on P2.S2b, P2.S3, P3.S2, P6.S2, P7.S3.
+- [ ] Not applicable — say which, and why:
+
+**Findings, and what happened to each:**
+
+<!-- One line per finding: applied, or waived with a reason. "None" is valid
+     only if a reviewer actually ran and reported none. -->
+
+## Evidence
+
+Not checkboxes — these want a filename or an answer, because a box gets ticked from habit.
+
+- **Does this add or change a PHI write path?** If yes, name the integration test that fails when the audit row is absent, and confirm it covers the sync-applied path and the conflict loser:
+- **Which logger config, serializer or `beforeSend` did you review**, and which test asserts no PHI reaches it?
+- **Does this add a runtime dependency?** Name it and say what it touches:
+- **Does this add or change an admin route or admin-adjacent module?**
 
 ## Decisions
 
@@ -44,7 +57,6 @@ Reviewers are read-only by design: they report, this PR applies the fixes.
 ## Checks
 
 - [ ] No real PHI anywhere — not in fixtures, tests, screenshots, or commit history. Synthetic only.
-- [ ] No PHI reachable by application logs or error tracking.
 - [ ] New source files under `apps/` and `packages/` carry the AGPL header.
 - [ ] No `.env` committed.
 - [ ] This diff is reviewable in one sitting. If not, it should have been split before dispatch.

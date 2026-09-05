@@ -2,12 +2,13 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "allowJs": true,
-    "checkJs": false,
-    // This package ships JS config objects, not a typed API. Declaration emit
-    // would force type annotations on re-exported third-party config shapes
-    // (TS2742) for no benefit — nothing imports these for their types.
-    "declaration": false,
-    "declarationMap": false
+    // NOTE: with checkJs off and only .js files in `include`, this typecheck
+    // currently proves nothing. That is honest rather than accidental — this
+    // package ships plain JS config objects, not a typed API — but do not
+    // read a green `pnpm typecheck` as evidence that this workspace is
+    // type-safe. The first workspace with .ts source makes the command mean
+    // something.
+    "checkJs": false
   },
   "include": ["eslint/**/*.js", "prettier/**/*.js"]
 }

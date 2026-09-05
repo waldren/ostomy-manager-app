@@ -4,11 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-This repo is **scaffolding only** — directory structure, docs, and specs. No application code, no `package.json` dependencies, no build/lint/test commands exist yet. `apps/mobile`, `apps/web`, and `apps/api` each contain only a README marked "Not yet scaffolded."
+**No application code yet.** `apps/mobile`, `apps/web`, and `apps/api` each contain only a README marked "Not yet scaffolded," and there is no `apps/admin`. `packages/core`, `packages/ui` and `packages/seed` do not exist as code either.
 
-Consequences for any work here:
-- There is nothing to build or run. Do not invent commands; when an app is scaffolded, record its real commands in `docs/getting-started.md` (which has `TBD` placeholders for exactly this) and update this file.
-- Many `docs/*.md` files are deliberate `TBD` stubs (`coding-standards.md`, `git-workflow.md`, `testing.md`, parts of `security-hipaa.md`). Filling them in as conventions get established is expected work, not scope creep.
+**The toolchain does exist** (sprint P0). `packages/config` holds the shared tsconfig, ESLint flat config and Prettier config that every workspace extends, and the root has working commands:
+
+```
+pnpm install
+pnpm verify    # check:env + format + lint + typecheck + test — exactly what CI runs
+```
+
+plus `lint`, `lint:fix`, `typecheck`, `test`, `test:unit`, `format`, `format:write`, `check:env`. `docs/getting-started.md` is authoritative; use those commands rather than inventing any. When an app is scaffolded, record its real commands there and update this file.
+
+Three lint rules fail the build rather than warn, because each backs a constraint that would otherwise depend on memory: the AGPL header, the admin/patient import boundary, and no hardcoded user-facing strings in UI directories. They have tests in `packages/config/eslint/__tests__/` — extend those when you touch a rule; two of the three shipped broken the first time precisely because they had none.
+
+Still deliberate `TBD` stubs: `docs/coding-standards.md` (waiting for code to standardize) and the app-specific sections of `docs/getting-started.md`. Filling them in as conventions get established is expected work, not scope creep.
 
 ## The source of truth: SRS_v2.md
 
@@ -32,7 +41,7 @@ Record significant new decisions there using `0000-template.md`: choices that ar
 
 From SRS_v2 Section 4 — treat these as settled unless the user reopens them:
 
-- **Monorepo** via pnpm workspaces (`apps/*`, `packages/*`). TypeScript throughout, including infrastructure.
+- **Monorepo** via pnpm workspaces (`apps/*`, `packages/*`). TypeScript throughout, including infrastructure. No task runner — plain pnpm scripts (ADR-0003). `packages/config` is the shared build/lint/format base every workspace extends.
 - **Mobile (`apps/mobile`)**: Expo managed workflow + React Native. The *only* offline-capable client — writes to local `expo-sqlite` first, appends to a local `sync_queue` table, pushes to the API on connectivity restore.
 - **Web (`apps/web`)**: React + Vite SPA, **online-only** by explicit decision. No local persistence layer. Don't add offline support to web.
 - **Admin console**: a *separate* internal React/Vite SPA with **zero PHI access**, managing value sets, clinical default ranges, and validation thresholds. Backed by its own Cognito user pool, disjoint from the patient pool, so the boundary is enforced at the identity layer rather than by authorization logic. It consumes an isolated `/api/v1/admin/...` surface and must never import patient data types. Not yet scaffolded — there is no `apps/admin` directory.
@@ -72,7 +81,8 @@ These come from the spec and apply to every feature, not just "compliance work":
 - **Accessibility is a hard target, not polish**: WCAG 2.1 AA across both clients. The patient population skews older and post-surgical — screen-reader support, scalable text, and touch-target sizes are requirements.
 - **No hardcoded user-facing strings.** v1 ships English-only, but all copy must be externalized and date/time/number/unit formatting must be locale-aware from day one. Patient-facing copy targets a 6th–8th grade reading level.
 - **Units**: a single metric/imperial preference governs both volume and weight (mL+kg or oz+lb). Mixed-system combinations must be impossible to select — make them unrepresentable in the type, not merely unselectable in the UI. All logging and display respect it; stored canonical values are never rewritten when it changes. **Canonical storage is always mL and kg** regardless of preference; imperial is a render-time conversion only (ADR-0004).
-- **Precision**: volume fields accept positive decimals, not integers. Stored values keep their entered precision. A volume *converted* between measurement systems is rounded to the nearest whole unit for display only — but **weight is excluded from that rule** and shows one decimal place in both systems, because rounding a converted weight to a whole unit would discard exactly the day-over-day changes the weight signal exists to detect (ADR-0005, SRS AC 2.1 AC 4).
+- **Precision**: volume fields accept positive decimals, not integers. Tier 1 rejects negatives, **zero**, and non-numeric input. Stored values keep their entered precision. A volume *converted* between measurement systems is rounded to the nearest whole unit for display only — but **weight is excluded from that rule** and shows one decimal place in both systems, because rounding a converted weight to a whole unit would discard exactly the day-over-day changes the weight signal exists to detect (ADR-0005, SRS AC 2.1 AC 4).
+- **Daily totals are computed from canonical values and rounded once, never summed from rounded per-entry display figures.** Daily Net Fluid Balance is one of the four hydration signals; accumulated display rounding across a day of entries is a clinical-accuracy defect (ADR-0005).
 
 ## Development environment
 

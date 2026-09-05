@@ -51,27 +51,62 @@ const UI = [
 ];
 
 /**
- * Patient-scoped modules the admin console may never import.
- *
- * The admin console has zero PHI access (SRS_v2 §3.11) and the boundary is an
- * identity-layer property (§4.6). This rule stops it degrading into an
- * authorization-logic property by accident. Keep this list current as
- * packages/core grows — see ADR-0007 for the path partition.
+ * Admin code, wherever it lives. The admin API (ADR-0008) lands at P3.S3,
+ * several phases before the console SPA, so scoping this to `apps/admin`
+ * alone would leave the higher-sensitivity half uncovered.
  */
-const PATIENT_ONLY_PATTERNS = [
-  '@ostomy/core/fhir',
-  '@ostomy/core/fhir/**',
-  '@ostomy/core/api-client',
-  '@ostomy/core/api-client/**',
-  '@ostomy/core/hydration',
-  '@ostomy/core/hydration/**',
-  '@ostomy/web',
-  '@ostomy/web/**',
-  '@ostomy/mobile',
-  '@ostomy/mobile/**',
-  '**/apps/web/**',
-  '**/apps/mobile/**',
+const ADMIN = ['apps/admin/**/*.{ts,tsx,js,jsx,mjs,cjs}', 'apps/api/src/admin/**/*.{ts,mjs,cjs}'];
+
+/**
+ * Workspace modules admin code is permitted to import. Deny by default.
+ *
+ * This is an allow-list on purpose. The first shape of this rule was a
+ * deny-list naming patient-scoped subpaths, and it was close to inert: it did
+ * not restrict the `@ostomy/core` root barrel — the import anyone writes by
+ * default, and the one a barrel file would launder every patient type
+ * through. A deny-list also fails open, silently, every time someone adds a
+ * subpath nobody remembers to enumerate.
+ *
+ * WHAT THIS RULE DOES NOT COVER, and must not be claimed to:
+ *   - Relative traversal out of the app (`../../web/src/x`). `no-restricted-
+ *     imports` matches the specifier string, not the resolved path, and admin
+ *     files legitimately use `../` internally at varying depths. Closing this
+ *     needs path resolution — add `eslint-plugin-import`'s `no-restricted-
+ *     paths` when `apps/admin` is scaffolded at P8.S1.
+ *   - Re-export laundering through an intermediate package.
+ *
+ * The load-bearing controls are elsewhere and this lint is a fast secondary
+ * check: the disjoint Cognito pool (SRS_v2 §4.6) and, once `apps/admin`
+ * exists, its package.json dependency closure — pnpm's isolated node_modules
+ * makes an undeclared import fail at install, which no lint bypass defeats.
+ *
+ * Expressed as one regex over `no-restricted-syntax` rather than through
+ * `no-restricted-imports` groups. That rule matches with gitignore semantics,
+ * where `!@ostomy/core/i18n` does not reliably re-include a path already
+ * excluded by `@ostomy/core/*` — verified: the catalog stayed blocked. It also
+ * registers no `ImportExpression` handler, so dynamic `import()` slips past it
+ * entirely. A single selector covers all four import forms with semantics we
+ * control and can test.
+ *
+ * Allowed: @ostomy/config, @ostomy/ui, @ostomy/core/admin, @ostomy/core/i18n
+ * (and anything beneath them). Everything else under @ostomy/ is blocked,
+ * including the @ostomy/core root barrel.
+ *
+ * `/` is a literal `/` — an unescaped one would close the esquery regex.
+ */
+const ADMIN_BLOCKED_SPECIFIER =
+  '/^@ostomy\\u002F(?!(config|ui)($|\\u002F))(?!core\\u002F(admin|i18n)($|\\u002F))/';
+
+const ADMIN_IMPORT_NODES = [
+  'ImportDeclaration',
+  'ImportExpression',
+  'ExportNamedDeclaration',
+  'ExportAllDeclaration',
 ];
+
+const ADMIN_BOUNDARY_MESSAGE =
+  'The admin console has zero PHI access (SRS_v2 §3.11) and must never import patient data types. ' +
+  'Permitted workspace imports: @ostomy/config, @ostomy/ui, @ostomy/core/admin, @ostomy/core/i18n. See ADR-0008.';
 
 export default [
   {
@@ -81,6 +116,8 @@ export default [
       '**/build/**',
       '**/coverage/**',
       '**/.expo/**',
+      // Specs, ADRs, and design mockups exported from other tools.
+      'design-specs/**',
       '**/*.min.js',
       'pnpm-lock.yaml',
     ],
@@ -97,7 +134,12 @@ export default [
     },
     rules: {
       eqeqeq: ['error', 'smart'],
-      'no-console': ['warn', { allow: ['warn', 'error'] }],
+      // No options here on purpose: flat config MERGES rule options when a
+      // later entry supplies only a severity, so an `allow` list set here
+      // would survive into the stricter block below and keep permitting
+      // console.error in shipped code. `lint` runs with --max-warnings=0, so
+      // a warning still fails CI.
+      'no-console': 'warn',
       '@typescript-eslint/no-unused-vars': [
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
@@ -111,31 +153,40 @@ export default [
     plugins: { ostomy },
     rules: {
       'ostomy/agpl-header': 'error',
+      // No console in shipped code, including console.error. The realistic
+      // leak is `console.error('sync failed', payload)` in an exception
+      // handler, which puts a batch of Observations into CloudWatch — the
+      // exact thing "never log PHI" exists to prevent, and the allow-list for
+      // warn/error would have permitted it. Use the structured logger, whose
+      // serializer strips PHI (docs/security-hipaa.md).
+      //
+      'no-console': 'error',
     },
   },
 
   // 2. Admin/patient boundary — enforced by tooling, not by memory.
-  //    apps/admin does not exist yet. The rule exists first on purpose (ADR-0008).
+  //    Neither apps/admin nor apps/api/src/admin exists yet. The rule lands
+  //    first on purpose (ADR-0008).
   {
-    files: ['apps/admin/**/*.{ts,tsx,js,jsx}'],
+    files: ADMIN,
     rules: {
-      'no-restricted-imports': [
+      'no-restricted-syntax': [
         'error',
-        {
-          patterns: [
-            {
-              group: PATIENT_ONLY_PATTERNS,
-              message:
-                'The admin console has zero PHI access (SRS_v2 §3.11). It must never import patient data types. See ADR-0008.',
-            },
-          ],
-        },
+        ...ADMIN_IMPORT_NODES.map((node) => ({
+          selector: `${node}[source.value=${ADMIN_BLOCKED_SPECIFIER}]`,
+          message: ADMIN_BOUNDARY_MESSAGE,
+        })),
       ],
     },
   },
 
   // 3. No hardcoded user-facing strings — v1 is English-only, but every string
   //    is externalized from day one (SRS_v2 §5.4). Catalog: packages/core/i18n.
+  //    'jsx-only' rather than the plugin default 'jsx-text-only': the default
+  //    checks only JSX text children, so `aria-label`, `accessibilityLabel`,
+  //    `placeholder`, `alt` and `title` — the accessible names WCAG 2.1 AA
+  //    depends on, for a screen-reader-dependent population — would never be
+  //    seen. Those are exactly the strings typed inline and never revisited.
   {
     files: UI,
     plugins: { i18next },
@@ -143,16 +194,52 @@ export default [
       'i18next/no-literal-string': [
         'error',
         {
-          mode: 'jsx-text-only',
+          mode: 'jsx-only',
           'should-validate-template': true,
+          'jsx-attributes': {
+            include: [
+              'aria-label',
+              'aria-description',
+              'aria-placeholder',
+              'aria-roledescription',
+              'aria-valuetext',
+              'accessibilityLabel',
+              'accessibilityHint',
+              'accessibilityValue',
+              'placeholder',
+              'alt',
+              'title',
+              'label',
+            ],
+          },
         },
       ],
     },
   },
 
-  // Config and test files are not shipped UI and not licensed source.
+  // The catalog itself holds the strings, so it may contain literals.
   {
-    files: ['**/*.config.{js,ts,mjs,cjs}', '**/eslint.config.js', '**/vitest.config.{js,ts}'],
+    files: ['packages/core/i18n/**', 'packages/core/src/i18n/**'],
+    rules: { 'i18next/no-literal-string': 'off' },
+  },
+
+  // Infrastructure and scripts: base rules apply, but they are not shipped
+  // application source. AWS CDK (TypeScript) lands in infra/ per CLAUDE.md,
+  // and ESLint 9 lints only .js/.mjs/.cjs unless TS files are named.
+  {
+    files: ['infra/**/*.{ts,js,mjs}', 'scripts/**/*.{ts,js,mjs}', '*.{ts,js,mjs}'],
+    rules: {
+      'ostomy/agpl-header': 'off',
+      // Operational output is the point of a script.
+      'no-console': ['warn', { allow: ['log', 'warn', 'error'] }],
+    },
+  },
+
+  // Config and test files are not shipped UI and not licensed source.
+  // Anchored to workspace roots so a future packages/ui/src/theme.config.ts —
+  // which is source — does not silently lose its header requirement.
+  {
+    files: ['*.config.{js,ts,mjs,cjs}', '{apps,packages}/*/*.config.{js,ts,mjs,cjs}'],
     rules: {
       'ostomy/agpl-header': 'off',
     },

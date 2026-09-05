@@ -76,9 +76,21 @@ const agplHeader = {
         // An empty file has nothing to license.
         if (text.trim() === '') return;
 
-        const hasHeader = source
+        // The header must be the FIRST comment and at the top — not merely
+        // present somewhere. A file quoting the licence in a doc comment
+        // further down is not licensed, and `some()` over all comments said
+        // it was. Line 2 allows for a shebang above it.
+        // espree exposes a shebang as a comment (type 'Shebang') at offset 0,
+        // so it would otherwise be "the first comment" and fail every
+        // executable script. Match on position, not type — the type name has
+        // changed across espree versions.
+        const first = source
           .getAllComments()
-          .some((c) => c.type === 'Block' && c.value.includes(LICENSE_MARKER));
+          .find((c) => !(c.range[0] === 0 && text.startsWith('#!')));
+        const hasHeader =
+          first?.type === 'Block' &&
+          first.value.includes(LICENSE_MARKER) &&
+          first.loc.start.line <= 2;
 
         if (hasHeader) return;
 
@@ -87,11 +99,19 @@ const agplHeader = {
           messageId: 'missing',
           fix(fixer) {
             const header = `/*\n${HEADER_BODY(year)}\n*/\n\n`;
-            // Preserve a shebang or "use strict"-style prologue if present.
-            const shebang = text.startsWith('#!') ? text.slice(0, text.indexOf('\n') + 1) : '';
-            return shebang
-              ? fixer.replaceTextRange([0, shebang.length], `${shebang}${header}`)
-              : fixer.insertTextBeforeRange([0, 0], header);
+
+            // Preserve a shebang prologue. Note the no-trailing-newline case:
+            // indexOf returns -1 there, and treating that as offset 0 would
+            // insert the header *above* the shebang and make the file
+            // unparseable ("'#!' can only be used at the start of a file").
+            if (!text.startsWith('#!')) {
+              return fixer.insertTextBeforeRange([0, 0], header);
+            }
+            const nl = text.indexOf('\n');
+            const shebangEnd = nl === -1 ? text.length : nl + 1;
+            const prologue = text.slice(0, shebangEnd);
+            const separator = prologue.endsWith('\n') ? '' : '\n';
+            return fixer.replaceTextRange([0, shebangEnd], `${prologue}${separator}${header}`);
           },
         });
       },

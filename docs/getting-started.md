@@ -34,7 +34,7 @@ pnpm test:unit       # excludes Testcontainers-backed integration tests
 pnpm format          # Prettier check
 pnpm format:write    # ...and rewrite
 pnpm check:env       # fails if a .env is tracked by git
-pnpm verify          # check:env + lint + typecheck + test — what CI runs
+pnpm verify          # everything CI runs, in the same order
 ```
 
 `pnpm verify` is the one to run before opening a PR.

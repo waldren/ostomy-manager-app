@@ -1,9 +1,11 @@
 node_modules/
 dist/
 build/
+coverage/
 .expo/
-.env
-.env.local
+.env*
+!.env.example
+.envrc
 *.log
 .DS_Store
 .vscode/
