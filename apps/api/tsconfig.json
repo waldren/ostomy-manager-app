@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@ostomy/config/tsconfig.base.json",
+  "compilerOptions": {
+    // NestJS's DI container resolves constructor parameter types through
+    // TypeScript's legacy decorator metadata. The base config targets a
+    // bundler-resolution, "module": "ESNext" world (right for Vite/Expo);
+    // Nest still wants CommonJS output and decorator metadata, so those two
+    // options are overridden here rather than in the shared base — see the
+    // "type": "commonjs" note in package.json for why this workspace's module
+    // system diverges from the monorepo default.
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    // verbatimModuleSyntax requires emitted import/export syntax to match
+    // what Node would treat the file as (ESM) — incompatible with plain
+    // CommonJS `require`/`exports` output, which is what Nest and this
+    // workspace's "type": "commonjs" package.json expect.
+    "verbatimModuleSyntax": false,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "baseUrl": "."
+  },
+  "include": ["src/**/*.ts"]
+}

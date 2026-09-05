@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**No application code yet.** `apps/mobile`, `apps/web`, and `apps/api` each contain only a README marked "Not yet scaffolded," and there is no `apps/admin`. `packages/core`, `packages/ui` and `packages/seed` do not exist as code either.
+**`apps/api` is scaffolded (P1.S1); everything else is not.** `apps/mobile` and `apps/web` still contain only a README marked "Not yet scaffolded," and there is no `apps/admin`. `packages/core`, `packages/ui` and `packages/seed` do not exist as code either. `apps/api` has a NestJS skeleton — typed/validated config, the structurally separate patient/admin OIDC guards, a liveness health check, OpenAPI generation, and a PHI-scrubbing Pino logger — but no database, no Prisma, no audit logging, and no business-logic endpoints yet (those are P1.S3, P1.S5, and P2). See `apps/api/README.md`.
 
 **The toolchain does exist** (sprint P0). `packages/config` holds the shared tsconfig, ESLint flat config and Prettier config that every workspace extends, and the root has working commands:
 
