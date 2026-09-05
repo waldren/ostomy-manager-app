@@ -19,6 +19,21 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 
 | ADR | Title | Status |
 |---|---|---|
-| — | *No decisions recorded yet* | — |
+| [0001](0001-sync-contract-and-conflict-semantics.md) | Define the sync wire contract with per-operation idempotency, tombstones, and a monotonic delta cursor | Accepted |
+| [0002](0002-testing-strategy.md) | Use Vitest everywhere except mobile, integration-test the API against real PostgreSQL, and name acceptance criteria in tests | Accepted |
+| [0003](0003-monorepo-task-tooling.md) | Use plain pnpm scripts for task orchestration; revisit a task runner at Gate C | Accepted |
+| [0004](0004-canonical-storage-units.md) | Store all volumes in millilitres and all weights in kilograms; convert only at render time | Accepted |
+| [0005](0005-decimal-volumetric-entry-and-conversion-rounding.md) | Accept decimal volumes on entry, and round to the nearest whole unit only when converting between measurement systems | Accepted |
+| [0006](0006-i18n-library-and-shared-catalog.md) | Use i18next with one shared English catalog in `packages/core`, and Intl for all formatting | Accepted |
+| [0007](0007-packages-core-ownership.md) | Partition `packages/core` by owning agent, read-only to everyone else | Accepted |
+| [0008](0008-admin-config-api-before-console.md) | Build the admin configuration API at its final shape early; defer the admin console SPA to P8 | Accepted |
+| [0009](0009-synthetic-seed-data-generation.md) | Generate synthetic seed data in `packages/seed`, writing through Prisma but validating against `packages/core` first | Accepted |
+
+**ADR-0005 changed the spec.** SRS_v2 was updated to v2.4 in the same change: AC 2.1 AC 1 now accepts decimal volumes, and a new AC 2.1 AC 4 specifies conversion rounding.
+
+### Decided elsewhere, deliberately not an ADR
+
+- **Git workflow and branch strategy** — `docs/git-workflow.md`. Blocking for P0 but not architectural.
+- **SNOMED CT estimation-technique code** — still open, and blocked on a terminology lookup rather than on engineering. Tracked in `design-specs/data-model/fhir-rxnorm-integration.md`; write an ADR when it resolves. Do not invent a code.
 
 Decisions predating this folder are captured in `SRS_v2.md` §4 and summarized in `CLAUDE.md`.

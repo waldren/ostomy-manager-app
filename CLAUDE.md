@@ -12,7 +12,7 @@ Consequences for any work here:
 
 ## The source of truth: SRS_v2.md
 
-`design-specs/requirements/SRS_v2.md` (currently v2.3) is the single authoritative spec. It is self-contained and supersedes `Ostomy_App_Specification_v1.pdf` (historical reference only — do not consult the PDF to answer architecture questions). All six spec phases — user functionality, non-functional requirements, technical architecture, v1 scope additions, weight tracking & composite hydration status, and resting heart rate & signal concordance — are approved, the most recent on 2026-09-05.
+`design-specs/requirements/SRS_v2.md` (currently v2.4) is the single authoritative spec. It is self-contained and supersedes `Ostomy_App_Specification_v1.pdf` (historical reference only — do not consult the PDF to answer architecture questions). All six spec phases — user functionality, non-functional requirements, technical architecture, v1 scope additions, weight tracking & composite hydration status, and resting heart rate & signal concordance — are approved, the most recent on 2026-09-05.
 
 **When a spec phase is approved, update this file in the same change.** A stale pointer here is worse than no pointer, because sessions read it and trust it. Check three things: the version number above, the phase list, and any rule below that the new phase changes.
 
@@ -23,6 +23,8 @@ Read it before making architectural or data-model decisions. Section 4 in partic
 ## Decisions made since the spec: design-specs/decisions/
 
 Architecture decision records live in `design-specs/decisions/`, indexed in its README. **An accepted ADR can supersede SRS_v2.md** — check the index before treating a spec statement as final, and read any ADR touching the area you are working in.
+
+Nine are accepted (ADR-0001 to ADR-0009), covering the sync wire contract, testing strategy, monorepo tooling, canonical units, entry precision, i18n, `packages/core` ownership, admin API sequencing, and seed data. ADR-0001 (sync) and ADR-0007 (`packages/core` ownership) bind almost every sprint — read both before writing shared or sync code.
 
 Record significant new decisions there using `0000-template.md`: choices that are expensive to reverse, that a future contributor would otherwise re-litigate, or that look arbitrary without their context. Routine implementation choices belong in the code, not an ADR. An ADR that changes something the spec states must update the spec — and this file, where it changes a rule below — in the same change, or the repo ends up with two answers to the same question.
 
@@ -69,7 +71,8 @@ These come from the spec and apply to every feature, not just "compliance work":
 - **No real PHI outside production.** Dev and staging use synthetic or de-identified data.
 - **Accessibility is a hard target, not polish**: WCAG 2.1 AA across both clients. The patient population skews older and post-surgical — screen-reader support, scalable text, and touch-target sizes are requirements.
 - **No hardcoded user-facing strings.** v1 ships English-only, but all copy must be externalized and date/time/number/unit formatting must be locale-aware from day one. Patient-facing copy targets a 6th–8th grade reading level.
-- **Units**: a single metric/imperial preference governs both volume and weight (mL+kg or oz+lb). Mixed-system combinations must be impossible to select. All logging and display respect it; stored canonical values are never rewritten when it changes.
+- **Units**: a single metric/imperial preference governs both volume and weight (mL+kg or oz+lb). Mixed-system combinations must be impossible to select — make them unrepresentable in the type, not merely unselectable in the UI. All logging and display respect it; stored canonical values are never rewritten when it changes. **Canonical storage is always mL and kg** regardless of preference; imperial is a render-time conversion only (ADR-0004).
+- **Precision**: volume fields accept positive decimals, not integers. Stored values keep their entered precision. A volume *converted* between measurement systems is rounded to the nearest whole unit for display only — but **weight is excluded from that rule** and shows one decimal place in both systems, because rounding a converted weight to a whole unit would discard exactly the day-over-day changes the weight signal exists to detect (ADR-0005, SRS AC 2.1 AC 4).
 
 ## Development environment
 
