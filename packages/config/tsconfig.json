@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    // NOTE: with checkJs off and only .js files in `include`, this typecheck
+    // currently proves nothing. That is honest rather than accidental — this
+    // package ships plain JS config objects, not a typed API — but do not
+    // read a green `pnpm typecheck` as evidence that this workspace is
+    // type-safe. The first workspace with .ts source makes the command mean
+    // something.
+    "checkJs": false
+  },
+  "include": ["eslint/**/*.js", "prettier/**/*.js"]
+}

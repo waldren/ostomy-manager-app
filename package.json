@@ -1,9 +1,30 @@
 {
   "name": "ostomy-application",
   "private": true,
+  "type": "module",
   "version": "0.0.1",
   "description": "Dual-platform (mobile + web) patient-facing app for ostomy care tracking.",
-  "scripts": {},
-  "devDependencies": {},
-  "license": "AGPL-3.0-or-later"
+  "license": "AGPL-3.0-or-later",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "test:unit": "pnpm -r --if-present run test:unit",
+    "format": "prettier --check .",
+    "format:write": "prettier --write .",
+    "check:env": "bash scripts/check-no-committed-env.sh",
+    "verify": "pnpm run check:env && pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test"
+  },
+  "devDependencies": {
+    "@ostomy/config": "workspace:*",
+    "eslint": "^9.39.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3"
+  }
 }

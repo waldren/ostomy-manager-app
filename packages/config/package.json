@@ -1,0 +1,41 @@
+{
+  "name": "@ostomy/config",
+  "version": "0.0.1",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "description": "Shared build, lint and format configuration for the ostomy monorepo. Every other workspace extends this one.",
+  "type": "module",
+  "exports": {
+    "./eslint": "./eslint/index.js",
+    "./eslint/plugin": "./eslint/plugin.js",
+    "./prettier": "./prettier/index.js",
+    "./tsconfig.base.json": "./tsconfig.base.json"
+  },
+  "files": [
+    "eslint",
+    "prettier",
+    "tsconfig.base.json"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:unit": "vitest run --passWithNoTests"
+  },
+  "peerDependencies": {
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@eslint/js": "^9.39.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-i18next": "^6.1.4",
+    "globals": "^16.5.0",
+    "typescript-eslint": "^8.46.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

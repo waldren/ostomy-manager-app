@@ -1,4 +1,4 @@
-# Software Requirements Specification — Ostomy Patient Management Application (v2.3)
+# Software Requirements Specification — Ostomy Patient Management Application (v2.4)
 
 Prepared by: Steven E. Waldren, MD, MS
 Supersedes: `Ostomy_App_Specification_v1.pdf` (v1.0), which is retained only as a historical reference — this document is fully self-contained and does not require consulting the v1.0 PDF.
@@ -14,6 +14,11 @@ Status: all six discussion phases complete.
 | 6 | Resting Heart Rate & Signal Concordance | ✅ Approved 2026-09-05 |
 
 **Phase 4 scope change:** v1 now targets **colostomy and ileostomy only**. Urostomy support is deferred — see Appendix A for the rationale.
+
+**v2.4 corrections (2026-09-05).** No new phase. Two acceptance criteria were corrected after implementation planning surfaced them; both are recorded in `design-specs/decisions/`.
+
+- **AC 17.3 AC 2** read "net fluid balance, urine output, and weight appear as **three** distinct signals." Phase 6 added resting heart rate as a fourth signal to Sections 3.5, 3.12 and 3.13 but did not update this criterion — and it was the only acceptance criterion asserting that the physician view keeps signals separate, so an implementation built against Section 7 alone could have shipped a three-signal view and been correct per the AC while wrong per the spec body. Corrected to four signals.
+- **AC 2.1 AC 1** required the volume field to accept "positive integers (no decimals or negative numbers)," which is incompatible with imperial as a first-class measurement system (Sections 3.0, 3.10). Rewritten to accept positive decimals, with conversion rounding specified in the new AC 2.1 AC 4. See [ADR-0005](../decisions/0005-decimal-volumetric-entry-and-conversion-rounding.md).
 
 Sections below are updated as each phase is completed. Sections not yet revisited are carried forward from v1.0 unchanged and marked as such.
 
@@ -504,7 +509,9 @@ Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full fro
 **AC 1: Numeric Validation**
 - Given the user is on the "Add Output" screen,
 - When they enter a value into the Volume field,
-- Then the field must only accept positive integers (no decimals or negative numbers).
+- Then the field must accept positive decimal values, and reject negative numbers, zero, and non-numeric input.
+
+*Revised in v2.4 (see ADR-0005). The original criterion required positive integers, which is incompatible with imperial as a first-class measurement system — an ounce value is not naturally a whole number, and 2,000 mL is not a whole number of ounces. Entry precision is not capped; the display rounding that keeps the field readable is specified in AC 4.*
 
 **AC 2: Out-of-Bounds Error Handling**
 - Given the user is entering an output volume,
@@ -515,6 +522,13 @@ Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full fro
 - Given the user is logging an output event,
 - When the screen loads,
 - Then the Date and Time fields auto-populate with the current system time, but remain fully editable so the user can backdate an entry.
+
+**AC 4: Conversion Rounding (added in v2.4)**
+- Given a stored volume is displayed in a measurement system other than the one in which it was entered,
+- When the value is converted for display,
+- Then the converted result is rounded to the nearest whole unit (mL or oz), and the stored canonical value retains its entered precision and is never rewritten.
+
+*Applies to volumetric entries only. Body weight is displayed to one decimal place in both systems per AC 17.1 AC 1 and Section 3.12: rounding a converted weight to a whole unit would discard changes smaller than 1 kg or 1 lb, which are exactly the day-over-day changes the weight signal exists to detect. See ADR-0005.*
 
 ### User Story 2.2: The "Measured vs. Estimated" Flag
 
@@ -696,7 +710,7 @@ Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full fro
 **AC 2: Separate in the Physician View**
 - Given the same data,
 - When the physician-focused view is generated,
-- Then net fluid balance, urine output, and weight appear as three distinct signals and are not combined into a score.
+- Then net fluid balance, urine output, weight, and resting heart rate appear as four distinct signals and are not combined into a score.
 
 **AC 3: Status Is Always Explainable**
 - Given a hydration status is shown,

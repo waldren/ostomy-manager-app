@@ -1,0 +1,77 @@
+name: PR
+
+# Runs on GitHub-hosted runners, never the self-hosted development runner.
+# The self-hosted runner deploys what has already passed here
+# (docs/deployment-development.md).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a run on main: merging to main IS the development deploy
+  # (docs/git-workflow.md), so cancelling would leave a deployed commit
+  # unverified.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Never let a workflow reach a real environment. Nothing here touches PHI.
+  NODE_ENV: test
+
+jobs:
+  verify:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # One step, so CI and `pnpm verify` cannot drift apart.
+      - name: Verify
+        run: pnpm run verify
+
+  dependencies:
+    name: Dependency and vulnerability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      # No install step: pnpm audit reads the lockfile.
+
+      # SRS_v2 §5.2 requires dependency vulnerability scanning. The blocking
+      # gate is production dependencies at high and critical: a build-tooling
+      # advisory with no available fix must not halt all work, and today every
+      # dependency in the repo is a devDependency.
+      - name: Audit production dependencies (high and critical)
+        run: pnpm audit --audit-level=high --prod
+
+      - name: Audit everything (informational)
+        if: always()
+        run: pnpm audit || true
