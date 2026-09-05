@@ -9,6 +9,7 @@
   "files": [
     "dist"
   ],
+  "//files": "TODO(P1.S3): \"files\" is a whitelist for pnpm's packing step (infra/docker/api.Dockerfile's prod-deps stage runs `pnpm deploy`, which packs by this field). schema.prisma and prisma/migrations/ will not be under dist/ - add \"prisma\" to the array above in the same change that adds the Prisma schema, or `prisma migrate deploy` fails inside the built image at runtime with the schema silently missing from /out.",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=.env dist/main.js",

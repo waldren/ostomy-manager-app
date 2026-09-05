@@ -9,6 +9,11 @@
 # described in docs/deployment-development.md ("Image build") once
 # apps/web exists: deps -> build -> nginx runtime, same shape as
 # infra/docker/api.Dockerfile's first three stages.
+# Runs as root (nginx:1.29-alpine's default user) — fine for a static
+# placeholder page with no data of any kind behind it, but do not let the
+# real multi-stage build inherit this by omission: infra/docker/api.Dockerfile
+# creates and switches to a non-root `app` user, and this image's real
+# replacement should do the same in its own nginx runtime stage.
 FROM nginx:1.29-alpine
 
 COPY infra/placeholder-pages/web/index.html /usr/share/nginx/html/index.html

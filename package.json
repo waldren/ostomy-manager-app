@@ -19,6 +19,7 @@
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "check:env": "bash scripts/check-no-committed-env.sh",
+    "dev:reset": "bash scripts/dev-reset.sh",
     "verify": "pnpm run check:env && pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test"
   },
   "devDependencies": {

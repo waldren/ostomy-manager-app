@@ -14,10 +14,27 @@
 # depending on --project-directory behaving as expected across Compose
 # versions.
 #
+# The explicit `-f infra/docker-compose.yml` also disables Compose's
+# automatic `docker-compose.override.yml` discovery (that discovery only
+# fires for the default, no-`-f`, current-directory lookup). That is
+# load-bearing today — every invocation in this repo (this file, the deploy
+# workflow, dev-reset.sh) is `-f`'d and none expects an override file to be
+# merged in — but it is currently incidental rather than a documented
+# contract. If a per-developer override file is ever introduced, it will
+# need to be passed explicitly with its own `-f`.
+#
 # LAN-only, plain HTTP, synthetic data only (docs/deployment-development.md
 # "What this environment deliberately does not do"). Nothing here may ever
 # hold a production credential or real PHI — see CLAUDE.md and
 # docs/security-hipaa.md.
+#
+# NOT a staging starting point. There is no hardening, no TLS, no secrets
+# manager, `NODE_ENV: development` on the API, MinIO root credentials doing
+# double duty as the API's object-storage credentials, and (until the nginx
+# placeholders are replaced at P2.S3) containers running as root — see
+# docs/deployment-development.md "What this environment deliberately does
+# not do" for the full deferred-risk list staging must independently verify.
+# Copying this file forward and hardening it in place is not the plan.
 
 name: ostomy-dev
 
@@ -54,9 +71,13 @@ services:
     restart: unless-stopped
     logging: *default-logging
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      # `:?` (Compose's required-variable syntax), not `:-`: an unset value
+      # here becomes an empty string, not an absent one, and an empty
+      # POSTGRES_PASSWORD is a real, silent way to end up with a
+      # passwordless superuser. See .env.example.
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -65,7 +86,7 @@ services:
     # "Network and access"). Uncomment only to point a GUI client at it
     # temporarily, and revert afterward:
     # ports:
-    #   - "5432:5432"
+    #   - "${DEV_BIND_ADDRESS:-127.0.0.1}:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -77,6 +98,59 @@ services:
     # log PHI") is what covers request/response and audit data, and there is
     # none in this container.
 
+  # One-shot: applies infra/db/bootstrap-roles.sql — the migration-owner /
+  # runtime-role split — every deploy, before `migrate` or `api` ever
+  # connect. See infra/db/README.md for the full rationale; in short:
+  #
+  # - `postgres` above bootstraps ${POSTGRES_USER} as a superuser (the
+  #   image's own behavior). That role is the "owner" migrations run as.
+  # - This service additionally creates/updates ${POSTGRES_RUNTIME_USER} —
+  #   NOSUPERUSER, NOCREATEDB, NOINHERIT — which is the ONLY role `api`
+  #   below ever connects as. Without that separation, a superuser bypasses
+  #   every privilege check, so a future `GRANT SELECT, INSERT ON
+  #   audit_events` with no UPDATE/DELETE grant ever added (P1.S5's
+  #   audit-immutability exit criterion, ADR-0011) would mean nothing had
+  #   `api` still connected as the same superuser that owns the table.
+  # - Deliberately its own service, not a docker-entrypoint-initdb.d script
+  #   mounted on `postgres`: the Postgres image only ever runs initdb.d
+  #   scripts once, against an empty data directory. This service re-runs
+  #   idempotently every deploy instead, which is what lets the role split
+  #   land against the shared host's ALREADY-provisioned `pgdata` volume
+  #   without a `dev-reset`. Generally, though: any future initdb.d script
+  #   added to this stack WILL be skipped on that same existing volume until
+  #   the next dev-reset — keep that in mind before reaching for one.
+  db-roles:
+    image: postgres:17-alpine
+    container_name: ostomy-dev-db-roles
+    logging: *default-logging
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - ./db/bootstrap-roles.sql:/bootstrap-roles.sql:ro
+    networks:
+      - ostomy-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -h
+      - postgres
+      - -U
+      - ${POSTGRES_USER:?set in .env}
+      - -d
+      - ${POSTGRES_DB:?set in .env}
+      - -v
+      - runtime_role=${POSTGRES_RUNTIME_USER:?set in .env}
+      - -v
+      - runtime_password=${POSTGRES_RUNTIME_PASSWORD:?set in .env}
+      - -v
+      - db_name=${POSTGRES_DB:?set in .env}
+      - -f
+      - /bootstrap-roles.sql
+
   minio:
     image: minio/minio:RELEASE.2025-04-08T15-41-24Z
     container_name: ostomy-dev-minio
@@ -84,8 +158,16 @@ services:
     logging: *default-logging
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # Also the API's own S3-compatible credentials today (wired into
+      # OBJECT_STORAGE_ACCESS_KEY_ID/SECRET_ACCESS_KEY below) — meaning the
+      # LAN-exposed console login and the API's storage credential are
+      # currently the same secret. A bucket-scoped service account (via an
+      # `mc admin user add` init step, run the same way `db-roles` runs its
+      # SQL) would make dev model production's shape more closely; judged
+      # out of scope for this pass rather than silently deferred — flag it
+      # before P1.S3 adds real objects to the bucket.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
     volumes:
       - miniodata:/data
     networks:
@@ -95,7 +177,12 @@ services:
       # table: MinIO API stays compose-network-only; the console is the LAN
       # row). The S3 API port (9000) is reachable from other containers as
       # http://minio:9000 but is intentionally not published to the host.
-      - "9001:9001"
+      # Standalone development against this MinIO from outside Docker (e.g.
+      # apps/api/.env.example's OBJECT_STORAGE_ENDPOINT=http://localhost:9000
+      # for `pnpm --filter @ostomy/api start:dev` run directly, not
+      # containerized) needs 9000 published too — add it temporarily,
+      # revert afterward, same as the postgres port above.
+      - "${DEV_BIND_ADDRESS:-127.0.0.1}:9001:9001"
     healthcheck:
       # No wget or curl in this image (verified against
       # minio/minio:RELEASE.2025-04-08T15-41-24Z) — only its own `mc` client
@@ -118,11 +205,18 @@ services:
     # two-pool separation. Every token it issues carries `iat`, `exp`,
     # `nbf`, matching the guards' `requiredClaims: ['exp', 'iat']`.
     #
+    # Pinned by tag AND digest, not `:latest`: this is the one image whose
+    # exact behavior (Host-header-derived `iss`, lazy per-path issuers, 405
+    # on HEAD) the DEV_HOST_ADDRESS design below depends on. An unpinned
+    # upstream change would break auth on the shared host with a symptom
+    # indistinguishable from a DEV_HOST_ADDRESS misconfiguration — re-verify
+    # the three behaviors above by hand before ever bumping this pin.
+    #
     # IMPORTANT — read before changing DEV_HOST_ADDRESS or issuer URLs:
     # this image derives the `iss` claim from the Host header of whatever
     # request minted the token, not from a fixed config value. See the
     # DEV_HOST_ADDRESS comment in .env.example.
-    image: ghcr.io/navikt/mock-oauth2-server:latest
+    image: ghcr.io/navikt/mock-oauth2-server:6.0.2@sha256:b538810afd589d42fbfb856c588c2065eaeed1dc528d6c532972048e67fc2aff
     container_name: ostomy-dev-mock-oidc
     restart: unless-stopped
     logging: *default-logging
@@ -131,18 +225,22 @@ services:
     networks:
       - ostomy-dev
     ports:
-      - "8090:8080"
+      - "${DEV_BIND_ADDRESS:-127.0.0.1}:8090:8080"
     healthcheck:
       # Not `wget --spider`: this server responds 405 to HEAD requests
-      # (verified against ghcr.io/navikt/mock-oauth2-server:latest), which is
-      # what --spider sends — a real GET is required.
+      # (verified against the pinned digest above), which is what --spider
+      # sends — a real GET is required. Probes /patient-issuer/ rather than
+      # /default/ because /patient-issuer/ and /admin-issuer/ are the
+      # issuers actually in use (apps/api/.env.example); /default/ proves
+      # only that the server is up, not that the issuer paths this stack
+      # depends on work.
       test:
         [
           "CMD",
           "wget",
           "--quiet",
           "--output-document=-",
-          "http://localhost:8080/default/.well-known/openid-configuration",
+          "http://localhost:8080/patient-issuer/.well-known/openid-configuration",
         ]
       interval: 5s
       timeout: 5s
@@ -154,26 +252,68 @@ services:
   # entrypoint, so a future multi-replica `api` can never race two concurrent
   # migration attempts.
   #
+  # Runs twice per `docker compose up -d` deploy today: the explicit `run
+  # --rm migrate` step in the deploy workflow removes its own container on
+  # exit, so `up -d` immediately after starts a second one to satisfy its
+  # own `service_completed_successfully` condition on `api`. Harmless while
+  # this is a no-op placeholder and will stay harmless once P1.S3 lands real
+  # migrations, PROVIDED they stay idempotent (`prisma migrate deploy` is,
+  # by design) — re-check this the day a migration ever carries a one-time
+  # data backfill rather than only schema changes.
+  #
   # Placeholder until P1.S3 (Prisma schema does not exist yet): reuses the
   # api image itself — its build is real today even though there is nothing
   # to migrate — with the container command overridden. When P1.S3 lands,
   # replace `command:` below with the real `prisma migrate deploy` (or
-  # equivalent) invocation; nothing else about this service's wiring changes.
+  # equivalent) invocation; nothing else about this service's wiring
+  # changes, including DATABASE_URL below, which already carries the owner
+  # role's DSN Prisma will need.
   migrate:
     <<: *api-image
     container_name: ostomy-dev-migrate
     logging: *default-logging
+    environment:
+      # The owner DSN — connects as ${POSTGRES_USER}, which db-roles above
+      # has NOT restricted, precisely because migrations need to create and
+      # alter tables. Unused by today's placeholder command; present now so
+      # P1.S3 only has to read process.env.DATABASE_URL, not also design the
+      # DSN split. See infra/db/README.md.
+      DATABASE_URL: postgresql://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
+    # Real connectivity check, not just a log line: opens a TCP connection to
+    # postgres:5432 with node's own `net` module (no new dependency — this
+    # placeholder has no business pulling in a Postgres client library
+    # before P1.S3 decides what that library is) and exits non-zero if it
+    # cannot connect within 5s. This is what actually exercises the
+    # `service_healthy -> service_completed_successfully` dependency chain
+    # below; a command that never touches Postgres would let that chain
+    # report success unconditionally, regardless of whether Postgres was
+    # ever reachable.
     command:
-      [
-        "node",
-        "-e",
-        "console.log('[migrate] no schema yet (P1.S3) - placeholder migrate step, exiting 0'); process.exit(0);",
-      ]
+      - "node"
+      - "-e"
+      - |
+        const net = require('net');
+        const socket = net.createConnection({ host: 'postgres', port: 5432 }, () => {
+          console.log('[migrate] connected to postgres:5432 - no schema yet (P1.S3), placeholder migrate step, exiting 0');
+          socket.end();
+          process.exit(0);
+        });
+        socket.setTimeout(5000);
+        socket.on('timeout', () => {
+          console.error('[migrate] timed out connecting to postgres:5432');
+          process.exit(1);
+        });
+        socket.on('error', (err) => {
+          console.error('[migrate] failed to connect to postgres:5432:', err.message);
+          process.exit(1);
+        });
     networks:
       - ostomy-dev
     depends_on:
       postgres:
         condition: service_healthy
+      db-roles:
+        condition: service_completed_successfully
 
   api:
     <<: *api-image
@@ -190,11 +330,19 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OIDC_CLOCK_TOLERANCE_SECONDS: ${OIDC_CLOCK_TOLERANCE_SECONDS:-30}
 
+      # The runtime DSN — connects as ${POSTGRES_RUNTIME_USER}, the role
+      # db-roles creates with NOSUPERUSER/NOCREATEDB/NOINHERIT. Not consumed
+      # by any code yet (no database module exists before P1.S3); present
+      # now precisely so the API never has the option of accidentally
+      # connecting as the migration owner once one does. See
+      # infra/db/README.md.
+      DATABASE_URL: postgresql://${POSTGRES_RUNTIME_USER:?set in .env}:${POSTGRES_RUNTIME_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
+
       # Patient OIDC. JWKS_URI uses compose-internal DNS: the JWKS content
       # mock-oauth2-server serves for a given issuer path is independent of
       # the Host header used to fetch it (verified empirically), so this is
       # safe even though ISSUER below must be reachable at DEV_HOST_ADDRESS.
-      OIDC_ISSUER: http://${DEV_HOST_ADDRESS}:8090/patient-issuer
+      OIDC_ISSUER: http://${DEV_HOST_ADDRESS:?set in .env - see .env.example, and never leave this as localhost}:8090/patient-issuer
       OIDC_JWKS_URI: http://mock-oidc:8080/patient-issuer/jwks
       OIDC_AUDIENCE: ostomy-patient-app
       OIDC_SUBJECT_CLAIM: sub
@@ -203,7 +351,7 @@ services:
       # issuer, audience, or JWKS URI with the patient block above
       # (SRS_v2 §4.6, ADR-0008; apps/api/src/config/load-config.ts rejects
       # startup otherwise).
-      ADMIN_OIDC_ISSUER: http://${DEV_HOST_ADDRESS}:8090/admin-issuer
+      ADMIN_OIDC_ISSUER: http://${DEV_HOST_ADDRESS:?set in .env - see .env.example, and never leave this as localhost}:8090/admin-issuer
       ADMIN_OIDC_JWKS_URI: http://mock-oidc:8080/admin-issuer/jwks
       ADMIN_OIDC_AUDIENCE: ostomy-admin-console
       ADMIN_OIDC_SUBJECT_CLAIM: sub
@@ -213,13 +361,13 @@ services:
       # not change OBJECT_STORAGE_FORCE_PATH_STYLE to "false" here.
       OBJECT_STORAGE_ENDPOINT: http://minio:9000
       OBJECT_STORAGE_REGION: us-east-1
-      OBJECT_STORAGE_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      OBJECT_STORAGE_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      OBJECT_STORAGE_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set in .env}
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
       OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
     networks:
       - ostomy-dev
     ports:
-      - "3000:3000"
+      - "${DEV_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -230,7 +378,13 @@ services:
       migrate:
         condition: service_completed_successfully
     # The Dockerfile's own HEALTHCHECK (curl against /api/v1/health) is
-    # authoritative; not overridden here.
+    # authoritative; not overridden here. It is liveness, not readiness —
+    # honest only because apps/api/src/config/load-config.ts fails fast
+    # before the listener ever opens, so today "the process is up" and "the
+    # process is correctly configured" happen to coincide. Both this
+    # healthcheck and the deploy workflow's own HTTP check must repoint at
+    # /api/v1/health/ready once P1.S3 gives the API a database connection
+    # that can be up-but-unready.
 
   web:
     build:
@@ -243,7 +397,7 @@ services:
     networks:
       - ostomy-dev
     ports:
-      - "8080:80"
+      - "${DEV_BIND_ADDRESS:-127.0.0.1}:8080:80"
 
   admin:
     build:
@@ -256,4 +410,4 @@ services:
     networks:
       - ostomy-dev
     ports:
-      - "8081:80"
+      - "${DEV_BIND_ADDRESS:-127.0.0.1}:8081:80"

@@ -13,6 +13,10 @@
 # that is a real ADR-0010 finding (a `require(esm)` failure vitest's ESM
 # transform cannot see) — do not "fix" it by switching this image to `tsx`.
 
+# Kept in step with .nvmrc (currently 24.14.0) by hand — nothing enforces
+# this automatically, so bumping one without checking the other is a real
+# way for the image's Node version and the version every other workspace
+# command runs against to quietly drift apart.
 ARG NODE_IMAGE=node:24.14.0-slim
 ARG PNPM_VERSION=10.34.5
 
@@ -52,7 +56,10 @@ RUN pnpm --filter @ostomy/api build
 # field (apps/api/package.json declares `"files": ["dist"]` for exactly this
 # reason: apps/api/.gitignore excludes dist/, and pnpm's packing rules follow
 # gitignore unless `files` overrides it), so `dist` must already exist from
-# the `build` stage before this runs.
+# the `build` stage before this runs. See the `//files` note next to that
+# field: P1.S3 must add `"prisma"` there once schema.prisma and
+# prisma/migrations/ exist, or they get silently packed out of /out and
+# `prisma migrate deploy` fails inside this image at runtime.
 #
 # `--legacy`: pnpm 10's default deploy implementation requires every
 # workspace it deploys to opt in with `inject-workspace-packages=true`
@@ -66,12 +73,9 @@ RUN pnpm --filter=@ostomy/api deploy --prod --legacy /out
 
 # --- runtime -----------------------------------------------------------------
 FROM ${NODE_IMAGE} AS runtime
-# curl is required for the container HEALTHCHECK below and for
-# docker-compose.yml's own healthcheck on this service; node:*-slim does not
-# ship it.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl \
-  && rm -rf /var/lib/apt/lists/*
+# No curl install: Node 24 ships a global `fetch` (undici-backed), which the
+# HEALTHCHECK below uses directly — one fewer apt layer and one fewer piece
+# of CVE surface in the runtime image than shelling out to curl would cost.
 
 # Non-root: the compose/deploy-dev runner is already in the `docker` group
 # (a full host-compromise risk documented in docs/deployment-development.md
@@ -95,7 +99,7 @@ ENV NODE_ENV=production
 EXPOSE 3000
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
-  CMD curl --fail --silent http://localhost:3000/api/v1/health || exit 1
+  CMD node -e "fetch('http://localhost:3000/api/v1/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 # No .env file in the image or the container — see
 # docs/deployment-development.md "Secrets": configuration is injected as real

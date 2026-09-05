@@ -9,6 +9,11 @@
 # apps/admin exists, built from a source tree containing no patient data
 # types (a code-organization property this Dockerfile cannot itself enforce
 # — see docs/security-hipaa.md "The admin/patient boundary").
+# Runs as root (nginx:1.29-alpine's default user) — fine for a static
+# placeholder page with no data of any kind behind it, but do not let the
+# real multi-stage build inherit this by omission: infra/docker/api.Dockerfile
+# creates and switches to a non-root `app` user, and this image's real
+# replacement should do the same in its own nginx runtime stage.
 FROM nginx:1.29-alpine
 
 COPY infra/placeholder-pages/admin/index.html /usr/share/nginx/html/index.html
