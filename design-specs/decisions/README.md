@@ -28,6 +28,7 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0007](0007-packages-core-ownership.md) | Partition `packages/core` by owning agent, read-only to everyone else | Accepted |
 | [0008](0008-admin-config-api-before-console.md) | Build the admin configuration API at its final shape early; defer the admin console SPA to P8 | Accepted |
 | [0009](0009-synthetic-seed-data-generation.md) | Generate synthetic seed data in `packages/seed`, writing through Prisma but validating against `packages/core` first | Accepted |
+| [0010](0010-api-commonjs-module-system.md) | Build `apps/api` as CommonJS with `nodenext` resolution, against an ESM monorepo | Accepted |
 
 **ADR-0005 changed the spec.** SRS_v2 was updated to v2.4 in the same change: AC 2.1 AC 1 now accepts decimal volumes, and a new AC 2.1 AC 4 specifies conversion rounding.
 

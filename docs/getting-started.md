@@ -57,9 +57,10 @@ These fail the build rather than warn, each because a project constraint depends
 
 ## Running the apps
 
-Not yet scaffolded — `apps/api`, `apps/web` and `apps/mobile` currently hold README stubs, and there is no `apps/admin`.
+`apps/web` and `apps/mobile` currently hold README stubs, and there is no `apps/admin`.
 
-- API: `TBD` — lands with P1.S1
+- **API:** scaffolded at P1.S1. `cp apps/api/.env.example apps/api/.env`, fill in real values, then
+  `pnpm --filter @ostomy/api start:dev`. No database yet — that lands at P1.S3. See `apps/api/README.md`.
 - Web: `TBD` — lands with P2.S3
 - Mobile (Expo): `TBD` — lands with P2.S2a. Set `EXPO_PUBLIC_API_URL` to the development server's LAN address; the test device must be on the same network
 - Local Docker stack and `dev-reset`: `TBD` — lands with P1.S2

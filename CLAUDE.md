@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**No application code yet.** `apps/mobile`, `apps/web`, and `apps/api` each contain only a README marked "Not yet scaffolded," and there is no `apps/admin`. `packages/core`, `packages/ui` and `packages/seed` do not exist as code either.
+**`apps/api` is scaffolded (P1.S1); everything else is not.** `apps/mobile` and `apps/web` still contain only a README marked "Not yet scaffolded," and there is no `apps/admin`. `packages/core`, `packages/ui` and `packages/seed` do not exist as code either. `apps/api` has a NestJS skeleton — typed/validated config, the structurally separate patient/admin OIDC guards, a liveness health check, OpenAPI generation, and a structured Pino logger whose serializers never assemble a request/response body into a log line, backed by a credential-redaction list (not a "PHI-scrubbing" filter — no PHI payload is ever logged in the first place, so there is nothing for one to scrub) — but no database, no Prisma, no audit logging, and no business-logic endpoints yet (those are P1.S3, P1.S5, and P2). See `apps/api/README.md`.
 
 **The toolchain does exist** (sprint P0). `packages/config` holds the shared tsconfig, ESLint flat config and Prettier config that every workspace extends, and the root has working commands:
 
@@ -42,6 +42,7 @@ Record significant new decisions there using `0000-template.md`: choices that ar
 From SRS_v2 Section 4 — treat these as settled unless the user reopens them:
 
 - **Monorepo** via pnpm workspaces (`apps/*`, `packages/*`). TypeScript throughout, including infrastructure. No task runner — plain pnpm scripts (ADR-0003). `packages/config` is the shared build/lint/format base every workspace extends.
+- **Module systems differ by workspace.** The repo is ESM (`"type": "module"`); `apps/api` is **CommonJS** with `nodenext` resolution, because NestJS's decorator DI does not fit the ESM defaults (ADR-0010). Consequence you must respect: the API's CJS build relies on Node's `require(esm)`, which throws `ERR_REQUIRE_ASYNC_MODULE` on **top-level await** — so `packages/core`'s entry graph must never use it. Vitest transforms to ESM and will not catch this; only running the built API will.
 - **Mobile (`apps/mobile`)**: Expo managed workflow + React Native. The *only* offline-capable client — writes to local `expo-sqlite` first, appends to a local `sync_queue` table, pushes to the API on connectivity restore.
 - **Web (`apps/web`)**: React + Vite SPA, **online-only** by explicit decision. No local persistence layer. Don't add offline support to web.
 - **Admin console**: a *separate* internal React/Vite SPA with **zero PHI access**, managing value sets, clinical default ranges, and validation thresholds. Backed by its own Cognito user pool, disjoint from the patient pool, so the boundary is enforced at the identity layer rather than by authorization logic. It consumes an isolated `/api/v1/admin/...` surface and must never import patient data types. Not yet scaffolded — there is no `apps/admin` directory.
