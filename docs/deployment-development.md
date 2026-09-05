@@ -70,11 +70,13 @@ Stages:
 1. **base** — Node LTS slim, `corepack enable pnpm`.
 2. **deps** — copy only `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, and each workspace package's manifest; `pnpm install --frozen-lockfile`. Keeping source out of this layer means the dependency install is cached until the lockfile actually changes.
 3. **build** — copy source, build `packages/core` and `apps/api`.
-4. **runtime** — `pnpm deploy --filter=@app/api --prod` to produce a pruned, hoisted `node_modules` with no dev dependencies, copied into a slim base. Runs as a non-root user.
+4. **runtime** — `pnpm deploy --filter=@app/api --prod --no-optional` to produce a pruned, hoisted `node_modules` with no dev dependencies, copied into a slim base. Runs as a non-root user.
+
+`apps/api`'s image is actually two leaves off that shared `build` stage, not just the one (CI-audit follow-up to P1.S3 — see `infra/docker/api.Dockerfile`'s own stage-by-stage comments for the full mechanism, including a pnpm/Prisma peer-dependency quirk that made `--prod` alone insufficient): `runtime` (above, `ostomy/api`) serves the API, and a separate `migrate` leaf (`ostomy/api-migrate`) carries `prisma` the CLI plus `prisma/schema.prisma`, `prisma/migrations/`, and `prisma.config.ts` — none of which `runtime` needs or has. They are two distinct images, not one image built twice; `infra/docker-compose.yml`'s `migrate` service builds and runs `ostomy/api-migrate`, not `ostomy/api`.
 
 The web and admin images are the same pattern, ending in an nginx stage serving the static build. The admin image must be built from a source tree that contains no patient data types (SRS §3.11); this is a code-organization property, not something the Dockerfile enforces.
 
-Images are built on the server and tagged with the short git SHA plus `dev-latest`. There is no registry, so rollback means retaining the previous few SHA-tagged images rather than pulling an older tag — prune on a schedule, keeping the last five.
+Images are built on the server and tagged with the short git SHA plus `dev-latest`. There is no registry, so rollback means retaining the previous few SHA-tagged images rather than pulling an older tag — prune on a schedule, keeping the last five. `ostomy/api-migrate` is tagged and pruned on the same schedule as `ostomy/api` (`.github/workflows/deploy-dev.yml`'s tag/prune loops list it explicitly) — it is a real, independently-built image now, not a free side effect of tagging `ostomy/api`.
 
 ### Rollback
 
@@ -85,6 +87,8 @@ git log --oneline -6 -- .          # find the short SHA of the last known-good c
 docker tag ostomy/api:<good-sha> ostomy/api:dev-latest      # repeat per app (web, admin) as needed
 docker compose --env-file .env -f infra/docker-compose.yml up -d
 ```
+
+This retags `ostomy/api`, the runtime image, only. It does **not** also retag `ostomy/api-migrate` — and does not need to for the case this recipe targets (bad application code in a deploy where the database is already correctly migrated): `docker compose ... up -d` still re-runs `migrate` to satisfy `db-roles`'/`api`'s `service_completed_successfully` dependency, but `prisma migrate deploy` against an already-migrated database is a no-op regardless of which build of the CLI ran it, per "Database lifecycle" below. If a bad deploy's regression is in the `migrate` stage itself (not application code, and not the schema) — a genuinely different, rarer failure — `docker tag ostomy/api-migrate:<good-sha> ostomy/api-migrate:dev-latest` before the same `up -d` is the equivalent step.
 
 This retags a previously-built image as `dev-latest` and redeploys it — it does **not** roll back the database. There is no down-migration story here (P1.S3 onward): a schema change that shipped with the bad deploy stays applied. If the failure was schema-related, the safe recovery is forward (fix and redeploy), not backward: `dev-reset.sh` is the only way to get to a clean database, and it is destructive (wipes `pgdata`/`miniodata` — see "No backups" below), which is the tradeoff of not maintaining down-migrations in a synthetic-data-only environment.
 

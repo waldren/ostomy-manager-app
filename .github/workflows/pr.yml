@@ -67,10 +67,43 @@ jobs:
 
       # SRS_v2 §5.2 requires dependency vulnerability scanning. The blocking
       # gate is production dependencies at high and critical: a build-tooling
-      # advisory with no available fix must not halt all work, and today every
-      # dependency in the repo is a devDependency.
+      # advisory with no available fix must not halt all work.
+      #
+      # `--no-optional`, alongside `--prod` (CI-audit follow-up to P1.S3):
+      # verified empirically that `--prod` alone is NOT "only genuine
+      # production dependencies" in this workspace. pnpm's own `--help`
+      # documents `--prod` as auditing "dependencies" AND
+      # "optionalDependencies" together, and `@prisma/client` (a real
+      # `apps/api` dependency) declares `prisma` — the CLI — as an
+      # `optional: true` peerDependency. Because `prisma` is installed
+      # somewhere in this workspace (apps/api's own devDependencies, needed
+      # for `prisma migrate deploy`/`generate`), pnpm auto-links it to
+      # satisfy that peer and records it as an `optionalDependencies` entry
+      # on `@prisma/client`'s resolved snapshot — regardless of which
+      # section of which package.json declares it, and confirmed
+      # empirically even with `prisma` removed from apps/api entirely and
+      # declared only at the workspace root instead (pnpm's peer linking is
+      # workspace-lockfile-wide, not scoped to one importer). `--prod` on
+      # its own therefore still walks `apps/api -> @prisma/client -> prisma
+      # -> mysql2`/`@prisma/config -> deepmerge-ts` and reports their
+      # advisories, even though `prisma` is correctly a devDependency and
+      # the running API never executes any of that code path (`@prisma/
+      # client`'s runtime import is `@prisma/client/runtime/client`, not a
+      # `require` of the sibling `prisma` package).
+      #
+      # `--no-optional` is pnpm's own purpose-built flag for exactly this
+      # distinction, not an ad hoc suppression: it does not touch
+      # `--audit-level`, does not `--ignore` these two advisories by ID (so
+      # it keeps working if their GHSA IDs or the packages' versions
+      # change), and does not hide them — the informational step below runs
+      # neither flag, so a real optionalDependencies vulnerability is still
+      # visible there, just not blocking. If this workspace ever adds a
+      # genuine (non-peer-linked) optionalDependency, this flag stops
+      # blocking on ITS high/critical advisories too — that is the actual
+      # scope this line now trades away, and it should be revisited if that
+      # ever happens.
       - name: Audit production dependencies (high and critical)
-        run: pnpm audit --audit-level=high --prod
+        run: pnpm audit --audit-level=high --prod --no-optional
 
       - name: Audit everything (informational)
         if: always()

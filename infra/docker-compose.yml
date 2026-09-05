@@ -46,10 +46,21 @@ volumes:
   pgdata:
   miniodata:
 
+# Shared build context/dockerfile for both `api` and `migrate` below — they
+# build from the SAME Dockerfile but at two different, divergent stages
+# (infra/docker/api.Dockerfile: `runtime` vs `migrate`), so each service
+# overrides `build.target` (and `image`, to avoid two unrelated images
+# fighting over one tag) explicitly rather than relying on this anchor's
+# defaults. YAML's `<<` merge key only merges top-level keys of the mapping
+# it's spread into; a key given explicitly in the service itself (`build:`,
+# `image:`) replaces the anchor's version of that key wholesale rather than
+# deep-merging into it — so each override below repeats `context`/
+# `dockerfile`, it does not just add `target`.
 x-api-image: &api-image
   build:
     context: ..
     dockerfile: infra/docker/api.Dockerfile
+    target: runtime
   image: ostomy/api:dev-latest
 
 # Bounded log rotation, not a PHI control: the default `json-file` driver
@@ -291,17 +302,32 @@ services:
   # password, and it cannot `ALTER` a role that does not exist yet. See that
   # service's comment and infra/db/README.md "The seam for P1.S3".
   #
-  # Runs `prisma migrate deploy` directly against the built image's own
-  # node_modules (no pnpm in the runtime stage — see
-  # infra/docker/api.Dockerfile — so this is `node` invoking the CLI's
-  # entry file, not `pnpm exec prisma`). Idempotent by design: a second run
-  # against an already-migrated database is a no-op, which is what makes
-  # this safe to run twice per `docker compose up -d` deploy (the deploy
-  # workflow's explicit `run --rm migrate` step removes its own container
-  # on exit, so `up -d` immediately after starts a second one to satisfy
-  # its own `service_completed_successfully` condition).
+  # Runs `prisma migrate deploy` directly against this stage's own
+  # node_modules (no pnpm invoked at container runtime, in either this
+  # stage or `runtime` — see infra/docker/api.Dockerfile's `migrate` stage
+  # — so this is `node` invoking the CLI's entry file, not `pnpm exec
+  # prisma`). Idempotent by design: a second run against an
+  # already-migrated database is a no-op, which is what makes this safe to
+  # run twice per `docker compose up -d` deploy (the deploy workflow's
+  # explicit `run --rm migrate` step removes its own container on exit, so
+  # `up -d` immediately after starts a second one to satisfy its own
+  # `service_completed_successfully` condition).
   migrate:
     <<: *api-image
+    # Overrides the anchor's `build`/`image` wholesale (see x-api-image's own
+    # comment on why a merge key can't just add `target` on top): this is
+    # infra/docker/api.Dockerfile's `migrate` stage, not `runtime` — it needs
+    # `prisma` (the CLI) and `dotenv`, which are devDependencies precisely so
+    # `runtime`'s `pnpm deploy --prod` excludes them (CI-audit follow-up to
+    # P1.S3 — see apps/api/package.json's own comment). A distinct image tag
+    # keeps this from fighting `api`'s `ostomy/api:dev-latest` tag over which
+    # build last claimed it — these are two different images now, not one
+    # image built twice.
+    build:
+      context: ..
+      dockerfile: infra/docker/api.Dockerfile
+      target: migrate
+    image: ostomy/api-migrate:dev-latest
     container_name: ostomy-dev-migrate
     logging: *default-logging
     environment:

@@ -7,11 +7,9 @@
   "description": "Backend service: authentication, data sync, FHIR-mapped storage, and RxNorm medication lookups.",
   "main": "dist/main.js",
   "files": [
-    "dist",
-    "prisma",
-    "prisma.config.ts"
+    "dist"
   ],
-  "//files": "P1.S3: \"prisma\" and \"prisma.config.ts\" added — \"files\" is a whitelist for pnpm's packing step (infra/docker/api.Dockerfile's prod-deps stage runs `pnpm deploy`, which packs by this field). schema.prisma + prisma/migrations/ are not under dist/, and prisma.config.ts (read by the CLI from the project root, never compiled into dist/) is a sibling file, not part of the prisma/ directory — all three are needed for `prisma migrate deploy` to run inside the built image (infra/docker-compose.yml's `migrate` service). Omitting any one fails at container runtime, not at build time.",
+  "//files": "CI-audit follow-up to P1.S3: this whitelist briefly held \"prisma\" and \"prisma.config.ts\" alongside \"dist\", because `pnpm deploy` (infra/docker/api.Dockerfile's prod-deps stage) packs a workspace's own files by this field and, at the time, `migrate` ran `prisma migrate deploy` inside that SAME pruned image `api` runs from. It no longer does — `migrate` is now its own Dockerfile stage/image (`migrate-deps` -> `migrate`) — so a single shared `files` list is no longer the right mechanism: it cannot express \"pack prisma/ and prisma.config.ts for the migrate image only, not for runtime,\" and leaving them here would silently hand the runtime image schema/migration files it no longer has any CLI to use. `files` now names only what every `pnpm deploy` invocation of this package should ever pack (\"dist\"); infra/docker/api.Dockerfile's `migrate` stage COPYs prisma/schema.prisma, prisma/migrations/, and prisma.config.ts directly from the `build` stage's source checkout instead, so only that stage receives them.",
   "scripts": {
     "prisma:generate": "prisma generate",
     "build": "prisma generate && tsc -p tsconfig.build.json",
@@ -29,18 +27,16 @@
     "@nestjs/swagger": "^12.0.1",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
-    "dotenv": "^17.2.3",
     "jose": "^6.2.12",
     "nestjs-pino": "^5.1.0",
     "pg": "^8.23.0",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
-    "prisma": "^7.10.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "zod": "^4.5.4"
   },
-  "//dependencies": "P1.S3: `prisma` and `dotenv` are ordinary dependencies, not devDependencies, even though only the CLI (never apps/api's own runtime code) imports them directly. infra/docker-compose.yml's `migrate` service runs `prisma migrate deploy` INSIDE the same pruned, prod-only image `api` runs from (pnpm deploy --prod --legacy — see infra/docker/api.Dockerfile's prod-deps stage); a devDependency is exactly what that prune step removes. `prisma.config.ts` also does `import 'dotenv/config'`, which the CLI must be able to resolve inside that same pruned tree.",
+  "//dependencies": "`@prisma/client` and `@prisma/adapter-pg` stay ordinary dependencies: the generated client imports `@prisma/client/runtime/client` directly at runtime (verified — see prisma/schema.prisma's generator-block comment; an earlier comment here claiming otherwise was wrong and has been removed), so pruning either would break `api` itself, not just the CLI. `prisma` (the CLI) and `dotenv` moved back to devDependencies below (CI-audit follow-up to P1.S3): both were briefly promoted to dependencies so `prisma migrate deploy` could run inside the same pruned, prod-only image `api` runs from, but that made `pnpm audit --audit-level=high --prod` — the blocking CI gate — fail on `mysql2`/`deepmerge-ts` advisories reachable only through `prisma`'s own dependency tree, which the running API never executes. `migrate` now has its own Dockerfile stage/image (infra/docker/api.Dockerfile's `migrate-deps` -> `migrate`) built WITHOUT `--prod`, so it still gets `prisma` and `dotenv` from devDependencies. Reclassifying `prisma`/`dotenv` here was NOT by itself enough to keep either the runtime image or the CI audit gate clean, though: `@prisma/client` declares `prisma` as an `optional: true` peerDependency, and pnpm auto-links it (bringing its whole tree — `mysql2`, `postgres`, `@prisma/engines`, `@prisma/dev`, `@prisma/studio-core` — along) whenever `prisma` resolves anywhere in this workspace's shared lockfile, which it must, for this very devDependency and for `migrate` to work. Both `infra/docker/api.Dockerfile`'s `prod-deps` stage and `.github/workflows/pr.yml`'s blocking audit step add `--no-optional` for exactly this reason — see each one's own comment. `--prod` reclassification here is necessary but was not, on its own, sufficient.",
   "devDependencies": {
     "@nestjs/testing": "^12.0.1",
     "@ostomy/config": "workspace:*",
@@ -50,6 +46,8 @@
     "@types/node": "^24.13.3",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
+    "dotenv": "^17.2.3",
+    "prisma": "^7.10.0",
     "supertest": "^7.2.2",
     "testcontainers": "^12.1.0",
     "tsx": "^4.23.13",
