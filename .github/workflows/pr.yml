@@ -1,0 +1,82 @@
+name: PR
+
+# Runs on GitHub-hosted runners, never the self-hosted development runner.
+# The self-hosted runner deploys what has already passed here
+# (docs/deployment-development.md).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Never let a workflow reach a real environment. Nothing here touches PHI.
+  NODE_ENV: test
+
+jobs:
+  verify:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject committed environment files
+        run: bash scripts/check-no-committed-env.sh
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Format check
+        run: pnpm run format
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm run test
+
+  dependencies:
+    name: Dependency and vulnerability scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # SRS_v2 §5.2 requires dependency vulnerability scanning. Fails on high
+      # and critical only — moderate findings are reported without blocking,
+      # so a transitive advisory with no fix available cannot halt all work.
+      - name: Audit (high and critical)
+        run: pnpm audit --audit-level=high
+
+      - name: Audit (full report, informational)
+        if: always()
+        run: pnpm audit || true

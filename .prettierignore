@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+coverage/
+.expo/
+pnpm-lock.yaml
+*.min.js
+LICENSE
+design-specs/requirements/*.pdf
+
+# Prettier formats code, not prose.
+#
+# The Markdown here is documents of record — the SRS, the ADRs (immutable once
+# accepted), the agent definitions. Prettier pads Markdown table columns to
+# align them, which turns a one-cell edit into a whole-table diff and churns
+# files whose git history is supposed to mean something. It buys nothing:
+# these are read on GitHub and in editors that render them.
+#
+# Remove an entry here only if you want that tree auto-formatted.
+**/*.md
