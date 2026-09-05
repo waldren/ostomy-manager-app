@@ -1,0 +1,208 @@
+name: Deploy dev
+
+# Targets the self-hosted runner on the on-premise dev host
+# (docs/deployment-development.md "Deployment pipeline"). This workflow
+# does not itself lint, type-check, or test — but be precise about what
+# enforces the assumption that pr.yml already did: there is no `needs:`
+# and no `workflow_run:` linking the two. Both fire independently on
+# `push: main` and run concurrently, so this workflow deploys whatever is
+# on `main` regardless of whether pr.yml's run against that exact commit
+# has finished, or even started. The actual gate today is branch
+# protection requiring pr.yml to pass before a merge to `main` can happen
+# at all (an organizational GitHub setting, not a file in this repo) —
+# not anything in this workflow. If that protection is ever relaxed, this
+# workflow will deploy unverified code with nothing here to stop it.
+#
+# Runs on push to main only. A squash-merged PR is a push (docs/git-workflow.md
+# "main is deployed on every merge"): merging IS deploying, to a LAN-only,
+# synthetic-data-only host. Never target this workflow at pull_request —
+# that would let a fork's branch execute on a runner sitting in the `docker`
+# group (CLAUDE.md, docs/deployment-development.md "Runner operational
+# notes").
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  # One deploy at a time: two concurrent `docker compose up` runs against the
+  # same named volumes and the same migrate-before-api ordering is exactly
+  # the kind of race this pipeline exists to avoid.
+  group: deploy-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build, migrate, deploy, health check
+    runs-on: [self-hosted, linux, x64, ostomy-dev]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # actions/checkout defaults to `git clean -ffdx` before checkout,
+          # which ignores .gitignore (-x) and would delete the runner's
+          # persistent, git-ignored `.env` on every single run — breaking
+          # every deploy after the first one that happens to run this
+          # workflow. `.env` living outside git is the documented design
+          # (docs/deployment-development.md "Secrets"); this must not fight
+          # that.
+          #
+          # This safety is coupled to .dockerignore in a way that is easy to
+          # forget: `clean: false` is only safe for `.env` BECAUSE `.env`
+          # sitting in the checkout directory (the Docker build context —
+          # `build.context: ..` in infra/docker-compose.yml, resolving to
+          # this same repo root) never actually reaches an image, and that
+          # second half is enforced entirely by .dockerignore's
+          # `.env` / `.env.*` / `!.env.example` lines, not by anything here.
+          # Someone editing .dockerignore for build-performance reasons and
+          # dropping those lines without realizing they are load-bearing for
+          # secrets, not just cache-busting, would silently start baking
+          # `.env` into every image built on this host. This comment is the
+          # only thing connecting the two files today. Safer long-term fix:
+          # move `.env` out of the checkout entirely (e.g.
+          # `/etc/ostomy-dev/.env`, passed to Compose via `--env-file`),
+          # which removes both this coupling and the need for `clean: false`
+          # at all.
+          clean: false
+
+      # .env lives only on the host (git-ignored, never checked out — see
+      # .env.example and docs/security-hipaa.md "Secrets"). Two distinct
+      # checks, matching apps/api's own fail-fast philosophy
+      # (src/config/load-config.ts):
+      #
+      # - Missing entirely: fails here, loudly, rather than letting Compose
+      #   fail three steps later with a less obvious message.
+      # - Present but with a required variable unset or empty: as of this
+      #   change, `infra/docker-compose.yml` uses `${VAR:?set in .env}` for
+      #   every value with no safe default (POSTGRES_USER,
+      #   POSTGRES_PASSWORD, POSTGRES_DB, POSTGRES_RUNTIME_USER,
+      #   POSTGRES_RUNTIME_PASSWORD, MINIO_ROOT_USER, MINIO_ROOT_PASSWORD,
+      #   DEV_HOST_ADDRESS), so an unset one now fails loudly at the first
+      #   `docker compose` invocation below — this step does not need to
+      #   duplicate that check.
+      #
+      # DEV_HOST_ADDRESS gets one more check on top of "is it set", because
+      # "set to something" is not the same as "set to something that
+      # works". `${DEV_HOST_ADDRESS:?}` only rejects an EMPTY value, and
+      # "localhost" or "127.0.0.1" are both non-empty, both plausible things
+      # to type, and both silently broken for every client except the
+      # runner itself (see .env.example and
+      # docs/deployment-development.md) — exactly the value this workflow's
+      # own health check below (`curl http://localhost:3000/...`) would not
+      # catch, since it runs from the host too.
+      - name: Verify .env exists on the host
+        run: |
+          if [[ ! -f .env ]]; then
+            echo "::error::.env not found at the repo root on this runner. Create it from .env.example (see docs/deployment-development.md 'Secrets') before deploying." >&2
+            exit 1
+          fi
+
+          dev_host_address=$(grep -E '^DEV_HOST_ADDRESS=' .env | tail -n1 | cut -d= -f2-)
+          dev_host_address="${dev_host_address%$'\r'}"
+          dev_host_address="${dev_host_address%\"}"
+          dev_host_address="${dev_host_address#\"}"
+          if [[ -z "$dev_host_address" || "$dev_host_address" == "localhost" || "$dev_host_address" == "127.0.0.1" ]]; then
+            echo "::error::DEV_HOST_ADDRESS in .env is unset, 'localhost', or '127.0.0.1'. Set it to this host's real LAN hostname or IP — see the comment in .env.example. Deploying with this value would auth-fail every client except the runner itself." >&2
+            exit 1
+          fi
+
+      - name: Build images
+        run: docker compose --env-file .env -f infra/docker-compose.yml build
+
+      # docs/deployment-development.md "Image build": "tagged with the short
+      # git SHA plus dev-latest" — dev-latest is what docker-compose.yml
+      # actually runs; the SHA tag is what makes rollback possible on a host
+      # with no registry (retain the previous few, per "Prune old images"
+      # below, rather than pulling an older tag from anywhere).
+      - name: Tag images with the short commit SHA
+        run: |
+          short_sha=$(git rev-parse --short HEAD)
+          for repo in ostomy/api ostomy/web ostomy/admin; do
+            docker tag "$repo:dev-latest" "$repo:$short_sha"
+          done
+
+      # Must exit 0 before `api` starts (docs/deployment-development.md
+      # "Database lifecycle"); `up -d` below also depends on this via
+      # `condition: service_completed_successfully`, but running it as its
+      # own step gives a distinct, readable log section and a distinct
+      # failure point in the Actions UI.
+      - name: Run database migrations
+        run: docker compose --env-file .env -f infra/docker-compose.yml run --rm migrate
+
+      - name: Deploy
+        run: docker compose --env-file .env -f infra/docker-compose.yml up -d
+
+      # The container-level HEALTHCHECK in infra/docker/api.Dockerfile covers
+      # `docker compose`'s own view of readiness; this step is the
+      # independent, from-the-outside confirmation that a real HTTP client
+      # on the LAN would get a 200 — the actual exit criterion.
+      - name: Health check
+        run: |
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --max-time 3 http://localhost:3000/api/v1/health; then
+              echo
+              echo "api is healthy."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::api did not become healthy within 60s." >&2
+          # Ships container logs to a GitHub Actions log, readable by
+          # everyone with repo access — correct today only because this
+          # environment is synthetic-data-only by invariant (CLAUDE.md,
+          # docs/security-hipaa.md "No real PHI outside production") and
+          # the API's own Pino redaction never assembles PHI into a log
+          # line to begin with (apps/api/src/logging/). Do not copy this
+          # step into a staging or production workflow without re-deriving
+          # whether that invariant still holds there — it does not.
+          docker compose --env-file .env -f infra/docker-compose.yml logs --tail=200 api
+          exit 1
+
+      # Keep the last five SHA-tagged images per app; there is no registry on
+      # this host, so this — not an older tag — is how rollback works
+      # (docs/deployment-development.md "Image build" and its "Rollback"
+      # section). `dev-latest` is excluded from the count and never pruned:
+      # docker-compose.yml always runs that tag, so removing it would break
+      # the next deploy.
+      #
+      # No `if: always()`: this step now only runs if every prior step
+      # succeeded (the Actions default). Pruning candidate rollback images
+      # immediately after a health-check failure — the one moment an
+      # operator might actually need one of them — was the wrong instinct;
+      # a broken deploy should leave the last five untouched until someone
+      # has looked at it.
+      - name: Prune old images (keep last five SHA tags per app)
+        run: |
+          for repo in ostomy/api ostomy/web ostomy/admin; do
+            # `docker images --format` emits a bare `<none>` tag for a
+            # dangling image with no name — a build's superseded
+            # intermediate layers, not a rollback candidate. Left in, it
+            # survives the `grep -v dev-latest` filter, gets passed to
+            # `docker rmi -f "$repo:<none>"`, which errors (that is not
+            # a real tag), and `xargs` exits 123 — turning a *successful*
+            # deploy's cleanup step red. Filtered out explicitly here.
+            old_tags=$(docker images "$repo" --format '{{.Tag}} {{.CreatedAt}}' \
+              | grep -v '^dev-latest ' \
+              | grep -v '^<none> ' \
+              | sort -rk2 \
+              | awk '{print $1}' \
+              | tail -n +6)
+            if [[ -n "$old_tags" ]]; then
+              echo "Pruning old images for $repo:"
+              echo "$old_tags"
+              # No `-f`: an old SHA tag still backing a running container
+              # (shouldn't happen given dev-latest is what actually runs,
+              # but this is cheap insurance) becomes a no-op skip instead
+              # of a forced removal.
+              echo "$old_tags" | xargs -r -I{} docker rmi "$repo:{}"
+            fi
+          done
+          # Host-wide, not scoped to this project: this also removes any
+          # dangling layer left by an unrelated image built directly on
+          # this host, if there ever is one. Accepted for now — there is
+          # nothing else on this host today.
+          docker image prune -f

@@ -99,11 +99,19 @@ bootstrap().catch((error: unknown) => {
   // branch fires for a `loadConfig()` failure or any error `bootstrap()`
   // rethrows after closing a partial app), so this cannot reuse
   // `LoggingModule`'s configured logger — it builds its own `pino()`
-  // instance instead, but wired with the exact same redaction lists and
-  // `err` serializer, so a startup failure (e.g. a P1.S3 database connection
-  // error, whose message can carry a connection string with a password) is
-  // held to the same "never log PHI, never log a credential" bar as every
-  // other log line in this app, not the bare pino default.
+  // instance instead, wired with the same named redaction paths and `err`
+  // serializer as every other log line in this app, which is real
+  // protection for a credential or PHI value that arrives as a *structured
+  // field* (e.g. `err.meta`, `err.params`).
+  //
+  // It is NOT protection for a credential embedded inside an error's own
+  // `message` *string* — `redact.paths` matches object paths, not
+  // substrings, and `errSerializer` allow-lists `message` through verbatim
+  // by design (see logging/serializers.ts). A P1.S3 database connection
+  // error whose message happens to interpolate a connection string with a
+  // password would still be logged in full. If that ever needs closing,
+  // it has to be a message-scrubbing step in errSerializer (or upstream, at
+  // whatever throws), not an addition to the redaction path lists here.
   const bootstrapLogger = pino({
     redact: {
       paths: [...CREDENTIAL_REDACTION_PATHS, ...PHI_SHAPED_REDACTION_PATHS],

@@ -1,0 +1,28 @@
+# Keeps the Docker build context (repo root — see infra/docker-compose.yml
+# `build.context: ..`) from shadowing what the *container's own* pnpm
+# install produces.
+#
+# This is load-bearing, not tidiness: infra/docker/api.Dockerfile's `build`
+# stage does `COPY apps/api apps/api` after the `deps` stage already ran
+# `pnpm install` inside the image. Without this file, that COPY would
+# overwrite the container's freshly-installed, Linux-native
+# `apps/api/node_modules` with whatever happens to be sitting in the local
+# working tree on the machine running `docker build` — platform-specific
+# binaries and pnpm's symlink layout included. Anyone building this image
+# from a checkout with `node_modules` already installed locally (the normal
+# state of a working tree) hits this.
+node_modules
+**/node_modules
+dist
+**/dist
+build
+**/build
+coverage
+**/coverage
+.git
+.expo
+*.log
+openapi.json
+.env
+.env.*
+!.env.example

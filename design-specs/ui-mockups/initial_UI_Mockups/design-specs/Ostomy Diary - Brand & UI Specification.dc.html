@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<style>
+doc-page:not(:defined){visibility:hidden}
+body{margin:0;font-family:Inter,system-ui,sans-serif;color:#0F172A}
+a{color:#0F766E}a:hover{color:#115E59}
+</style>
+<script src="./doc-page.js"></script>
+</helmet>
+
+<doc-page margin="0.8in">
+
+<div slot="footer" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid #E2E8F0;font:500 9.5pt Inter;color:#94A3B8">
+  <span>Ostomy Diary — Brand &amp; UI Specification</span>
+  <span>Clinical Clarity v1.0 · September 2026</span>
+</div>
+
+<div style="border-bottom:2px solid #14B8A6;padding-bottom:16px;margin-bottom:22px">
+  <div style="font:600 10pt Inter;letter-spacing:.1em;text-transform:uppercase;color:#0F766E">Design specification</div>
+  <h1 style="font:700 30pt/1.1 Inter;letter-spacing:-.02em;margin:8px 0 0">Clinical Clarity</h1>
+  <p style="font:400 13pt/1.5 Inter;color:#475569;margin:10px 0 0;max-width:44em">The brand and interface system for the Ostomy Diary app. This document is the reference for designers and developers: it defines the palette, type, spacing, components and content rules, and states which decisions are fixed and which are open.</p>
+</div>
+
+<div style="display:flex;gap:14px;margin-bottom:26px">
+  <div style="flex:1;border:1px solid #E2E8F0;border-radius:12px;padding:12px 14px">
+    <div style="font:600 8.5pt Inter;letter-spacing:.06em;text-transform:uppercase;color:#64748B">Applies to</div>
+    <div style="font:500 10.5pt/1.45 Inter;color:#334155;margin-top:4px">iOS and Android patient app, care-team report, marketing site</div>
+  </div>
+  <div style="flex:1;border:1px solid #E2E8F0;border-radius:12px;padding:12px 14px">
+    <div style="font:600 8.5pt Inter;letter-spacing:.06em;text-transform:uppercase;color:#64748B">Owner</div>
+    <div style="font:500 10.5pt/1.45 Inter;color:#334155;margin-top:4px">Product design. Raise changes as a PR against this document.</div>
+  </div>
+  <div style="flex:1;border:1px solid #E2E8F0;border-radius:12px;padding:12px 14px">
+    <div style="font:600 8.5pt Inter;letter-spacing:.06em;text-transform:uppercase;color:#64748B">Reference build</div>
+    <div style="font:500 10.5pt/1.45 Inter;color:#334155;margin-top:4px">Ostomy Mobile Mockups, screens 1a–1v</div>
+  </div>
+</div>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:0 0 8px;padding-top:6px;border-top:1px solid #E2E8F0">1. Position and principles</h2>
+<p style="font:400 11pt/1.6 Inter;color:#334155;margin:0 0 12px;max-width:46em">Ostomy patients manage a continuous clinical condition. The interface has to hold two things at once: enough medical authority that a patient trusts the numbers and a physician accepts the report, and enough lightness that logging six times a day does not feel like a chore. Clinical Clarity resolves that as a crisp, card-based, high-legibility system where saturated colour is rationed and reserved for clinical meaning.</p>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px">
+  <div style="border-left:3px solid #14B8A6;background:#F8FAFC;padding:12px 14px;border-radius:0 10px 10px 0">
+    <div style="font:600 11pt Inter">Legibility before decoration</div>
+    <div style="font:400 10.5pt/1.5 Inter;color:#475569;margin-top:3px">Numbers are read in bathrooms, at night, one-handed. Size, contrast and tabular alignment win over styling.</div>
+  </div>
+  <div style="border-left:3px solid #14B8A6;background:#F8FAFC;padding:12px 14px;border-radius:0 10px 10px 0">
+    <div style="font:600 11pt Inter">Logging above reporting</div>
+    <div style="font:400 10.5pt/1.5 Inter;color:#475569;margin-top:3px">Quick-add sits at the top of the dashboard. Analysis is one tap away, never in the way of the entry.</div>
+  </div>
+  <div style="border-left:3px solid #14B8A6;background:#F8FAFC;padding:12px 14px;border-radius:0 10px 10px 0">
+    <div style="font:600 11pt Inter">Colour carries meaning</div>
+    <div style="font:400 10.5pt/1.5 Inter;color:#475569;margin-top:3px">Red means a clinical anomaly. Teal means an action or a confirmation. Neither is ever used decoratively.</div>
+  </div>
+  <div style="border-left:3px solid #14B8A6;background:#F8FAFC;padding:12px 14px;border-radius:0 10px 10px 0">
+    <div style="font:600 11pt Inter">The app observes, it does not diagnose</div>
+    <div style="font:400 10.5pt/1.5 Inter;color:#475569;margin-top:3px">Ranges are shown with their source and described as suggestions. Advice belongs to the care team.</div>
+  </div>
+</div>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:22px 0 8px;padding-top:6px;border-top:1px solid #E2E8F0">2. Colour</h2>
+<p style="font:400 11pt/1.6 Inter;color:#334155;margin:0 0 14px;max-width:46em">Three families: a slate scale that does the structural work, one teal accent for interaction, and a status set that only appears when the data warrants it. There is no fourth brand colour.</p>
+
+<table style="width:100%;border-collapse:collapse;font:400 10pt Inter;margin-bottom:8px">
+  <thead>
+    <tr style="background:#F8FAFC">
+      <th style="text-align:left;padding:8px 10px;border-bottom:1.5px solid #CBD5E1;font:600 9pt Inter;letter-spacing:.05em;text-transform:uppercase;color:#64748B;width:38px"></th>
+      <th style="text-align:left;padding:8px 10px;border-bottom:1.5px solid #CBD5E1;font:600 9pt Inter;letter-spacing:.05em;text-transform:uppercase;color:#64748B">Token</th>
+      <th style="text-align:left;padding:8px 10px;border-bottom:1.5px solid #CBD5E1;font:600 9pt Inter;letter-spacing:.05em;text-transform:uppercase;color:#64748B">Hex</th>
+      <th style="text-align:left;padding:8px 10px;border-bottom:1.5px solid #CBD5E1;font:600 9pt Inter;letter-spacing:.05em;text-transform:uppercase;color:#64748B">Where it is used</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#475569"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">primary / slate-600</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#475569</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Hero panels, selected chips, icon strokes, the output data series</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#0F172A"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">ink / slate-900</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#0F172A</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Headings, figures, primary label text</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#334155"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">body / slate-700</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#334155</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Paragraphs, secondary button labels</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#64748B"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">muted / slate-500</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#64748B</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Section labels, helper text, units</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#94A3B8"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">faint / slate-400</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#94A3B8</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Timestamps, inactive tabs, metadata. Never body copy.</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#14B8A6"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">accent / teal-500</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#14B8A6</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Primary buttons, quick-add primary tile, selection, the intake data series</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#0F766E"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">accent-text / teal-700</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#0F766E</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Teal used as text or a small icon; active tab label</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#F0FDFA;border:1px solid #99F6E4"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">accent-tint / border</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#F0FDFA / #99F6E4</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Selected cards, informational panels, confirmation pills</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#F8FAFC;border:1px solid #E2E8F0"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">bg / surface</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#F8FAFC / #FFFFFF</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Screen ground; cards, bars and sheets sit on it in white</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#E2E8F0"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">border / hairline</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#E2E8F0 / #F1F5F9</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Card edges and chrome rules / rules inside a card</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#CBD5E1"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">border-strong</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#CBD5E1</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Input borders, secondary buttons, disabled fills</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#B91C1C"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">alert</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#B91C1C</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Out-of-range figures, flagged days, required-field markers</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#FEF2F2;border:1px solid #FECACA"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">alert-tint / border</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#FEF2F2 / #FECACA</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Alert panels; body text inside them is #7F1D1D, headings #991B1B</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9"><span style="display:block;width:20px;height:20px;border-radius:5px;background:#B45309"></span></td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">caution</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums">#B45309</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Worth noticing, not clinical: low urine, minor leak, queued sync. Tint #FFFBEB, border #FDE68A.</td></tr>
+  </tbody>
+</table>
+
+<h3 style="font:600 12.5pt Inter;margin:18px 0 6px">2.1 Rules that are not negotiable</h3>
+<ul style="font:400 10.5pt/1.65 Inter;color:#334155;margin:0 0 14px;padding-left:20px;max-width:46em">
+  <li>Red is a clinical signal. It marks a value outside the patient's range, a flagged day, or a required field that is blocking a save. It is never a brand colour, a chart default, or a delete-button fill by habit.</li>
+  <li>Teal at #14B8A6 is a fill colour. As text or a thin icon on white it drops to #0F766E for contrast.</li>
+  <li>Never use colour as the only signal. Every flagged value also carries a word — "Above range", "Flagged", "Low" — or an icon.</li>
+  <li>One saturated element per card. If a card holds both a teal action and a red flag, the flag wins and the action reverts to the secondary style.</li>
+  <li>No gradients, no tinted photography, no colour-coded backgrounds for whole screens.</li>
+</ul>
+
+<h3 style="font:600 12.5pt Inter;margin:18px 0 6px">2.2 Data-series colours</h3>
+<p style="font:400 10.5pt/1.6 Inter;color:#334155;margin:0 0 8px;max-width:46em">Charts use the same three roles everywhere, so a physician reading the report and a patient reading Trends see one language: output is slate #475569, fluid intake is teal #14B8A6, urine is a dashed #CBD5E1 line, thresholds are a dashed #FECACA rule, and any bar or point that breaches the threshold turns #B91C1C.</p>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:22px 0 8px;padding-top:6px;border-top:1px solid #E2E8F0">3. Typography</h2>
+<p style="font:400 11pt/1.6 Inter;color:#334155;margin:0 0 12px;max-width:46em">Inter, one family, four weights: 400 regular, 500 medium, 600 semibold, 700 bold. Roboto is the approved substitute where Inter cannot be licensed or bundled; the scale below is unchanged either way. All figures use <b>font-variant-numeric: tabular-nums</b> so volumes align down a column.</p>
+
+<table style="width:100%;border-collapse:collapse;font:400 10pt Inter;margin-bottom:12px">
+  <thead>
+    <tr style="background:#F8FAFC">
+      <th style="text-align:left;padding:8px 10px;border-bottom:1.5px solid #CBD5E1;font:600 9pt Inter;letter-spacing:.05em;text-transform:uppercase;color:#64748B">Role</th>
+      <th style="text-align:left;padding:8px 10px;border-bottom:1.5px solid #CBD5E1;font:600 9pt Inter;letter-spacing:.05em;text-transform:uppercase;color:#64748B">Size / weight</th>
+      <th style="text-align:left;padding:8px 10px;border-bottom:1.5px solid #CBD5E1;font:600 9pt Inter;letter-spacing:.05em;text-transform:uppercase;color:#64748B">Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">Hero figure</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9">42–58 / 700, −0.03em</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">One per screen: today's balance, the volume being entered</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">Screen title</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9">26 / 700, −0.02em</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Sentence case, always with a date or context line above</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">Card figure</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9">20–26 / 700</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Tabular. Unit follows in 11–14 / 400–500 muted</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">Modal / nav title</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9">16 / 600</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Centred in the sheet header only</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">Row title</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9">14.5–15 / 500–600</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">600 when the row is selected or edited</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">Body</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9">14 / 400, line-height 1.5</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Minimum size for anything the patient must read</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">Section label</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9">11.5 / 600, uppercase, 0.06em</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Muted #64748B. One per group; never stacked two deep</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">Helper / meta</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9">11.5–12.5 / 400</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Muted or faint. Never carries information found nowhere else</td></tr>
+    <tr><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;font-weight:600">Pill / tag</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9">10–11 / 600, 0.06em</td><td style="padding:7px 10px;border-bottom:1px solid #F1F5F9;color:#475569">Uppercase for state (EST., SYNCED), sentence case for status (High, Low)</td></tr>
+  </tbody>
+</table>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:22px 0 8px;padding-top:6px;border-top:1px solid #E2E8F0">4. Layout, shape and elevation</h2>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:14px">
+  <div>
+    <h3 style="font:600 12.5pt Inter;margin:0 0 6px">Spacing</h3>
+    <p style="font:400 10.5pt/1.6 Inter;color:#334155;margin:0">A 4px base: 4, 8, 10, 12, 14, 16, 20, 24. Screen gutter is 20px on both platforms. Cards are 14–16px inside. Vertical rhythm between card groups is 12–14px; between a section label and its content, 8–9px.</p>
+  </div>
+  <div>
+    <h3 style="font:600 12.5pt Inter;margin:0 0 6px">Radius</h3>
+    <p style="font:400 10.5pt/1.6 Inter;color:#334155;margin:0">Cards and sheets 14px. Buttons, inputs and segmented controls 12px. Small controls and inner tiles 10px. Pills and chips 999px. Nothing is square, nothing is more rounded than 14px except pills.</p>
+  </div>
+  <div>
+    <h3 style="font:600 12.5pt Inter;margin:0 0 6px">Elevation</h3>
+    <p style="font:400 10.5pt/1.6 Inter;color:#334155;margin:0">Two steps only. Resting card: <b>0 1px 2px rgba(15,23,42,.04)</b> with a 1px #E2E8F0 border. Raised (segmented thumb, sheet, toggle knob): <b>0 1px 2px rgba(15,23,42,.08)</b>. No blurred, coloured or neumorphic shadows.</p>
+  </div>
+  <div>
+    <h3 style="font:600 12.5pt Inter;margin:0 0 6px">Structure</h3>
+    <p style="font:400 10.5pt/1.6 Inter;color:#334155;margin:0">One white card per idea. Related rows live inside one card separated by #F1F5F9 hairlines rather than becoming separate cards. Bottom bars and sheet headers are white against the #F8FAFC ground with a single 1px top or bottom border.</p>
+  </div>
+</div>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:22px 0 10px;padding-top:6px;border-top:1px solid #E2E8F0">5. Components</h2>
+
+<div style="border:1px solid #E2E8F0;border-radius:14px;padding:16px;margin-bottom:14px;break-inside:avoid">
+  <div style="font:600 12pt Inter;margin-bottom:10px">Buttons</div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+    <span style="min-height:44px;display:flex;align-items:center;padding:0 20px;border-radius:12px;background:#14B8A6;color:#fff;font:600 11pt Inter">Save entry</span>
+    <span style="min-height:44px;display:flex;align-items:center;padding:0 20px;border-radius:12px;background:#fff;border:1px solid #CBD5E1;color:#334155;font:600 11pt Inter">Back</span>
+    <span style="min-height:44px;display:flex;align-items:center;padding:0 20px;border-radius:12px;color:#64748B;font:500 11pt Inter">Skip for now</span>
+    <span style="min-height:44px;display:flex;align-items:center;padding:0 20px;border-radius:12px;background:#CBD5E1;color:#fff;font:600 11pt Inter">Disabled</span>
+  </div>
+  <p style="font:400 10.5pt/1.6 Inter;color:#475569;margin:0">Primary is a solid teal fill, one per screen, 52px tall in a footer bar and full width. Secondary is white with a #CBD5E1 border. Ghost is text-only in muted slate. Disabled is a #CBD5E1 fill with white text — it stays visible and is paired with a line saying what is missing. Pressed states darken one step (#0D9488 teal, #F1F5F9 secondary); focus is a 2px #14B8A6 ring at 2px offset.</p>
+</div>
+
+<div style="border:1px solid #E2E8F0;border-radius:14px;padding:16px;margin-bottom:14px;break-inside:avoid">
+  <div style="font:600 12pt Inter;margin-bottom:10px">Inputs, segmented controls and chips</div>
+  <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+    <div style="width:190px">
+      <div style="font:600 8.5pt Inter;letter-spacing:.06em;text-transform:uppercase;color:#64748B;margin-bottom:5px">Daily fluid goal</div>
+      <div style="min-height:44px;display:flex;align-items:center;padding:0 14px;border:1px solid #CBD5E1;border-radius:12px;background:#fff;font:500 11pt Inter;font-variant-numeric:tabular-nums">2,400 mL</div>
+    </div>
+    <div style="display:flex;background:#EEF2F6;border-radius:12px;padding:3px">
+      <div style="min-height:40px;display:flex;align-items:center;padding:0 16px;border-radius:10px;background:#fff;font:600 10.5pt Inter;box-shadow:0 1px 2px rgba(15,23,42,.08)">Measured</div>
+      <div style="min-height:40px;display:flex;align-items:center;padding:0 16px;font:500 10.5pt Inter;color:#64748B">Estimated</div>
+    </div>
+    <span style="min-height:40px;display:flex;align-items:center;padding:0 16px;border-radius:999px;background:#14B8A6;color:#fff;font:600 10pt Inter">Watery</span>
+    <span style="min-height:40px;display:flex;align-items:center;padding:0 16px;border-radius:999px;background:#fff;border:1px solid #CBD5E1;color:#334155;font:500 10pt Inter">Loose</span>
+  </div>
+  <p style="font:400 10.5pt/1.6 Inter;color:#475569;margin:0">Field labels are uppercase 11.5/600 muted, above the control. Inputs are 50–52px tall, 16px text on mobile so iOS does not zoom. Two mutually exclusive options use a segmented control with a white raised thumb; three or more that are not exclusive use chips. Selected chips are a solid teal fill; a selected card-sized option is the #F0FDFA tint with a 1.5px #14B8A6 border.</p>
+</div>
+
+<div style="border:1px solid #E2E8F0;border-radius:14px;padding:16px;margin-bottom:14px;break-inside:avoid">
+  <div style="font:600 12pt Inter;margin-bottom:10px">Status pills</div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+    <span style="font:600 9.5pt Inter;color:#B91C1C;background:#FEF2F2;border:1px solid #FECACA;border-radius:999px;padding:5px 11px">Above range</span>
+    <span style="font:600 9.5pt Inter;color:#B45309;background:#FFFBEB;border:1px solid #FDE68A;border-radius:999px;padding:5px 11px">Low</span>
+    <span style="font:600 9.5pt Inter;color:#0F766E;background:#F0FDFA;border:1px solid #99F6E4;border-radius:999px;padding:5px 11px">SYNCED</span>
+    <span style="font:600 9.5pt Inter;color:#64748B;background:#F1F5F9;border-radius:999px;padding:5px 11px">EST.</span>
+  </div>
+  <p style="font:400 10.5pt/1.6 Inter;color:#475569;margin:0">Four and only four: alert (clinical breach), caution (worth noticing), confirmation (system state that is fine), neutral (a fact about the record, such as Measured or Estimated). A pill never wraps to two lines — shorten the label instead.</p>
+</div>
+
+<div style="border:1px solid #E2E8F0;border-radius:14px;padding:16px;margin-bottom:14px;break-inside:avoid">
+  <div style="font:600 12pt Inter;margin-bottom:10px">Quick-add tiles</div>
+  <p style="font:400 10.5pt/1.6 Inter;color:#475569;margin:0">A two-column grid of 72–88px cards, 10px gap. The most-used entry is the single teal-filled card; the rest are white with a #E2E8F0 border and a teal category label. The last cell is a dashed-border "Something else". The amount is the largest thing on the card, tabular, with the unit and method trailing in muted 12.5. Three treatments were explored (cards, list rows, stepper rows); the card grid is the shipped one.</p>
+</div>
+
+<div style="border:1px solid #E2E8F0;border-radius:14px;padding:16px;margin-bottom:14px;break-inside:avoid">
+  <div style="font:600 12pt Inter;margin-bottom:10px">Bottom navigation</div>
+  <p style="font:400 10.5pt/1.6 Inter;color:#475569;margin:0">Five destinations: Today, Add, Trends, History, You. White bar, 1px #E2E8F0 top border, 52px minimum item height plus the platform safe area. Active is #0F766E icon and 600 label; inactive is #94A3B8 with a 500 label. Labels are sentence case at 10.5px and always present.</p>
+</div>
+
+<div style="border:1px solid #E2E8F0;border-radius:14px;padding:16px;margin-bottom:14px;break-inside:avoid">
+  <div style="font:600 12pt Inter;margin-bottom:10px">Alert and information panels</div>
+  <p style="font:400 10.5pt/1.6 Inter;color:#475569;margin:0">A tinted card with a matching 1px border, an icon at 20px, a 14/600 heading and 12.5/400 body. Alert panels use the red family, caution the amber family, information the teal family, and a plain white card with a #E2E8F0 border for neutral notes. Panels never stack more than one per screen region; if two conditions apply, show the clinical one.</p>
+</div>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:22px 0 8px;padding-top:6px;border-top:1px solid #E2E8F0">6. Data display</h2>
+<ul style="font:400 10.5pt/1.65 Inter;color:#334155;margin:0 0 14px;padding-left:20px;max-width:46em">
+  <li>Volumes are whole numbers in mL, thousands separated by a comma (1,640 mL). The unit is never bolded and never larger than the figure.</li>
+  <li>Net balance is signed with a true minus (−740), coloured #B91C1C when negative beyond the patient's threshold and ink otherwise.</li>
+  <li>Urine is reported on its own and excluded from net balance. Any screen showing balance must say so.</li>
+  <li>Every volume entry carries Measured or Estimated. It is a required field and shows as a neutral pill in lists.</li>
+  <li>Times are 24-hour, tabular, in faint slate at the left of a row. Dates read "Thu 4 Sep"; formal report headers read "4 Sep 2026".</li>
+  <li>Ranges appear with their source and a qualifier: "Suggested 600–1,200 mL", "Typical for an ileostomy 3 weeks after surgery".</li>
+  <li>Edited entries keep both versions visible with the change, the author and the timestamp.</li>
+</ul>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:22px 0 8px;padding-top:6px;border-top:1px solid #E2E8F0">7. Accessibility</h2>
+<ul style="font:400 10.5pt/1.65 Inter;color:#334155;margin:0 0 14px;padding-left:20px;max-width:46em">
+  <li>Touch targets are 48px minimum, 52px for primary actions and anything used at night.</li>
+  <li>Body text is 14px minimum and honours the platform text-size setting up to 200%; layouts wrap rather than truncate.</li>
+  <li>Text contrast meets WCAG AA against its own background. #94A3B8 is only used for metadata at 11.5px and above, never for instructions.</li>
+  <li>Teal on white is a fill colour, not a text colour: use #0F766E for teal text and small icons.</li>
+  <li>Colour is never the sole carrier of meaning; every status pill and chart flag has a text label.</li>
+  <li>Keyboard and switch focus is a 2px #14B8A6 outline at 2px offset — never the browser default.</li>
+</ul>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:22px 0 8px;padding-top:6px;border-top:1px solid #E2E8F0">8. Voice</h2>
+<p style="font:400 11pt/1.6 Inter;color:#334155;margin:0 0 10px;max-width:46em">Plain, second person, unhurried. Say what happened and what it means for the log, not how the patient should feel. No exclamation marks, no streaks, no congratulation for logging. Clinical terms appear with a plain-language gloss the first time: "Anti-diarrheal — loperamide. Slows output. Sold as Imodium."</p>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:8px">
+  <div style="border:1px solid #99F6E4;background:#F0FDFA;border-radius:12px;padding:12px 14px">
+    <div style="font:600 10.5pt Inter;color:#0F766E;margin-bottom:5px">Write this</div>
+    <div style="font:400 10.5pt/1.55 Inter;color:#334155">"Your output is high and your fluids are 1,500 mL short of your goal."<br>"That's a lot for one emptying. Please check the amount is right before you save."</div>
+  </div>
+  <div style="border:1px solid #FECACA;background:#FEF2F2;border-radius:12px;padding:12px 14px">
+    <div style="font:600 10.5pt Inter;color:#991B1B;margin-bottom:5px">Not this</div>
+    <div style="font:400 10.5pt/1.55 Inter;color:#334155">"Warning! Dehydration risk detected."<br>"Great job logging 5 days in a row!"<br>"Invalid input."</div>
+  </div>
+</div>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:22px 0 8px;padding-top:6px;border-top:1px solid #E2E8F0">9. Implementation tokens</h2>
+<p style="font:400 10.5pt/1.6 Inter;color:#334155;margin:0 0 10px;max-width:46em">Define these once per platform and reference them by name. Values below are the source of truth; anything not listed here is not part of the system.</p>
+<pre style="font:500 9.5pt/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;padding:14px 16px;color:#334155;white-space:pre-wrap;margin:0 0 14px">color.primary        #475569    color.accent         #14B8A6
+color.ink            #0F172A    color.accent.text    #0F766E
+color.body           #334155    color.accent.tint    #F0FDFA
+color.muted          #64748B    color.accent.border  #99F6E4
+color.faint          #94A3B8    color.alert          #B91C1C
+color.bg             #F8FAFC    color.alert.tint     #FEF2F2
+color.surface        #FFFFFF    color.alert.border   #FECACA
+color.border         #E2E8F0    color.caution        #B45309
+color.hairline       #F1F5F9    color.caution.tint   #FFFBEB
+color.border.strong  #CBD5E1    color.caution.border #FDE68A
+
+font.family  Inter (fallback Roboto, system-ui)
+font.weights 400 / 500 / 600 / 700      numerals  tabular-nums
+radius       card 14  control 12  small 10  pill 999
+space        4 8 10 12 14 16 20 24      gutter 20
+shadow.card  0 1px 2px rgba(15,23,42,.04)
+shadow.raised 0 1px 2px rgba(15,23,42,.08)
+target.min   48        target.primary 52</pre>
+
+<h2 style="font:700 17pt Inter;letter-spacing:-.01em;margin:22px 0 8px;padding-top:6px;border-top:1px solid #E2E8F0">10. Open questions</h2>
+<ul style="font:400 10.5pt/1.65 Inter;color:#334155;margin:0 0 6px;padding-left:20px;max-width:46em">
+  <li>Dark mode is not yet specified. Night logging currently relies on the light theme at reduced brightness; a dark palette needs its own contrast pass before it ships.</li>
+  <li>The care-team web view reuses these tokens but needs a denser table scale and a print stylesheet.</li>
+  <li>Iconography is Lucide at 2px stroke pending a licence decision; sizes in use are 14, 18, 20 and 21px.</li>
+  <li>No illustration or photography style has been set. Nothing in the app currently requires either.</li>
+</ul>
+
+</doc-page>
+
+</x-dc>
+</body>
+</html>

@@ -78,6 +78,7 @@ Numeric thresholds are admin-managed configuration, not constants in code.
 These come from the spec and apply to every feature, not just "compliance work":
 
 - **Never log PHI.** Every PHI create/edit/delete is audit-logged with user identity, timestamp, and before/after values, to an append-only store separate from application logs.
+- **The API never runs as the database schema owner.** Two non-superuser roles: a migration/owner role for `migrate`, and a runtime role for request handling that holds `SELECT`/`INSERT` on `audit_events` and **no `UPDATE`/`DELETE`** (ADR-0011). Append-only is enforced by grant, not by convention — a superuser or table owner bypasses it and makes the P1.S5 audit test pass while proving nothing. Role and grant changes go in a **migration**, never only in a Compose init script: Testcontainers starts its own PostgreSQL and never sees one.
 - **No real PHI outside production.** Dev and staging use synthetic or de-identified data.
 - **Accessibility is a hard target, not polish**: WCAG 2.1 AA across both clients. The patient population skews older and post-surgical — screen-reader support, scalable text, and touch-target sizes are requirements.
 - **No hardcoded user-facing strings.** v1 ships English-only, but all copy must be externalized and date/time/number/unit formatting must be locale-aware from day one. Patient-facing copy targets a 6th–8th grade reading level.

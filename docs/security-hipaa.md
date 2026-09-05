@@ -31,7 +31,7 @@ These are settled rules, not guidance. Where a rule can be enforced by tooling i
 ### Secrets
 
 - **Never commit a `.env`.** `.gitignore` covers it and `scripts/check-no-committed-env.sh` fails CI on a force-added one.
-- `.env.example` is the only committed environment file and contains **placeholders only** — the same check rejects anything resembling a real credential in it.
+- `.env.example` is the only committed environment file and contains **placeholders only** — the same check scans it against a fixed prefix list (AWS/GitHub/Slack/Stripe-shaped keys, a JWT, a PEM private-key header, credentials embedded in a URL). That catches those specific shapes, not a real password or any other credential outside the list — it is the fast, dependency-free layer described in the script's own header comment, not a substitute for review.
 - No production or staging credential is ever placed on the development host.
 - Runtime secrets come from the platform (AWS Secrets Manager in deployed environments), never from source, never from a build argument, never baked into an image.
 - A leaked credential is rotated first and investigated second.

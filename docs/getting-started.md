@@ -59,11 +59,40 @@ These fail the build rather than warn, each because a project constraint depends
 
 `apps/web` and `apps/mobile` currently hold README stubs, and there is no `apps/admin`.
 
-- **API:** scaffolded at P1.S1. `cp apps/api/.env.example apps/api/.env`, fill in real values, then
-  `pnpm --filter @ostomy/api start:dev`. No database yet — that lands at P1.S3. See `apps/api/README.md`.
+- **API, standalone (no Docker):** scaffolded at P1.S1. `cp apps/api/.env.example apps/api/.env`,
+  fill in real values, then `pnpm --filter @ostomy/api start:dev`. No database yet — that lands at
+  P1.S3. See `apps/api/README.md`.
 - Web: `TBD` — lands with P2.S3
 - Mobile (Expo): `TBD` — lands with P2.S2a. Set `EXPO_PUBLIC_API_URL` to the development server's LAN address; the test device must be on the same network
-- Local Docker stack and `dev-reset`: `TBD` — lands with P1.S2
+- **Local Docker stack:** scaffolded at P1.S2. From the repo root:
+
+  ```bash
+  cp .env.example .env    # then fill in real (still synthetic-only) values — every required
+                          # value uses Compose's ${VAR:?...} syntax, so a value left unset fails
+                          # loudly at the next command rather than deploying with an empty one
+  docker compose --env-file .env -f infra/docker-compose.yml up -d --build
+  curl http://localhost:3000/api/v1/health
+  ```
+
+  Brings up `postgres`, `db-roles` (one-shot; applies the migration-owner/runtime-role split —
+  see `infra/db/README.md`), `minio`, `mock-oidc`, a one-shot `migrate` (a TCP-connectivity check
+  today, a placeholder until P1.S3 — there is no schema yet), `api`, and static placeholder
+  `web`/`admin` containers — see `docs/deployment-development.md` for the full topology and
+  `infra/docker-compose.yml` for the wiring. `.env.example`'s `DEV_HOST_ADDRESS` comment explains
+  a real dev-host gotcha specific to the mock OIDC provider — there is no default that "just
+  works" even on your own machine; set it explicitly (`localhost` is fine for genuinely
+  single-machine use, but is never the right value on the shared host — read the comment before
+  choosing it there). `DEV_BIND_ADDRESS` similarly has no LAN-reachable default (`127.0.0.1`);
+  set it to the host's LAN address only on the shared host.
+
+  Reset (wipes `pgdata`/`miniodata`, recreates, migrates — nothing else may destroy data):
+
+  ```bash
+  scripts/dev-reset.sh   # or: pnpm dev:reset (works from a Windows checkout too)
+  ```
+
+  On the shared dev host this stack is deployed by `.github/workflows/deploy-dev.yml` on every
+  push to `main` — see `docs/git-workflow.md` ("`main` is deployed on every merge").
 
 See `design-specs/planning/v1-implementation-plan.md` for the sequence.
 

@@ -38,6 +38,7 @@ Test phone ────────┤
        │  │  admin (nginx)    :8081               │  │
        │  │  api (Node/TS)    :3000               │  │
        │  │  migrate (one-shot, runs before api)  │  │
+       │  │  db-roles (one-shot, before migrate)  │  │
        │  │  postgres         volume: pgdata      │  │
        │  │  minio            volume: miniodata   │  │
        │  │  mock-oidc                            │  │
@@ -75,6 +76,18 @@ The web and admin images are the same pattern, ending in an nginx stage serving 
 
 Images are built on the server and tagged with the short git SHA plus `dev-latest`. There is no registry, so rollback means retaining the previous few SHA-tagged images rather than pulling an older tag — prune on a schedule, keeping the last five.
 
+### Rollback
+
+If a deploy's health check fails, `dev-latest` still points at the broken image (`restart: unless-stopped` keeps it running), and `.github/workflows/deploy-dev.yml` retains the last five SHA-tagged images per app precisely so there is something to roll back to. The recipe, run on the host:
+
+```bash
+git log --oneline -6 -- .          # find the short SHA of the last known-good commit
+docker tag ostomy/api:<good-sha> ostomy/api:dev-latest      # repeat per app (web, admin) as needed
+docker compose --env-file .env -f infra/docker-compose.yml up -d
+```
+
+This retags a previously-built image as `dev-latest` and redeploys it — it does **not** roll back the database. There is no down-migration story here (P1.S3 onward): a schema change that shipped with the bad deploy stays applied. If the failure was schema-related, the safe recovery is forward (fix and redeploy), not backward: `dev-reset.sh` is the only way to get to a clean database, and it is destructive (wipes `pgdata`/`miniodata` — see "No backups" below), which is the tradeoff of not maintaining down-migrations in a synthetic-data-only environment.
+
 ## Deployment pipeline
 
 A GitHub Actions workflow targeting the self-hosted runner (labels: `self-hosted`, `linux`, `x64`, `ostomy-dev`).
@@ -90,15 +103,18 @@ push to main
   → prune images older than the last five
 ```
 
-Lint, type-check, and unit tests run on the pull-request workflow using GitHub-hosted runners, not here — this workflow deploys what already passed.
+`docker compose run --rm migrate` starts `migrate`'s own dependencies first — including `db-roles`, the one-shot service that applies the migration-owner/runtime-role split (`infra/db/bootstrap-roles.sql`) — so the role model is (re-)applied on every deploy without a separate pipeline step for it.
+
+Lint, type-check, and unit tests run on the pull-request workflow (`pr.yml`) using GitHub-hosted runners, not here. Be precise about what connects the two: nothing in either workflow file does — both trigger independently on push to `main`, with no `needs:`/`workflow_run:` between them, so this workflow deploys whatever is on `main` without checking that `pr.yml`'s run against that commit succeeded, or even finished. The actual enforcement is branch protection on `main` requiring `pr.yml` to pass before a merge is possible at all (an organizational GitHub setting, not a file in this repo); if that protection is ever relaxed, this workflow has nothing of its own to fall back on.
 
 **Runner operational notes.** The runner runs as a dedicated non-root user that is a member of the `docker` group. Membership in that group is effectively root on the host: anyone who can queue a workflow can run a privileged container. That is an accepted risk for a LAN-only box holding synthetic data, and it is the specific reason this host must never hold a production credential or real PHI. Keep the runner auto-updating and scope its repository access to this repository alone.
 
 ## Database lifecycle
 
 - **Persistent named volume.** Data survives deploys, so accumulated test state is not lost on every push.
+- **Two Postgres roles, not one.** `migrate` connects as the migration/owner role and can create and alter anything; `api` connects as a separate, deliberately unprivileged runtime role (`NOSUPERUSER`, `NOCREATEDB`, `NOINHERIT`) that can only do what it has been explicitly granted, table by table, in the migration that creates each one — no blanket default grant (ADR-0011). This is what makes limiting `audit_events` to `GRANT SELECT, INSERT` (the P1.S5 audit-immutability exit criterion) an enforceable database grant rather than a no-op against a superuser that bypasses every privilege check. See `infra/db/README.md` and `infra/db/bootstrap-roles.sql`.
 - **Migrations run automatically** as a one-shot `migrate` service that must exit successfully before `api` starts. Running them as a separate service rather than in the API entrypoint avoids concurrent migration attempts if the API is ever scaled to more than one replica.
-- **Reset is explicit.** A `scripts/dev-reset.sh` (or `make dev-reset`) tears down the volume, recreates it, migrates, and reseeds. Nothing else may destroy data.
+- **Reset is explicit.** A `scripts/dev-reset.sh` (or `pnpm dev:reset`) tears down the volume, recreates it, migrates, and reseeds. Nothing else may destroy data.
 
 Because the volume persists, migrations are continuously exercised against existing rows — which is the failure mode that matters, since a migration that only ever runs against an empty schema is untested.
 
@@ -138,13 +154,27 @@ LAN only, plain HTTP. The server holds a static LAN address or a local DNS name.
 | minio API | 9000 | compose network only |
 | mock-oidc | 8090 | LAN (clients need to reach the issuer) |
 
-Postgres stays off the LAN by default; expose it temporarily when a GUI client is genuinely needed rather than leaving it bound. `ufw` allows the LAN subnet and denies everything else; nothing is port-forwarded at the router.
+Postgres stays off the LAN by default; expose it temporarily when a GUI client is genuinely needed rather than leaving it bound. Nothing is port-forwarded at the router.
+
+**`ufw` does not enforce "LAN only" for anything Docker publishes, and it never has.** Docker implements `ports:` publishing as a DNAT rule in the `nat` table's `PREROUTING` chain, with the actual permit/deny decision made in the `filter` table's `FORWARD` chain — traffic destined for a published container port never traverses `INPUT`, which is the chain a normal `ufw allow from <LAN subnet>` rule governs. A host with `ufw` "restricted to the LAN" and a container publishing `0.0.0.0:PORT` is reachable from outside that restriction; `ufw` simply never gets asked. (Docker does add its own rules to a `DOCKER-USER` chain that `ufw` can be configured to cooperate with, but that is a deliberate, separate integration step this stack does not currently take.)
+
+What actually enforces LAN-only here, since `ufw` does not: every published port is bound to `${DEV_BIND_ADDRESS}` (`.env`, defaulting to `127.0.0.1`) rather than the implicit `0.0.0.0` a short-form `ports:` entry would use — see every service's `ports:` entry in `infra/docker-compose.yml`. Set `DEV_BIND_ADDRESS` to the host's actual LAN address to make the stack reachable from the LAN, and to nothing broader than that. `ufw` still has a real, narrower job: it is what stops direct access to a port a container has *not* published (Postgres and the MinIO S3 API, both compose-network-only in the table below) from another process on the same host or a LAN client that somehow reaches the host's non-Docker-managed ports.
 
 ### Mobile clients
 
 Expo is not containerized. The mobile app runs via Expo on a developer machine, with `EXPO_PUBLIC_API_URL` pointing at the server's LAN address. A physical test device must be on the same Wi-Fi.
 
 Cleartext HTTP to a LAN address works in Expo Go and in debug builds, but this is a debug-only allowance: Android release builds block cleartext without an explicit network security configuration, and iOS requires an ATS exception for local networking in a standalone build. Do not carry either workaround into a release configuration.
+
+### `DEV_HOST_ADDRESS` must be the real LAN address, not `localhost`
+
+Found while building the stack at P1.S2, and it will cost someone an afternoon otherwise.
+
+`mock-oauth2-server` embeds the **request's `Host` header** into the `iss` claim of every token it issues, rather than using a fixed issuer URL. The API compares `iss` by exact string equality. So a token minted by a laptop or phone that reached the server as `http://192.168.1.x:8090` carries that issuer, while an API configured against `http://localhost:8090` rejects it — with `AUTH_INVALID_ISSUER`, despite a perfectly valid signature.
+
+Set `DEV_HOST_ADDRESS` in the server's `.env` to the host's actual LAN hostname or IP. Symptom if you get it wrong: every real client fails auth while `curl` from the server itself works.
+
+This is a mock-specific quirk with **no Cognito equivalent** — Cognito's issuer is a fixed URL independent of how the request arrived — so it disappears at staging rather than being another deferred risk. It is documented here because it is a property of this environment, not a defect in the code.
 
 ## Secrets
 
@@ -158,7 +188,7 @@ The rule that matters: **no production or staging credential is ever placed on t
 
 ## Host baseline
 
-Ubuntu 26.04 LTS with Docker Engine and the Compose plugin. `unattended-upgrades` enabled. `ufw` restricted to the LAN. A dedicated non-root user for the runner. Volumes for `pgdata` and `miniodata` on a disk with room to grow, with free space monitored — a full disk on a Postgres volume is the most likely way this environment breaks.
+Ubuntu 26.04 LTS with Docker Engine and the Compose plugin. `unattended-upgrades` enabled. `ufw` restricted to the LAN — for ports Docker has not published; see "Network and access" above for why that is a narrower job than it sounds, and what actually keeps a published container port off addresses beyond the LAN. A dedicated non-root user for the runner. Volumes for `pgdata` and `miniodata` on a disk with room to grow, with free space monitored — a full disk on a Postgres volume is the most likely way this environment breaks.
 
 **No backups.** This is deliberate, not an oversight: every byte here is either in git or regenerable by the seed script. The only non-reproducible state is the runner registration and the `.env` file, both of which are a few minutes to recreate. Do not let this environment accumulate anything that would make that untrue.
 
