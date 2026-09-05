@@ -1,8 +1,8 @@
-# Software Requirements Specification — Ostomy Patient Management Application (v2.2)
+# Software Requirements Specification — Ostomy Patient Management Application (v2.3)
 
 Prepared by: Steven E. Waldren, MD, MS
 Supersedes: `Ostomy_App_Specification_v1.pdf` (v1.0), which is retained only as a historical reference — this document is fully self-contained and does not require consulting the v1.0 PDF.
-Status: all five discussion phases complete.
+Status: all six discussion phases complete.
 
 | Phase | Topic | Status |
 |---|---|---|
@@ -11,6 +11,7 @@ Status: all five discussion phases complete.
 | 3 | Technical Architecture | ✅ Approved 2026-09-04 |
 | 4 | v1 Scope Additions (urine output, data validation, suggested ranges, onboarding & preferences, administration console) | ✅ Approved 2026-09-04 |
 | 5 | Weight Tracking & Composite Hydration Status | ✅ Approved 2026-09-04 |
+| 6 | Resting Heart Rate & Signal Concordance | ✅ Approved 2026-09-05 |
 
 **Phase 4 scope change:** v1 now targets **colostomy and ileostomy only**. Urostomy support is deferred — see Appendix A for the rationale.
 
@@ -30,9 +31,9 @@ This application is a dual-platform (Mobile & Web) patient-facing diary designed
 - **Offline-First Architecture:** Because patients will track data on-the-go (e.g., in public restrooms or while traveling), the application must utilize a local database (e.g., SQLite or Realm) to allow continuous data entry and historical review without an active internet connection. Data will automatically synchronize with the central secure cloud server once connectivity is restored.
 
 ## 3. Core Features & Workflows (User Functionality)
-*(Phase 1 — approved 2026-09-04; Sections 3.7–3.11 added in Phase 4; Section 3.12 added in Phase 5)*
+*(Phase 1 — approved 2026-09-04; Sections 3.7–3.11 added in Phase 4; Section 3.12 added in Phase 5; Section 3.13 added in Phase 6)*
 
-Sections 3.0–3.10 and 3.12 are patient-facing. Section 3.11 describes the internal administration console. The administration console retains its number despite the ordering, because Section 3.11 is referenced from the engineering documentation and renumbering would silently invalidate those references.
+Sections 3.0–3.10, 3.12, and 3.13 are patient-facing. Section 3.11 describes the internal administration console. The administration console retains its number despite the ordering, because Section 3.11 is referenced from the engineering documentation and renumbering would silently invalidate those references.
 
 ### 3.0 Onboarding & Profile Setup — NEW
 *(Phase 1; minimum-required-fields rule added in Phase 4)*
@@ -65,7 +66,7 @@ Sections 3.0–3.10 and 3.12 are patient-facing. Section 3.11 describes the inte
 - **Medication Reminders:** Configurable per medication, scheduled manually or derived from logged administration patterns.
 - **Appliance-Change Reminders:** Adaptive, based on the patient's own historical average wear time; manually adjustable.
 - **Hydration/Intake Nudges:** Triggered when logged fluid intake trends low relative to output or the physician-set target, and when a significant weight change suggests fluid loss (Section 3.12).
-- **Weigh-In Reminders (Phase 5):** Their own reminder category, defaulting to a daily morning prompt and independently configurable. Weight is only a usable signal when readings are taken consistently, and the reminder is the mechanism that produces that consistency.
+- **Daily Check-In Reminder (Phase 5; revised in Phase 6):** A single daily morning prompt covering both weight (Section 3.12) and resting heart rate (Section 3.13), independently configurable and subject to quiet hours. Both are best taken in the morning at rest under consistent conditions, so one reminder produces both readings rather than adding a second notification type to a patient already receiving medication, appliance, and hydration prompts. Consistency is what makes either signal usable, and the reminder is the mechanism that produces it.
 - **Notification Preferences:** Independent enable/disable per reminder category; quiet-hours setting.
 
 ### 3.5 The Physician-Focused View (Care Plan Efficacy)
@@ -73,7 +74,9 @@ Sections 3.0–3.10 and 3.12 are patient-facing. Section 3.11 describes the inte
 - **Daily Net Fluid Balance:** Total fluid intake minus total stoma output (and other recorded losses), prominently displayed to highlight dehydration trends.
 - **Chronological Correlation Visuals:** Data visualized across time periods (Morning, Afternoon, Evening, Night); line/bar graphs overlay medication administration times and fluid intake against stoma output volumes. **Extended:** appliance-change and skin-condition events are now overlaid on the same timeline so a physician can correlate a leak or irritation flare with intake/output/medication patterns.
 - **Urine Output Adequacy (Phase 4):** The daily voided-urine total is displayed as its own hydration indicator alongside net fluid balance — deliberately not folded into it (Section 3.7) — and its events are overlaid on the same chronological timeline.
-- **Weight Trend (Phase 5):** Body weight and its change against the patient's baseline, displayed as a third distinct hydration signal and overlaid on the same chronological timeline. The physician view keeps net fluid balance, urine output, and weight **separate and uncombined** — the composite status described in Section 3.12 is a patient-facing simplification only. A clinician assessing dehydration needs to know which signal moved, not a derived score.
+- **Weight Trend (Phase 5):** Body weight and its change against the patient's baseline, displayed as a distinct hydration signal and overlaid on the same chronological timeline.
+- **Resting Heart Rate (Phase 6):** Resting heart rate against baseline, plus the postural rise where an orthostatic pair was recorded, shown as a fourth distinct signal on the same timeline, annotated with measurement source and whether resting conditions were met (Section 3.13). Physician-facing copy must carry the caveat that rate-controlling medications can blunt or abolish the tachycardic response to volume depletion, so a normal reading in such a patient is not reassuring.
+- **Signals stay separate here:** the physician view presents net fluid balance, urine output, weight, and resting heart rate **separately and uncombined** — the composite status described in Section 3.12 is a patient-facing simplification only. A clinician assessing dehydration needs to know which signal moved, not a derived score.
 - **Outlier & Anomaly Highlighting:** Automatically flags anomalies (e.g., output exceeding 1,000 mL/day while intake remains low, or a significant weight drop against baseline), now using the patient's personalized target ranges from Section 3.0 where available, falling back to generic defaults otherwise.
 
 ### 3.6 Data Management & History — NEW
@@ -102,12 +105,14 @@ A two-tier model. The governing principle is that the app may refuse structurall
 - Timestamps in the future, beyond a small allowance for device clock skew.
 - Entry timestamps earlier than the recorded surgery/ostomy creation date (Section 3.0).
 - A missing mandatory Measured/Estimated selection (existing acceptance criterion, Section 7).
-- Values above an absolute physiological ceiling configured per entry type (Section 3.11), including an absolute plausible-weight range (Section 3.12).
+- Values above an absolute physiological ceiling configured per entry type (Section 3.11), including an absolute plausible-weight range (Section 3.12) and an absolute plausible heart-rate range (Section 3.13).
 
 **Tier 2 — Soft Warning (implausible but possible; always overridable):**
 - Single-entry volumes above the configured warning threshold — the existing >2,000 mL rule is one instance of this class, not a special case.
 - Daily totals falling far outside the patient's suggested or physician-set range (Section 3.9).
 - A weight reading whose change from the previous reading exceeds a plausible day-over-day threshold — typically a mis-keyed digit or a unit confusion rather than a real measurement (Section 3.12).
+
+**Not a validation concern:** the red-flag heart-rate threshold (Section 3.13) is a clinical safety response, not a data-quality rule. It never blocks or questions the entry — the reading is saved normally and the patient is separately advised to seek care. Conflating the two would train patients to dismiss an urgent prompt as another data-entry warning.
 - Warning copy states plainly what looks unusual and asks for confirmation. It never blocks and never scolds — a genuine 2,500 mL output day is precisely the data point the care team most needs to see.
 
 **Where validation runs:** Rules are defined once in `packages/core` and executed client-side — including offline on mobile — for immediate feedback, then re-enforced server-side on every write and on every synced operation. Client-side validation is a user-experience affordance, never the enforcement point: a payload arriving from an offline device is untrusted input like any other.
@@ -121,7 +126,7 @@ A two-tier model. The governing principle is that the app may refuse structurall
 
 The app proposes starting values for intake goals, expected output, excessive-output thresholds, urine output adequacy, and net fluid balance targets, so a new patient is not asked to invent clinical numbers they have no basis to choose.
 
-- **Seeded from clinical defaults:** Initial suggestions come from admin-managed default range tables (Section 3.11) keyed to ostomy type and time since surgery, so there is useful guidance from day one. Weight-change thresholds and target dry weight (Section 3.12) participate in this same system, including the same precedence order.
+- **Seeded from clinical defaults:** Initial suggestions come from admin-managed default range tables (Section 3.11) keyed to ostomy type and time since surgery, so there is useful guidance from day one. Weight-change thresholds and target dry weight (Section 3.12), and resting heart-rate thresholds (Section 3.13), participate in this same system, including the same precedence order. The heart-rate red-flag threshold is the one exception: it is a fixed clinical safety bound managed in Section 3.11 and is not patient-adjustable.
 - **Presented, not imposed:** A suggestion appears as a pre-filled value with its basis stated in plain language (e.g. "typical for an ileostomy about 3 months after surgery"). The patient accepts or edits it. No value becomes an active threshold without a human confirming it.
 - **Adaptation requires confirmation:** Once enough history accumulates to refine a range toward the patient's own rolling baseline, the app proposes the change and explains why; the patient accepts or keeps the current value. Adaptation is never silent — a threshold that quietly tracks a worsening baseline would normalize deterioration and suppress the very anomaly flags meant to catch it.
 - **Physician-set values are never auto-changed:** A physician-entered target is only ever flagged as diverging, consistent with Section 3.0.
@@ -135,7 +140,9 @@ A persistent settings area, reachable at any time, covering everything onboardin
 
 - **Profile:** ostomy type and surgery date. Both are editable but audit-logged, since the surgery date is a validation boundary (Section 3.8) and the ostomy type drives range selection.
 - **Measurement system:** metric or imperial, governing both volume and weight (Section 3.0). Changing it re-renders historical data in the new units; the stored canonical value is never rewritten.
-- **Weight tracking:** enable or disable weight logging and its reminder, and review or set the target dry weight (Section 3.12).
+- **Weight tracking:** enable or disable weight logging, and review or set the target dry weight (Section 3.12).
+- **Heart-rate tracking:** enable or disable resting heart-rate logging, and enable or disable the optional orthostatic measurement independently (Section 3.13).
+- **Daily check-in reminder:** cadence and time for the combined weight and heart-rate prompt (Section 3.4).
 - **Target ranges and suggestion review:** current values, their source per the Section 3.9 precedence order, and any pending suggested adaptations awaiting confirmation.
 - **Notifications:** per-category enable/disable and quiet hours (Section 3.4).
 - **Appliance defaults:** baseline appliance type and reminder cadence.
@@ -152,8 +159,8 @@ Preferences synchronize across devices via the Section 4.5 pull-sync delta endpo
 An internal tool for developers and clinical staff to manage the terminology and thresholds the application runs on, without requiring a code deploy for every clinical adjustment.
 
 - **Zero PHI access — an architectural boundary, not a policy:** The console has no route to patient data. It is a separate application backed by a separate identity pool (Section 4.6), so an admin credential cannot address a patient endpoint even if compromised. This keeps the console outside PHI scope by construction rather than by correct authorization logic alone.
-- **Manages clinical value sets:** output consistency, fluid types, meal quick-tags, leak suspected-cause tags, peristomal skin severity levels, appliance types, and the urine color scale (Section 3.7).
-- **Manages clinical default range tables:** the published defaults keyed to ostomy type and post-operative period that seed Section 3.9 suggestions, including the weight-change percentage thresholds and rolling-window definitions used by Section 3.12.
+- **Manages clinical value sets:** output consistency, fluid types, meal quick-tags, leak suspected-cause tags, peristomal skin severity levels, appliance types, the urine color scale (Section 3.7), and heart-rate measurement sources (Section 3.13).
+- **Manages clinical default range tables:** the published defaults keyed to ostomy type and post-operative period that seed Section 3.9 suggestions, including the weight-change percentage thresholds and rolling-window definitions used by Section 3.12, the resting heart-rate elevation thresholds and postural-rise threshold used by Section 3.13, and the heart-rate red-flag threshold, which is managed here and is not patient-adjustable.
 - **Manages validation rule thresholds:** the numeric bounds behind the Section 3.8 warn and block tiers, including the soft-warning volume threshold and the absolute physiological ceilings.
 - **Explicitly not managed here:** patient-facing copy and terminology display labels. These stay in the externalized i18n string catalog (Section 5.4); routing them through the console would fork the localization pipeline into two systems.
 - **Retire, never delete:** Value-set members carry an active/retired status. Retiring a value removes it from pickers going forward while historical entries continue to resolve and render normally. No administrative action ever changes the meaning of previously recorded clinical data or leaves a blank in a patient's history.
@@ -181,17 +188,45 @@ Rationale: acute weight change is among the most reliable indicators of fluid lo
 - A significant drop both flags in the physician view (Section 3.5) and prompts the patient with plain-language guidance to increase fluids and to contact their care team if it continues. Weight change is directly actionable by the patient, unlike most anomaly flags, so surfacing it only to a clinician who may not review the data for weeks wastes the signal.
 
 **Composite hydration status**
-- The **patient dashboard** presents a single plain-language hydration status derived from net fluid balance, urine output (Section 3.7), and weight change, with the contributing signals visible on tap. Three related numbers on one dashboard is a genuine comprehension burden for this population (Section 5.4); one clear status with drill-down is not.
-- The **physician view keeps all three separate** (Section 3.5). The composite exists to make the patient's dashboard legible, not to summarize away clinical detail.
-- The composite must always be explainable: the patient can see which signal drove the status, and a status is never shown without the underlying readings being reachable.
+- The **patient dashboard** presents a single plain-language hydration status derived from net fluid balance, urine output (Section 3.7), weight change, and resting heart rate (Section 3.13), with the contributing signals visible on tap. Four related numbers on one dashboard is a genuine comprehension burden for this population (Section 5.4); one clear status with drill-down is not.
+- **Concordance escalates the status (Phase 6):** the status rises when two or more signals point the same way. Agreement between signals is far more meaningful than any single reading — a rising heart rate alongside a weight drop and falling urine output is a coherent dehydration picture, whereas any one of them in isolation is frequently artifact. A single deviating signal should inform the status without dominating it.
+- The **physician view keeps all four separate** (Section 3.5). The composite exists to make the patient's dashboard legible, not to summarize away clinical detail.
+- The composite must always be explainable: the patient can see which signal or combination of signals drove the status, and a status is never shown without the underlying readings being reachable. When concordance drove an escalation, the agreeing signals are named.
 
 **Framing and opt-out**
 - Weight is presented throughout as a **hydration measure**, not as a body-composition or weight-management metric. Copy, iconography, and dashboard placement must all reflect that.
 - Weight tracking is **on by default** but can be turned off in preferences (Section 3.10), which also disables its reminder and removes it from the composite status. Default-on because a patient who never discovers the feature loses the signal precisely when high output puts them most at risk; switchable off because daily weighing is not appropriate for everyone.
 
+### 3.13 Resting Heart Rate — NEW
+*(Phase 6)*
+
+Rationale: tachycardia is one of the earliest compensatory responses to volume depletion, typically moving before weight does. It is also the noisiest of the four hydration signals, which shapes most of the requirements below.
+
+**Logging**
+- **Resting Heart Rate:** Beats per minute, logged as an observation with its timestamp.
+- **Measurement source:** Captured from an admin-managed value set (Section 3.11) — manual pulse count, home blood-pressure monitor, pulse oximeter, or wearable readout. Accuracy differs materially between these, and a physician reviewing an outlier needs to know whether it came from a validated device or a patient counting at their wrist.
+- **Resting-condition prompt:** A brief check before logging confirms the patient has been seated and at rest for several minutes with no recent caffeine, nicotine, or exertion. Readings taken outside those conditions are recorded and annotated but **excluded from baseline computation**, so a post-coffee or post-stairs reading does not silently distort the baseline.
+- **Manual entry only:** Wearable and connected-device integration is deferred (Appendix A). The patient reads a number from a device or counts a pulse and enters it.
+
+**Optional orthostatic measurement**
+- The patient may record a **postural pair** — a seated or supine reading followed by a standing reading — from which the app calculates the postural rise. This is substantially more specific for hypovolemia than resting heart rate alone.
+- **Optional and independently disableable** (Section 3.10). Resting heart rate remains fully usable without it.
+- **Safety guidance is shown every time the orthostatic flow is started**, not once at setup. The measurement deliberately provokes the response being measured, in a population that is post-surgical, frequently deconditioned, and at genuine risk of falling. Guidance states in plain language to stop immediately on feeling lightheaded, to remain within reach of a chair, and to have someone nearby if the patient is prone to dizziness. This is the one place in the app where repeated friction is warranted.
+- The postural rise is evaluated against an admin-managed threshold (Section 3.11).
+
+**Baseline and interpretation**
+- A **rolling baseline** is computed from the patient's own qualifying resting readings — those meeting the resting-condition check — with a physician-set value taking precedence, following the Section 3.9 order.
+- **Known limitation, stated in copy:** rate-controlling medications, principally beta blockers and non-dihydropyridine calcium channel blockers, can blunt or abolish the tachycardic response to volume depletion. A normal heart rate in such a patient is not reassuring. This caveat appears in both patient-facing and physician-facing copy. v1 does not attempt to detect these medications from the logged medication list or adjust thresholds automatically; the caveat is carried by copy rather than by logic.
+- Fever, pain, anxiety, and recent activity also elevate heart rate. This is the primary reason the composite status weights signal concordance over any single reading (Section 3.12).
+
+**Red-flag escalation**
+- A reading beyond a configured red-flag threshold (Section 3.11, not patient-adjustable) produces a **distinct, clearly differentiated prompt to seek prompt medical attention**, separate from ordinary hydration nudges.
+- This is a safety net, not a treatment recommendation, and is deliberately exempt from the descriptive-only framing constraint in Section 3.9. An app that can observe a reading suggesting serious illness and says nothing distinctive about it is making a choice too.
+- Red-flag handling is **not** data validation (Section 3.8). The entry saves normally and is never questioned as an input error. Routing urgency through the same mechanism as data-quality warnings would train patients to dismiss it.
+
 ### Appendix A: Functionality Considered and Deferred
 The following were discussed and deliberately excluded from v1/v2 scope, with rationale, so they remain a conscious decision rather than a silent omission:
-- **Wearable and connected-device integration** (Apple Health / Google Fit auto-logging of fluid intake or weight, and Bluetooth smart scales feeding Section 3.12) — deferred; adds a full integration surface, better suited to a post-launch release. Weight is entered manually in v1.
+- **Wearable and connected-device integration** (Apple Health / Google Fit auto-logging of fluid intake or weight, Bluetooth smart scales feeding Section 3.12, and continuous or wearable heart-rate capture feeding Section 3.13) — deferred; adds a full integration surface, better suited to a post-launch release. Weight and heart rate are entered manually in v1, though the patient may read the value off a device.
 - **Patient education/resource library** — deferred; this is content work rather than a data/workflow feature and can be scoped as its own initiative.
 - **Gamification (streaks, badges)** — deferred; risks undercutting the clinical seriousness of the tool unless designed carefully.
 - **Caregiver/provider portal accounts with ongoing live access** — deferred beyond the existing one-off read-only export/share-link; a full second user type is a materially larger scope and compliance surface.
@@ -246,7 +281,8 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 - **App-native tables** (appliance changes, leak events, peristomal skin condition, reminder configuration, Quick-Add templates — all Phase 1 additions) are modeled as ordinary relational tables without FHIR constraints, since they don't correspond to standard FHIR resources. This is the main trade-off of the Postgres-with-FHIR-shaped-schema approach versus a managed FHIR-native store: full flexibility for these app-specific data types, at the cost of the database not being FHIR-native itself.
 - **Urine observations (Phase 4):** voided urine (Section 3.7) is stored in the same `observations` table as other volumetric entries, distinguished by its observation code, so it inherits the FHIR `Observation` mapping and the Measured/Estimated `method` column unchanged. Optional urine color is stored as a coded observation component rather than a free-text field, so it is analyzable and value-set governed.
 - **Weight observations (Phase 5):** body weight (Section 3.12) is stored in the `observations` table alongside other measurements, distinguished by its observation code, and maps to FHIR R4 `Observation` in the standard way. The `method` column is left unpopulated, since the Measured/Estimated distinction does not apply to a scale reading. The computed rolling baseline is derived rather than stored as an observation; a physician-set target dry weight is stored as a range value with provenance, like any other target.
-- **Observation code system:** clinical observation codes use **LOINC** (body weight is LOINC 29463-7), with SNOMED CT retained for the `method` attribute as specified above. This was implicit before Phase 5 and is stated here explicitly, since weight is the first entry type with an unambiguous, universally recognized standard code.
+- **Heart-rate observations (Phase 6):** resting heart rate (Section 3.13) is stored in the `observations` table with LOINC 8867-4, with `method` unpopulated as for weight. Measurement source and whether resting conditions were met are stored as coded observation components, the latter driving inclusion in or exclusion from baseline computation. An orthostatic pair is stored as two linked observations — positional context recorded per reading, with the calculated postural rise derived rather than stored — so each reading remains a valid standalone `Observation` for FHIR export while the pairing is preserved.
+- **Observation code system:** clinical observation codes use **LOINC** (body weight is LOINC 29463-7, heart rate is LOINC 8867-4), with SNOMED CT retained for the `method` attribute as specified above. This was implicit before Phase 5 and is stated here explicitly, since weight is the first entry type with an unambiguous, universally recognized standard code.
 - **Configuration tables (Phase 4):** clinical value sets, default range tables, and validation thresholds (Section 3.11) are configuration, not patient data, and live in their own tables outside the PHI boundary. Value-set members carry an active/retired status and are never hard-deleted; clinical records reference them by stable code, so a retired member still resolves when rendering historical entries.
 - **Suggested vs. effective ranges (Phase 4):** a patient's effective range is stored with its provenance — physician-set, patient-set, patient-confirmed suggestion, or clinical default (Section 3.9 precedence) — so the physician view can show not just the threshold but where it came from, and so an unconfirmed suggestion is never mistaken for a clinical target.
 - **FHIR export:** a dedicated export module in the backend assembles valid FHIR R4 `Bundle` resources on demand — from the FHIR-mappable tables — for the physician-view share-link/PDF export (Section 3.5) and for any future EHR integration, rather than the database storing FHIR resources natively.
@@ -444,13 +480,24 @@ Ostomy patients skew older and post-surgical, which raises the stakes for access
 - As a patient, I want a daily reminder to weigh in so my readings are consistent enough to mean something.
 - As a patient, I want to be told in plain terms when my weight has dropped meaningfully, and what to do about it, so I can act before I become seriously dehydrated.
 - As a patient, I want one clear hydration status on my dashboard rather than three separate numbers to interpret, while still being able to see what is behind it.
-- As a physician, I want net fluid balance, urine output, and weight shown separately so I can tell which signal actually moved.
+- As a physician, I want the hydration signals shown separately so I can tell which one actually moved.
 - As a patient, I want weight presented as a hydration measure rather than a weight-management metric, and I want to be able to turn it off entirely.
 - As a patient whose weight is legitimately recovering after surgery, I want my baseline to track that recovery so normal regain is not flagged as a problem.
 
+### Epic 18: Resting Heart Rate — NEW
+- As a patient, I want to log my resting heart rate so a rising pulse can warn me of dehydration before my weight changes.
+- As a patient, I want to record how I measured it so my care team knows how much to trust the number.
+- As a patient, I want the app to know when I was not properly at rest so a reading taken after coffee or stairs does not distort my baseline.
+- As a patient willing to do it, I want to record a standing and seated pair so the more specific postural measurement is available to my care team.
+- As a patient attempting the standing measurement, I want clear safety instructions every time so I do not fall while deliberately provoking a response.
+- As a patient, I want a single morning prompt for both weight and heart rate rather than two separate notifications.
+- As a patient, I want my hydration status to reflect signals agreeing with each other rather than reacting to one odd reading.
+- As a patient, I want to be told clearly to seek care if a reading is dangerously high, in a way I cannot mistake for a routine data warning.
+- As a physician, I want to be reminded that rate-controlling medications can mask tachycardia so I do not read a normal heart rate as reassurance.
+
 ## 7. Detailed Acceptance Criteria
 
-Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full from v1.0 — the only epic v1.0 detailed to this level — plus Epics 12–14, added in Phase 4 because urine logging, validation, and suggested ranges are defined largely by their rules and are ambiguous without them, and Epic 17, added in Phase 5. Acceptance criteria for Epics 3–11, 15, and 16 are not yet written and remain a backlog-refinement task.
+Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full from v1.0 — the only epic v1.0 detailed to this level — plus Epics 12–14, added in Phase 4 because urine logging, validation, and suggested ranges are defined largely by their rules and are ambiguous without them, Epic 17, added in Phase 5, and Epic 18, added in Phase 6. Acceptance criteria for Epics 3–11, 15, and 16 are not yet written and remain a backlog-refinement task.
 
 ### User Story 2.1: Log Stoma Output Volume
 
@@ -659,7 +706,68 @@ Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full fro
 **AC 4: Disabling Weight Removes It Cleanly**
 - Given the patient turns off weight tracking in preferences,
 - When the dashboard and reminders are next evaluated,
-- Then the weigh-in reminder stops, weight is excluded from the composite status, and previously logged weights remain in history.
+- Then weight is excluded from the composite status and previously logged weights remain in history.
+
+### User Story 18.1: Log Resting Heart Rate
+
+**AC 1: Source Is Captured**
+- Given the patient is logging a heart rate,
+- When they save the entry,
+- Then a measurement source is recorded from the configured value set, and the source is visible on the entry in history and in the physician view.
+
+**AC 2: Resting Conditions Gate the Baseline**
+- Given the patient indicates they were not at rest, or had recent caffeine, nicotine, or exertion,
+- When the reading is saved,
+- Then it is stored and displayed with that annotation but excluded from rolling baseline computation.
+
+**AC 3: Absolute Bounds Are Enforced**
+- Given the patient enters a heart rate outside the configured absolute plausible range,
+- When they attempt to save,
+- Then the save is blocked as a Tier 1 validation failure.
+
+### User Story 18.2: Orthostatic Measurement
+
+**AC 1: Optional and Independently Disableable**
+- Given the patient has heart-rate tracking enabled,
+- When they disable the orthostatic measurement in preferences,
+- Then resting heart-rate logging continues to function unchanged and the orthostatic flow is not offered.
+
+**AC 2: Safety Guidance Every Time**
+- Given the patient starts the orthostatic flow,
+- When the flow begins,
+- Then plain-language safety guidance is displayed on every occasion, including an explicit instruction to stop on feeling lightheaded, and is not reducible to a first-run-only message.
+
+**AC 3: Postural Rise Is Calculated, Not Entered**
+- Given the patient records a seated or supine reading followed by a standing reading,
+- When both are saved,
+- Then the postural rise is calculated by the app, the two readings remain individually inspectable, and the pair is evaluated against the configured postural-rise threshold.
+
+### User Story 18.3: Concordance and Red Flags
+
+**AC 1: Concordance Escalates the Status**
+- Given two or more hydration signals move in the same direction,
+- When the composite hydration status is computed,
+- Then the status escalates beyond what any one of those signals would produce alone, and the agreeing signals are named to the patient.
+
+**AC 2: A Single Outlier Does Not Dominate**
+- Given one signal deviates while the others remain within range,
+- When the composite status is computed,
+- Then the deviating signal informs the status without driving it to its most severe level on its own.
+
+**AC 3: Red Flag Is Visually and Behaviorally Distinct**
+- Given a heart-rate reading exceeds the configured red-flag threshold,
+- When the entry is saved,
+- Then the entry saves normally without any data-validation warning, and a clearly differentiated prompt advises seeking prompt medical attention.
+
+**AC 4: Red-Flag Threshold Is Not Patient-Adjustable**
+- Given the patient is editing target ranges in preferences,
+- When they review heart-rate settings,
+- Then the red-flag threshold is not editable, unlike other thresholds governed by the Section 3.9 precedence order.
+
+**AC 5: Medication Caveat Is Surfaced**
+- Given heart-rate data is presented in the physician-focused view,
+- When the view is rendered,
+- Then it carries the caveat that rate-controlling medications can blunt the tachycardic response to volume depletion.
 
 
 ---
