@@ -20,8 +20,10 @@
     "format:write": "prettier --write .",
     "check:env": "bash scripts/check-no-committed-env.sh",
     "dev:reset": "bash scripts/dev-reset.sh",
+    "build:deps": "pnpm --filter @ostomy/core build",
     "verify:build-artifact": "pnpm --filter @ostomy/api build && node -e \"require('./apps/api/dist/prisma/prisma.service.js'); console.log('built CJS artifact loads: apps/api/dist/prisma/prisma.service.js')\"",
-    "verify": "pnpm run check:env && pnpm run format && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run verify:build-artifact"
+    "verify:core-require": "pnpm --filter @ostomy/core build && node apps/api/scripts/require-core-smoke.cjs && echo \"apps/api (CommonJS) required @ostomy/core (ESM) built output successfully - ADR-0010 proof\"",
+    "verify": "pnpm run check:env && pnpm run format && pnpm run build:deps && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run verify:build-artifact && pnpm run verify:core-require"
   },
   "devDependencies": {
     "@ostomy/config": "workspace:*",

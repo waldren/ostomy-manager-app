@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@ostomy/config/tsconfig.base.json",
+  "compilerOptions": {
+    // packages/core ships real, Node-executable ESM, and apps/api — a
+    // CommonJS workspace — loads its built output via Node's require(esm)
+    // (ADR-0010). That is a Node-resolution concern, not a bundler one: the
+    // base config's "bundler" moduleResolution would happily typecheck a
+    // relative import written WITHOUT a file extension
+    // (import { x } from './foo') and emit it unchanged, which Node's ESM
+    // loader then cannot resolve at all — a failure ADR-0010 states plainly
+    // that Vitest's ESM transform will never catch, because it never
+    // exercises the CJS require() path apps/api actually uses.
+    //
+    // "nodenext" is the only mode that fails typecheck, rather than only
+    // failing at runtime inside apps/api's require(esm), the moment a
+    // relative import omits its extension. It also matches how apps/api's
+    // own tsconfig.json reasons about the same boundary from the other
+    // side.
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    "declarationMap": true
+  },
+  "include": ["src/**/*.ts"]
+}
