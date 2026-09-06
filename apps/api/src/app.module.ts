@@ -18,11 +18,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { Module, type DynamicModule } from '@nestjs/common';
 
 import { AdminAuthModule } from './admin/admin-auth.module';
+import { AuditInterceptorModule } from './audit/audit-interceptor.module';
+import { AuditStubModule } from './audit/test-support/audit-stub.module';
 import { PatientAuthModule } from './auth/patient-auth.module';
 import { ConfigModule } from './config/config.module';
 import type { AppConfig } from './config/env.schema';
 import { HealthModule } from './health/health.module';
 import { LoggingModule } from './logging/logging.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { ThresholdsModule } from './thresholds/thresholds.module';
 
 @Module({})
 export class AppModule {
@@ -31,15 +35,40 @@ export class AppModule {
    * `config/config.module.ts` for why config loading happens in `main.ts`
    * rather than inside this module graph.
    *
-   * `PrismaModule` (../prisma/prisma.module.ts) is deliberately NOT
-   * imported here yet (P1.S3). This sprint proves the migration and the
-   * connection work via that module's own integration test; nothing in
-   * this application actually reads or writes the database yet. Importing
-   * it here now would give every test that boots `AppModule` — including
-   * `app.module.spec.ts`, which supplies a synthetic `databaseUrl` no
-   * container is listening on — a live-database dependency it does not
-   * need. Add the import in the same change that adds the first consumer
-   * (P1.S5's audit/threshold module, or P2.S1a's observations module).
+   * `PrismaModule` (./prisma/prisma.module.ts) enters this graph here, at
+   * P1.S5 — P1.S3's own comment on that module named this sprint as the one
+   * responsible for it, because this is the first sprint with a real
+   * consumer (`AuditModule`/`ThresholdsModule`, both imported transitively
+   * below). `PrismaService` still connects lazily (see its own doc
+   * comment), so no test that only calls `app.init()` — `app.module.spec.ts`,
+   * `route-guard-coverage.spec.ts` — newly needs a live Postgres just to
+   * construct the module graph; `main.ts`'s bootstrap is the one place that
+   * now does, via `assertRuntimeRoleIsNotOverPrivileged()` (ADR-0011, B4).
+   *
+   * `AuditInterceptorModule` (not just `AuditModule`) is what actually
+   * registers the global `APP_INTERCEPTOR` — see that module's own comment
+   * for why the two are split. `AuditStubModule` is TEST SCAFFOLDING (see
+   * its controller's doc comment): it exists only so the audit interceptor,
+   * `route-guard-coverage.spec.ts`, and `app-http-surface.spec.ts` have a
+   * real `@Audited()` route to exercise before P2.S1a's first genuine PHI
+   * endpoint lands. Remove it (and this conditional) in the same change
+   * that adds that endpoint.
+   *
+   * B4 (P1.S5 review response): `AuditStubModule` is gated out of any
+   * `production`-config graph, not merely commented as test-only.
+   * `tsconfig.build.json` excludes `src/**\/*.spec.ts` and
+   * `src/test-support/**`, but the stub lives at
+   * `src/audit/test-support/**`, which that glob does not match, and this
+   * module imported it unconditionally — so it shipped in every build
+   * regardless of environment. In a deployed environment that meant any
+   * authenticated patient could `POST /api/v1/audit-stub/widgets` with an
+   * arbitrary body, copied verbatim into `afterValue` and persisted into
+   * `audit_events`, the one table with no `DELETE` grant: unbounded
+   * attacker-controlled JSON with no application-level cleanup path, on top
+   * of an unbounded in-memory `Map`. `app.module.spec.ts`'s "excludes
+   * AuditStubModule from a production-config graph" test asserts this gate
+   * holds — a comment alone is exactly as forgettable as the one this
+   * replaces.
    */
   static register(config: AppConfig): DynamicModule {
     return {
@@ -50,6 +79,10 @@ export class AppModule {
         HealthModule,
         PatientAuthModule,
         AdminAuthModule,
+        PrismaModule,
+        AuditInterceptorModule,
+        ...(config.nodeEnv !== 'production' ? [AuditStubModule] : []),
+        ThresholdsModule,
       ],
     };
   }

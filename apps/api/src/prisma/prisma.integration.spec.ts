@@ -540,6 +540,43 @@ describe.skipIf(!dockerAvailable)(
         await ownerPrismaService.$disconnect();
       }
     });
+
+    it('assertRuntimeRoleIsNotOverPrivileged() throws when the runtime role holds only TRUNCATE on audit_events (S7)', async () => {
+      // The exact gap S7 closes: a role with neither UPDATE nor DELETE, only
+      // TRUNCATE — a future over-granting migration's plausible mistake,
+      // since TRUNCATE is easy to reach for when "clear this table" is the
+      // intent without meaning to grant row-level DML. TRUNCATE empties the
+      // whole append-only table in one statement regardless.
+      const grantOwner = new PgClient({ connectionString: ownerDatabaseUrl });
+      await grantOwner.connect();
+      try {
+        await grantOwner.query(`GRANT TRUNCATE ON audit_events TO "${RUNTIME_ROLE}"`);
+      } finally {
+        await grantOwner.end();
+      }
+
+      try {
+        const runtimePrismaService = buildPrismaServiceForTest(runtimeDatabaseUrl);
+        try {
+          await expect(runtimePrismaService.assertRuntimeRoleIsNotOverPrivileged()).rejects.toThrow(
+            /UPDATE or DELETE audit_events/,
+          );
+        } finally {
+          await runtimePrismaService.$disconnect();
+        }
+      } finally {
+        // Revoked again rather than left granted — this is the last test in
+        // the file today, but leaving a stray grant in place is exactly the
+        // kind of state a future reordering could depend on by accident.
+        const revokeOwner = new PgClient({ connectionString: ownerDatabaseUrl });
+        await revokeOwner.connect();
+        try {
+          await revokeOwner.query(`REVOKE TRUNCATE ON audit_events FROM "${RUNTIME_ROLE}"`);
+        } finally {
+          await revokeOwner.end();
+        }
+      }
+    });
   },
 );
 

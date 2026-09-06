@@ -118,6 +118,10 @@ export default [
       '**/.expo/**',
       // Specs, ADRs, and design mockups exported from other tools.
       'design-specs/**',
+      // Agent worktrees live inside the checkout and are gitignored, but
+      // ESLint walks the filesystem, not git — without this, `pnpm lint`
+      // fails on a concurrent agent's branch rather than on your own code.
+      '.claude/**',
       '**/*.min.js',
       'pnpm-lock.yaml',
     ],

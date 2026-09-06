@@ -15,11 +15,14 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { DiscoveryModule, DiscoveryService } from '@nestjs/core';
+import { PATH_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { INestApplicationContext } from '@nestjs/common';
+import type { INestApplicationContext, Type } from '@nestjs/common';
 
 import { AppModule } from './app.module';
+import { AuditStubController } from './audit/test-support/audit-stub.controller';
 import type { AppConfig } from './config/env.schema';
 
 function testConfig(): AppConfig {
@@ -28,11 +31,14 @@ function testConfig(): AppConfig {
     port: 3000,
     logLevel: 'silent',
     oidcClockToleranceSeconds: 30,
-    // Deliberately unreachable — nothing in AppModule's current graph
-    // opens a database connection to construct (PrismaService is not
-    // imported here yet; see app.module.ts's comment), so this test never
-    // needs a live Postgres, only a syntactically valid DSN to satisfy
-    // AppConfig's type.
+    // Deliberately unreachable — `PrismaModule` is part of AppModule's graph
+    // as of P1.S5 (see app.module.ts's comment), but `PrismaService` still
+    // connects lazily on first query (see that class's own comment) and
+    // `app.init()` never queries it: the boot-time privilege self-check
+    // (`assertRuntimeRoleIsNotOverPrivileged()`) is called explicitly from
+    // `main.ts`'s bootstrap, not from any Nest lifecycle hook this test
+    // exercises. So this test still never needs a live Postgres, only a
+    // syntactically valid DSN to satisfy AppConfig's type.
     databaseUrl: 'postgresql://ostomy_runtime:unused@localhost:5432/unused',
     oidc: {
       issuer: 'https://mock-oidc.test/patient-issuer',
@@ -73,5 +79,39 @@ describe('AppModule wiring', () => {
     await app.init();
 
     expect(app).toBeDefined();
+  });
+
+  /**
+   * B4 (P1.S5 review response): `AuditStubModule` — TEST SCAFFOLDING with
+   * no application-level cleanup path for what it persists (see
+   * `app.module.ts`'s own comment) — must never ship in a `production`
+   * config graph. Asserted two ways: no discovered controller path
+   * contains `audit-stub`, and the controller itself is not resolvable
+   * from the compiled module. A single assertion checking only one of
+   * these could pass while the other fails (e.g. the controller is
+   * present in the graph but happens to 404 for an unrelated reason), so
+   * both are checked directly rather than inferring one from the other.
+   */
+  it('excludes AuditStubModule, and every audit-stub route, from a production-config graph', async () => {
+    const config = testConfig();
+    config.nodeEnv = 'production';
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule.register(config), DiscoveryModule],
+    }).compile();
+
+    app = moduleRef.createNestApplication();
+    await app.init();
+
+    const discovery = app.get(DiscoveryService);
+    const controllerPaths = discovery
+      .getControllers()
+      .map((wrapper) => wrapper.metatype as Type<unknown> | undefined)
+      .filter((metatype): metatype is Type<unknown> => metatype !== undefined)
+      .map((metatype) => Reflect.getMetadata(PATH_METADATA, metatype) as unknown)
+      .filter((path): path is string => typeof path === 'string');
+
+    expect(controllerPaths.some((path) => path.includes('audit-stub'))).toBe(false);
+    expect(() => app!.get(AuditStubController, { strict: true })).toThrow();
   });
 });
