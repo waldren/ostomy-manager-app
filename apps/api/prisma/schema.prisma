@@ -388,6 +388,67 @@ model Observation {
 
   status ObservationStatus @default(FINAL) @map("status")
 
+  /// P1.S4 finding (ADR-0005 follow-up): the schema stored only canonical
+  /// mL/kg plus `Profile.measurementSystem`, which §3.10 explicitly lets a
+  /// patient change — so ADR-0005's "round to a whole unit only when the
+  /// display system differs from the ENTRY system" rule had no per-row
+  /// source of truth to read `entrySystem` from.
+  /// `convertVolumeForDisplay` in packages/core/src/units/convert.ts
+  /// therefore takes `entrySystem` as a REQUIRED parameter it cannot
+  /// actually be given yet; this column is what P2 write paths must supply
+  /// so that parameter stops being unimplementable.
+  ///
+  /// Stores which of METRIC/IMPERIAL the value was ENTERED in — reusing the
+  /// existing `measurement_system` enum (the same one `Profile
+  /// .measurementSystem` uses), not the finer-grained entered unit
+  /// (mL/oz/kg/lb). The unit is fully determined by this column plus
+  /// `code` under ADR-0004's fixed code->canonical-unit mapping (a volume
+  /// code is always mL-canonical, entered in mL or oz; a weight code is
+  /// always kg-canonical, entered in kg or lb) and under §3.10's rule that
+  /// mixed-system combinations are impossible to select — so a unit-level
+  /// column would store no fact this one plus `code` doesn't already
+  /// determine, at the cost of a second CHECK constraint cross-validating
+  /// unit against code. `MeasurementSystemUnits` in packages/core is
+  /// exactly this system value (`unitsForMeasurementSystem` turns it into
+  /// the full unit pair `convertVolumeForDisplay` needs) — storing the
+  /// system, not the unit, is what a P2 write path reads off this column
+  /// with no translation step. What this forecloses: if a future
+  /// measurement system ever needed a *unit* distinction this enum can't
+  /// express (e.g. UK vs. US fluid ounces under one "imperial" label),
+  /// this column does not carry that; it would need widening (a new enum
+  /// value here is additive, but a genuinely different axis — same system,
+  /// different unit — is not something this column was designed to hold).
+  ///
+  /// NOT NULL, for every code this table holds — including body weight and
+  /// (once written) heart rate, not just the three volumetric codes
+  /// ADR-0005's rounding rule is actually about. Two reasons this is not
+  /// scoped narrower: (1) a NULL-means-"not applicable" convention already
+  /// exists on `method` above and is flagged elsewhere in this schema as a
+  /// wart worth not repeating — a column whose NULL can mean two different
+  /// things depending on which row you're looking at is exactly the
+  /// ambiguity a future reader has to rediscover by reading code, not the
+  /// schema; (2) it is not actually true that only volumetric codes need
+  /// it — a write path converting a patient-entered value (in whichever
+  /// unit their current preference implies) into this table's canonical
+  /// mL/kg has to know the entry system to do that conversion AT ALL,
+  /// including for a weight entered in lb, so every write path already
+  /// has this value in hand at insert time regardless of code. There is
+  /// no default: with zero rows in this table today, `NOT NULL` costs
+  /// nothing to add now and everything to retrofit once real rows exist
+  /// with no recorded entry system to backfill from — see
+  /// design-specs/data-model/p1-s3-schema-coverage.md and
+  /// design-specs/data-model/fhir-rxnorm-integration.md for the full
+  /// analysis and what P2.S1a's write path is obliged to do with it.
+  ///
+  /// Not a FHIR field. FHIR R4 `Observation` has no "entered measurement
+  /// system" element — `valueQuantity.unit`/`.code` on the wire are always
+  /// the canonical unit (ADR-0004), regardless of what this column says.
+  /// This is app-native provenance the export module is not obliged to
+  /// surface in a `Bundle` at all; see fhir-rxnorm-integration.md for
+  /// whether/how a future export might carry it as a non-standard
+  /// `extension`.
+  enteredMeasurementSystem MeasurementSystem @map("entered_measurement_system")
+
   /// See Profile.clientUpdatedAt for what this is and is not used for.
   clientUpdatedAt DateTime @db.Timestamptz(3) @map("client_updated_at")
   /// See Profile.serverSequence for what this default is (and is not) and
@@ -581,6 +642,26 @@ model AuditEvent {
   /// two write paths that are "the ones that get missed" per that ADR.
   reasonCode String? @map("reason_code")
 
+  /// The request (or sync batch) this row belongs to.
+  ///
+  /// Nullable because not every audited write has a request: ADR-0001's
+  /// last-write-wins conflict LOSER is audited without one, and so is any
+  /// future scheduled or queue-driven write. NULL means "no originating
+  /// request", never "we forgot" — a write that has a correlation id must
+  /// supply it.
+  ///
+  /// P1.S5 shipped this value nested inside `beforeValue`/`afterValue` JSON
+  /// because that sprint could not touch prisma/. Review flagged that those
+  /// rows can never be normalised — `audit_events` has no UPDATE grant by
+  /// design (ADR-0011) — so the column lands here while the only wrapped
+  /// rows are synthetic test scaffolding. After P2.S1a it would have been
+  /// permanent.
+  ///
+  /// Indexed because the query that reads it back runs under a breach
+  /// notification clock: "reconstruct everything that happened in request
+  /// X" must not be a sequential scan of the largest table in the system.
+  correlationId String? @db.VarChar(255) @map("correlation_id")
+
   beforeValue Json? @map("before_value")
   afterValue  Json? @map("after_value")
 
@@ -602,6 +683,7 @@ model AuditEvent {
 
   @@index([entityType, entityId])
   @@index([actorId, occurredAt])
+  @@index([correlationId])
   @@map("audit_events")
 }
 

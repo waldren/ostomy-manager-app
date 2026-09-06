@@ -24,6 +24,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // grants) are non-superuser (B3), every table's grant set matches what the
 // migration declares (S9), and the boot-time privilege self-check (B4)
 // actually distinguishes the runtime role from the owner role.
+//
+// Also covers the `fix/entered-measurement-system` follow-up migration
+// (after P1.S3/P1.S4): `observations.entered_measurement_system` is
+// NOT NULL with no default, and a new column on an existing table needs no
+// new GRANT — both exercised by dedicated tests below rather than only
+// asserted in design-specs/data-model/p1-s3-schema-coverage.md.
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -359,8 +365,8 @@ describe.skipIf(!dockerAvailable)(
 
       await expect(
         plainRuntimePgClient.query(
-          `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, client_updated_at, updated_at)
-           VALUES (gen_random_uuid(), $1, '79560-9', 100, 'liters', now(), now(), now())`,
+          `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at)
+           VALUES (gen_random_uuid(), $1, '79560-9', 100, 'liters', now(), 'METRIC', now(), now())`,
           [patientId],
         ),
       ).rejects.toMatchObject({
@@ -368,11 +374,49 @@ describe.skipIf(!dockerAvailable)(
       });
 
       const goodInsert = await plainRuntimePgClient.query(
-        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, client_updated_at, updated_at)
-         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), now(), now())`,
+        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at)
+         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', now(), now())`,
         [patientId],
       );
       expect(goodInsert.rowCount).toBe(1);
+    });
+
+    it('rejects an INSERT that omits entered_measurement_system — NOT NULL, no default (P1.S3 follow-up: ADR-0005 entry-system column)', async () => {
+      const patient = await plainRuntimePgClient.query(
+        `INSERT INTO patients (id, oidc_subject, updated_at) VALUES (gen_random_uuid(), 'entry-system-required-subject', now()) RETURNING id`,
+      );
+      const patientId = patient.rows[0].id;
+
+      await expect(
+        plainRuntimePgClient.query(
+          `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, client_updated_at, updated_at)
+           VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), now(), now())`,
+          [patientId],
+        ),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('entered_measurement_system'),
+      });
+    });
+
+    it('lets the runtime role write and read entered_measurement_system with no extra grant needed — a new column on an existing table inherits the unqualified table-level grant (ADR-0011)', async () => {
+      const patient = await plainRuntimePgClient.query(
+        `INSERT INTO patients (id, oidc_subject, updated_at) VALUES (gen_random_uuid(), 'entry-system-grant-check-subject', now()) RETURNING id`,
+      );
+      const patientId = patient.rows[0].id;
+
+      const inserted = await plainRuntimePgClient.query(
+        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at)
+         VALUES (gen_random_uuid(), $1, '79560-9', 236.588, 'mL', now(), 'IMPERIAL', now(), now())
+         RETURNING entered_measurement_system`,
+        [patientId],
+      );
+      expect(inserted.rows[0].entered_measurement_system).toBe('IMPERIAL');
+
+      const selected = await plainRuntimePgClient.query(
+        `SELECT entered_measurement_system FROM observations WHERE patient_id = $1`,
+        [patientId],
+      );
+      expect(selected.rows[0].entered_measurement_system).toBe('IMPERIAL');
     });
 
     it('the sync-sequence trigger assigns strictly increasing server_sequence values across tables, unconditionally overwriting whatever the caller supplied (B1)', async () => {
@@ -382,14 +426,14 @@ describe.skipIf(!dockerAvailable)(
       const patientId = patient.rows[0].id;
 
       const first = await plainRuntimePgClient.query(
-        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, client_updated_at, updated_at, server_sequence)
-         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), now(), now(), 999999)
+        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at, server_sequence)
+         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', now(), now(), 999999)
          RETURNING server_sequence`,
         [patientId],
       );
       const second = await plainRuntimePgClient.query(
-        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, client_updated_at, updated_at, server_sequence)
-         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), now(), now(), 999999)
+        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at, server_sequence)
+         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', now(), now(), 999999)
          RETURNING server_sequence`,
         [patientId],
       );

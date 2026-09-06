@@ -30,6 +30,9 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0009](0009-synthetic-seed-data-generation.md) | Generate synthetic seed data in `packages/seed`, writing through Prisma but validating against `packages/core` first | Accepted |
 | [0010](0010-api-commonjs-module-system.md) | Build `apps/api` as CommonJS with `nodenext` resolution, against an ESM monorepo | Accepted |
 | [0011](0011-database-roles-and-audit-immutability.md) | Separate migration-owner and runtime database roles, and enforce audit immutability by grant | Accepted |
+| [0012](0012-entered-measurement-system-provenance.md) | Store the entered measurement system on every observation | Accepted |
+
+**ADR-0012 completes ADR-0005** rather than superseding it. ADR-0005's decisions all stand; it simply had no source of truth for the entry measurement system, and ADR-0012 supplies one. ADR-0005 is not edited, per the immutability rule above.
 
 **ADR-0005 changed the spec.** SRS_v2 was updated to v2.4 in the same change: AC 2.1 AC 1 now accepts decimal volumes, and a new AC 2.1 AC 4 specifies conversion rounding.
 
