@@ -32,6 +32,7 @@ import { loadConfig } from './config/load-config';
 import { CREDENTIAL_REDACTION_PATHS, PHI_SHAPED_REDACTION_PATHS } from './logging/redaction';
 import { errSerializer } from './logging/serializers';
 import { writeOpenApiDocument } from './openapi/write-openapi-document';
+import { PrismaService } from './prisma/prisma.service';
 
 const API_PREFIX = 'api/v1';
 
@@ -48,6 +49,17 @@ async function bootstrap(): Promise<void> {
     // redaction as everything else, rather than the default console logger.
     app = await NestFactory.create(AppModule.register(config), { bufferLogs: true });
     app.useLogger(app.get(Logger));
+
+    // P1.S5 (B4, ADR-0011): the boot-time privilege self-check
+    // `PrismaService` has carried since P1.S3 without anything calling it.
+    // `PrismaModule` only entered `AppModule`'s graph in this same sprint
+    // (see that module's comment) — this is the first point in the process
+    // lifecycle with both a real DI container to pull `PrismaService` from
+    // and a genuine reason for every boot to touch the database. A positive
+    // result here means the connected role can defeat SRS §5.2's
+    // append-only audit guarantee, which must fail startup outright, before
+    // `app.listen()` ever opens a port — never be logged and continued past.
+    await app.get(PrismaService).assertRuntimeRoleIsNotOverPrivileged();
 
     app.setGlobalPrefix(API_PREFIX);
 

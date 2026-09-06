@@ -38,6 +38,20 @@ import { PatientStubController } from './patient-stub.controller';
       inject: [APP_CONFIG],
     },
   ],
-  exports: [JwtAuthGuard],
+  // Both are exported, not just `JwtAuthGuard` alone: a module that only
+  // IMPORTS `PatientAuthModule` (rather than declaring the controller here
+  // directly, as `PatientStubController` above does) and applies
+  // `@UseGuards(JwtAuthGuard)` to its own controller needs
+  // `PATIENT_JWKS_RESOLVER` to also resolve from ITS OWN module scope —
+  // verified empirically: `@nestjs/testing`'s `TestingInjector` does not
+  // walk into `JwtAuthGuard`'s already-exported-and-instantiated
+  // dependencies for a guard referenced this way from a second module;
+  // it re-resolves the guard's constructor params from the consuming
+  // module's own visible providers. `P2.S1a`'s first real observations
+  // module hits this exact shape (its own module, `@UseGuards(JwtAuthGuard)`,
+  // importing `PatientAuthModule` rather than living inside it) — exporting
+  // the resolver token here is what makes that work rather than reproducing
+  // this sprint's own audit-stub-module debugging session.
+  exports: [JwtAuthGuard, PATIENT_JWKS_RESOLVER],
 })
 export class PatientAuthModule {}

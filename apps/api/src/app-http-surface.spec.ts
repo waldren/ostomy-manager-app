@@ -31,12 +31,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminJwtAuthGuard } from './admin/admin-jwt-auth.guard';
 import { AppModule } from './app.module';
+import { AuditService } from './audit/audit.service';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
+import { PATIENT_JWKS_RESOLVER } from './auth/patient-jwks-resolver.token';
 import type { AppConfig } from './config/env.schema';
+import { createTestOidcIssuer } from './test-support/oidc-test-tokens';
 
 function testConfig(): AppConfig {
   return {
@@ -135,5 +138,62 @@ describe('HTTP surface — GET /api/v1/*', () => {
 
     expect(patientRouteResponse.status).toBe(401);
     expect(adminRouteResponse.status).toBe(401);
+  });
+
+  /**
+   * P1.S5's own "AC6": proves `AuditInterceptor` actually resolves and runs
+   * on a real, listening HTTP server — not merely that `app.init()`
+   * succeeds (which, per this file's own header comment, does not prove an
+   * enhancer resolves correctly on the first real request). `AuditService`
+   * is overridden with a fake here rather than exercised against a real
+   * Postgres — this file, per ADR-0002, stays a fast unit-level Supertest
+   * suite; the full "a real audit_events row lands, connected as the
+   * runtime role" proof is `audit.integration.spec.ts`'s job.
+   */
+  it('AuditInterceptor resolves and runs on a real request, staging an entry through to AuditService', async () => {
+    const issuer = await createTestOidcIssuer();
+    const config = testConfig();
+    config.oidc.issuer = 'https://mock-oidc.test/patient-issuer';
+    config.oidc.audience = 'ostomy-patient-app';
+
+    const fakeAuditService = { record: vi.fn().mockResolvedValue({ id: 'audit-row-id' }) };
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule.register(config)],
+    })
+      .overrideProvider(PATIENT_JWKS_RESOLVER)
+      .useValue(issuer.getKey)
+      .overrideProvider(AuditService)
+      .useValue(fakeAuditService)
+      .compile();
+    const nestApp = moduleRef.createNestApplication();
+    nestApp.setGlobalPrefix('api/v1');
+    await nestApp.init();
+    app = nestApp;
+
+    const token = await issuer.sign({
+      issuer: config.oidc.issuer,
+      audience: config.oidc.audience,
+      subject: 'patient-subject-http-surface',
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/audit-stub/widgets')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ note: 'synthetic test scaffolding, no PHI' });
+
+    expect(response.status).toBe(201);
+    expect(response.body.id).toEqual(expect.any(String));
+    expect(fakeAuditService.record).toHaveBeenCalledTimes(1);
+    expect(fakeAuditService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorType: 'PATIENT',
+        actorId: 'patient-subject-http-surface',
+        action: 'CREATE',
+        entityType: 'audit_stub_widget',
+        entityId: response.body.id,
+        correlationId: expect.any(String),
+      }),
+    );
   });
 });

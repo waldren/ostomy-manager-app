@@ -34,6 +34,11 @@ import { AdminStubController } from './admin-stub.controller';
       inject: [APP_CONFIG],
     },
   ],
-  exports: [AdminJwtAuthGuard],
+  // See PatientAuthModule's identical comment (patient-auth.module.ts) for
+  // why both the guard and its JWKS resolver token are exported, not just
+  // the guard — the same NestJS testing-DI shape applies here, and P3.S3's
+  // admin config module will otherwise hit it the first time it composes
+  // `AdminJwtAuthGuard` from outside this module.
+  exports: [AdminJwtAuthGuard, ADMIN_JWKS_RESOLVER],
 })
 export class AdminAuthModule {}
