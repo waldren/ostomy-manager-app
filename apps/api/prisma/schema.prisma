@@ -642,6 +642,26 @@ model AuditEvent {
   /// two write paths that are "the ones that get missed" per that ADR.
   reasonCode String? @map("reason_code")
 
+  /// The request (or sync batch) this row belongs to.
+  ///
+  /// Nullable because not every audited write has a request: ADR-0001's
+  /// last-write-wins conflict LOSER is audited without one, and so is any
+  /// future scheduled or queue-driven write. NULL means "no originating
+  /// request", never "we forgot" — a write that has a correlation id must
+  /// supply it.
+  ///
+  /// P1.S5 shipped this value nested inside `beforeValue`/`afterValue` JSON
+  /// because that sprint could not touch prisma/. Review flagged that those
+  /// rows can never be normalised — `audit_events` has no UPDATE grant by
+  /// design (ADR-0011) — so the column lands here while the only wrapped
+  /// rows are synthetic test scaffolding. After P2.S1a it would have been
+  /// permanent.
+  ///
+  /// Indexed because the query that reads it back runs under a breach
+  /// notification clock: "reconstruct everything that happened in request
+  /// X" must not be a sequential scan of the largest table in the system.
+  correlationId String? @db.VarChar(255) @map("correlation_id")
+
   beforeValue Json? @map("before_value")
   afterValue  Json? @map("after_value")
 
@@ -663,6 +683,7 @@ model AuditEvent {
 
   @@index([entityType, entityId])
   @@index([actorId, occurredAt])
+  @@index([correlationId])
   @@map("audit_events")
 }
 

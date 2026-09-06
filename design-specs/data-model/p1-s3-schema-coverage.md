@@ -64,7 +64,21 @@ migration landed and is looking for what changed.
 | *(none — relational FK)* | `subject` (Reference to Patient)   | Modeled as an ordinary `patient_id` foreign key, not a FHIR `Reference` string — the accepted asymmetry of "FHIR-shaped relational, not FHIR-native" (SRS §4.4). The export module (not built yet) is what turns this FK into `subject: { reference: "Patient/<id>" }` on the wire. |
 | *(none)*                 | `id` (the resource's own logical id) | `observations.id` doubles as this — it is the same client-generated UUID FHIR would use as the resource id. |
 
-### Entered measurement system — `entered_measurement_system` (follow-up to P1.S3/P1.S4)
+### Audit correlation id
+
+`audit_events.correlation_id` is a nullable, indexed `VARCHAR(255)`.
+
+**Nullable on purpose.** Not every audited write has an originating request: ADR-0001's last-write-wins conflict **loser** is audited without one, and so is any future scheduled or queue-driven write. NULL means "no originating request" — never "we forgot". A write that has a correlation id must supply it.
+
+**Why it landed here rather than at P1.S5.** P1.S5 built the audit interceptor under a constraint that it must not touch `prisma/`, so it nested the correlation id inside `beforeValue`/`afterValue` JSON. Review flagged that those rows **can never be normalised**: `audit_events` has no `UPDATE` grant by design (ADR-0011), so there is no backfill. The column landed while the only wrapped rows were synthetic test scaffolding; after P2.S1a it would have been permanent.
+
+**Indexed because of when it gets queried.** "Reconstruct everything that happened in request X" is a breach-investigation query running under a 60-day notification clock. Without the index it is a sequential scan of what will be the largest table in the system.
+
+**What P2 must do.** `AuditService.record()` still writes the nested shape; migrating it to the column is a P2.S1a task, and the reader should be a plain `correlation_id = $1`, not a JSON path. One sync push produces N audit rows plus a row per conflict loser — they are joined by this column and nothing else.
+
+**No grant change was needed**, verified rather than assumed: `information_schema.role_table_grants` for `(ostomy_runtime, audit_events)` reads `INSERT,SELECT` before and after. PostgreSQL's unqualified table-level grant covers columns added later by `ALTER TABLE … ADD COLUMN`.
+
+## Entered measurement system — `entered_measurement_system` (follow-up to P1.S3/P1.S4)
 
 **The problem this closes.** ADR-0005 states its whole-unit conversion-
 rounding rule in terms of the measurement system a volume was **entered**
