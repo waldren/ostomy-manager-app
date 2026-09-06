@@ -42,16 +42,21 @@ import { PatientStubController } from './patient-stub.controller';
   // IMPORTS `PatientAuthModule` (rather than declaring the controller here
   // directly, as `PatientStubController` above does) and applies
   // `@UseGuards(JwtAuthGuard)` to its own controller needs
-  // `PATIENT_JWKS_RESOLVER` to also resolve from ITS OWN module scope —
-  // verified empirically: `@nestjs/testing`'s `TestingInjector` does not
-  // walk into `JwtAuthGuard`'s already-exported-and-instantiated
-  // dependencies for a guard referenced this way from a second module;
-  // it re-resolves the guard's constructor params from the consuming
-  // module's own visible providers. `P2.S1a`'s first real observations
-  // module hits this exact shape (its own module, `@UseGuards(JwtAuthGuard)`,
-  // importing `PatientAuthModule` rather than living inside it) — exporting
-  // the resolver token here is what makes that work rather than reproducing
-  // this sprint's own audit-stub-module debugging session.
+  // `PATIENT_JWKS_RESOLVER` to also resolve from ITS OWN module scope.
+  //
+  // This is core NestJS behaviour, not a `@nestjs/testing` limitation (S9,
+  // P1.S5 review response — the original comment here misattributed it):
+  // when a guard is referenced by class in `@UseGuards()`, Nest instantiates
+  // it in the DECLARING CONTROLLER's module context, not the module that
+  // originally provided the guard class. So `JwtAuthGuard`'s constructor
+  // tokens (`PATIENT_JWKS_RESOLVER` included) must be visible from whatever
+  // module declares the controller using it — in production, identically to
+  // `@nestjs/testing`, not merely as a test-harness quirk. `P2.S1a`'s first
+  // real observations module hits this exact shape (its own module,
+  // `@UseGuards(JwtAuthGuard)`, importing `PatientAuthModule` rather than
+  // living inside it) — exporting the resolver token here is what makes
+  // that work, and it is production wiring, not something a future refactor
+  // can drop because it "only mattered under the test runner."
   exports: [JwtAuthGuard, PATIENT_JWKS_RESOLVER],
 })
 export class PatientAuthModule {}

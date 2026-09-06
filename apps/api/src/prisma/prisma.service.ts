@@ -94,22 +94,29 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    *
    * Asserts a PROPERTY of the connected role, not its NAME: `SELECT
    * has_table_privilege('audit_events', 'UPDATE') OR
-   * has_table_privilege('audit_events', 'DELETE')` is true only for a role
+   * has_table_privilege('audit_events', 'DELETE') OR
+   * has_table_privilege('audit_events', 'TRUNCATE')` is true only for a role
    * that could defeat ADR-0011's audit-immutability guarantee. This is
    * deliberately different from — and a strictly stronger check than —
    * asserting the connected role's name is `'ostomy_runtime'`: a name check
    * would pass for a role called `ostomy_runtime` that had somehow been
-   * granted `UPDATE`/`DELETE` (a future over-granting migration), or that
-   * had somehow become a superuser (B3's exact failure mode, which bypasses
-   * privilege checks including `has_table_privilege` itself — `false` is
-   * never returned to a superuser querying its own privileges, so this
-   * check also catches B3's failure mode as a side effect). It equally
+   * granted `UPDATE`/`DELETE`/`TRUNCATE` (a future over-granting migration),
+   * or that had somehow become a superuser (B3's exact failure mode, which
+   * bypasses privilege checks including `has_table_privilege` itself —
+   * `false` is never returned to a superuser querying its own privileges, so
+   * this check also catches B3's failure mode as a side effect). It equally
    * catches a wrong DSN pointing at the owner role, or a forgotten
    * post-deploy `ALTER ROLE`, in every environment this ever runs in —
    * including production, none of which the Testcontainers-based
    * integration test (`prisma.integration.spec.ts`) exercises, since that
    * test constructs its own ephemeral database and role from scratch every
    * run.
+   *
+   * `TRUNCATE` (S7, P1.S5 review response): `UPDATE`/`DELETE` alone missed a
+   * role granted `TRUNCATE ON audit_events` by a future over-granting
+   * migration — `TRUNCATE` empties the table in one statement, no `WHERE`
+   * clause, no per-row trigger, wiping the append-only store just as
+   * completely as an unrestricted `DELETE` would.
    *
    * Throws rather than returning a boolean: a positive result here means
    * the running process can silently defeat SRS §5.2's append-only audit
@@ -122,14 +129,15 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     const rows = await this.$queryRaw<Array<{ over_privileged: boolean }>>`
       SELECT
         has_table_privilege('audit_events', 'UPDATE')
-        OR has_table_privilege('audit_events', 'DELETE') AS over_privileged
+        OR has_table_privilege('audit_events', 'DELETE')
+        OR has_table_privilege('audit_events', 'TRUNCATE') AS over_privileged
     `;
     if (rows[0]?.over_privileged) {
       throw new Error(
-        'Refusing to start: the connected database role can UPDATE or DELETE audit_events. ' +
-          'This defeats the append-only audit guarantee ADR-0011 requires (SRS §5.2). ' +
-          "Check DATABASE_URL is the runtime role's DSN, not the owner/migration role's, " +
-          'and that no migration has over-granted the runtime role.',
+        'Refusing to start: the connected database role can UPDATE or DELETE audit_events ' +
+          '(or TRUNCATE it). This defeats the append-only audit guarantee ADR-0011 requires ' +
+          "(SRS §5.2). Check DATABASE_URL is the runtime role's DSN, not the owner/migration " +
+          "role's, and that no migration has over-granted the runtime role.",
       );
     }
   }

@@ -12,8 +12,12 @@ apps/api/openapi.json
 # committed — see apps/api/.gitignore and prisma/schema.prisma's generator
 # block.
 apps/api/src/generated/
-# .claude/
-design-specs/ holds the spec, the ADRs, and design mockups exported from
+# Agent worktrees live inside the checkout and are gitignored, but Prettier
+# walks the filesystem, not git — without this, `pnpm format` fails on a
+# concurrent agent's branch rather than on your own code.
+.claude/
+
+# design-specs/ holds the spec, the ADRs, and design mockups exported from
 # other tools. None of it is source we format, and reformatting a mockup
 # would produce a diff against a file its author regenerates elsewhere.
 design-specs/

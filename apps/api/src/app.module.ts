@@ -51,7 +51,24 @@ export class AppModule {
    * its controller's doc comment): it exists only so the audit interceptor,
    * `route-guard-coverage.spec.ts`, and `app-http-surface.spec.ts` have a
    * real `@Audited()` route to exercise before P2.S1a's first genuine PHI
-   * endpoint lands. Remove it in the same change that adds that endpoint.
+   * endpoint lands. Remove it (and this conditional) in the same change
+   * that adds that endpoint.
+   *
+   * B4 (P1.S5 review response): `AuditStubModule` is gated out of any
+   * `production`-config graph, not merely commented as test-only.
+   * `tsconfig.build.json` excludes `src/**\/*.spec.ts` and
+   * `src/test-support/**`, but the stub lives at
+   * `src/audit/test-support/**`, which that glob does not match, and this
+   * module imported it unconditionally — so it shipped in every build
+   * regardless of environment. In a deployed environment that meant any
+   * authenticated patient could `POST /api/v1/audit-stub/widgets` with an
+   * arbitrary body, copied verbatim into `afterValue` and persisted into
+   * `audit_events`, the one table with no `DELETE` grant: unbounded
+   * attacker-controlled JSON with no application-level cleanup path, on top
+   * of an unbounded in-memory `Map`. `app.module.spec.ts`'s "excludes
+   * AuditStubModule from a production-config graph" test asserts this gate
+   * holds — a comment alone is exactly as forgettable as the one this
+   * replaces.
    */
   static register(config: AppConfig): DynamicModule {
     return {
@@ -64,7 +81,7 @@ export class AppModule {
         AdminAuthModule,
         PrismaModule,
         AuditInterceptorModule,
-        AuditStubModule,
+        ...(config.nodeEnv !== 'production' ? [AuditStubModule] : []),
         ThresholdsModule,
       ],
     };

@@ -18,6 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { Inject, Injectable, Optional } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { ValidationTier } from '../generated/prisma/enums';
 import type { VolumetricValidationThresholds } from '@ostomy/core/validation';
 
 /**
@@ -37,10 +38,41 @@ export const THRESHOLD_KEY = {
   SYNC_CLOCK_SKEW_ALLOWANCE_SECONDS: 'sync_clock_skew_allowance_seconds',
 } as const;
 
-const REQUIRED_VOLUMETRIC_THRESHOLD_KEYS = [
-  THRESHOLD_KEY.STOMA_OUTPUT_SOFT_WARNING_ML,
-  THRESHOLD_KEY.SYNC_CLOCK_SKEW_ALLOWANCE_SECONDS,
-] as const;
+/**
+ * What `loadVolumetricThresholds()` requires each row to be, beyond merely
+ * existing (S3, P1.S5 review response). `validation_thresholds` carries
+ * `unit` and `tier` columns this service previously ignored entirely — it
+ * read `value.toNumber()` and trusted the key name alone. An admin editing
+ * the soft-warning row's `unit` from `'mL'` to `'L'` (same key, same
+ * `value` column, a 1000x unit change) silently turned `2000` into "soft-warn
+ * at 2000 L", i.e. never; a clock-skew row switched to `'minutes'` would
+ * silently multiply the allowance by 60. Both are administratively
+ * plausible mistakes an admin console (P3.S3) will not itself prevent —
+ * this is the layer that must catch a row that no longer means what this
+ * service assumes it means.
+ */
+interface RequiredVolumetricThreshold {
+  readonly key: string;
+  readonly expectedUnit: string;
+  readonly expectedTier: ValidationTier;
+}
+
+const REQUIRED_VOLUMETRIC_THRESHOLDS: readonly RequiredVolumetricThreshold[] = [
+  {
+    key: THRESHOLD_KEY.STOMA_OUTPUT_SOFT_WARNING_ML,
+    expectedUnit: 'mL',
+    expectedTier: ValidationTier.TIER_2_SOFT_WARNING,
+  },
+  {
+    key: THRESHOLD_KEY.SYNC_CLOCK_SKEW_ALLOWANCE_SECONDS,
+    expectedUnit: 'seconds',
+    expectedTier: ValidationTier.OPERATIONAL,
+  },
+];
+
+const REQUIRED_VOLUMETRIC_THRESHOLD_KEYS = REQUIRED_VOLUMETRIC_THRESHOLDS.map(
+  (requirement) => requirement.key,
+);
 
 /** A retired-never-deleted value set member, trimmed to what a caller needs to render a picker (CLAUDE.md "Value-set members are retired, never deleted"). */
 export interface ActiveValueSetMember {
@@ -73,6 +105,18 @@ export const THRESHOLDS_CACHE_TTL_MS = Symbol('THRESHOLDS_CACHE_TTL_MS');
  * `thresholds.service.spec.ts`/`thresholds.integration.spec.ts` for the
  * "changed row is picked up without a restart" proof (AC 13.2 AC2's
  * enabling requirement, per this sprint's own exit criteria).
+ *
+ * The cache is per-PROCESS, not cluster-wide: `invalidate()` only clears
+ * the instance that received the call. Fargate/ECS (SRS §4, CLAUDE.md
+ * "Infrastructure") runs more than one API process, so a P3.S3 admin write
+ * hitting one process's `invalidate()` leaves every other process serving
+ * the old cached value until its own TTL expires. Not a P1.S5 concern to
+ * solve — flagged here so a future sprint (P9 in the current planning
+ * numbering) picks deliberately between the two options this implies:
+ * shortening the TTL alone (simplest, still leaves a bounded staleness
+ * window) or a pub/sub invalidation broadcast across processes (immediate,
+ * more moving parts). Nobody should assume `invalidate()` is cluster-wide
+ * today.
  */
 @Injectable()
 export class ThresholdsService {
@@ -113,14 +157,26 @@ export class ThresholdsService {
    * offering this in a picker," which is exactly this method's contract; a
    * historical record referencing a retired code resolves it elsewhere
    * (whichever sprint renders history), not through this method.
+   *
+   * Returns a fresh copy on every call, never the cached array itself (S5,
+   * P1.S5 review response): the same `CacheEntry.value` array is shared
+   * across every caller for the duration of the TTL, so returning it by
+   * reference let one caller sorting or filtering it in place silently
+   * poison the cache for every subsequent caller in this process, with no
+   * error and no test that would catch it short of asserting exact ordering
+   * after a concurrent mutation. The return type is `readonly` as a second
+   * layer — it stops a caller relying on the reference from mutating this
+   * particular array even if a future refactor reintroduces returning it
+   * directly, but the copy is the actual fix; `readonly` alone is
+   * TypeScript-only and does nothing at runtime.
    */
-  async getActiveValueSetMembers(valueSetKey: string): Promise<ActiveValueSetMember[]> {
+  async getActiveValueSetMembers(valueSetKey: string): Promise<readonly ActiveValueSetMember[]> {
     const cached = this.readCache(this.valueSetCache.get(valueSetKey));
-    if (cached) return cached;
+    if (cached) return [...cached];
 
     const value = await this.loadActiveValueSetMembers(valueSetKey);
     this.valueSetCache.set(valueSetKey, { value, expiresAt: Date.now() + this.cacheTtlMs });
-    return value;
+    return [...value];
   }
 
   /**
@@ -146,20 +202,33 @@ export class ThresholdsService {
     });
     const byKey = new Map(rows.map((row) => [row.thresholdKey, row]));
 
-    const softWarning = byKey.get(THRESHOLD_KEY.STOMA_OUTPUT_SOFT_WARNING_ML);
-    const clockSkewSeconds = byKey.get(THRESHOLD_KEY.SYNC_CLOCK_SKEW_ALLOWANCE_SECONDS);
+    // S3: a row that exists but carries the wrong unit or tier is exactly
+    // as unusable as a missing row — both fail the SAME way, with the SAME
+    // error, so a caller (and this method's own tests) cannot tell "nobody
+    // seeded this yet" apart from "somebody edited it into a different
+    // unit" from the exception alone, which is deliberate: neither case is
+    // safe to fall back from, and the fix in both cases is the same (an
+    // admin must set the row to what this service expects).
+    const invalidOrMissing = REQUIRED_VOLUMETRIC_THRESHOLDS.filter((requirement) => {
+      const row = byKey.get(requirement.key);
+      return !row || row.unit !== requirement.expectedUnit || row.tier !== requirement.expectedTier;
+    }).map((requirement) => requirement.key);
 
-    const missing = REQUIRED_VOLUMETRIC_THRESHOLD_KEYS.filter((key) => !byKey.has(key));
-    if (missing.length > 0) {
+    if (invalidOrMissing.length > 0) {
       throw new Error(
-        `ThresholdsService: missing required validation_thresholds row(s) for: ${missing.join(', ')}. ` +
-          'A clinical threshold must be admin-configured, never silently defaulted in code.',
+        `ThresholdsService: missing required validation_thresholds row(s), or a row whose unit/tier ` +
+          `does not match what this service expects, for: ${invalidOrMissing.join(', ')}. ` +
+          'A clinical threshold must be admin-configured with the expected unit and tier, never ' +
+          'silently defaulted or reinterpreted in code.',
       );
     }
 
+    const softWarning = byKey.get(THRESHOLD_KEY.STOMA_OUTPUT_SOFT_WARNING_ML)!;
+    const clockSkewSeconds = byKey.get(THRESHOLD_KEY.SYNC_CLOCK_SKEW_ALLOWANCE_SECONDS)!;
+
     return {
-      softWarningMaxMl: softWarning!.value.toNumber(),
-      maxClockSkewMs: clockSkewSeconds!.value.toNumber() * 1000,
+      softWarningMaxMl: softWarning.value.toNumber(),
+      maxClockSkewMs: clockSkewSeconds.value.toNumber() * 1000,
     };
   }
 

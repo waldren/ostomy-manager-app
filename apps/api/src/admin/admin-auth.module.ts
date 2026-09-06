@@ -36,9 +36,13 @@ import { AdminStubController } from './admin-stub.controller';
   ],
   // See PatientAuthModule's identical comment (patient-auth.module.ts) for
   // why both the guard and its JWKS resolver token are exported, not just
-  // the guard — the same NestJS testing-DI shape applies here, and P3.S3's
-  // admin config module will otherwise hit it the first time it composes
-  // `AdminJwtAuthGuard` from outside this module.
+  // the guard. This is core NestJS behaviour, not a testing-harness quirk
+  // (S9, P1.S5 review): a guard referenced by class in `@UseGuards()` is
+  // instantiated in the DECLARING CONTROLLER's module context, so its
+  // constructor tokens must be visible from that module in production too.
+  // P3.S3's admin config module hits this the first time it composes
+  // `AdminJwtAuthGuard` from outside this module. Do not revert this on the
+  // grounds that it cannot be reproduced under `@nestjs/testing`.
   exports: [AdminJwtAuthGuard, ADMIN_JWKS_RESOLVER],
 })
 export class AdminAuthModule {}

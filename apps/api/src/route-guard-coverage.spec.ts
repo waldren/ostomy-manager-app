@@ -32,7 +32,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * happens: a controller reachable with no guard, with lint, typecheck and
  * tests all otherwise green).
  *
- * P1.S5 adds a fourth assertion: every mutating route (POST/PUT/PATCH/DELETE)
+ * P1.S5 adds a fourth assertion: every mutating route (POST/PUT/PATCH/DELETE/ALL)
  * must carry `@Audited()` (`audit/audited.decorator.ts`). The audit
  * interceptor is the one enhancer in this app that *is* registered globally
  * (`APP_INTERCEPTOR`, via `audit/audit-interceptor.module.ts`), because
@@ -40,7 +40,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * unaudited — see README.md's note on scoping "no global enhancer" to
  * guards specifically. Being registered globally makes the interceptor
  * *capable* of auditing every route; this assertion is what makes every
- * mutating route actually *require* it — a POST/PUT/PATCH/DELETE handler
+ * mutating route actually *require* it — a POST/PUT/PATCH/DELETE/ALL handler
  * with no `@Audited()` fails this test the same way an unguarded route
  * does above, rather than shipping as a silently-unaudited PHI write.
  */
@@ -104,12 +104,22 @@ interface DiscoveredRoute {
   audited: boolean;
 }
 
-/** POST/PUT/PATCH/DELETE — the HTTP methods a PHI mutation can arrive on. `GET` and `HEAD` never mutate, so they carry no audit obligation. */
+/**
+ * POST/PUT/PATCH/DELETE/ALL — the HTTP methods a PHI mutation can arrive
+ * on. `GET` and `HEAD` never mutate, so they carry no audit obligation.
+ *
+ * `RequestMethod.ALL` (S4, P1.S5 review response) is included: an `@All()`
+ * handler accepts every method, POST included, so a mutating `@All()`
+ * handler is exactly as capable of writing PHI as an explicit `@Post()`
+ * one. Omitting it here let an `@All()` handler skip the `@Audited()`
+ * requirement entirely, regardless of what it actually did.
+ */
 const MUTATING_HTTP_METHODS: ReadonlySet<RequestMethod> = new Set([
   RequestMethod.POST,
   RequestMethod.PUT,
   RequestMethod.PATCH,
   RequestMethod.DELETE,
+  RequestMethod.ALL,
 ]);
 
 function pathSegment(value: unknown): string {
@@ -149,7 +159,19 @@ function discoverRoutes(discovery: DiscoveryService): DiscoveredRoute[] {
 
       const handlerPath = pathSegment(Reflect.getMetadata(PATH_METADATA, handler));
       const methodGuards: unknown[] = Reflect.getMetadata(GUARDS_METADATA, handler) ?? [];
-      const audited = Reflect.getMetadata(AUDITED_KEY, handler) === true;
+      // Mirrors `AuditInterceptor`'s own `reflector.getAllAndOverride(AUDITED_KEY,
+      // [handler, class])` (S4, P1.S5 review response): handler-level metadata
+      // wins when present, falling back to class-level `@Audited()`. The
+      // previous `Reflect.getMetadata(AUDITED_KEY, handler) === true` read
+      // only the handler and only the literal boolean `true` — so a
+      // class-level `@Audited()` satisfied the runtime interceptor (which
+      // does check the class) but failed this build-time check, and
+      // `@Audited({ allowEmpty: true })` (S2's object-shaped metadata) would
+      // have failed the strict `=== true` comparison even on a handler that
+      // carried it directly.
+      const audited = Boolean(
+        Reflect.getMetadata(AUDITED_KEY, handler) ?? Reflect.getMetadata(AUDITED_KEY, metatype),
+      );
 
       const fullPath = normalizePath('api/v1', controllerPath, handlerPath);
       routes.push({

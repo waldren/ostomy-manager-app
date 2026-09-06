@@ -155,7 +155,20 @@ describe.skipIf(!dockerAvailable)(
       expect(result.exitCode).not.toBe(0);
       expect(result.output).toContain('UPDATE or DELETE audit_events');
       // Never actually opened a port — the check runs before app.listen().
+      // This log-pattern assertion alone is vacuous (S8, P1.S5 review
+      // response): main.ts logs nothing after a successful app.listen()
+      // (see main.ts — no "listening" line is ever emitted on the success
+      // path either), so this passes whether or not a port actually opened.
+      // Kept as a documented, cheap first check, not the proof.
       expect(result.output).not.toMatch(/listening|nest application successfully started/i);
+      // The real proof: `runBootstrap` only resolves once the child process
+      // has already exited (see that function's own comment — the process
+      // is expected to exit on its own here, unlike the "reaches a
+      // listening state" contrast case below). A real TCP connection
+      // attempt against TEST_PORT afterward must be refused; a `fetch`
+      // resolving to anything at all would mean something is listening
+      // despite the process having exited.
+      await expect(fetch(`http://127.0.0.1:${TEST_PORT}/api/v1/health`)).rejects.toThrow();
     }, 30_000);
 
     it('passes the check and reaches a listening state when DATABASE_URL is the constrained runtime role', async () => {

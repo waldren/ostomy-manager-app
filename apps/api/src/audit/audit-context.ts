@@ -35,6 +35,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * future author has to remember to wire up themselves — the type they must
  * produce already exists, and the only function capable of writing an audit
  * row already requires it.
+ *
+ * Transactional callers (B2, P1.S5 review response): a handler that owns
+ * its own `$transaction` — P2.S1a's observation write, P2.S1b's
+ * sync-applied write and conflict-loser handling — should pass that same
+ * `Prisma.TransactionClient` as `AuditService.record()`'s second argument
+ * (`tx`) rather than calling `record(context)` alone. Without it, the PHI
+ * write and its audit row are two separate transactions: the PHI write can
+ * commit while the audit write fails, landing an unaudited row with no way
+ * to roll either back. Passing `tx` makes both writes commit or roll back
+ * together. `AuditInterceptor` itself still calls `record()` without `tx`
+ * this sprint — its timing (after the handler's observable emits, so
+ * outside the handler's own transaction if it has one) is unchanged; `tx`
+ * is made available for a caller in the position to use it, not retrofitted
+ * onto the interceptor.
  */
 export type AuditActorType = 'PATIENT' | 'ADMIN' | 'SYSTEM';
 

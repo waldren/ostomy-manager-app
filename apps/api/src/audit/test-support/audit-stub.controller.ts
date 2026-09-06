@@ -68,7 +68,13 @@ export class AuditStubController {
   create(@Req() request: Request, @Body() body: Record<string, unknown>): { id: string } {
     const patientId = getPatientActor(request).id;
     const id = randomUUID();
-    const afterValue = { ...body };
+    // S6 (P1.S5 review): NOT `{ ...body }`. `audit.service.ts` says never to
+    // wrap a raw request body verbatim, and this controller is the template
+    // P2.S1a will copy — so it has to model the safe shape even for a
+    // synthetic entity. A spread would carry client-supplied extra keys, and
+    // eventually a stray header or token echoed into a body field, into
+    // `audit_events` permanently: there is no UPDATE grant to correct them.
+    const afterValue = { note: typeof body.note === 'string' ? body.note : null };
 
     this.widgetsFor(patientId).set(id, afterValue);
 
@@ -118,7 +124,7 @@ export class AuditStubController {
       throw new NotFoundException({ code: 'AUDIT_STUB_WIDGET_NOT_FOUND' });
     }
 
-    const afterValue = { ...body };
+    const afterValue = { note: typeof body.note === 'string' ? body.note : null };
     widgets.set(id, afterValue);
 
     stageAuditEntry(request, {

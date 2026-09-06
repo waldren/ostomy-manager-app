@@ -87,14 +87,31 @@ per-controller; the audit interceptor does not.
 `stageAuditEntry()` (`audit/audit-recorder.ts`) — once per entity it wrote — before returning; the
 interceptor persists whatever was staged via `AuditService.record()`, the single write path to
 `audit_events`, and **throws** (failing the request as a 500) if an `@Audited()` route completes having
-staged nothing. `route-guard-coverage.spec.ts` closes the other half: it fails the build if any
-mutating (POST/PUT/PATCH/DELETE) route carries no `@Audited()` at all.
+staged nothing — unless the route opts out with `@Audited({ allowEmpty: true })` for a batch endpoint
+where "staged nothing" is a legitimate outcome (e.g. sync push, P2.S1b, when every operation in a batch
+is rejected — see `AuditedOptions.allowEmpty`'s doc comment). `route-guard-coverage.spec.ts` closes the
+other half: it fails the build if any mutating (POST/PUT/PATCH/DELETE/ALL) route carries no
+`@Audited()` at all.
 
 **What a P2 author must do to stay audited:** decorate the mutating route handler with `@Audited()`,
 and call `stageAuditEntry(request, { actorType, actorId, action, entityType, entityId, beforeValue,
-afterValue, reasonCode })` before the handler returns. **If you forget either half**, the route fails
-loudly — `route-guard-coverage.spec.ts` if `@Audited()` itself is missing, or a 500 at request time if
-the decorator is present but nothing was staged — rather than shipping an unaudited PHI write.
+afterValue, reasonCode })` before the handler returns. If you forget `@Audited()` itself,
+`route-guard-coverage.spec.ts` fails the build. If the decorator is present but nothing was staged, the
+interceptor throws — but **the PHI write has already committed by that point**: the interceptor runs
+after the handler's observable emits, so a 500 here means the write succeeded and its audit row did
+not, not that nothing happened. The interceptor also persists whatever WAS staged before a handler
+throws (a `catchError` branch, added after this sprint's own review found staged entries were silently
+lost on that path — see `AuditInterceptor`'s doc comment), so a handler that stages entries and then
+fails partway through still gets those entries audited even though the response itself fails.
+
+**What this does NOT prove, and this file previously overstated:** the "staged nothing → 500" trip-wire
+is a per-ROUTE check, not a per-ENTITY one. A batch handler that applies twenty writes but stages only
+one entry satisfies it while nineteen writes go unaudited — the most likely real failure mode for sync
+push, and neither trip-wire here touches it. Per-entity coverage is the handler author's responsibility;
+closing this fully needs a database-level guarantee this sprint does not build (see `AuditService.record()`'s
+optional `tx: Prisma.TransactionClient` parameter for the first step toward it — pass it so a handler's
+own PHI write and its audit row share one transaction and commit or roll back together; the interceptor
+itself does not use `tx`, since it runs outside the handler's transaction by construction).
 
 A write with no HTTP request of its own — a sync-applied write, or the losing side of a last-write-wins
 conflict (ADR-0001) — never goes through the interceptor at all; it calls `AuditService.record()`
@@ -104,9 +121,22 @@ current, explicitly-flagged limitation this implies: `audit_events` has no dedic
 column, so it is nested inside whichever of `beforeValue`/`afterValue` is populated rather than getting
 one of its own.
 
+`AuditService.record()` never lets a raw Prisma error escape it — a failed `auditEvent.create()` (a
+constraint violation, a bad JSON shape) is wrapped into a purpose-built `AuditPersistenceError` carrying
+only `entityType`/`entityId`/`action`/`actorType` and the original error's `name`/`code`, never the
+original error object or its `message`. This matters because `AuditService.record()` is the first and
+only code in this repo that hands clinical before/after values to Prisma as a `create()` argument, and a
+`PrismaClientValidationError`'s own `.message` renders the offending `data` — i.e. the clinical value
+itself — verbatim; `logging/serializers.ts`'s `errSerializer` allow-lists `message` through by design, so
+an unwrapped Prisma error here would have put PHI into application logs the moment this write ever
+failed.
+
 `audit/test-support/audit-stub.controller.ts` is scaffolding only — a synthetic in-memory entity with
 no clinical meaning, used solely to give the interceptor and its tests something real to exercise ahead
-of P2.S1a's first genuine PHI endpoint. Remove it in the same change that endpoint lands.
+of P2.S1a's first genuine PHI endpoint. Remove it (and its now-conditional import in `app.module.ts`) in
+the same change that endpoint lands. `AppModule.register()` only imports `AuditStubModule` when
+`config.nodeEnv !== 'production'` — `app.module.spec.ts` asserts a `production`-config graph exposes no
+`audit-stub` route.
 
 ## What is deliberately not here yet
 

@@ -27,6 +27,32 @@ import { SetMetadata } from '@nestjs/common';
 export const AUDITED_KEY = Symbol('AUDITED');
 
 /**
+ * `@Audited()`'s options. Currently the one escape hatch: `allowEmpty`
+ * (S2, P1.S5 review response).
+ */
+export interface AuditedOptions {
+  /**
+   * Declares that this route can legitimately complete having staged NO
+   * audit entries — the default behaviour treats that as the author
+   * forgetting `stageAuditEntry()` and fails the request as a 500 (see
+   * `AuditInterceptor.persistStagedEntries()`), which is correct for an
+   * ordinary single-entity write but wrong for a batch endpoint where
+   * "nothing happened" is a legitimate outcome: sync push (P2.S1b), where
+   * every operation in a pushed batch can be rejected, must return a
+   * per-operation accepted/rejected result the mobile client can act on
+   * (SRS AC 13.1 AC4) — not a transport failure that trains it to retry a
+   * batch that will only be rejected again. Set this only where "audited
+   * nothing" is a real, expected outcome; every other mutating route should
+   * leave it unset so a genuinely forgotten `stageAuditEntry()` still fails
+   * loudly.
+   */
+  readonly allowEmpty?: boolean;
+}
+
+/** The value `SetMetadata` stores under `AUDITED_KEY` — `true` for the common case, an options object when a route needs `allowEmpty`. Both are truthy, which is what "is this route audited at all" checks (`AuditInterceptor`, `route-guard-coverage.spec.ts`) test for. */
+export type AuditedMetadata = true | AuditedOptions;
+
+/**
  * Marks a route handler as a PHI mutation that `AuditInterceptor` (global,
  * `APP_INTERCEPTOR` — see that class's doc comment for why this is the one
  * enhancer in this app that is registered globally rather than
@@ -35,11 +61,14 @@ export const AUDITED_KEY = Symbol('AUDITED');
  * This decorator alone does not write anything: the handler must also call
  * `stageAuditEntry()` (`audit-recorder.ts`) before returning. What this
  * decorator buys is the other half of that contract — `AuditInterceptor`
- * throws if a route it decorates completes having staged nothing, and
+ * throws if a route it decorates completes having staged nothing (unless
+ * `{ allowEmpty: true }` — see `AuditedOptions.allowEmpty`), and
  * `route-guard-coverage.spec.ts` fails the build if a mutating
- * (POST/PUT/PATCH/DELETE) route carries no `@Audited()` at all. Together
- * those two checks are what makes "every PHI write is audited" a property
- * of the route table rather than something a handler author has to
- * remember unaided — see that spec file's own comment for the second half.
+ * (POST/PUT/PATCH/DELETE/ALL) route carries no `@Audited()` at all.
+ * Together those two checks are what makes "every PHI write is audited" a
+ * property of the route table rather than something a handler author has
+ * to remember unaided — see that spec file's own comment for the second
+ * half.
  */
-export const Audited = (): MethodDecorator => SetMetadata(AUDITED_KEY, true);
+export const Audited = (options?: AuditedOptions): MethodDecorator =>
+  SetMetadata(AUDITED_KEY, options === undefined ? true : options);
