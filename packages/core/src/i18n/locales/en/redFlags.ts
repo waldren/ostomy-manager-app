@@ -27,5 +27,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * through the validation path. Do not populate it with placeholder or
  * invented copy either — the red-flag voice is a patient-safety property
  * and P7.S3's `accessibility-copy-reviewer` review of it is blocking.
+ *
+ * S7 (this sprint's review): namespace separation here stops a red-flag
+ * STRING from being filed as a warning, but it does not by itself stop a
+ * future author from adding a `redFlag` field to
+ * `VolumetricValidationResult` (`packages/core/src/validation/types.ts`)
+ * — at which point a client would pick the namespace from whatever the API
+ * handed it, defeating this separation at the call site. The rule that
+ * closes that gap: a red flag is NOT a third validation tier, and a red
+ * flag never travels in the same result object as `errors` or `warnings`.
+ * It is a distinct safety-response channel with its own type, evaluated
+ * and surfaced independently of `VolumetricValidationResult` — see
+ * CLAUDE.md's "heart-rate red-flag threshold is a safety response, not
+ * validation" rule.
  */
 export const redFlags = {} as const;

@@ -1,4 +1,4 @@
-# Software Requirements Specification — Ostomy Patient Management Application (v2.4)
+# Software Requirements Specification — Ostomy Patient Management Application (v2.5)
 
 Prepared by: Steven E. Waldren, MD, MS
 Supersedes: `Ostomy_App_Specification_v1.pdf` (v1.0), which is retained only as a historical reference — this document is fully self-contained and does not require consulting the v1.0 PDF.
@@ -19,6 +19,10 @@ Status: all six discussion phases complete.
 
 - **AC 17.3 AC 2** read "net fluid balance, urine output, and weight appear as **three** distinct signals." Phase 6 added resting heart rate as a fourth signal to Sections 3.5, 3.12 and 3.13 but did not update this criterion — and it was the only acceptance criterion asserting that the physician view keeps signals separate, so an implementation built against Section 7 alone could have shipped a three-signal view and been correct per the AC while wrong per the spec body. Corrected to four signals.
 - **AC 2.1 AC 1** required the volume field to accept "positive integers (no decimals or negative numbers)," which is incompatible with imperial as a first-class measurement system (Sections 3.0, 3.10). Rewritten to accept positive decimals, with conversion rounding specified in the new AC 2.1 AC 4. See [ADR-0005](../decisions/0005-decimal-volumetric-entry-and-conversion-rounding.md).
+
+**v2.5 correction (2026-09-06).** No new phase. One acceptance criterion's prompt copy was corrected during P1.S4 code review.
+
+- **AC 2.1 AC 2**'s prompt copy read "This is a high volume for a single entry. Please confirm this amount is correct." The second sentence made saving read as conditional on the amount being "correct," centring error language for what Section 3.8 identifies as "precisely the data point the care team most needs to see." Corrected to "This amount is higher than most entries. If it is right, save it. Your care team needs to see days like this." The warning remains soft and always-overridable; only the wording changed.
 
 Sections below are updated as each phase is completed. Sections not yet revisited are carried forward from v1.0 unchanged and marked as such.
 
@@ -516,7 +520,9 @@ Acceptance criteria below cover Epic 2 (Data Entry), carried forward in full fro
 **AC 2: Out-of-Bounds Error Handling**
 - Given the user is entering an output volume,
 - When the user inputs a value greater than 2,000 mL,
-- Then the system will display a soft warning prompt: "This is a high volume for a single entry. Please confirm this amount is correct," before allowing the user to save.
+- Then the system will display a soft warning prompt: "This amount is higher than most entries. If it is right, save it. Your care team needs to see days like this," before allowing the user to save.
+
+*Revised in v2.5 (P1.S4 review). The original prompt's second sentence ("Please confirm this amount is correct") made saving read as conditional on correctness and centred error, in tension with Section 3.8's point that a genuine high-volume day "is precisely the data point the care team most needs to see." The revised wording keeps the same soft-warning behavior (always overridable, never blocking) and states plainly that the entry is welcome, not merely tolerated.*
 
 **AC 3: Timestamp Editing**
 - Given the user is logging an output event,

@@ -20,20 +20,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * LOINC codes count toward Daily Net Fluid Balance, with voided urine
  * excluded on purpose. The composite hydration status (P6/P7) is
  * deliberately not built here.
+ *
+ * `./loincCodes.js` is intentionally NOT re-exported here. Its literals are
+ * module-internal to this classification; exporting them would make this
+ * module a de facto terminology entry point and raise the cost of the
+ * eventual move to `packages/core/src/fhir` (ADR-0007). Consumers get
+ * behaviour (`countsTowardDailyNetFluidBalance`, `netDailyFluidBalanceMl`)
+ * and named sets, never the raw codes.
  */
-
-export {
-  BODY_WEIGHT_LOINC_CODE,
-  FLUID_INTAKE_LOINC_CODE,
-  RESTING_HEART_RATE_LOINC_CODE,
-  STOMA_OUTPUT_LOINC_CODE,
-  VOIDED_URINE_LOINC_CODE,
-} from './loincCodes.js';
 
 export {
   countsTowardDailyNetFluidBalance,
   DAILY_NET_FLUID_BALANCE_LOINC_CODES,
   EXCLUDED_FROM_DAILY_NET_FLUID_BALANCE_LOINC_CODES,
-  sumDailyNetFluidBalanceMl,
+  NET_FLUID_BALANCE_INTAKE_LOINC_CODES,
+  NET_FLUID_BALANCE_OUTPUT_LOINC_CODES,
+  netDailyFluidBalanceMl,
   type FluidBalanceObservation,
 } from './netFluidBalance.js';

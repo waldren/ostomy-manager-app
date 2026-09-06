@@ -42,4 +42,4 @@ export {
   type MeasuredOrEstimated,
 } from './volumetric.js';
 
-export { ESTIMATION_METHOD_CODE } from './estimationMethod.js';
+export { ESTIMATION_METHOD_CODE, type EstimationMethodCode } from './estimationMethod.js';

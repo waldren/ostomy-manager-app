@@ -36,8 +36,20 @@ export type MeasuredOrEstimated = 'measured' | 'estimated';
 export interface VolumetricEntryInput {
   /** Field identifier surfaced on any resulting error/warning — never the value itself. */
   readonly field: string;
-  /** The value as entered, BEFORE any "is this a number" narrowing — a patient can type anything into a form field, and an offline-queued payload is untrusted input regardless. */
-  readonly rawValue: unknown;
+  /**
+   * The value BEFORE any "is this a number" narrowing — a patient can type
+   * anything into a form field, and an offline-queued payload is untrusted
+   * input regardless. Named `rawValueMl`, not `rawValue`: despite the
+   * "raw" in the name, this is NOT the value as the patient typed it in
+   * their preferred unit — the caller MUST convert to canonical millilitres
+   * (ADR-0004) before constructing this input. `softWarningMaxMl` (B3, this
+   * sprint's review) and every other threshold this module compares against
+   * are canonical-mL bounds; comparing an un-converted imperial entry (e.g.
+   * `80` for 80 oz) against a canonical-mL threshold silently never fires
+   * for imperial patients. ADR-0004 makes "callers convert before
+   * validating" the only coherent reading of this field.
+   */
+  readonly rawValueMl: unknown;
   /** The mandatory Measured/Estimated toggle (SRS AC 2.2 AC1). `null` means "not selected yet". */
   readonly method: MeasuredOrEstimated | null;
   readonly effectiveDateTime: Date;
@@ -52,7 +64,7 @@ function isFiniteNumber(rawValue: unknown): rawValue is number {
 }
 
 function checkValueIsNumeric(input: VolumetricEntryInput): ValidationError | null {
-  if (!isFiniteNumber(input.rawValue)) {
+  if (!isFiniteNumber(input.rawValueMl)) {
     return { field: input.field, ruleCode: TIER1_RULE_CODE.VALUE_NOT_NUMERIC };
   }
   return null;
@@ -66,8 +78,8 @@ function checkValueIsNumeric(input: VolumetricEntryInput): ValidationError | nul
  * as no entry, not a zero-volume observation.
  */
 function checkValueIsPositive(input: VolumetricEntryInput): ValidationError | null {
-  if (!isFiniteNumber(input.rawValue)) return null; // covered by checkValueIsNumeric
-  if (input.rawValue <= 0) {
+  if (!isFiniteNumber(input.rawValueMl)) return null; // covered by checkValueIsNumeric
+  if (input.rawValueMl <= 0) {
     return { field: input.field, ruleCode: TIER1_RULE_CODE.VALUE_NOT_POSITIVE };
   }
   return null;

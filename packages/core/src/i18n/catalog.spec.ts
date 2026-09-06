@@ -53,9 +53,23 @@ describe('i18n catalog structure (ADR-0006)', () => {
     expect(en.redFlags).toEqual({});
   });
 
-  it('warning copy asks for confirmation and never states a blocking instruction ("never scold")', () => {
+  it('the clinical-caveats namespace is reserved and empty — no caveat copy exists until P7, and none is fabricated here (S6)', () => {
+    expect(en.clinicalCaveats).toEqual({});
+  });
+
+  it('warning copy asks for confirmation and never states a blocking instruction, and never scolds (nits: extended deny-list)', () => {
+    const denyList =
+      /\b(must|required|invalid|error|too (?:high|low|much|many)|incorrect|wrong|failed|are you sure|you (?:should|need to|must))\b/;
     for (const message of Object.values(en.validationWarnings)) {
-      expect(message.toLowerCase()).not.toMatch(/\b(must|required|invalid|error)\b/);
+      expect(message.toLowerCase()).not.toMatch(denyList);
+    }
+  });
+
+  it('no catalog key contains a digit — values interpolate into messages, identifiers never do (ADR-0006)', () => {
+    for (const namespace of Object.values(en)) {
+      for (const key of Object.keys(namespace)) {
+        expect(key).not.toMatch(/\d/);
+      }
     }
   });
 });

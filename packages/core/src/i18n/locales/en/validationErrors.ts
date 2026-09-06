@@ -30,8 +30,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 export const validationErrors = {
   VALUE_NOT_NUMERIC: 'Enter the amount as a number.',
-  VALUE_NOT_POSITIVE: 'Enter an amount greater than zero.',
-  METHOD_REQUIRED: 'Choose whether this amount was measured or estimated.',
-  EFFECTIVE_DATE_TIME_IN_FUTURE: 'Choose a date and time that has already happened.',
+  // S8 (this sprint's review): simplified from "Enter an amount greater
+  // than zero" to a plainer positive instruction at the target 6th-8th
+  // grade reading level.
+  VALUE_NOT_POSITIVE: 'Enter an amount above 0.',
+  // S8: the previous copy ("Choose whether this amount was measured or
+  // estimated") tested at roughly a 9.7 grade level (passive, formal
+  // "whether"). Rewritten as a direct, active instruction.
+  METHOD_REQUIRED: 'Tell us if you measured this amount or estimated it.',
+  // S8: simplified from "Choose a date and time that has already happened."
+  EFFECTIVE_DATE_TIME_IN_FUTURE: 'Choose a date and time in the past.',
   EFFECTIVE_DATE_TIME_BEFORE_SURGERY: 'Choose a date on or after your surgery date.',
 } as const;

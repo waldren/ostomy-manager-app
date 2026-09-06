@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { describe, expect, it } from 'vitest';
 
+import { ozToMl } from '../units/index.js';
 import {
   evaluateTier1,
   evaluateTier2,
@@ -44,7 +45,7 @@ const THRESHOLDS: VolumetricValidationThresholds = {
 function validEntry(overrides: Partial<VolumetricEntryInput> = {}): VolumetricEntryInput {
   return {
     field: 'stomaOutputVolumeMl',
-    rawValue: 350,
+    rawValueMl: 350,
     method: 'measured',
     effectiveDateTime: new Date('2026-06-15T11:00:00.000Z'),
     surgeryDate: SURGERY_DATE,
@@ -60,7 +61,7 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
 
   describe('AC 2.1 AC1 — numeric, positive volume required', () => {
     it('blocks a non-numeric value', () => {
-      const result = evaluateTier1(validEntry({ rawValue: 'a lot' }), THRESHOLDS);
+      const result = evaluateTier1(validEntry({ rawValueMl: 'a lot' }), THRESHOLDS);
       expect(result).toMatchObject({
         outcome: 'blocked',
         errors: [{ field: 'stomaOutputVolumeMl', ruleCode: TIER1_RULE_CODE.VALUE_NOT_NUMERIC }],
@@ -68,7 +69,7 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
     });
 
     it('blocks a missing value', () => {
-      const result = evaluateTier1(validEntry({ rawValue: undefined }), THRESHOLDS);
+      const result = evaluateTier1(validEntry({ rawValueMl: undefined }), THRESHOLDS);
       expect(result).toMatchObject({
         outcome: 'blocked',
         errors: [{ ruleCode: TIER1_RULE_CODE.VALUE_NOT_NUMERIC }],
@@ -76,7 +77,7 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
     });
 
     it('blocks NaN', () => {
-      const result = evaluateTier1(validEntry({ rawValue: Number.NaN }), THRESHOLDS);
+      const result = evaluateTier1(validEntry({ rawValueMl: Number.NaN }), THRESHOLDS);
       expect(result).toMatchObject({
         outcome: 'blocked',
         errors: [{ ruleCode: TIER1_RULE_CODE.VALUE_NOT_NUMERIC }],
@@ -84,7 +85,7 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
     });
 
     it('blocks a negative value', () => {
-      const result = evaluateTier1(validEntry({ rawValue: -5 }), THRESHOLDS);
+      const result = evaluateTier1(validEntry({ rawValueMl: -5 }), THRESHOLDS);
       expect(result).toMatchObject({
         outcome: 'blocked',
         errors: [{ ruleCode: TIER1_RULE_CODE.VALUE_NOT_POSITIVE }],
@@ -92,7 +93,7 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
     });
 
     it('blocks zero — a real 0 mL day is recorded as no entry, not a zero-volume observation', () => {
-      const result = evaluateTier1(validEntry({ rawValue: 0 }), THRESHOLDS);
+      const result = evaluateTier1(validEntry({ rawValueMl: 0 }), THRESHOLDS);
       expect(result).toMatchObject({
         outcome: 'blocked',
         errors: [{ ruleCode: TIER1_RULE_CODE.VALUE_NOT_POSITIVE }],
@@ -100,7 +101,7 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
     });
 
     it('accepts a positive decimal value (ADR-0005 — entry precision is not capped at integers)', () => {
-      expect(evaluateTier1(validEntry({ rawValue: 123.45 }), THRESHOLDS).outcome).toBe('pass');
+      expect(evaluateTier1(validEntry({ rawValueMl: 123.45 }), THRESHOLDS).outcome).toBe('pass');
     });
   });
 
@@ -178,7 +179,7 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
   });
 
   it('collects every violated rule, not just the first', () => {
-    const result = evaluateTier1(validEntry({ rawValue: -1, method: null }), THRESHOLDS);
+    const result = evaluateTier1(validEntry({ rawValueMl: -1, method: null }), THRESHOLDS);
     expect(result.outcome).toBe('blocked');
     if (result.outcome === 'blocked') {
       expect(result.errors.map((error) => error.ruleCode).sort()).toEqual(
@@ -188,14 +189,14 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
   });
 
   it('never includes the offending value in an error (docs/security-hipaa.md)', () => {
-    const result = evaluateTier1(validEntry({ rawValue: -2500.5 }), THRESHOLDS);
+    const result = evaluateTier1(validEntry({ rawValueMl: -2500.5 }), THRESHOLDS);
     expect(JSON.stringify(result)).not.toContain('2500.5');
   });
 });
 
 describe('Tier 2 — soft, always-overridable warning on implausible-but-real values', () => {
   it('passes a typical value', () => {
-    expect(evaluateTier2(validEntry({ rawValue: 350 }), THRESHOLDS)).toEqual({
+    expect(evaluateTier2(validEntry({ rawValueMl: 350 }), THRESHOLDS)).toEqual({
       tier: 'tier2',
       outcome: 'pass',
     });
@@ -203,7 +204,7 @@ describe('Tier 2 — soft, always-overridable warning on implausible-but-real va
 
   describe('AC 2.1 AC2 — an instance of the injected soft-warning class, not a special case', () => {
     it('warns above the injected threshold', () => {
-      const result = evaluateTier2(validEntry({ rawValue: 2500 }), THRESHOLDS);
+      const result = evaluateTier2(validEntry({ rawValueMl: 2500 }), THRESHOLDS);
       expect(result).toMatchObject({
         outcome: 'warn',
         warnings: [
@@ -214,7 +215,7 @@ describe('Tier 2 — soft, always-overridable warning on implausible-but-real va
 
     it('does not warn at exactly the threshold', () => {
       const result = evaluateTier2(
-        validEntry({ rawValue: THRESHOLDS.softWarningMaxMl }),
+        validEntry({ rawValueMl: THRESHOLDS.softWarningMaxMl }),
         THRESHOLDS,
       );
       expect(result.outcome).toBe('pass');
@@ -222,34 +223,51 @@ describe('Tier 2 — soft, always-overridable warning on implausible-but-real va
 
     it('a different injected threshold changes the outcome for the same value — proof this is not hardcoded', () => {
       const stricter: VolumetricValidationThresholds = { ...THRESHOLDS, softWarningMaxMl: 300 };
-      expect(evaluateTier2(validEntry({ rawValue: 350 }), THRESHOLDS).outcome).toBe('pass');
-      expect(evaluateTier2(validEntry({ rawValue: 350 }), stricter).outcome).toBe('warn');
+      expect(evaluateTier2(validEntry({ rawValueMl: 350 }), THRESHOLDS).outcome).toBe('pass');
+      expect(evaluateTier2(validEntry({ rawValueMl: 350 }), stricter).outcome).toBe('warn');
+    });
+  });
+
+  describe('B3 — the comparison has no unit contract of its own; the caller must convert to canonical mL first (ADR-0004)', () => {
+    it('warns for an imperial-entered value that converts to canonical mL above the threshold', () => {
+      // 80 oz is well over the AC 2.1 AC2 threshold once converted
+      // (~2,366 mL against a 2,000 mL ceiling). Comparing the raw imperial
+      // number `80` against the mL threshold would wrongly pass — the bug
+      // this field's rename and docstring exist to prevent.
+      const eightyOzInCanonicalMl = ozToMl(80);
+      const result = evaluateTier2(validEntry({ rawValueMl: eightyOzInCanonicalMl }), THRESHOLDS);
+      expect(result).toMatchObject({
+        outcome: 'warn',
+        warnings: [
+          { field: 'stomaOutputVolumeMl', ruleCode: TIER2_RULE_CODE.VALUE_ABOVE_TYPICAL_RANGE },
+        ],
+      });
     });
   });
 
   it('does not evaluate the magnitude check against a non-numeric value — that is Tier 1s job', () => {
-    expect(evaluateTier2(validEntry({ rawValue: 'not a number' }), THRESHOLDS)).toEqual({
+    expect(evaluateTier2(validEntry({ rawValueMl: 'not a number' }), THRESHOLDS)).toEqual({
       tier: 'tier2',
       outcome: 'pass',
     });
   });
 
   it('never includes the offending value in a warning', () => {
-    const result = evaluateTier2(validEntry({ rawValue: 999_999 }), THRESHOLDS);
+    const result = evaluateTier2(validEntry({ rawValueMl: 999_999 }), THRESHOLDS);
     expect(JSON.stringify(result)).not.toContain('999999');
   });
 });
 
 describe('a soft warning never becomes a block (CLAUDE.md: "A warning must never become a block")', () => {
   it('an entry that is Tier-2-implausible but Tier-1-valid is never blocked', () => {
-    const result = validateVolumetricEntry(validEntry({ rawValue: 5000 }), THRESHOLDS);
+    const result = validateVolumetricEntry(validEntry({ rawValueMl: 5000 }), THRESHOLDS);
     expect(isBlocked(result)).toBe(false);
     expect(hasWarnings(result)).toBe(true);
   });
 
   it('a Tier 1 block does not suppress Tier 2 information — the two tiers are independent', () => {
     const result = validateVolumetricEntry(
-      validEntry({ rawValue: 5000, method: null }),
+      validEntry({ rawValueMl: 5000, method: null }),
       THRESHOLDS,
     );
     expect(isBlocked(result)).toBe(true);

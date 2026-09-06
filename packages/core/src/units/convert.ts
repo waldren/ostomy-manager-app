@@ -15,7 +15,12 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import type { CanonicalVolume, DisplayVolume, DisplayWeight, MeasurementSystem } from './types.js';
+import type {
+  CanonicalVolume,
+  DisplayVolume,
+  DisplayWeight,
+  MeasurementSystemUnits,
+} from './types.js';
 
 /**
  * Conversion factors, defined once (ADR-0005: "they must be defined once
@@ -28,9 +33,31 @@ import type { CanonicalVolume, DisplayVolume, DisplayWeight, MeasurementSystem }
 const ML_PER_US_FLUID_OUNCE = 29.5735295625;
 const KG_PER_INTERNATIONAL_POUND = 0.45359237;
 
+/**
+ * Round-half-away-from-zero, by magnitude with the sign reapplied
+ * afterward, and with `-0` normalised to `0` (S3, this sprint's review).
+ *
+ * `Math.round` rounds half toward +Infinity: `Math.round(-2.5) === -2`, a
+ * bias that — once Daily Net Fluid Balance is negative, which is the
+ * routine case for an output-dominant day (SRS §3.5) — would round a
+ * negative total TOWARD zero, i.e. toward looking less dehydrated. That is
+ * the wrong direction for a safety-relevant number, so rounding here is
+ * done on the magnitude and the original sign is reapplied, never on the
+ * signed value directly.
+ *
+ * `-0` is normalised to `0` because `Math.round(-0.4)` is `-0`, and
+ * `Intl.NumberFormat` renders that as the literal string "-0" — a patient
+ * would see e.g. "-0 oz" for an amount that, for display purposes, is
+ * zero.
+ */
+function roundHalfAwayFromZero(value: number): number {
+  const rounded = Math.sign(value) * Math.round(Math.abs(value));
+  return rounded === 0 ? 0 : rounded;
+}
+
 function roundToDecimalPlaces(value: number, places: number): number {
   const factor = 10 ** places;
-  return Math.round(value * factor) / factor;
+  return roundHalfAwayFromZero(value * factor) / factor;
 }
 
 export function mlToOz(valueMl: number): number {
@@ -50,23 +77,48 @@ export function lbToKg(valueLb: number): number {
 }
 
 /**
- * Render a canonical (mL) volume in the given measurement system
+ * Render a canonical (mL) volume in a target measurement system
  * (SRS AC 2.1 AC4, ADR-0005).
  *
- * Displayed as entered within the same system — no rounding, the stored
- * precision is preserved. Rounded to the nearest whole unit only when the
- * display system differs from the canonical one: mL is already the
- * canonical/metric unit, so metric never rounds here; a conversion to oz
- * always does.
+ * `entrySystem` is REQUIRED, not optional-with-a-default — ADR-0005 states
+ * the whole-unit rounding rule in terms of the system the value was
+ * ENTERED in, not the canonical storage unit. The schema (P1.S3) stores
+ * only canonical mL/kg plus the patient's current `Profile.measurementSystem`
+ * preference, which §3.10 lets change, so "canonical unit" and "entry
+ * unit" are not the same fact and this function must not conflate them: a
+ * value entered in mL and later viewed in mL (same system, no conversion
+ * needed) must read back at its entered precision — rounding it to a
+ * whole unit is exactly the "8.5 oz reads back as 9 oz" defect this
+ * parameter exists to prevent. Rounding to a whole unit applies only when
+ * `targetSystem` differs from `entrySystem` — a genuine cross-system
+ * conversion (AC 2.1 AC4: "a stored volume is displayed in a measurement
+ * system other than the one in which it was entered") — never on a
+ * same-system readback.
+ *
+ * An optional parameter with a default is how this rule silently reverts;
+ * making it required means a future caller that hasn't resolved the entry
+ * system (once the `entered_measurement_system` schema column exists) gets
+ * a compile error instead of a silently wrong render.
  */
 export function convertVolumeForDisplay(
   canonicalValueMl: number,
-  targetSystem: MeasurementSystem,
+  entrySystem: MeasurementSystemUnits,
+  targetSystem: MeasurementSystemUnits,
 ): DisplayVolume {
-  if (targetSystem === 'metric') {
-    return { value: canonicalValueMl, unit: 'mL' };
+  const isCrossSystemConversion = entrySystem.system !== targetSystem.system;
+
+  if (targetSystem.system === 'metric') {
+    return {
+      value: isCrossSystemConversion ? roundHalfAwayFromZero(canonicalValueMl) : canonicalValueMl,
+      unit: 'mL',
+    };
   }
-  return { value: Math.round(mlToOz(canonicalValueMl)), unit: 'oz' };
+
+  const valueOz = mlToOz(canonicalValueMl);
+  return {
+    value: isCrossSystemConversion ? roundHalfAwayFromZero(valueOz) : valueOz,
+    unit: 'oz',
+  };
 }
 
 /**
@@ -75,15 +127,21 @@ export function convertVolumeForDisplay(
  * rounding.
  *
  * Unlike volume, weight is rounded to one decimal place in BOTH systems,
- * including metric, never to a whole unit. Rounding a converted weight to
- * a whole kilogram or pound would discard exactly the sub-kilogram
- * day-over-day change §3.12's weight signal exists to detect.
+ * including metric, never to a whole unit, and regardless of whether this
+ * is a same-system readback or a cross-system conversion. Rounding a
+ * converted weight to a whole kilogram or pound would discard exactly the
+ * sub-kilogram day-over-day change §3.12's weight signal exists to detect
+ * — so unlike volume, there is no entry-system-dependent branch here; this
+ * function takes only the target system, typed as `MeasurementSystemUnits`
+ * (not a bare `MeasurementSystem` string) so it cannot be paired with a
+ * different, mismatched units object than a sibling `convertVolumeForDisplay`
+ * call for the same screen (S1, this sprint's review).
  */
 export function convertWeightForDisplay(
   canonicalValueKg: number,
-  targetSystem: MeasurementSystem,
+  targetSystem: MeasurementSystemUnits,
 ): DisplayWeight {
-  if (targetSystem === 'metric') {
+  if (targetSystem.system === 'metric') {
     return { value: roundToDecimalPlaces(canonicalValueKg, 1), unit: 'kg' };
   }
   return { value: roundToDecimalPlaces(kgToLb(canonicalValueKg), 1), unit: 'lb' };
@@ -108,7 +166,8 @@ export function sumCanonicalVolumesMl(entries: readonly CanonicalVolume[]): numb
  */
 export function formatDailyVolumeTotalForDisplay(
   entries: readonly CanonicalVolume[],
-  targetSystem: MeasurementSystem,
+  entrySystem: MeasurementSystemUnits,
+  targetSystem: MeasurementSystemUnits,
 ): DisplayVolume {
-  return convertVolumeForDisplay(sumCanonicalVolumesMl(entries), targetSystem);
+  return convertVolumeForDisplay(sumCanonicalVolumesMl(entries), entrySystem, targetSystem);
 }

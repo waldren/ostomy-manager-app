@@ -23,9 +23,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * ADR-0006's compliance review). Keyed by `ValidationWarning.ruleCode`.
  */
 export const validationWarnings = {
-  // SRS AC 2.1 AC2's suggested copy ("This is a high volume for a single
-  // entry. Please confirm this amount is correct"), rendered to invite a
-  // check rather than issue an instruction — the entry saves either way.
+  // SRS AC 2.1 AC2's exact approved copy (v2.5 — corrected during P1.S4
+  // review; see SRS_v2.md's "v2.5 correction" note). An approved
+  // acceptance criterion's prompt text is not a suggestion to be
+  // paraphrased: this is the verbatim string. It states plainly that the
+  // entry is welcome, never conditions saving on the amount being
+  // "correct," and never scolds — a genuine high-volume day "is precisely
+  // the data point the care team most needs to see" (SRS §3.8).
   VALUE_ABOVE_TYPICAL_RANGE:
-    'This is a high volume for a single entry. Check the number, then save it if it is correct.',
+    'This amount is higher than most entries. If it is right, save it. Your care team needs to see days like this.',
 } as const;

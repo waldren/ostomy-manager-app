@@ -17,10 +17,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { describe, expect, it } from 'vitest';
 
-import { ESTIMATION_METHOD_CODE } from './estimationMethod.js';
+import { ESTIMATION_METHOD_CODE, type EstimationMethodCode } from './estimationMethod.js';
 
 describe('AC 2.5 AC2 — Estimation technique SNOMED code (D4, unresolved)', () => {
-  it('is not set to any value yet — do not invent a code', () => {
-    expect(ESTIMATION_METHOD_CODE).toBeNull();
+  it('is not resolved to any code yet — do not invent one', () => {
+    expect(ESTIMATION_METHOD_CODE).toEqual({ resolved: false });
+  });
+
+  it('B4 — the unresolved state has no `code` property to accidentally read or assign', () => {
+    expect(ESTIMATION_METHOD_CODE).not.toHaveProperty('code');
+  });
+
+  it('B4 — a caller must narrow on `resolved` before reading a code (compile-time proof)', () => {
+    function readCodeOrNull(value: EstimationMethodCode): string | null {
+      // @ts-expect-error — `code` does not exist on the `{ resolved: false }` arm; a caller must narrow first.
+      const impossible: string = value.code;
+      void impossible;
+
+      return value.resolved ? value.code : null;
+    }
+
+    expect(readCodeOrNull(ESTIMATION_METHOD_CODE)).toBeNull();
+    expect(readCodeOrNull({ resolved: true, code: '12345-6' })).toBe('12345-6');
   });
 });

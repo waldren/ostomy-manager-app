@@ -18,14 +18,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 /**
  * "common" namespace: copy shared across screens that is neither a
  * validation error, a validation warning, nor the heart-rate red-flag
- * prompt. See ../../index.ts for why those three are kept in separate
+ * prompt. See ../../index.ts for why those are kept in separate
  * namespaces.
+ *
+ * Unit wording is deliberately NOT duplicated here (S2, this sprint's
+ * review): `../../format.ts`'s `formatVolumeQuantity` /
+ * `formatWeightQuantity` source unit wording from
+ * `Intl.NumberFormat`'s `style: 'unit'`, which is locale-aware and
+ * CLDR-correct. A hand-written `unit.mL: 'milliliters (mL)'` string here
+ * would be a second, unreferenced source of truth for the same wording —
+ * the exact divergence ADR-0006 exists to prevent — so it was removed
+ * rather than kept unused.
  */
 export const common = {
   'method.measured': 'Measured',
   'method.estimated': 'Estimated',
-  'unit.mL': 'milliliters (mL)',
-  'unit.oz': 'ounces (oz)',
-  'unit.kg': 'kilograms (kg)',
-  'unit.lb': 'pounds (lb)',
 } as const;

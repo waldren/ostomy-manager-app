@@ -31,6 +31,16 @@ export const TIER2_RULE_CODE = {
  * (`./thresholds.js`), never hardcoded here — see
  * `no-hardcoded-thresholds.spec.ts`.
  *
+ * `softWarningMaxMl` is a canonical-mL bound, and `input.rawValueMl` MUST
+ * already be canonical mL by the time it reaches this function (see the
+ * docstring on `VolumetricEntryInput.rawValueMl` in `./tier1.js`) — this
+ * comparison has no unit contract of its own to enforce; it trusts the
+ * caller to have converted an imperial-entered value (e.g. 80 oz) before
+ * calling `evaluateTier2`, per ADR-0004. An un-converted `80` compared
+ * against a ~2000 canonical-mL threshold would silently never warn for an
+ * imperial patient, which is exactly the bug B3 (this sprint's review)
+ * fixed by naming this field for what it must contain.
+ *
  * This check is skipped only when the value is not a usable number at all
  * (Tier 1's job to flag) — never as a way of avoiding a block. A
  * `Tier2Result` cannot express a blocking outcome regardless (see
@@ -41,9 +51,9 @@ function checkValueWithinTypicalRange(
   input: VolumetricEntryInput,
   thresholds: VolumetricValidationThresholds,
 ): ValidationWarning | null {
-  const { rawValue } = input;
-  if (typeof rawValue !== 'number' || !Number.isFinite(rawValue)) return null;
-  if (rawValue > thresholds.softWarningMaxMl) {
+  const { rawValueMl } = input;
+  if (typeof rawValueMl !== 'number' || !Number.isFinite(rawValueMl)) return null;
+  if (rawValueMl > thresholds.softWarningMaxMl) {
     return { field: input.field, ruleCode: TIER2_RULE_CODE.VALUE_ABOVE_TYPICAL_RANGE };
   }
   return null;

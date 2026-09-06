@@ -26,12 +26,31 @@ import {
 } from './index.js';
 
 describe('Intl-based formatting helpers (ADR-0006)', () => {
-  it('formats a volume quantity with its unit', () => {
+  it('formats a volume quantity with its unit, short form by default', () => {
     expect(formatVolumeQuantity({ value: 350, unit: 'mL' })).toBe('350 mL');
+    expect(formatVolumeQuantity({ value: 8, unit: 'oz' })).toBe('8 fl oz');
   });
 
-  it('formats a weight quantity to one decimal place with its unit', () => {
+  it('formats a volume quantity with its long, screen-reader-friendly unit name on request (S2)', () => {
+    expect(formatVolumeQuantity({ value: 350, unit: 'mL' }, DEFAULT_LOCALE, 'long')).toBe(
+      '350 milliliters',
+    );
+    expect(formatVolumeQuantity({ value: 8, unit: 'oz' }, DEFAULT_LOCALE, 'long')).toBe(
+      '8 fluid ounces',
+    );
+  });
+
+  it('formats a weight quantity to one decimal place with its unit, short form by default', () => {
     expect(formatWeightQuantity({ value: 70.9, unit: 'kg' })).toBe('70.9 kg');
+  });
+
+  it('formats a weight quantity with its long, screen-reader-friendly unit name on request (S2) — "70.9 kilograms", not "kg" read letter-by-letter', () => {
+    expect(formatWeightQuantity({ value: 70.9, unit: 'kg' }, DEFAULT_LOCALE, 'long')).toBe(
+      '70.9 kilograms',
+    );
+    expect(formatWeightQuantity({ value: 149.9, unit: 'lb' }, DEFAULT_LOCALE, 'long')).toBe(
+      '149.9 pounds',
+    );
   });
 
   it('is locale-aware: a different locale changes number formatting even though v1 ships only one', () => {
@@ -45,10 +64,22 @@ describe('Intl-based formatting helpers (ADR-0006)', () => {
     expect(formatNumber(1234.5)).toBe(formatNumber(1234.5, DEFAULT_LOCALE));
   });
 
-  it('formats a date/time value', () => {
+  it('formats a date/time value with an explicit, fixed output (nits: not just typeof === "string")', () => {
     const value = new Date('2026-06-15T12:00:00.000Z');
-    const formatted = formatDateTime(value);
-    expect(typeof formatted).toBe('string');
-    expect(formatted.length).toBeGreaterThan(0);
+    expect(formatDateTime(value)).toBe('Jun 15, 2026, 12:00 PM');
+  });
+
+  it('formats the same instant identically regardless of the host environment, via an explicit default time zone (nits)', () => {
+    const value = new Date('2026-06-15T23:30:00.000Z');
+    // Without an explicit default zone, this would render differently on
+    // a UTC API host vs. a device in, say, America/Los_Angeles.
+    expect(formatDateTime(value)).toBe('Jun 15, 2026, 11:30 PM');
+  });
+
+  it("accepts an explicit time zone override for a caller that needs the viewer's local zone", () => {
+    const value = new Date('2026-06-15T23:30:00.000Z');
+    expect(formatDateTime(value, DEFAULT_LOCALE, { timeZone: 'America/Los_Angeles' })).toBe(
+      'Jun 15, 2026, 4:30 PM',
+    );
   });
 });

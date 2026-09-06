@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { clinicalCaveats } from './locales/en/clinicalCaveats.js';
 import { common } from './locales/en/common.js';
 import { redFlags } from './locales/en/redFlags.js';
 import { validationErrors } from './locales/en/validationErrors.js';
@@ -22,8 +23,8 @@ import { validationWarnings } from './locales/en/validationWarnings.js';
 import { DEFAULT_LOCALE } from './constants.js';
 
 /**
- * Catalog namespaces (ADR-0006). Four separate namespaces, not adjacent
- * keys within one, because two distinctions must be legible to a reviewer
+ * Catalog namespaces (ADR-0006). Separate namespaces, not adjacent keys
+ * within one, because these distinctions must be legible to a reviewer
  * reading the catalog's structure alone:
  *
  *   - `validationErrors` (Tier 1, blocks the save) vs. `validationWarnings`
@@ -32,9 +33,34 @@ import { DEFAULT_LOCALE } from './constants.js';
  *     misread.
  *   - `validationWarnings` vs. `redFlags` (the heart-rate safety response,
  *     P7) — a data-quality nudge vs. "seek care," which must never share
- *     a voice or a code path (CLAUDE.md).
+ *     a voice or a code path (CLAUDE.md; see `redFlags.ts`'s doc comment
+ *     for the additional structural rule this implies for
+ *     `VolumetricValidationResult`).
+ *   - `redFlags` vs. `clinicalCaveats` — "seek care now" vs. a standing
+ *     qualification on how to read a signal (e.g. the SRS §3.13
+ *     beta-blocker caveat), neither of which is a validation message at
+ *     all.
+ *
+ * Key-naming convention (S5, this sprint's review), for every namespace:
+ *   - `*.label` — visible text.
+ *   - `*.a11yLabel` — an accessible name ONLY when it must differ from the
+ *     visible label (e.g. an icon-only control). It names the ACTION the
+ *     control performs, never the icon ("Log stoma output", not
+ *     "Droplet icon"). Never carry meaning by colour alone — a state that
+ *     is colour-coded must also have a `*.label` or `*.a11yLabel` text
+ *     equivalent (urine-colour scale steps, hydration statuses).
+ *   - `*.hint` — supplementary text, not the accessible name itself.
+ *
+ * No catalog key contains a digit (see `catalog.spec.ts`) — ADR-0006:
+ * values interpolate into rendered messages, identifiers never do.
  */
-export const NAMESPACES = ['common', 'validationErrors', 'validationWarnings', 'redFlags'] as const;
+export const NAMESPACES = [
+  'common',
+  'validationErrors',
+  'validationWarnings',
+  'redFlags',
+  'clinicalCaveats',
+] as const;
 export type Namespace = (typeof NAMESPACES)[number];
 
 export const en = {
@@ -42,6 +68,7 @@ export const en = {
   validationErrors,
   validationWarnings,
   redFlags,
+  clinicalCaveats,
 } satisfies Record<Namespace, Record<string, string>>;
 
 /**
