@@ -22,6 +22,24 @@ plan finding F3.)
 - JSON payloads use FHIR-standard field names directly (e.g.
   `resourceType: "Observation"`, `valueQuantity.value`) rather than a
   custom schema mapped later.
+- `Observation.valueQuantity.unit`/`.code` are always the **canonical**
+  unit (mL or kg, ADR-0004) on the wire, regardless of which measurement
+  system the patient entered the value in. As of the
+  `fix/entered-measurement-system` follow-up migration (after P1.S3/P1.S4),
+  `observations.entered_measurement_system` (`METRIC`/`IMPERIAL`) records
+  that entry system as a separate column — **it is app-native provenance,
+  not a FHIR element.** FHIR R4 `Observation` has no field for "what system
+  was this value entered in"; a `Bundle` assembled by the export module
+  emits `valueQuantity` exactly as it already does today, unaffected by
+  this column's existence. Resolved this way rather than folding the entry
+  system into `valueQuantity` itself (e.g. by NOT converting to canonical
+  units before storage) because ADR-0004 already settled that storage is
+  canonical, unconditionally, and reopening that is a much larger change
+  than adding one provenance column. If a future need arises to expose
+  entry-system provenance to a FHIR-consuming downstream system (there is
+  none identified today), the mechanism would be a non-standard
+  `extension` on the `Observation` resource, not a repurposed core field —
+  flagged as an open question below rather than built speculatively.
 
 ## RxNorm / medication
 
@@ -84,3 +102,13 @@ table there either way.
   they arrive as additive `ALTER TABLE` migrations with their own features,
   per the implementation plan's "deliberately partial" instruction for that
   sprint.
+- **Whether `entered_measurement_system` should ever be exposed on the wire
+  as a FHIR `extension`.** Not resolved, and not blocking: no downstream
+  FHIR consumer has asked for entry-system provenance, and the export
+  module does not exist yet regardless. If this is ever needed, the shape
+  would be an `Observation.extension` entry with an application-owned
+  `url` (not a published FHIR extension — there is no standard one for
+  this), carrying `METRIC`/`IMPERIAL` as a `valueCode`. Recorded here so
+  whoever eventually builds the export module does not have to
+  independently rediscover that this column exists and has no home in the
+  core resource fields.

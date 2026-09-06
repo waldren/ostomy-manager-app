@@ -20,6 +20,14 @@ and for `fhir-data-modeler` at whichever sprint next touches
 `apps/api/prisma/schema.prisma` itself (the schema is the source of truth;
 this document explains it, not the other way around).
 
+**Follow-up migration, additive, after P1.S3/P1.S4 (branch
+`fix/entered-measurement-system`):** `observations.entered_measurement_system`
+was added — see "Entered measurement system" below, inserted into the
+`observations` section in place, plus a new paragraph at the end of "Role
+split" documenting that this column needed no new `GRANT` statement. This
+paragraph is the pointer for anyone who read this document before that
+migration landed and is looking for what changed.
+
 ## What exists after this sprint
 
 - `apps/api/prisma/schema.prisma` — the full data model.
@@ -52,8 +60,108 @@ this document explains it, not the other way around).
 | `effective_datetime`     | `effectiveDateTime`                | `TIMESTAMPTZ(3)`. |
 | `method`                 | `method.coding[0].code`            | SNOMED CT "Estimation technique" code when estimated; NULL otherwise (measured, or not applicable — weight/heart rate). The exact SNOMED code is `TODO(code-unverified)`. |
 | `status`                 | `status`                           | Full FHIR value set (`registered`…`unknown`), mapped via `@map` so the stored value is the literal FHIR wire string. |
+| `entered_measurement_system` | *(none — app-native provenance)* | Added by the `fix/entered-measurement-system` follow-up migration, after P1.S3/P1.S4 shipped. See "Entered measurement system" below. |
 | *(none — relational FK)* | `subject` (Reference to Patient)   | Modeled as an ordinary `patient_id` foreign key, not a FHIR `Reference` string — the accepted asymmetry of "FHIR-shaped relational, not FHIR-native" (SRS §4.4). The export module (not built yet) is what turns this FK into `subject: { reference: "Patient/<id>" }` on the wire. |
 | *(none)*                 | `id` (the resource's own logical id) | `observations.id` doubles as this — it is the same client-generated UUID FHIR would use as the resource id. |
+
+### Entered measurement system — `entered_measurement_system` (follow-up to P1.S3/P1.S4)
+
+**The problem this closes.** ADR-0005 states its whole-unit conversion-
+rounding rule in terms of the measurement system a volume was **entered**
+in: "when a stored volume is rendered in a measurement system other than
+the one it was entered in, the converted result is rounded to the nearest
+whole unit," worked example 8 oz -> 236.588 mL stored -> renders as
+`237 mL`. P1.S3's schema stores only canonical mL/kg (ADR-0004) plus
+`Profile.measurementSystem`, which SRS §3.10 explicitly lets a patient
+change. Those two facts together mean the entry system was **not
+recoverable per row** — a patient who entered in imperial, then switched
+their preference to metric, has no row-level record of which system
+produced the stored value. `convertVolumeForDisplay` in
+`packages/core/src/units/convert.ts` (P1.S4) was built already knowing
+this: `entrySystem` is a **required** parameter specifically so a caller
+that cannot truthfully supply it fails to compile, rather than silently
+defaulting to something wrong (the P1.S4 review caught exactly that shape
+of bug: "metric never rounds, imperial always rounds" made an 8.5 oz entry
+read back as 9 oz, and an 8 oz entry render as the literal `236.588 mL`
+ADR-0005 exists to prevent). This migration is what makes that parameter
+satisfiable by a real caller.
+
+**Shape chosen: the measurement-system enum, not the entered unit.**
+`entered_measurement_system` reuses the existing `measurement_system`
+Postgres enum (`METRIC` / `IMPERIAL` — the same one `profiles
+.measurement_system` already uses), not a finer-grained
+`mL` / `oz` / `kg` / `lb` unit column. The unit is fully determined by this
+column plus `code`, under two rules already load-bearing elsewhere in this
+schema: ADR-0004's fixed code -> canonical-unit mapping (a volume code is
+always mL-canonical, entered in mL or oz depending on system; a weight
+code is always kg-canonical, entered in kg or lb) and §3.10's "mixed-system
+combinations must be impossible to select." A unit-level column would
+therefore store no fact this one plus `code` doesn't already determine, at
+the cost of a second `CHECK` cross-validating unit against code (mirroring
+`observations_value_quantity_unit_check`, which already does this for the
+*canonical* unit). The system value is also exactly what `packages/core`
+consumes: `MeasurementSystemUnits` in `packages/core/src/units/types.ts`
+is keyed on `system`, and `unitsForMeasurementSystem(system)` is the one
+function that turns a bare system value into the full unit pair
+`convertVolumeForDisplay`/`convertWeightForDisplay` need — so a P2 write
+path reads this column and hands it straight to that function with no
+translation step. **What this forecloses:** if a future measurement system
+needed a *unit* distinction this enum can't express on its own (e.g. UK vs.
+US fluid ounces both called "imperial"), this column does not carry that;
+widening it would need either a new enum value (additive, cheap) or
+revisiting the shape entirely (not additive) if the axis is "same system,
+different unit" rather than "a new system." Nothing in SRS_v2 or an ADR
+currently anticipates that axis, so this is flagged rather than
+pre-designed for.
+
+**Nullability: `NOT NULL`, no default, for every row — not scoped to
+volumetric codes only.** Two reasons this is not narrower:
+
+1. `Observation.method` already has a NULL that means two different
+   things depending on which row you're looking at ("measured" vs. "not
+   applicable" — see that column's own doc comment in `schema.prisma`),
+   and this document already flags that as a wart rather than a pattern to
+   repeat. A NULL-means-"not applicable" convention on this column would
+   be the same ambiguity again, on a column that exists specifically to
+   remove an ambiguity.
+2. It is not actually true that only the three volumetric codes need this
+   value. A write path converting a patient-entered figure (in whichever
+   unit their current preference implies) into this table's canonical
+   mL/kg has to know the entry system to perform that conversion **at
+   all** — including a weight entered in lb, which still needs converting
+   to canonical kg before it can be stored, even though weight's own
+   *display* rounding (ADR-0005's carve-out) never reads this column back.
+   Every write path this table will ever have already holds this value at
+   insert time, for every code, as a precondition of computing
+   `value_quantity_value` in the first place.
+
+No default value: with zero rows in `observations` as of this migration
+(no P2 write path has landed yet), `NOT NULL` costs nothing today and
+becomes a real data-migration problem — with no recorded entry system to
+backfill from — the first time a row exists without it. This was the
+cheapest moment to add it, and after P2 ships it would not be.
+
+**What P2.S1a's write path is obliged to do with it:** resolve the current
+"which system is this specific value being entered in" fact (normally the
+patient's current `Profile.measurementSystem`, read at write time — not a
+value cached from an earlier request) and write it into this column on
+every INSERT, for every code, including body weight and (once written)
+heart rate. It must never be back-filled or guessed from `Profile
+.measurementSystem` as it stands at RENDER time — that is precisely the
+"canonical unit and entry unit are not the same fact" confusion this
+column exists to prevent, per `convertVolumeForDisplay`'s own doc comment.
+
+**Not a FHIR field.** FHIR R4 `Observation` has no "entered measurement
+system" element. `valueQuantity.unit`/`.code` on the wire are always the
+canonical unit (ADR-0004) regardless of what this column says — a `Bundle`
+assembled by the export module needs no change to keep emitting correct
+FHIR from this table. This column is app-native provenance the export
+module is not obliged to surface at all; see
+`design-specs/data-model/fhir-rxnorm-integration.md` for whether/how a
+future export might carry it as a non-standard `extension`.
+
+**Verified, not assumed: no new `GRANT` needed.** See "Role split" below
+for the empirical check.
 
 **Deliberately not in this table yet:** urine color as a coded
 `component` (arrives with P3.S2's urine-color feature) and resting heart
@@ -287,6 +395,28 @@ writing this migration:
   either. It runs the same one-line `ALTER ROLE` itself, as the owner
   connection, with a throwaway per-test password, before connecting as the
   runtime role. See `prisma.integration.spec.ts`.
+
+**Follow-up (`fix/entered-measurement-system`): a new column on an
+existing table needed no new `GRANT`, and this was verified, not
+assumed.** ADR-0011's "no blanket `ALTER DEFAULT PRIVILEGES`" rule is
+about a *new table* inheriting nothing until granted explicitly —
+Postgres has no per-table default-privilege mechanism that would
+auto-grant a freshly created table, which is why every table above has its
+own explicit `GRANT` line. A *new column* on an *existing* table is a
+different mechanism entirely: the unqualified `GRANT SELECT, INSERT,
+UPDATE ON "observations" TO "ostomy_runtime"` above names no column list,
+so it applies to the table's columns as a set — including
+`entered_measurement_system`, added afterward by `ALTER TABLE ... ADD
+COLUMN`. Verified against a real Postgres 17 container: applied
+`20260905000000_init_schema_core`, then the new migration on top, with
+**zero** `GRANT` statements added by the new migration, and confirmed the
+runtime role could `INSERT` a row naming `entered_measurement_system`
+explicitly, `SELECT` it back, and `UPDATE` it — and that
+`information_schema.role_table_grants` for `(ostomy_runtime,
+observations)` was still exactly `{INSERT, SELECT, UPDATE}`, byte-for-byte
+unchanged from before the column existed. The `audit_events` grant model
+(`SELECT`/`INSERT`, no `UPDATE`/`DELETE`) is untouched — this migration
+does not touch that table.
 
 **A real cost this design accepts, worth flagging explicitly:** because a
 migration is static SQL with no equivalent of psql's client-side `-v`
@@ -651,4 +781,10 @@ estimated entry would additionally carry
 `"method": { "coding": [{ "system": "http://snomed.info/sct", "code": "<TODO(code-unverified)>" }] }`
 once that code is resolved. `medication_administrations` entries
 (`MedicationAdministration` resources, RxNorm-coded) are not representable
-yet — that table does not exist.
+yet — that table does not exist. `entered_measurement_system` (added by
+the `fix/entered-measurement-system` follow-up migration) deliberately
+does **not** appear anywhere in this `Bundle` — it has no FHIR element to
+map to, and `valueQuantity` is always the canonical unit regardless of
+what system the value was entered in. See "Entered measurement system"
+above for whether a future export might carry it as a non-standard
+`extension`.
