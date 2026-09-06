@@ -36,6 +36,7 @@ function validEnv(): NodeJS.ProcessEnv {
     OBJECT_STORAGE_ACCESS_KEY_ID: 'test-access-key',
     OBJECT_STORAGE_SECRET_ACCESS_KEY: 'test-secret-key',
     OBJECT_STORAGE_FORCE_PATH_STYLE: 'true',
+    DATABASE_URL: 'postgresql://ostomy_runtime:test-password@localhost:5432/ostomy_test',
   };
 }
 
@@ -93,6 +94,27 @@ describe('loadConfig', () => {
     env.OBJECT_STORAGE_FORCE_PATH_STYLE = 'sometimes';
 
     expect(() => loadConfig(env)).toThrow(ConfigValidationError);
+  });
+
+  it('parses the runtime-role database URL (ADR-0011 — never the owner/migration DSN)', () => {
+    const config = loadConfig(validEnv());
+
+    expect(config.databaseUrl).toBe(
+      'postgresql://ostomy_runtime:test-password@localhost:5432/ostomy_test',
+    );
+  });
+
+  it('fails with a clear, field-naming message when DATABASE_URL is missing', () => {
+    const env = validEnv();
+    delete env.DATABASE_URL;
+
+    try {
+      loadConfig(env);
+      expect.unreachable('loadConfig should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigValidationError);
+      expect((error as Error).message).toContain('databaseUrl');
+    }
   });
 
   it('fails when the patient and admin issuers are the same — the identity-layer boundary must not degrade to a single OIDC config by accident', () => {

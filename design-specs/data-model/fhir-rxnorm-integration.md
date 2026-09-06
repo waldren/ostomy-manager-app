@@ -1,15 +1,86 @@
 # FHIR & RxNorm Integration Notes
 
-Working notes on the data-model mapping approach described in the SRS (`design-specs/requirements/Ostomy_App_Specification_v1.pdf`).
+Working notes on the data-model mapping approach described in
+`design-specs/requirements/SRS_v2.md` §4.4. (Previously this pointed at
+`Ostomy_App_Specification_v1.pdf` — that PDF is historical reference only
+per `CLAUDE.md`; the pointer was stale and is fixed here, per implementation
+plan finding F3.)
 
 ## FHIR mapping
-- Output and intake logs map to the FHIR R4 `Observation` resource.
-- The "Measured vs. Estimated" distinction is stored as an explicit `Observation.method` attribute, using the appropriate SNOMED CT code for "Estimation technique" when estimated.
-- JSON payloads should use FHIR-standard field names directly (e.g. `resourceType: "Observation"`, `valueQuantity.value`) rather than a custom schema that's mapped later.
+
+- Output, intake, voided urine, body weight, and (later) resting heart rate
+  all map to the FHIR R4 `Observation` resource, in one relational
+  `observations` table distinguished by `code` — never a separate table per
+  entry type. See `apps/api/prisma/schema.prisma`'s `Observation` model
+  (P1.S3) for the exact column-to-FHIR-field mapping and
+  `design-specs/data-model/p1-s3-schema-coverage.md` for the full coverage
+  note.
+- The "Measured vs. Estimated" distinction is stored as an explicit
+  `Observation.method` attribute, using the SNOMED CT code for "Estimation
+  technique" when estimated, for **volumetric entries only** — body weight
+  and resting heart rate leave `method` unpopulated (SRS §4.4).
+- JSON payloads use FHIR-standard field names directly (e.g.
+  `resourceType: "Observation"`, `valueQuantity.value`) rather than a
+  custom schema mapped later.
 
 ## RxNorm / medication
-- Medication records are stored using RxNorm Concept Unique Identifiers (RXCUIs).
-- The UI presents patient-friendly terminology; the backend maps patient selections to RXCUIs so data is semantically interoperable with provider EHRs.
+
+- Medication records are stored using RxNorm Concept Unique Identifiers
+  (RXCUIs), in a separate `medication_administrations` table (FHIR
+  `MedicationAdministration`) — not built yet; arrives with the medication
+  feature per the implementation plan.
+- The UI presents patient-friendly terminology; the backend maps patient
+  selections to RXCUIs so data is semantically interoperable with provider
+  EHRs.
+
+## Verified LOINC codes
+
+Looked up rather than guessed, per the standing rule that a wrong LOINC
+code is a silent, durable data-quality defect. Each was cross-checked
+against a second independent mirror of the LOINC database (`findacode.com`,
+which republishes LOINC's own Component/Property/Time/System/Scale/Class
+fields) after `loinc.org` itself returned HTTP 403 to automated fetches;
+where a code is also used in a published FHIR profile (US Core), that is
+noted as additional corroboration.
+
+| Code       | Long common name                                                  | Used for                                    | Verified via |
+| ---------- | ------------------------------------------------------------------ | -------------------------------------------- | ------------ |
+| `79560-9`  | Fluid output gastrointestinal ostomy [Volume] Measured             | Stoma output                                 | loinc.org / findacode.com — Component "Fluid output.gastrointestinal ostomy", Property Vol, Time Pt, System "Gastrointestinal system", Scale Qn, Class IO_OUT.MOLEC |
+| `9000-1`   | Fluid intake oral Measured                                         | Fluid intake                                 | loinc.org / findacode.com — Component "Fluid intake.oral", Property Vol, Time Pt, System "Upper GI tract", Scale Qn, Class IO_IN.MOLEC |
+| `9187-6`   | Urine output                                                        | Voided urine (point-in-time)                 | loinc.org / findacode.com — Component "Fluid output.urine", Property Vol, Time Pt (spot/random), System "Urinary tract", Scale Qn, Class IO_OUT.MOLEC |
+| `29463-7`  | Body weight                                                         | Body weight (already cited in `CLAUDE.md`)   | loinc.org / findacode.com; also the code used by the FHIR US Core Body Weight profile |
+| `8867-4`   | Heart rate                                                           | Resting heart rate (already cited in `CLAUDE.md`; not yet written by any endpoint) | loinc.org / findacode.com; also the code used by the FHIR US Core Heart Rate profile |
+
+Notes on the LOINC-vs-app-model mismatch worth flagging for a future
+reader: LOINC itself publishes separate codes for the *Measured* and
+*Estimated* variants of some of these components (e.g. `9000-1` "...
+Measured" vs `8999-5` "... Estimated" for oral fluid intake). This
+application deliberately does **not** follow that split — the
+Measured/Estimated distinction is carried once, uniformly, as
+`Observation.method` (CLAUDE.md), so every volumetric entry uses the single
+"Measured"-named code above regardless of which toggle position the patient
+selected. Checked specifically for `79560-9` (gastrointestinal ostomy
+output): no separate "Estimated" LOINC code for that component/time-aspect
+combination was found, so there is no unused alternative being left on the
+table there either way.
 
 ## Open questions
-_TBD — exact SNOMED CT code(s) to use for estimation technique, which RxNorm subset/API to query, versioning strategy for FHIR resources as the schema evolves._
+
+- **SNOMED CT code for "Estimation technique" (`Observation.method`) —
+  still unresolved.** Do not invent a number here. `packages/core` (P1.S4)
+  carries this as `ESTIMATION_METHOD_CODE` with an explicit
+  `TODO(code-unverified)` marker; `apps/api/prisma/schema.prisma`'s
+  `Observation.method` column doc comment points back to this file.
+- Which RxNorm subset/API to query for medication lookups — not yet
+  scoped; medications are out of P1.S3's scope entirely.
+- Versioning strategy for FHIR resources as the schema evolves — not yet
+  decided; the FHIR export module itself (assembling `Bundle` resources on
+  demand) is not built yet either. See
+  `design-specs/data-model/p1-s3-schema-coverage.md` for what a `Bundle`
+  from the P1.S3 tables would look like once it is.
+- Resting heart rate's own coded components (measurement source,
+  resting-conditions flag) and voided urine's coded color component (SRS
+  §4.4) are deliberately not part of the P1.S3 `observations` table shape —
+  they arrive as additive `ALTER TABLE` migrations with their own features,
+  per the implementation plan's "deliberately partial" instruction for that
+  sprint.

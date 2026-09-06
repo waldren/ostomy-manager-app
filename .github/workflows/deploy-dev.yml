@@ -118,10 +118,19 @@ jobs:
       # actually runs; the SHA tag is what makes rollback possible on a host
       # with no registry (retain the previous few, per "Prune old images"
       # below, rather than pulling an older tag from anywhere).
+      #
+      # `ostomy/api-migrate` (CI-audit follow-up to P1.S3) is included here
+      # alongside `ostomy/api`: infra/docker/api.Dockerfile's `migrate`
+      # stage now builds a genuinely separate image (see
+      # infra/docker-compose.yml's `migrate` service comment), not a second
+      # tag of the same one — leaving it out of this loop would mean it
+      # never gets a SHA tag and, more importantly, never enters the "keep
+      # last five" prune loop below, so its untagged predecessors would
+      # accumulate on this host's disk indefinitely.
       - name: Tag images with the short commit SHA
         run: |
           short_sha=$(git rev-parse --short HEAD)
-          for repo in ostomy/api ostomy/web ostomy/admin; do
+          for repo in ostomy/api ostomy/api-migrate ostomy/web ostomy/admin; do
             docker tag "$repo:dev-latest" "$repo:$short_sha"
           done
 
@@ -177,7 +186,7 @@ jobs:
       # has looked at it.
       - name: Prune old images (keep last five SHA tags per app)
         run: |
-          for repo in ostomy/api ostomy/web ostomy/admin; do
+          for repo in ostomy/api ostomy/api-migrate ostomy/web ostomy/admin; do
             # `docker images --format` emits a bare `<none>` tag for a
             # dangling image with no name — a build's superseded
             # intermediate layers, not a rollback candidate. Left in, it

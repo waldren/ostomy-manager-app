@@ -57,6 +57,9 @@ function testConfig(): AppConfig {
     port: 3000,
     logLevel: 'silent',
     oidcClockToleranceSeconds: 30,
+    // Deliberately unreachable — see app.module.spec.ts's identical field
+    // for why (PrismaService is not part of AppModule's graph yet).
+    databaseUrl: 'postgresql://ostomy_runtime:unused@localhost:5432/unused',
     oidc: {
       issuer: 'https://mock-oidc.test/patient-issuer',
       jwksUri: 'https://mock-oidc.test/patient-issuer/jwks',

@@ -79,6 +79,13 @@ export const rawEnvSchema = z.object({
   oidc: oidcSchema,
   adminOidc: oidcSchema,
 
+  // The RUNTIME role's DSN (ADR-0011) — the only one the running API
+  // process ever connects with. The migration/owner role's DSN is a
+  // separate, CLI-only concern (apps/api/prisma.config.ts,
+  // infra/docker-compose.yml's `migrate` service); it is never read by
+  // application code, so it has no field here.
+  databaseUrl: urlString('databaseUrl'),
+
   objectStorage: z.object({
     endpoint: urlString('endpoint'),
     region: z.string().min(1, 'region is required'),
