@@ -2,7 +2,7 @@
 
 Shared validation, unit conversion, Daily Net Fluid Balance classification, and the i18n catalog — the shared kernel consumed by `apps/api` and both patient clients (SRS §3.8; [ADR-0007](../../design-specs/decisions/0007-packages-core-ownership.md)).
 
-This package is authored per-path, not as a whole. See ADR-0007 for the full ownership table. This sprint (P1.S4) covers exactly:
+This package is authored per-path, not as a whole. See ADR-0007 for the full ownership table. The subpaths that exist today:
 
 | Path                            | Contents                                                                                 |
 | -------------------------------- | ----------------------------------------------------------------------------------------- |
@@ -11,17 +11,19 @@ This package is authored per-path, not as a whole. See ADR-0007 for the full own
 | `src/hydration`                  | The Daily Net Fluid Balance classification and computation (SRS §3.5, §3.7): `netDailyFluidBalanceMl` is total intake MINUS total stoma output (never a sum) — `NET_FLUID_BALANCE_INTAKE_LOINC_CODES` and `..._OUTPUT_LOINC_CODES` are separate sets so the sign is structural. Voided urine, weight, and heart rate are named exclusions. LOINC literals (`loincCodes.ts`) are module-internal, not re-exported. Nothing beyond what P2 needs — the composite hydration status is P6/P7, not here. |
 | `src/i18n`                       | The shared English catalog ([ADR-0006](../../design-specs/decisions/0006-i18n-library-and-shared-catalog.md)): `validationErrors`, `validationWarnings`, `redFlags`, `clinicalCaveats` (reserved, empty until P7), and `common` as separate namespaces, plus `Intl`-based date/time/number/unit formatters — `formatVolumeQuantity`/`formatWeightQuantity` source unit wording from `Intl`'s `style: 'unit'` (with a `unitDisplay: 'short' \| 'long'` option for accessible names), not a hand-written string. |
 
-`src/fhir` (owned by `fhir-data-modeler`), `src/sync` (owned by `nestjs-api-developer`), and `src/api-client` (generated from OpenAPI) do not exist yet and are out of this sprint's scope — see ADR-0007's conflict procedure before adding to them.
+| `src/sync`                       | The sync wire contract types (P2.S0) — `docs/sync-contract.md`, implementing [ADR-0001](../../design-specs/decisions/0001-sync-contract-and-conflict-semantics.md). Push request/operations, the three-status result union (`accepted` / `superseded` / `rejected`), the delta cursor request/response, change and tombstone entries, the `Observation` payload, and the §6.2 reason codes. `serverSequence` and `appliedServerSequence` are branded **strings**, never numbers (§7.3). Four contract invariants are structural, each with a `*.type-test.ts` compile-time proof: a rejection has no field a clinical value could occupy (§6.3), `appliedServerSequence` is absent on a rejection rather than optional everywhere (§3.6), a tombstone has no `payload` property at all (§5.2), and a push result cannot express a Tier 2 outcome (§6.2). Reason codes reuse `TIER1_RULE_CODE` rather than restating it. No thresholds: `SYNC_PUSH_MAX_OPERATIONS`, the delta page size and `sync_clock_skew_allowance_seconds` are configuration. |
+
+`src/fhir` (owned by `fhir-data-modeler`) and `src/api-client` (generated from OpenAPI) do not exist yet — see ADR-0007's conflict procedure before adding to them.
 
 ## Module system (ADR-0010)
 
 This package is ESM (`"type": "module"`), and its built `dist/` output is the **first ESM package the CommonJS `apps/api` imports**, via Node's `require(esm)`. That capability throws `ERR_REQUIRE_ASYNC_MODULE` if the required module's entry graph contains top-level await — so nothing under `src/` may use it, directly or transitively. Vitest transforms everything to ESM and cannot see this; only running the built output proves it.
 
-Root `pnpm verify` includes `verify:core-require`, which builds this package and has `apps/api`'s own CommonJS runtime `require()` its four subpath exports — see `apps/api/scripts/require-core-smoke.cjs`.
+Root `pnpm verify` includes `verify:core-require`, which builds this package and has `apps/api`'s own CommonJS runtime `require()` its subpath exports — see `apps/api/scripts/require-core-smoke.cjs`. **That script currently covers four of the five subpaths: `./sync` is not in it.** Adding the line is an `apps/api` change and P2.S0 was scoped out of `apps/api/**`, so it is owed by the next sprint that touches that workspace; `./sync` was verified to load under `require()` by hand at P2.S0.
 
 ## Subpath exports only — no root barrel
 
-There is no `"."` export. Each owned area (`./units`, `./validation`, `./hydration`, `./i18n`) is an independent entry point; future owners add their own (`./fhir`, `./sync`) without needing to touch a shared barrel. This is deliberate: `packages/config/eslint/index.js`'s admin-boundary rule already treats an all-encompassing `@ostomy/core` specifier as the thing to guard against, since a root barrel would launder every patient-scoped type through one import the zero-PHI admin console could otherwise reach for.
+There is no `"."` export. Each owned area (`./units`, `./validation`, `./hydration`, `./i18n`, `./sync`) is an independent entry point; future owners add their own (`./fhir`) without needing to touch a shared barrel. This is deliberate: `packages/config/eslint/index.js`'s admin-boundary rule already treats an all-encompassing `@ostomy/core` specifier as the thing to guard against, since a root barrel would launder every patient-scoped type through one import the zero-PHI admin console could otherwise reach for.
 
 ## Commands
 
