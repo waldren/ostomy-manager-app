@@ -30,7 +30,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // This file is plain CommonJS, run with plain `node` (not compiled, not
 // bundled), from inside apps/api, resolving `@ostomy/core`'s subpaths
 // through apps/api's own node_modules (pnpm workspace link) exactly the
-// way the running API would. If any of these four `require()` calls ever
+// way the running API would. If any of these five `require()` calls ever
 // throws, this script's non-zero exit fails `pnpm verify`.
 //
 // `require()` here is the point of the file, not a style slip — the
@@ -41,3 +41,4 @@ require('@ostomy/core/validation');
 require('@ostomy/core/units');
 require('@ostomy/core/hydration');
 require('@ostomy/core/i18n');
+require('@ostomy/core/sync');
