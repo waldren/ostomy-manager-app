@@ -182,18 +182,6 @@ export function createApiClient(options: ApiClientOptions) {
   }
 
   return {
-    adminAuth: {
-      /**
-       * Returns the authenticated admin subject. Stub only.
-       */
-      get: (): Promise<void> =>
-        request<void>({
-          method: 'GET',
-          path: `/api/v1/admin/auth-stub`,
-          requiresAuth: true,
-        }),
-    },
-
     auth: {
       /**
        * Returns the authenticated patient subject. Stub only.

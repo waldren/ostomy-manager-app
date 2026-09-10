@@ -69,3 +69,72 @@ describe('ObservationQueryPipe', () => {
     expect(() => pipe.transform({ limit: '-5' })).toThrow(ObservationRejectedException);
   });
 });
+
+/**
+ * The body pipe already refuses an unrecognized key (§6.2). The query string
+ * silently dropped one, which is the same data-loss path with the same lack
+ * of a signal — and worse in effect, because the request still returns 200
+ * with a full, unfiltered list.
+ */
+describe('unrecognized query parameters are refused, not ignored', () => {
+  it('rejects a typo of a real parameter rather than returning an unfiltered list', () => {
+    // The realistic case: `effectiveDateFrom` for `effectiveDateTimeFrom`.
+    expect(() => new ObservationQueryPipe().transform({ effectiveDateFrom: '2026-09-01' })).toThrow(
+      ObservationRejectedException,
+    );
+  });
+
+  it('never echoes the offending key, which is client-supplied content (§6.3)', () => {
+    try {
+      new ObservationQueryPipe().transform({ patientNickname: 'Marjorie-4471' });
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      const rejection = error as ObservationRejectedException;
+      expect(rejection.getStatus()).toBe(400);
+      expect(rejection.details).toEqual([
+        { field: 'payload', reasonCode: 'PAYLOAD_FIELD_UNRECOGNIZED' },
+      ]);
+      expect(JSON.stringify(rejection.getResponse())).not.toContain('Marjorie');
+      expect(JSON.stringify(rejection.getResponse())).not.toContain('patientNickname');
+    }
+  });
+
+  it('still accepts every recognized parameter together', () => {
+    expect(() =>
+      new ObservationQueryPipe().transform({
+        effectiveDateTimeFrom: '2026-09-01T00:00:00.000Z',
+        effectiveDateTimeTo: '2026-09-30T00:00:00.000Z',
+        limit: '50',
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe('an inverted date range is refused rather than rendering as "no entries"', () => {
+  it('rejects from > to', () => {
+    expect(() =>
+      new ObservationQueryPipe().transform({
+        effectiveDateTimeFrom: '2026-09-30T00:00:00.000Z',
+        effectiveDateTimeTo: '2026-09-01T00:00:00.000Z',
+      }),
+    ).toThrow(ObservationRejectedException);
+  });
+
+  it('allows from === to, which is a legitimate single-instant query', () => {
+    expect(() =>
+      new ObservationQueryPipe().transform({
+        effectiveDateTimeFrom: '2026-09-01T00:00:00.000Z',
+        effectiveDateTimeTo: '2026-09-01T00:00:00.000Z',
+      }),
+    ).not.toThrow();
+  });
+
+  it('allows either bound on its own', () => {
+    expect(() =>
+      new ObservationQueryPipe().transform({ effectiveDateTimeFrom: '2026-09-01T00:00:00.000Z' }),
+    ).not.toThrow();
+    expect(() =>
+      new ObservationQueryPipe().transform({ effectiveDateTimeTo: '2026-09-01T00:00:00.000Z' }),
+    ).not.toThrow();
+  });
+});

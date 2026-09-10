@@ -27,7 +27,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { Injectable, type PipeTransform } from '@nestjs/common';
 import { z } from 'zod';
 
-import { OBSERVATION_QUERY_FIELD, queryInvalid } from './observation-rejection';
+import { OBSERVATION_QUERY_FIELD, queryInvalid, queryUnrecognized } from './observation-rejection';
 
 /** Page size defaults. Server configuration, not a clinical threshold. */
 export const OBSERVATION_LIST_DEFAULT_LIMIT = 100;
@@ -47,19 +47,57 @@ export class ObservationQueryPipe implements PipeTransform<unknown, ObservationL
     const raw: Record<string, unknown> =
       typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
 
+    // Rejected, not ignored — the same rule `observation-body.pipe.ts`
+    // applies to the body, for the same reason (§6.2
+    // PAYLOAD_FIELD_UNRECOGNIZED): silently dropping a parameter a newer
+    // client thought it was sending is a data-loss path with no signal on
+    // either side. Reading three known keys off `req.query` and discarding
+    // the rest meant a typo'd `effectiveDateFrom`, or a `cursor` from a
+    // client this server predates, returned **200 with the full unfiltered
+    // list**. On a history screen the patient sees entries outside the
+    // window they asked for and has no way to tell.
+    for (const key of Object.keys(raw)) {
+      if (!RECOGNIZED_QUERY_KEYS.has(key)) {
+        throw queryUnrecognized();
+      }
+    }
+
+    const effectiveDateTimeFrom = parseInstant(
+      raw.effectiveDateTimeFrom,
+      OBSERVATION_QUERY_FIELD.EFFECTIVE_DATE_TIME_FROM,
+    );
+    const effectiveDateTimeTo = parseInstant(
+      raw.effectiveDateTimeTo,
+      OBSERVATION_QUERY_FIELD.EFFECTIVE_DATE_TIME_TO,
+    );
+
+    // An inverted range is a client bug that otherwise renders as "you have
+    // no entries" — indistinguishable, to a patient, from having actually
+    // logged nothing. Refused so it is correctable.
+    if (
+      effectiveDateTimeFrom !== undefined &&
+      effectiveDateTimeTo !== undefined &&
+      effectiveDateTimeFrom.getTime() > effectiveDateTimeTo.getTime()
+    ) {
+      throw queryInvalid(OBSERVATION_QUERY_FIELD.EFFECTIVE_DATE_TIME_FROM);
+    }
+
     return {
-      effectiveDateTimeFrom: parseInstant(
-        raw.effectiveDateTimeFrom,
-        OBSERVATION_QUERY_FIELD.EFFECTIVE_DATE_TIME_FROM,
-      ),
-      effectiveDateTimeTo: parseInstant(
-        raw.effectiveDateTimeTo,
-        OBSERVATION_QUERY_FIELD.EFFECTIVE_DATE_TIME_TO,
-      ),
+      effectiveDateTimeFrom,
+      effectiveDateTimeTo,
       limit: parseLimit(raw.limit),
     };
   }
 }
+
+/**
+ * Every query parameter this release accepts. Adding one is additive under
+ * §8; removing one is not, so a parameter retired later should keep being
+ * accepted and ignored rather than starting to 400 a fielded client.
+ */
+const RECOGNIZED_QUERY_KEYS: ReadonlySet<string> = new Set<string>(
+  Object.values(OBSERVATION_QUERY_FIELD),
+);
 
 function parseInstant(
   raw: unknown,

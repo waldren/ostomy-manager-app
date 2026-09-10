@@ -115,7 +115,12 @@ Files, in the order a request touches them:
 
 - `observation-body.pipe.ts` / `observation-query.pipe.ts` — parse and validate before a handler sees
   anything. The body pipe is where "the payload is untrusted input" is enforced, including on the sync
-  path later.
+  path later. **Both refuse an unrecognized key rather than ignoring it** (§6.2
+  `PAYLOAD_FIELD_UNRECOGNIZED`), reporting `field: "payload"` and never the key itself, which is
+  client-supplied content. The query pipe silently dropped unknown parameters until P2.S1a's review: a
+  typo'd `effectiveDateFrom` returned `200` with the full unfiltered list, so the patient saw entries
+  outside the window they asked for with no way to tell. An inverted date range is refused for the
+  same reason — it otherwise renders as "you have no entries.
 - `observation-payload.ts` — the zod schemas. FHIR field names (`valueQuantity.value`,
   `effectiveDateTime`) are the accepted spelling and a non-FHIR spelling of the same data is **refused**
   rather than accepted alongside it, so the wire format cannot quietly fork.
@@ -129,6 +134,11 @@ Files, in the order a request touches them:
   offending clinical value back (sync-contract §6.3), which is also what keeps rejections out of logs.
 - `observation-persistence.error.ts` — the same wrapping `AuditService` does, for the same reason: a raw
   `PrismaClientValidationError`'s `.message` renders the offending `data`, i.e. the clinical value.
+  Also `isUniqueConstraintViolationOn(error, model)`, which is scoped to a **model** on purpose: the
+  write transaction contains two inserts, so an unqualified `P2002` test reports an *audit* constraint
+  violation as a `409` on the observation id — and an offline queue reads a `409` as permanent and
+  stops retrying, losing the patient's entry silently. An `AuditPersistenceError` is rethrown unchanged
+  rather than re-wrapped, so an audit-write failure stays distinguishable in the incident log.
 
 Three rules that are easy to undo by accident:
 

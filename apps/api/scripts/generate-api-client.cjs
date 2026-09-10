@@ -139,6 +139,23 @@ function indent(text, depth) {
     .join('\n');
 }
 
+/**
+ * Renders `oneOf`/`anyOf`/`allOf` members into a union or intersection.
+ *
+ * Parenthesised whenever there is more than one member: `A | B | null` reads
+ * correctly by luck, but `ReadonlyArray<A | B>` and a trailing `& C` do not,
+ * and the `nullable` suffix below appends without knowing what it is
+ * appending to.
+ */
+function renderComposite(members, separator, depth, keyword) {
+  if (!Array.isArray(members) || members.length === 0) {
+    throw new Error(`A schema declares an empty \`${keyword}\`, which describes no value.`);
+  }
+  const rendered = members.map((member) => renderType(member, depth));
+  const unique = [...new Set(rendered)];
+  return unique.length === 1 ? unique[0] : `(${unique.join(separator)})`;
+}
+
 function renderObject(schema, depth) {
   const properties = schema.properties ?? {};
   const required = new Set(schema.required ?? []);
@@ -180,6 +197,14 @@ function renderType(schema, depth = 0) {
   let rendered;
   if (Array.isArray(schema.enum) && schema.enum.length > 0) {
     rendered = schema.enum.map((value) => JSON.stringify(value)).join(' | ');
+  } else if (Array.isArray(schema.oneOf) || Array.isArray(schema.anyOf)) {
+    // `z.union` and `z.discriminatedUnion` both land here. Rendered as a
+    // TypeScript union, parenthesised so a later `| null` from `nullable`
+    // cannot bind to only the last member.
+    const members = schema.oneOf ?? schema.anyOf;
+    rendered = renderComposite(members, ' | ', depth, 'oneOf/anyOf');
+  } else if (Array.isArray(schema.allOf)) {
+    rendered = renderComposite(schema.allOf, ' & ', depth, 'allOf');
   } else if (schema.type === 'array') {
     rendered = `ReadonlyArray<${renderType(schema.items ?? {}, depth)}>`;
   } else if (schema.type === 'object' || schema.properties) {
@@ -191,7 +216,15 @@ function renderType(schema, depth = 0) {
   } else if (schema.type === 'boolean') {
     rendered = 'boolean';
   } else {
-    rendered = 'unknown';
+    // Fails loudly, exactly as the `$ref` branch above does and for the same
+    // reason. This used to emit `unknown`: the output compiled, `pnpm verify`
+    // stayed green, and every consumer of the field silently lost type
+    // safety with no signal anywhere. For a clinical payload that is the
+    // worst available outcome — a wrong client that looks right.
+    throw new Error(
+      `Unsupported schema shape, refusing to emit \`unknown\` for it: ${JSON.stringify(schema)}. ` +
+        'Add a branch to renderType() in scripts/generate-api-client.cjs.',
+    );
   }
 
   if (schema.nullable === true) {
@@ -246,12 +279,48 @@ function successResponse(operation) {
   };
 }
 
+/**
+ * Routes the patient client must not contain.
+ *
+ * The admin API is backed by a Cognito pool disjoint from the patient pool
+ * (SRS_v2 §4.6, ADR-0008) — the boundary is enforced at the identity layer
+ * rather than by authorization logic. But `createApiClient` has ONE token
+ * supplier, documented as "the patient access token", and every operation
+ * marked `requiresAuth` draws from it. Emitting `/api/v1/admin/**` into this
+ * client therefore produces a method that can only ever be called with a
+ * patient bearer token against an admin endpoint.
+ *
+ * That is not a server-side hole — `AdminJwtAuthGuard` is bound to a
+ * different issuer and audience, and `route-guard-coverage.spec.ts` proves
+ * the guards never mix — but it is one token supplier spanning two identity
+ * pools, in a client whose stated boundary is structural. Today it is one
+ * stub route; at P3.S3 it is the real value-set and threshold surface, and
+ * by P8 it is the client's published shape.
+ *
+ * Excluded rather than emitted into a second module, deliberately: a
+ * separate admin client needs its own `packages/core` subpath, its own entry
+ * in `packages/config/eslint/index.js`'s admin allow-list, and an owner
+ * under ADR-0007. `apps/admin` does not exist yet (P8.S1), so inventing that
+ * policy now would be designing for a consumer nobody has written. The
+ * sprint that builds the admin API surface for real (P3.S3) owns it.
+ *
+ * The exclusion is reported on stdout, never silent — a generated client
+ * quietly missing an endpoint is its own kind of defect.
+ */
+const EXCLUDED_ROUTE_PREFIX = '/api/v1/admin';
+
 function collectOperations(document) {
   const operations = [];
+  const excluded = [];
   for (const [route, pathItem] of Object.entries(document.paths ?? {})) {
     for (const method of HTTP_METHODS) {
       const operation = pathItem[method];
       if (!operation) continue;
+
+      if (route.startsWith(EXCLUDED_ROUTE_PREFIX)) {
+        excluded.push(`${method.toUpperCase()} ${route}`);
+        continue;
+      }
 
       const tag = operation.tags?.[0] ?? 'default';
       const group = camelCase(tag);
@@ -300,6 +369,14 @@ function collectOperations(document) {
       });
     }
   }
+
+  if (excluded.length > 0) {
+    console.log(
+      `Excluded ${excluded.length} admin operation(s) from the patient client ` +
+        `(disjoint identity pool, ADR-0008): ${excluded.join(', ')}`,
+    );
+  }
+
   return operations;
 }
 
@@ -659,7 +736,17 @@ function reportDrift(emitted) {
   console.log(`API client is up to date with ${DOCUMENT_PATH} (${emitted.size} files checked)`);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+// Only when run as a script. Without this guard the generator executes on
+// `require()`, which is why it had no tests: importing it to exercise
+// `renderType()` would regenerate the client as a side effect.
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
+// Exported for `generate-api-client.spec.ts`. The schema-to-TypeScript
+// rendering is the part with real branching and the part whose failure mode
+// is silent, so it is the part under test.
+module.exports = { renderType, renderComposite, collectOperations, namedTypes };

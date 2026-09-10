@@ -46,8 +46,33 @@ function errorCodeOf(error: unknown): string | number | undefined {
   return typeof raw === 'string' || typeof raw === 'number' ? raw : undefined;
 }
 
-export function isUniqueConstraintViolation(error: unknown): boolean {
-  return errorCodeOf(error) === UNIQUE_CONSTRAINT_ERROR_CODE;
+function modelNameOf(error: unknown): string | undefined {
+  const meta = (error as { meta?: { modelName?: unknown } } | null | undefined)?.meta;
+  return typeof meta?.modelName === 'string' ? meta.modelName : undefined;
+}
+
+/**
+ * A unique-constraint violation raised by a write to `model`, and not by any
+ * other write in the same transaction.
+ *
+ * The model check is not incidental (P2.S1a review, finding 9).
+ * `insertWithAudit` wraps a `$transaction` containing TWO inserts — the
+ * observation and its audit row — so an unqualified `P2002` test attributes
+ * an **audit** constraint violation to the observation id and returns HTTP
+ * 409 `ENTITY_ID_CONFLICT`. A client's offline queue reads a 409 as a
+ * permanent, non-retryable conflict (`docs/sync-contract.md` §9), so it
+ * stops retrying: an entry the patient made is never persisted, never
+ * surfaced for correction, and the audit failure that actually caused it is
+ * reported as something else entirely.
+ *
+ * `meta.modelName` is absent on some Prisma error shapes, so an unqualified
+ * `P2002` with no model no longer reads as an id conflict — it falls through
+ * to the generic wrap, which is a 500. That is the safe direction: a 500
+ * tells the client the outcome is unknown and to re-push, which is true,
+ * where a wrong 409 tells it to give up, which is not.
+ */
+export function isUniqueConstraintViolationOn(error: unknown, model: string): boolean {
+  return errorCodeOf(error) === UNIQUE_CONSTRAINT_ERROR_CODE && modelNameOf(error) === model;
 }
 
 export class ObservationPersistenceError extends Error {

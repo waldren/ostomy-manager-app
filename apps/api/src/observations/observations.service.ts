@@ -49,7 +49,7 @@ import { SYNC_REASON_CODE } from '@ostomy/core/sync';
 import { validateVolumetricEntry, type VolumetricEntryInput } from '@ostomy/core/validation';
 import type { Request } from 'express';
 
-import { AuditService } from '../audit/audit.service';
+import { AuditPersistenceError, AuditService } from '../audit/audit.service';
 import { stageCommittedAuditEntry } from '../audit/audit-recorder';
 import type { PatientActor } from '../auth/patient-actor';
 import { getRequestId } from '../logging/request-id';
@@ -59,7 +59,7 @@ import { ObservationStatus, type Prisma, type Observation } from '../generated/p
 import { toMeasuredOrEstimated, toStoredMethod } from './estimation-method';
 import {
   ObservationPersistenceError,
-  isUniqueConstraintViolation,
+  isUniqueConstraintViolationOn,
 } from './observation-persistence.error';
 import {
   interpretObservationPayload,
@@ -89,6 +89,14 @@ export const DIRECT_WRITE_REASON_CODE = 'direct_write';
 
 /** `audit_events.entity_type` for an observation. */
 export const OBSERVATION_ENTITY_TYPE = 'observation';
+
+/**
+ * The Prisma model name as it appears in a `PrismaClientKnownRequestError`'s
+ * `meta.modelName`. Used to tell an observation-id collision apart from a
+ * constraint violation raised by the audit insert sharing its transaction —
+ * see `isUniqueConstraintViolationOn`.
+ */
+const OBSERVATION_PRISMA_MODEL = 'Observation';
 
 export interface ObservationCreateResult {
   readonly observation: ObservationResource;
@@ -361,11 +369,28 @@ export class ObservationsService {
         return { row, auditEventId };
       });
     } catch (error) {
-      if (isUniqueConstraintViolation(error)) {
+      // An audit-write failure is already wrapped, already value-free, and
+      // already carries its own diagnostic fields (entityType, action,
+      // actorType). Re-wrapping it as an ObservationPersistenceError would
+      // discard all of that and make "the audit row could not be written" —
+      // the failure this entire apparatus exists to make visible —
+      // indistinguishable from an ordinary insert failure in the incident
+      // log. Rethrown unchanged; the filter still turns it into a bare 500.
+      if (error instanceof AuditPersistenceError) {
+        throw error;
+      }
+
+      if (isUniqueConstraintViolationOn(error, OBSERVATION_PRISMA_MODEL)) {
         // The id belongs to a row that exists — this patient's (a race
         // against the scoped pre-check above) or another patient's (which
         // the scoped pre-check cannot see, by design). Same refusal either
         // way; see `entityIdConflict()`.
+        //
+        // Scoped to the observation model on purpose: this `try` wraps a
+        // transaction containing two inserts, and an unqualified P2002 test
+        // would report an AUDIT constraint violation as a 409 on the
+        // observation id — which an offline queue treats as permanent and
+        // stops retrying. See `isUniqueConstraintViolationOn`.
         throw entityIdConflict();
       }
       throw new ObservationPersistenceError(String(data.id), error);

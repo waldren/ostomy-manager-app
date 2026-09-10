@@ -47,7 +47,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * Both use the same codes and the same field paths.
  */
 import { HttpException, HttpStatus } from '@nestjs/common';
-import { SYNC_REASON_CODE, type SyncFieldPath, type SyncReasonCode } from '@ostomy/core/sync';
+import {
+  SYNC_FIELD_PATH,
+  SYNC_REASON_CODE,
+  type SyncFieldPath,
+  type SyncReasonCode,
+} from '@ostomy/core/sync';
 
 /**
  * Query-parameter names on `GET /observations`. Not sync field paths — sync
@@ -231,6 +236,28 @@ export function queryInvalid(field: ObservationQueryField): ObservationRejectedE
     OBSERVATION_ERROR_CODE.QUERY_INVALID,
     HttpStatus.BAD_REQUEST,
     [{ field, reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID }],
+  );
+}
+
+/**
+ * A query string carrying a parameter this release does not recognise.
+ *
+ * Reports `field: "payload"` and **never the offending key**, exactly as
+ * `PAYLOAD_FIELD_UNRECOGNIZED` requires for a body (§6.2): the key is
+ * client-supplied content, and echoing client-supplied content into a
+ * response the client persists and logs is the shape §6.3 forbids. A client
+ * that sent the parameter already knows which one it sent.
+ */
+export function queryUnrecognized(): ObservationRejectedException {
+  return new ObservationRejectedException(
+    OBSERVATION_ERROR_CODE.QUERY_INVALID,
+    HttpStatus.BAD_REQUEST,
+    [
+      {
+        field: SYNC_FIELD_PATH.PAYLOAD,
+        reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_UNRECOGNIZED,
+      },
+    ],
   );
 }
 
