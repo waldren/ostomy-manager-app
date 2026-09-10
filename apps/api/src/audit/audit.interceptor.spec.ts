@@ -20,7 +20,7 @@ import { firstValueFrom, of, throwError } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AuditInterceptor } from './audit.interceptor';
-import { stageAuditEntry } from './audit-recorder';
+import { stageAuditEntry, stageCommittedAuditEntry } from './audit-recorder';
 
 function fakeAuditService() {
   return { record: vi.fn().mockResolvedValue({ id: 'audit-row-id' }) };
@@ -188,6 +188,135 @@ describe('AuditInterceptor', () => {
         interceptor.intercept(fakeHttpContext(request), handlerReturning({ ok: true })),
       ),
     ).rejects.toThrow(/no staged audit entries/);
+    expect(auditService.record).not.toHaveBeenCalled();
+  });
+
+  // P2.S1a. `ObservationsService.create()` writes its own audit row inside
+  // the PHI write's transaction, so the interceptor must NOT write it again
+  // — `audit_events` has no DELETE grant (ADR-0011), so a duplicate is
+  // permanent — while the route must still satisfy the coverage trip-wire.
+  // Moving the write into the transaction must not cost the check that
+  // catches a PHI write with no audit row at all.
+  // The flag is only a control if it cannot be set without the thing it
+  // asserts. Before this, `stageCommittedAuditEntry()` took the caller's
+  // word, so a handler that forgot `record(ctx, tx)` wrote PHI with no audit
+  // row and passed every trip-wire — the route was decorated, entries were
+  // staged, and the interceptor skipped them all.
+  it.each([
+    ['an empty id', ''],
+    ['a missing id', undefined],
+  ])('refuses to stage a committed entry with %s — the id IS the proof', (_label, id) => {
+    const request: Record<string, unknown> = { id: 'req-unproven' };
+
+    expect(() =>
+      stageCommittedAuditEntry(
+        request as never,
+        {
+          actorType: 'PATIENT',
+          actorId: 'patient-1',
+          action: 'CREATE',
+          entityType: 'observation',
+          entityId: 'entity-1',
+        },
+        id as never,
+      ),
+    ).toThrow(/requires the id returned by AuditService\.record/);
+
+    // And nothing was staged, so the @Audited() trip-wire still fires for
+    // this route rather than being satisfied by a rejected entry.
+    expect(request.auditEntries).toBeUndefined();
+  });
+
+  it('does not re-persist an entry the handler already committed in its own transaction', async () => {
+    const auditService = fakeAuditService();
+    const interceptor = new AuditInterceptor(fakeReflector(true) as never, auditService as never);
+    const request: Record<string, unknown> = { id: 'req-committed' };
+    stageCommittedAuditEntry(
+      request as never,
+      {
+        actorType: 'PATIENT',
+        actorId: 'patient-1',
+        action: 'CREATE',
+        entityType: 'observation',
+        entityId: 'entity-1',
+        afterValue: { valueQuantityValue: 350.5 },
+      },
+      'audit-row-1',
+    );
+
+    const result = await firstValueFrom(
+      interceptor.intercept(fakeHttpContext(request), handlerReturning({ id: 'entity-1' })),
+    );
+
+    // The route passed the trip-wire (no "no staged audit entries" throw)
+    // and nothing was written a second time.
+    expect(result).toEqual({ id: 'entity-1' });
+    expect(auditService.record).not.toHaveBeenCalled();
+  });
+
+  it('still persists ordinary entries staged alongside a committed one', async () => {
+    const auditService = fakeAuditService();
+    const interceptor = new AuditInterceptor(fakeReflector(true) as never, auditService as never);
+    const request: Record<string, unknown> = { id: 'req-mixed' };
+    stageCommittedAuditEntry(
+      request as never,
+      {
+        actorType: 'PATIENT',
+        actorId: 'patient-1',
+        action: 'CREATE',
+        entityType: 'observation',
+        entityId: 'entity-committed',
+        afterValue: { value: 1 },
+      },
+      'audit-row-2',
+    );
+    stageAuditEntry(request as never, {
+      actorType: 'PATIENT',
+      actorId: 'patient-1',
+      action: 'CREATE',
+      entityType: 'observation',
+      entityId: 'entity-staged',
+      afterValue: { value: 2 },
+    });
+
+    await firstValueFrom(
+      interceptor.intercept(fakeHttpContext(request), handlerReturning({ ok: true })),
+    );
+
+    expect(auditService.record).toHaveBeenCalledTimes(1);
+    expect(auditService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ entityId: 'entity-staged' }),
+    );
+  });
+
+  it('does not persist a committed entry on the error path either', async () => {
+    // The mirror image: that transaction either landed with its PHI write or
+    // rolled back with it. Writing it here would claim a write that may
+    // never have happened.
+    const auditService = fakeAuditService();
+    const interceptor = new AuditInterceptor(fakeReflector(true) as never, auditService as never);
+    const request: Record<string, unknown> = { id: 'req-committed-then-failed' };
+    stageCommittedAuditEntry(
+      request as never,
+      {
+        actorType: 'PATIENT',
+        actorId: 'patient-1',
+        action: 'CREATE',
+        entityType: 'observation',
+        entityId: 'entity-1',
+        afterValue: { value: 1 },
+      },
+      'audit-row-3',
+    );
+
+    await expect(
+      firstValueFrom(
+        interceptor.intercept(
+          fakeHttpContext(request),
+          handlerThrowing(new Error('serialization failure')),
+        ),
+      ),
+    ).rejects.toThrow(/serialization failure/);
     expect(auditService.record).not.toHaveBeenCalled();
   });
 

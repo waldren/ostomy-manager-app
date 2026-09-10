@@ -347,7 +347,7 @@ The set of legal `field` values is closed and enumerated in `packages/core/src/s
 
 | `reasonCode` | Raised when |
 | --- | --- |
-| Any `TIER1_RULE_CODE` value — `VALUE_NOT_NUMERIC`, `VALUE_NOT_POSITIVE`, `METHOD_REQUIRED`, `EFFECTIVE_DATE_TIME_IN_FUTURE`, `EFFECTIVE_DATE_TIME_BEFORE_SURGERY` | Server-side re-enforcement of `packages/core`'s Tier 1 rules (AC 13.1 AC3). Returned verbatim, not remapped. |
+| Any `TIER1_RULE_CODE` value — `VALUE_NOT_NUMERIC`, `VALUE_NOT_POSITIVE`, `VALUE_EXCEEDS_MAX_MAGNITUDE`, `VALUE_EXCEEDS_MAX_PRECISION`, `METHOD_REQUIRED`, `EFFECTIVE_DATE_TIME_IN_FUTURE`, `EFFECTIVE_DATE_TIME_BEFORE_SURGERY` | Server-side re-enforcement of `packages/core`'s Tier 1 rules (AC 13.1 AC3). Returned verbatim, not remapped. `VALUE_EXCEEDS_MAX_MAGNITUDE` and `VALUE_EXCEEDS_MAX_PRECISION` (P2.S1a) are the canonical column's representability bounds — a value at or beyond `10^8`, or carrying more than 4 decimal places. Both were previously an HTTP `500`, which §9 tells a client to re-push indefinitely; as Tier 1 rejections they are correctable instead. Neither is clinical: implausible-but-real magnitudes stay Tier 2 and are never rejected. |
 | `CLIENT_TIMESTAMP_OUT_OF_RANGE` | §3.8. |
 | `ENTITY_NOT_FOUND` | An update or delete naming an entity id that exists for no row of this patient's, tombstoned or otherwise (§4). |
 | `ENTITY_ID_CONFLICT` | An entity id that resolves to a row belonging to **another patient** (§2). Not a same-patient create collision — that is an ordinary last-write-wins comparison (§4), not a rejection. |

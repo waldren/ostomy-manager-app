@@ -95,18 +95,13 @@ export interface AuditContext {
    * that produced it, supplied by the caller, not derived from a request
    * object it doesn't have).
    *
-   * FLAGGED, not decided silently: `audit_events` (P1.S3) has no dedicated
-   * correlation-id column, and this sprint does not modify
-   * `apps/api/prisma/` (a concurrent branch owns the only schema change in
-   * flight). `AuditService.record()` therefore nests this value inside
-   * whichever of `beforeValue`/`afterValue` JSON column is populated, rather
-   * than getting a column of its own — see that method's doc comment for
-   * the exact shape and the trade-off. Recorded here so a future reader
-   * does not have to rediscover it, and reported explicitly at the end of
-   * this sprint rather than assumed settled: P2, which owns the real sync
-   * endpoints and therefore the first genuine multi-row-per-request use of
-   * this field, is the natural place for an additive migration giving it a
-   * real column, if that is the decision the project wants to make.
+   * Persisted to the indexed `audit_events.correlation_id` column. It was
+   * not always: P1.S5 flagged the missing column, could not change
+   * `prisma/`, and nested this value inside `beforeValue`/`afterValue`
+   * instead. Migration `20260906203344_add_audit_correlation_id` added the
+   * column, and P2.S1a — the first sprint writing real clinical rows — is
+   * what started writing to it, before the wrapped shape could become
+   * permanent in a table with no UPDATE grant (ADR-0011).
    */
   readonly correlationId?: string;
 }

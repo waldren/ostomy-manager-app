@@ -65,18 +65,22 @@ export class AuditService {
    * a null actor (the sprint's own explicit "must never silently read
    * `undefined` and write a null actor" requirement).
    *
-   * Correlation-id placement (see `AuditContext.correlationId`'s doc comment
-   * for why this exists rather than a dedicated column): nested as
-   * `{ correlationId, entity: <value> }` inside whichever of
-   * `beforeValue`/`afterValue` is populated, preferring `afterValue` (present
-   * for CREATE and UPDATE) and falling back to `beforeValue` (present for
-   * DELETE, where `afterValue` is legitimately absent). This preserves the
-   * existing "NULL means this side genuinely does not apply" reading for the
-   * *other* column in the common CREATE/DELETE cases — only the populated
-   * side gains the wrapper. In the (currently unreached) case where neither
-   * is supplied but a correlation id is, `afterValue` is written as
-   * `{ correlationId, entity: null }` rather than silently dropping the
-   * correlation id.
+   * Correlation-id placement (P2.S1a): the `audit_events.correlation_id`
+   * **column**, indexed, exactly as `prisma/schema.prisma` describes it.
+   *
+   * P1.S5 could not touch `prisma/` and therefore nested this value inside
+   * `beforeValue`/`afterValue` as `{ correlationId, entity: <value> }`; the
+   * follow-up migration `20260906203344_add_audit_correlation_id` added the
+   * column specifically so that this sprint — the first one writing real
+   * clinical rows — would not make the wrapped shape permanent. That column
+   * landed with nothing writing to it, which this method now does. The
+   * wrapper is gone: `beforeValue`/`afterValue` again hold the entity's own
+   * fields and nothing else, which is what makes "reconstruct this record's
+   * history" a straight column read rather than an unwrapping step every
+   * future reader would have to know about. Nothing needed migrating,
+   * because the only rows ever written in the wrapped shape were synthetic
+   * test scaffolding — and `audit_events` has no UPDATE grant, so had real
+   * rows existed they could never have been normalised (ADR-0011).
    *
    * `tx` (B2, P1.S5 review response): optional `Prisma.TransactionClient`,
    * defaulting to `this.prisma` when omitted. Without it, the PHI write and
@@ -88,13 +92,16 @@ export class AuditService {
    * retries, and for the mobile sync queue that means re-pushing an
    * operation whose write already landed. Passing `tx` does not change
    * either behaviour by itself: `AuditInterceptor` still calls `record()`
-   * after the handler returns, so this sprint deliberately does NOT rewire
-   * its timing. What `tx` buys is the *shape* a handler that owns its own
-   * `$transaction` can use today — call `record(context, tx)` from inside
-   * that transaction so the PHI write and its audit row commit or roll back
-   * together — which is exactly the property P2.S1a's observation writes
-   * and P2.S1b's sync-applied/conflict-loser writes need. Build on this
-   * rather than re-deriving it.
+   * after the handler returns for any entry staged the ordinary way.
+   *
+   * P2.S1a is the first caller to pass it. `ObservationsService.create()`
+   * opens a `$transaction`, writes the observation, calls
+   * `record(context, tx)` inside it, and then stages the entry with
+   * `stageCommittedAuditEntry()` (audit-recorder.ts) so the interceptor
+   * counts it for coverage without writing it twice. Every later PHI write
+   * path — P2.S1b's sync-applied and conflict-loser rows especially, where
+   * one route applies many operations — should follow that shape rather
+   * than re-deriving it.
    */
   async record(context: AuditContext, tx?: Prisma.TransactionClient): Promise<{ id: string }> {
     if (!context.actorId) {
@@ -108,18 +115,8 @@ export class AuditService {
       );
     }
 
-    let beforeValue = toInputJsonValue(context.beforeValue);
-    let afterValue = toInputJsonValue(context.afterValue);
-
-    if (context.correlationId !== undefined) {
-      if (afterValue !== undefined) {
-        afterValue = { correlationId: context.correlationId, entity: afterValue };
-      } else if (beforeValue !== undefined) {
-        beforeValue = { correlationId: context.correlationId, entity: beforeValue };
-      } else {
-        afterValue = { correlationId: context.correlationId, entity: null };
-      }
-    }
+    const beforeValue = toInputJsonValue(context.beforeValue);
+    const afterValue = toInputJsonValue(context.afterValue);
 
     const client = tx ?? this.prisma;
     let created: { id: string };
@@ -137,6 +134,7 @@ export class AuditService {
           // so an `undefined` local variable must be left out of `data`
           // entirely via a conditional spread, never assigned in as a value.
           reasonCode: context.reasonCode ?? null,
+          correlationId: context.correlationId ?? null,
           ...(beforeValue !== undefined ? { beforeValue } : {}),
           ...(afterValue !== undefined ? { afterValue } : {}),
         },
@@ -178,6 +176,16 @@ export class AuditService {
  * exists to guarantee.
  */
 export class AuditPersistenceError extends Error {
+  /**
+   * Opts this type's `message` into being logged verbatim by
+   * `ErrorSanitizerFilter` (`http/error-sanitizer.filter.ts`). Safe here by
+   * construction: the message is assembled from `entityId`/`action`/type
+   * names and the original error's `name`/`code` only — never the original
+   * error object, and never its `message`, which for a Prisma validation
+   * error renders the offending `data` verbatim.
+   */
+  readonly phiSafeMessage = true as const;
+
   readonly entityType: string;
   readonly entityId: string;
   readonly action: AuditAction;

@@ -239,7 +239,7 @@ describe.skipIf(!dockerAvailable)(
 
     async function auditRowsFor(entityId: string): Promise<Array<Record<string, unknown>>> {
       const result = await runtimeClient.query(
-        `SELECT actor_type, actor_id, action, entity_type, entity_id, reason_code, before_value, after_value
+        `SELECT actor_type, actor_id, action, entity_type, entity_id, reason_code, correlation_id, before_value, after_value
          FROM audit_events WHERE entity_id = $1`,
         [entityId],
       );
@@ -355,13 +355,17 @@ describe.skipIf(!dockerAvailable)(
             reason_code: 'sync_conflict_loser',
           });
 
-          // Both rows' afterValue nests the same push's correlation id
-          // (AuditService.record()'s documented placement — see that
-          // method's own doc comment for why there is no dedicated column).
-          const appliedAfter = appliedRows[0]!.after_value as { correlationId?: string };
-          const loserAfter = loserRows[0]!.after_value as { correlationId?: string };
-          expect(appliedAfter.correlationId).toBe(pushCorrelationId);
-          expect(loserAfter.correlationId).toBe(pushCorrelationId);
+          // Both rows carry the same push's correlation id in the indexed
+          // `correlation_id` column (P2.S1a). It used to be nested inside
+          // `after_value`; migration 20260906203344_add_audit_correlation_id
+          // gave it a column, and AuditService.record() writes it there.
+          expect(appliedRows[0]!.correlation_id).toBe(pushCorrelationId);
+          expect(loserRows[0]!.correlation_id).toBe(pushCorrelationId);
+
+          // And the JSON columns hold the entity's own fields and nothing
+          // else — no wrapper for a future reader to have to unwrap.
+          expect(appliedRows[0]!.after_value).toEqual({ valueQuantityValue: 150 });
+          expect(loserRows[0]!.after_value).toEqual({ valueQuantityValue: 140 });
         } finally {
           await prismaService.$disconnect();
         }
