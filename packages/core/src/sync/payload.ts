@@ -83,12 +83,25 @@ export type ObservationWireStatus =
  * omitted (§7.2), because an absent key cannot be told apart from a client
  * that does not implement the mandatory Measured/Estimated toggle.
  *
- * Derived from `packages/core`'s own `EstimationMethodCode` rather than
- * written as `string | null`, so that this field and D4 cannot resolve
- * separately. `ESTIMATION_METHOD_CODE` is still `{ resolved: false }`, so
- * no write path can produce a non-null value today; the wire type stays
- * nullable because §7.2 requires the server to be able to *receive* a
- * non-null value from an old or lying client and reject it.
+ * Written in terms of `packages/core`'s own `EstimationMethodCode` so the
+ * two are textually coupled — but be clear about how weak that coupling
+ * currently is, because the aspiration is easy to mistake for a control.
+ * `EstimationMethodCode`'s resolved arm is `{ resolved: true; code: string }`,
+ * so this type collapses to exactly `string | null` today. It does NOT
+ * constrain anything, and when D4 resolves to a literal SNOMED code
+ * nothing here will change or complain.
+ *
+ * `method-tracks-d4.type-test.ts` pins that: it asserts the collapse holds
+ * and fails the moment D4 narrows the resolved arm, which is the point at
+ * which someone must come back and decide whether the wire type should
+ * narrow with it. A tripwire, not an enforcement — stated that way because
+ * an overstated structural claim in this package is worse than an honest
+ * `string | null`.
+ *
+ * `ESTIMATION_METHOD_CODE` is still `{ resolved: false }`, so no write path
+ * can produce a non-null value today. The wire type stays nullable because
+ * §7.2 requires the server to be able to *receive* a non-null value from
+ * an old or lying client and reject it with `PAYLOAD_FIELD_INVALID`.
  */
 export type ObservationMethodWireValue =
   Extract<EstimationMethodCode, { resolved: true }>['code'] | null;

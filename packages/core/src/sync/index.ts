@@ -22,9 +22,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  *
  * This subpath is the single definition of the protocol that `apps/api`
  * (P2.S1b) and `apps/mobile` (P2.S2b) both compile against. Where these
- * types and `docs/sync-contract.md` disagree, the document is right and
- * these types are wrong — a type can be regenerated and a fielded app
- * cannot.
+ * types and `docs/sync-contract.md` disagree, the document governs and
+ * these types are corrected to match — a type can be regenerated and a
+ * fielded app cannot.
+ *
+ * Build every outbound wire object with the constructors exported here
+ * (`syncRejectedResult`, `syncDeltaTombstone`, ...), never by hand and
+ * never by spreading a row or a validation result into a literal. The
+ * types cannot stop a spread from widening them; the constructors can.
+ * See `wireShape.spec.ts`.
  *
  * There are no thresholds, bounds or defaults here.
  * `sync_clock_skew_allowance_seconds`, `SYNC_PUSH_MAX_OPERATIONS`, the
@@ -98,6 +104,9 @@ export {
   isSupersededResult,
   SYNC_OPERATION_TYPE,
   SYNC_RESULT_STATUS,
+  syncAcceptedResult,
+  syncRejectedResult,
+  syncSupersededResult,
 } from './push.js';
 
 export type {
@@ -107,4 +116,9 @@ export type {
   SyncDeltaTombstone,
   SyncDeltaUpsert,
 } from './delta.js';
-export { isSyncDeltaTombstone, isSyncDeltaUpsert } from './delta.js';
+export {
+  isSyncDeltaTombstone,
+  isSyncDeltaUpsert,
+  syncDeltaTombstone,
+  syncDeltaUpsert,
+} from './delta.js';

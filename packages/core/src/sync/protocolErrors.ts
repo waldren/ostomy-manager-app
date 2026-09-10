@@ -41,6 +41,18 @@ export const SYNC_PROTOCOL_ERROR_CODE = {
   ENTITY_ID_MISMATCH: 'ENTITY_ID_MISMATCH',
   /** Missing, expired or invalid token. */
   UNAUTHENTICATED: 'UNAUTHENTICATED',
+  /**
+   * A `since` older than the tombstone purge horizon (§5.4). The client
+   * wipes local entity state and re-syncs from `since=0`.
+   *
+   * The horizon's value is blocked on the PHI retention period and is
+   * deliberately not named anywhere in this package. The CODE cannot wait
+   * for it: adding a protocol error after clients ship is the versioned,
+   * coordinated-release change §8 describes, and without this one a purge
+   * silently strands deleted clinical rows on any device whose cursor
+   * predates it — §5.3's invariant broken through the retention door.
+   */
+  CURSOR_TOO_OLD: 'CURSOR_TOO_OLD',
   /** More than `SYNC_PUSH_MAX_OPERATIONS` operations. The bound itself is server configuration and is deliberately not named in this package. */
   BATCH_TOO_LARGE: 'BATCH_TOO_LARGE',
 } as const;

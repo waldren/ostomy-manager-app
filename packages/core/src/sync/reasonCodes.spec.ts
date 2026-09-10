@@ -47,11 +47,12 @@ describe('§6.2 — the rejection reason-code set', () => {
     }
   });
 
-  it('contains the six sync-specific codes §6.2 names, and no others beyond Tier 1', () => {
+  it('contains the seven sync-specific codes §6.2 names, and no others beyond Tier 1', () => {
     expect(Object.keys(SYNC_SPECIFIC_REASON_CODE).sort()).toEqual([
       'CLIENT_TIMESTAMP_OUT_OF_RANGE',
       'ENTITY_ID_CONFLICT',
       'ENTITY_NOT_FOUND',
+      'PAYLOAD_FIELD_INVALID',
       'PAYLOAD_FIELD_UNRECOGNIZED',
       'UNSUPPORTED_CODE',
       'UNSUPPORTED_STATUS',

@@ -28,7 +28,7 @@ import { describe, expect, it } from 'vitest';
  * check over the rule-evaluation modules, but it scans its own directory
  * and cannot see this one — extending it would mean editing a path
  * `react-web-developer` owns (ADR-0007), so this is the sibling rather
- * than a shared helper. See the P2.S0 report.
+ * than a shared helper; factoring one out needs a dispatch to that owner.
  *
  * The values this guards against are specific and all named in
  * `docs/sync-contract.md` as configuration: `SYNC_PUSH_MAX_OPERATIONS`

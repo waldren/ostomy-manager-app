@@ -61,6 +61,8 @@ export const SYNC_SPECIFIC_REASON_CODE = {
   UNSUPPORTED_CODE: 'UNSUPPORTED_CODE',
   /** An observation `status` outside the set the current release accepts (§7.2). The wire type is the full eight-member FHIR value set; what a release accepts is narrower and is server configuration, so this is a data error rather than a type-level exclusion. */
   UNSUPPORTED_STATUS: 'UNSUPPORTED_STATUS',
+  /** A RECOGNIZED field carrying a value outside its domain — an unknown `enteredMeasurementSystem`, a `resourceType` that is not "Observation", a `valueQuantity.unit` that disagrees with `code`, a non-UUID `id`, an unrecognized `method`, a timestamp not in §7.3's exact form. Names the field, never the value. This is the code that keeps per-field validation from escalating to a request-level 400, which would reinstate the all-or-nothing batching ADR-0001 rejected. */
+  PAYLOAD_FIELD_INVALID: 'PAYLOAD_FIELD_INVALID',
   /** A field not in §7. Rejected rather than ignored: silently dropping a field a newer client thought it was sending is a data-loss path with no signal on either side. */
   PAYLOAD_FIELD_UNRECOGNIZED: 'PAYLOAD_FIELD_UNRECOGNIZED',
 } as const;

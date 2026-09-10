@@ -26,17 +26,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * `field: \`valueQuantity.value (${value})\`` typechecks perfectly and puts
  * PHI in a client log. Enumerating the paths removes the place to put it.
  *
- * Spelled exactly as §7 spells the wire field names, and — following the
- * §3.4 example, which uses `"valueQuantity.value"` — payload paths are
+ * Spelled exactly as §3.1 and §7 spell the wire field names, and — following
+ * the §3.4 example, which uses `"valueQuantity.value"` — payload paths are
  * **not** prefixed with `payload.`.
  *
  * Growing this set as new entity types land at P4 is additive under §8.
  */
 export const SYNC_FIELD_PATH = {
-  // Operation-level fields (§3.1). Note these are not paths into `payload`
-  // at all, which is a wrinkle in §6.2's own description of `field`; see
-  // the P2.S0 report. `CLIENT_TIMESTAMP_OUT_OF_RANGE`, `ENTITY_NOT_FOUND`
-  // and `ENTITY_ID_CONFLICT` have no payload path to name.
+  // Operation-level fields (§3.1). These are not paths into `payload` at
+  // all: `CLIENT_TIMESTAMP_OUT_OF_RANGE` names `clientTimestamp`, and
+  // `ENTITY_NOT_FOUND` and `ENTITY_ID_CONFLICT` name `entityId`. §6.2
+  // covers both groups.
   OPERATION_ID: 'operationId',
   ENTITY_TYPE: 'entityType',
   ENTITY_ID: 'entityId',

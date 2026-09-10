@@ -85,7 +85,15 @@ export type SyncDeltaUpsert = {
  * An optional `payload?:` would put the decision at every call site that
  * builds one; the absence of the property puts it in the build.
  * `tombstone-carries-no-payload.type-test.ts` fails typecheck if it is
- * ever added back.
+ * ever added back **to this type**.
+ *
+ * What that proof does NOT cover: excess property checking does not apply
+ * to spread properties, so `{ ...row, entityType: 'Observation', deleted:
+ * true }` typechecks and ships the full clinical payload of a deleted
+ * entry to every device on the account. That is also the natural DRY
+ * refactor once someone notices the two arms share four fields. Build
+ * changes with `syncDeltaTombstone()` / `syncDeltaUpsert()` below, which
+ * project a fixed field set the call site cannot widen.
  */
 export interface SyncDeltaTombstone extends SyncDeltaChangeCommonFields {
   readonly entityType: SyncEntityType;
@@ -93,6 +101,46 @@ export interface SyncDeltaTombstone extends SyncDeltaChangeCommonFields {
 }
 
 export type SyncDeltaChange = SyncDeltaUpsert | SyncDeltaTombstone;
+
+// ---------------------------------------------------------------------------
+// Constructors — the sanctioned way to build a change (§5.2).
+//
+// See the note on `SyncDeltaTombstone` above. `delta.spec.ts` asserts the
+// produced key sets at RUNTIME, because a type-level proof cannot see a
+// runtime extra property and a spread is how one arrives.
+// ---------------------------------------------------------------------------
+
+export function syncDeltaTombstone(fields: {
+  entityType: SyncEntityType;
+  entityId: EntityId;
+  serverSequence: ServerSequence;
+  clientUpdatedAt: WireInstant;
+}): SyncDeltaTombstone {
+  return {
+    entityType: fields.entityType,
+    entityId: fields.entityId,
+    serverSequence: fields.serverSequence,
+    clientUpdatedAt: fields.clientUpdatedAt,
+    deleted: true,
+  };
+}
+
+export function syncDeltaUpsert<TEntityType extends SyncEntityType>(fields: {
+  entityType: TEntityType;
+  entityId: EntityId;
+  serverSequence: ServerSequence;
+  clientUpdatedAt: WireInstant;
+  payload: SyncPayloadByEntityType[TEntityType];
+}): SyncDeltaUpsertFor<TEntityType> {
+  return {
+    entityType: fields.entityType,
+    entityId: fields.entityId,
+    serverSequence: fields.serverSequence,
+    clientUpdatedAt: fields.clientUpdatedAt,
+    deleted: false,
+    payload: fields.payload,
+  };
+}
 
 export interface SyncDeltaResponse {
   /** Ordered by `serverSequence` ascending (§5.2). */

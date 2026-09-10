@@ -19,7 +19,7 @@ This package is authored per-path, not as a whole. See ADR-0007 for the full own
 
 This package is ESM (`"type": "module"`), and its built `dist/` output is the **first ESM package the CommonJS `apps/api` imports**, via Node's `require(esm)`. That capability throws `ERR_REQUIRE_ASYNC_MODULE` if the required module's entry graph contains top-level await — so nothing under `src/` may use it, directly or transitively. Vitest transforms everything to ESM and cannot see this; only running the built output proves it.
 
-Root `pnpm verify` includes `verify:core-require`, which builds this package and has `apps/api`'s own CommonJS runtime `require()` its subpath exports — see `apps/api/scripts/require-core-smoke.cjs`. **That script currently covers four of the five subpaths: `./sync` is not in it.** Adding the line is an `apps/api` change and P2.S0 was scoped out of `apps/api/**`, so it is owed by the next sprint that touches that workspace; `./sync` was verified to load under `require()` by hand at P2.S0.
+Root `pnpm verify` includes `verify:core-require`, which builds this package and has `apps/api`'s own CommonJS runtime `require()` all five subpath exports — see `apps/api/scripts/require-core-smoke.cjs`. A new subpath must be added there in the same change that adds it here, or the ADR-0010 proof silently stops covering it.
 
 ## Subpath exports only — no root barrel
 

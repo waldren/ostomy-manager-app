@@ -129,11 +129,14 @@ export interface SyncAcceptedResult extends SyncResultCommonFields {
   /**
    * A **receipt, not a cursor** (§3.6). It names the server sequence of
    * the entity row as it stands after this operation was processed. A
-   * client MUST NOT advance its delta cursor from it: the sequence is
-   * assigned globally across patients and rows, so a value observed here
-   * says nothing about which other rows have become visible, and advancing
-   * from it would skip every row written between the last delta pull and
-   * this batch.
+   * client MUST NOT advance its delta cursor from it: this reports where
+   * one row landed, whereas a delta cursor asserts that EVERY row up to
+   * that point has been seen (§5.3). Advancing from a receipt skips every
+   * row written between the last delta pull and this batch, and bypasses
+   * whatever visibility mechanism §5.3 obliges the delta endpoint to
+   * apply. Stated without reference to how the sequence is assigned, on
+   * purpose: §5.3 option 2 would make it per-patient, and the rule holds
+   * either way.
    */
   readonly appliedServerSequence: ServerSequence;
 }
@@ -167,7 +170,17 @@ export interface SyncSupersededResult extends SyncResultCommonFields {
  * log. `packages/core`'s `ValidationError` already makes this structurally
  * true for Tier 1, and this type holds the same shape for the same reason.
  * `rejected-result-carries-no-clinical-value.type-test.ts` fails the build
- * if a property is ever added.
+ * if a property is ever added **to this type**.
+ *
+ * That proof has a hole, and it is the one worth knowing about: excess
+ * property checking applies only to properties written literally in a
+ * fresh object literal, NOT to spread properties. So
+ * `{ ...validationResult, status: 'rejected', ... }` typechecks cleanly
+ * and serializes whatever `validationResult` was carrying — which, at the
+ * only call site that will ever exist, is the offending clinical value.
+ * The type cannot close that; `syncRejectedResult()` below does, by
+ * projecting a fixed field set the call site cannot widen. Build results
+ * with it rather than by hand.
  *
  * Note there is no `appliedServerSequence` here — see
  * `applied-server-sequence-absent-on-rejection.type-test.ts`. Nothing was
@@ -181,6 +194,78 @@ export interface SyncRejectedResult extends SyncResultCommonFields {
 }
 
 export type SyncOperationResult = SyncAcceptedResult | SyncSupersededResult | SyncRejectedResult;
+
+// ---------------------------------------------------------------------------
+// Constructors — the sanctioned way to build a result (§6.3).
+//
+// These exist because the type alone cannot enforce what §6.3 requires.
+// TypeScript's excess-property check does not apply to spread properties,
+// so every one of these typechecks today and ships a clinical value:
+//
+//   { ...validationResult, status: 'rejected', ... }   // offending value
+//   { ...row, status: 'accepted', ... }                // the whole row
+//
+// and the spread form is not a mistake anyone has to make deliberately —
+// it is the natural refactor the moment someone notices the three result
+// shapes share four fields. A function that names its own fields cannot be
+// widened from the call site, whatever it is handed.
+//
+// `push.spec.ts` asserts the produced key sets at RUNTIME. A type-level
+// proof cannot see a runtime extra property, which is precisely the
+// failure mode here.
+// ---------------------------------------------------------------------------
+
+export function syncAcceptedResult(fields: {
+  operationId: OperationId;
+  entityId: EntityId;
+  appliedServerSequence: ServerSequence;
+  replayed: boolean;
+}): SyncAcceptedResult {
+  return {
+    operationId: fields.operationId,
+    entityId: fields.entityId,
+    status: 'accepted',
+    appliedServerSequence: fields.appliedServerSequence,
+    replayed: fields.replayed,
+  };
+}
+
+export function syncSupersededResult(fields: {
+  operationId: OperationId;
+  entityId: EntityId;
+  appliedServerSequence: ServerSequence;
+  replayed: boolean;
+}): SyncSupersededResult {
+  return {
+    operationId: fields.operationId,
+    entityId: fields.entityId,
+    status: 'superseded',
+    appliedServerSequence: fields.appliedServerSequence,
+    replayed: fields.replayed,
+  };
+}
+
+/**
+ * The one that matters most. Whatever the caller is holding — a
+ * `ValidationError`, a Prisma error, a row — only these five fields reach
+ * the wire.
+ */
+export function syncRejectedResult(fields: {
+  operationId: OperationId;
+  entityId: EntityId;
+  reasonCode: SyncReasonCode;
+  field: SyncFieldPath;
+  replayed: boolean;
+}): SyncRejectedResult {
+  return {
+    operationId: fields.operationId,
+    entityId: fields.entityId,
+    status: 'rejected',
+    reasonCode: fields.reasonCode,
+    field: fields.field,
+    replayed: fields.replayed,
+  };
+}
 
 /**
  * `200 OK`, one result per operation, in request order (§3.4). A batch

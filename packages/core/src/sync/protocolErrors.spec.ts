@@ -25,10 +25,11 @@ import {
 import { SYNC_REASON_CODE } from './reasonCodes.js';
 
 describe('SYNC_PROTOCOL_ERROR_CODE — docs/sync-contract.md §6.1', () => {
-  it('names exactly the six conditions §6.1 tabulates', () => {
+  it('names exactly the seven conditions §6.1 tabulates', () => {
     expect(Object.keys(SYNC_PROTOCOL_ERROR_CODE).sort()).toEqual([
       'BATCH_OUT_OF_ORDER',
       'BATCH_TOO_LARGE',
+      'CURSOR_TOO_OLD',
       'ENTITY_ID_MISMATCH',
       'MALFORMED_REQUEST',
       'PAYLOAD_PRESENCE_INVALID',

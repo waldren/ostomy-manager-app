@@ -23,7 +23,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { SyncDeltaRequest, SyncDeltaResponse } from './delta.js';
 import { toEntityId, toOperationId, toServerSequence } from './identifiers.js';
-import type { SyncProtocolErrorResponse } from './protocolErrors.js';
+import { SYNC_PROTOCOL_ERROR_CODE, type SyncProtocolErrorResponse } from './protocolErrors.js';
+import { SYNC_REASON_CODE } from './reasonCodes.js';
 import type { SyncPushRequest, SyncPushResponse } from './push.js';
 
 /**
@@ -65,6 +66,38 @@ function fencedJsonBlocks(markdown: string): unknown[] {
 }
 
 const jsonExamples = fencedJsonBlocks(contractSource);
+
+/**
+ * The document's normative TABLES, not only its JSON fences.
+ *
+ * The fences are the shapes; the tables are the vocabularies, and a table
+ * is what an implementer actually works from when writing a handler. They
+ * were mirrored by hand-typed lists in `reasonCodes.spec.ts` and
+ * `protocolErrors.spec.ts`, which means the document and the constants
+ * could have drifted in exactly the place a drift is least visible — a
+ * code added to one and not the other reads as complete on both sides.
+ *
+ * Extracts every `CODE_LIKE_THIS` appearing in a backtick-quoted cell of
+ * the table under `heading`.
+ */
+function codesInTableUnder(heading: string): Set<string> {
+  const start = contractSource.indexOf(heading);
+  if (start === -1) throw new Error(`heading not found in the contract: ${heading}`);
+
+  const afterHeading = contractSource.slice(start + heading.length);
+  const nextHeading = afterHeading.search(/^#{2,4} /m);
+  const section = nextHeading === -1 ? afterHeading : afterHeading.slice(0, nextHeading);
+
+  const codes = new Set<string>();
+  for (const line of section.split('\n')) {
+    if (!line.trimStart().startsWith('|')) continue;
+    for (const cell of line.matchAll(/`([A-Z][A-Z0-9_]{3,})`/g)) {
+      const code = cell[1];
+      if (code !== undefined) codes.add(code);
+    }
+  }
+  return codes;
+}
 
 const [pushRequestExample, pushResponseExample, deltaResponseExample, protocolErrorExample] =
   jsonExamples;
@@ -195,6 +228,24 @@ describe('docs/sync-contract.md — the document own examples satisfy packages/c
   it('§5.1 — `since: "0"` is a legal initial-sync cursor', () => {
     const initial: SyncDeltaRequest = { since: toServerSequence('0') };
     expect(initial.since).toBe('0');
+  });
+
+  it('§6.1 — the code table and SYNC_PROTOCOL_ERROR_CODE name the same set', () => {
+    const documented = codesInTableUnder('### 6.1 Protocol errors');
+    // SYNC_PUSH_MAX_OPERATIONS is named in that table as the bound whose
+    // breach raises BATCH_TOO_LARGE; it is configuration, not a code.
+    documented.delete('SYNC_PUSH_MAX_OPERATIONS');
+
+    expect([...documented].sort()).toEqual(Object.values(SYNC_PROTOCOL_ERROR_CODE).sort());
+  });
+
+  it('§6.2 — the reason-code table and SYNC_REASON_CODE name the same set', () => {
+    const documented = codesInTableUnder('### 6.2 Data errors');
+    // The Tier 1 row names TIER1_RULE_CODE as the source of its codes
+    // rather than being a code itself.
+    documented.delete('TIER1_RULE_CODE');
+
+    expect([...documented].sort()).toEqual(Object.values(SYNC_REASON_CODE).sort());
   });
 
   it('§6.1 — the protocol-error body is a SyncProtocolErrorResponse and carries nothing else', () => {
