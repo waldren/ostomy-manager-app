@@ -50,14 +50,15 @@ type Expect<TAssertion extends true> = TAssertion;
  * Adding `payload` — or any other property that could carry clinical
  * content, such as a "last known values" convenience field — makes
  * `Equals` resolve to `false` and fails the build with "Type 'false' does
- * not satisfy the constraint 'true'". Note `clientUpdatedAt` is
- * deliberately not in this set, matching §5.2's example; see the P2.S0
- * report for why that asymmetry is worth a second look.
+ * not satisfy the constraint 'true'". `clientUpdatedAt` IS in this set:
+ * §5.2 puts it on both arms so a device can resolve an unpushed local
+ * edit against an incoming delete by the same last-write-wins rule the
+ * server applies. It is a write timestamp, not clinical content.
  */
 type _TombstoneCarriesExactlyTheseKeys = Expect<
   Equals<
     keyof SyncDeltaTombstone,
-    'entityId' | 'serverSequence' | 'entityType' | 'deleted' | 'deletedAt'
+    'entityId' | 'serverSequence' | 'clientUpdatedAt' | 'entityType' | 'deleted'
   >
 >;
 
@@ -77,7 +78,7 @@ if (change.deleted) {
 
 declare const entityId: EntityId;
 declare const serverSequence: ServerSequence;
-declare const deletedAt: WireInstant;
+declare const clientUpdatedAt: WireInstant;
 declare const payload: ObservationSyncPayload;
 
 const tombstoneWithPayload: SyncDeltaTombstone = {
@@ -85,7 +86,7 @@ const tombstoneWithPayload: SyncDeltaTombstone = {
   entityId,
   serverSequence,
   deleted: true,
-  deletedAt,
+  clientUpdatedAt,
   // @ts-expect-error — object literal may only specify known properties; a tombstone has nowhere to put clinical values.
   payload,
 };
@@ -97,7 +98,7 @@ const tombstone: SyncDeltaTombstone = {
   entityId,
   serverSequence,
   deleted: true,
-  deletedAt,
+  clientUpdatedAt,
 };
 void tombstone;
 

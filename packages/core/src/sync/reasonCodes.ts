@@ -38,7 +38,7 @@ import { TIER1_RULE_CODE } from '../validation/index.js';
 export type Tier1ReasonCode = (typeof TIER1_RULE_CODE)[keyof typeof TIER1_RULE_CODE];
 
 /**
- * The five §6.2 codes that are the sync protocol's own, with no Tier 1
+ * The §6.2 codes that are the sync protocol's own, with no Tier 1
  * analogue.
  *
  * Kept as a named subset rather than folded anonymously into
@@ -59,6 +59,8 @@ export const SYNC_SPECIFIC_REASON_CODE = {
   ENTITY_ID_CONFLICT: 'ENTITY_ID_CONFLICT',
   /** An observation `code` outside the value set the current release accepts. */
   UNSUPPORTED_CODE: 'UNSUPPORTED_CODE',
+  /** An observation `status` outside the set the current release accepts (§7.2). The wire type is the full eight-member FHIR value set; what a release accepts is narrower and is server configuration, so this is a data error rather than a type-level exclusion. */
+  UNSUPPORTED_STATUS: 'UNSUPPORTED_STATUS',
   /** A field not in §7. Rejected rather than ignored: silently dropping a field a newer client thought it was sending is a data-loss path with no signal on either side. */
   PAYLOAD_FIELD_UNRECOGNIZED: 'PAYLOAD_FIELD_UNRECOGNIZED',
 } as const;

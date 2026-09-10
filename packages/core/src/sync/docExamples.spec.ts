@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { SyncDeltaRequest, SyncDeltaResponse } from './delta.js';
 import { toEntityId, toOperationId, toServerSequence } from './identifiers.js';
+import type { SyncProtocolErrorResponse } from './protocolErrors.js';
 import type { SyncPushRequest, SyncPushResponse } from './push.js';
 
 /**
@@ -65,14 +66,15 @@ function fencedJsonBlocks(markdown: string): unknown[] {
 
 const jsonExamples = fencedJsonBlocks(contractSource);
 
-const [pushRequestExample, pushResponseExample, deltaResponseExample] = jsonExamples;
+const [pushRequestExample, pushResponseExample, deltaResponseExample, protocolErrorExample] =
+  jsonExamples;
 
 describe('docs/sync-contract.md — the document own examples satisfy packages/core/src/sync', () => {
-  it('has exactly the three JSON examples these types cover (§3.1, §3.4, §5.2)', () => {
+  it('has exactly the four JSON examples these types cover (§3.1, §3.4, §5.2, §6.1)', () => {
     // A deliberate tripwire, not a fragile assertion: a new example in the
     // document is a new wire shape, and whoever adds one needs to be sent
     // here to give it a type.
-    expect(jsonExamples).toHaveLength(3);
+    expect(jsonExamples).toHaveLength(4);
   });
 
   it('§3.1 — the push request example is a SyncPushRequest', () => {
@@ -157,7 +159,7 @@ describe('docs/sync-contract.md — the document own examples satisfy packages/c
           entityId: toEntityId('8b2f3c4d-5e6f-4a7b-8c9d-1e2f3a4b5c6d'),
           serverSequence: toServerSequence('48214'),
           deleted: true,
-          deletedAt: '2026-09-07T22:09:03.001Z',
+          clientUpdatedAt: '2026-09-07T22:09:03.001Z',
         },
       ],
       cursor: toServerSequence('48214'),
@@ -193,5 +195,18 @@ describe('docs/sync-contract.md — the document own examples satisfy packages/c
   it('§5.1 — `since: "0"` is a legal initial-sync cursor', () => {
     const initial: SyncDeltaRequest = { since: toServerSequence('0') };
     expect(initial.since).toBe('0');
+  });
+
+  it('§6.1 — the protocol-error body is a SyncProtocolErrorResponse and carries nothing else', () => {
+    const expected: SyncProtocolErrorResponse = { error: { code: 'BATCH_OUT_OF_ORDER' } };
+
+    expect(protocolErrorExample).toEqual(expected);
+
+    // The assertion that matters is not the code but the closure: §6.1
+    // forbids prose, a field path, echoed request content, or an index
+    // into the offending operation, and the request a protocol error
+    // would quote is a batch of clinical values.
+    expect(Object.keys(expected.error)).toEqual(['code']);
+    expect(Object.keys(expected)).toEqual(['error']);
   });
 });

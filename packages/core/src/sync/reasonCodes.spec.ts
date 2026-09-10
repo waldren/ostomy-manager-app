@@ -47,13 +47,14 @@ describe('§6.2 — the rejection reason-code set', () => {
     }
   });
 
-  it('contains the five sync-specific codes §6.2 names, and no others beyond Tier 1', () => {
+  it('contains the six sync-specific codes §6.2 names, and no others beyond Tier 1', () => {
     expect(Object.keys(SYNC_SPECIFIC_REASON_CODE).sort()).toEqual([
       'CLIENT_TIMESTAMP_OUT_OF_RANGE',
       'ENTITY_ID_CONFLICT',
       'ENTITY_NOT_FOUND',
       'PAYLOAD_FIELD_UNRECOGNIZED',
       'UNSUPPORTED_CODE',
+      'UNSUPPORTED_STATUS',
     ]);
 
     expect(Object.keys(SYNC_REASON_CODE).sort()).toEqual(
@@ -101,7 +102,7 @@ describe('§6.4 — which codes may be rendered to a patient', () => {
     }
   });
 
-  it('the five sync-specific codes are NOT patient-facing and have no catalog entry', () => {
+  it('the sync-specific codes are NOT patient-facing and have no catalog entry', () => {
     for (const code of Object.values(SYNC_SPECIFIC_REASON_CODE)) {
       expect(hasPatientFacingCopy(code)).toBe(false);
       expect(Object.keys(en.validationErrors)).not.toContain(code);

@@ -45,13 +45,25 @@ export interface SyncDeltaRequest {
 interface SyncDeltaChangeCommonFields {
   readonly entityId: EntityId;
   readonly serverSequence: ServerSequence;
+  /**
+   * The client timestamp of the write that produced this version — what
+   * last-write-wins compares against (§4).
+   *
+   * On BOTH arms, including a tombstone, where it is the client timestamp
+   * of the operation that deleted the row rather than a server receipt
+   * time (§5.2). A device holding an unpushed local edit to an entity it
+   * has just been told is deleted has to resolve that itself, by the same
+   * rule the server applies, and it cannot do that against a clock it does
+   * not share. The server's own `deletedAt` is bookkeeping and does not
+   * cross the wire, for the same reason `createdAt` and `updatedAt` do
+   * not (§7.2).
+   */
+  readonly clientUpdatedAt: WireInstant;
 }
 
 type SyncDeltaUpsertFor<TEntityType extends SyncEntityType> = SyncDeltaChangeCommonFields & {
   readonly entityType: TEntityType;
   readonly deleted: false;
-  /** The client timestamp of the write that produced this version — what last-write-wins compared against (§4). */
-  readonly clientUpdatedAt: WireInstant;
   readonly payload: SyncPayloadByEntityType[TEntityType];
 };
 
@@ -78,7 +90,6 @@ export type SyncDeltaUpsert = {
 export interface SyncDeltaTombstone extends SyncDeltaChangeCommonFields {
   readonly entityType: SyncEntityType;
   readonly deleted: true;
-  readonly deletedAt: WireInstant;
 }
 
 export type SyncDeltaChange = SyncDeltaUpsert | SyncDeltaTombstone;

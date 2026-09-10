@@ -67,6 +67,13 @@ export {
   SYNC_SPECIFIC_REASON_CODE,
 } from './reasonCodes.js';
 
+export type {
+  SyncProtocolError,
+  SyncProtocolErrorCode,
+  SyncProtocolErrorResponse,
+} from './protocolErrors.js';
+export { isSyncProtocolErrorCode, SYNC_PROTOCOL_ERROR_CODE } from './protocolErrors.js';
+
 export type { SyncFieldPath } from './fieldPaths.js';
 export { isSyncFieldPath, SYNC_FIELD_PATH } from './fieldPaths.js';
 

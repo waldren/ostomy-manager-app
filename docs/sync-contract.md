@@ -128,7 +128,7 @@ A batch never fails as a unit for data reasons (ADR-0001 point 2). One implausib
 
 Present on `accepted` and `superseded` results; absent on `rejected`. It names the server sequence of the entity row as it stands after this operation was processed — for `superseded`, that is the winning row's sequence, not this operation's.
 
-**A client MUST NOT use it to advance its delta cursor.** The sequence is assigned globally across patients and rows; a value observed here says nothing about which other rows have become visible. Advancing the cursor from a push receipt would skip every row written between the client's last delta pull and this batch. The delta cursor comes from §5 and from nowhere else.
+**A client MUST NOT use it to advance its delta cursor.** It reports where one row landed; a delta cursor asserts that *every* row up to that point has been seen (§5.3). Advancing from a push receipt skips every row written between the client's last delta pull and this batch, and it bypasses whatever visibility mechanism §5.3 obliges the delta endpoint to apply. The delta cursor comes from a delta response and from nowhere else.
 
 ### 3.7 Idempotency and replay
 
@@ -210,7 +210,7 @@ GET /api/v1/sync/delta?since=48198&limit=200
       "entityId": "8b2f3c4d-5e6f-4a7b-8c9d-1e2f3a4b5c6d",
       "serverSequence": "48214",
       "deleted": true,
-      "deletedAt": "2026-09-07T22:09:03.001Z"
+      "clientUpdatedAt": "2026-09-07T22:09:03.001Z"
     }
   ],
   "cursor": "48214",
@@ -221,6 +221,8 @@ GET /api/v1/sync/delta?since=48198&limit=200
 Changes are ordered by `serverSequence` ascending. The client pulls in a loop until `hasMore` is `false`, persisting `cursor` after each page.
 
 **A tombstone carries no `payload`.** The receiving device needs the entity id to remove its local row and nothing else; sending the clinical values of a deleted entry would transmit PHI that serves no purpose, and the minimum-necessary rule applies to a protocol as much as to a screen.
+
+**Both variants carry `clientUpdatedAt`**, and a tombstone's is the client timestamp of the operation that deleted the row — not a server receipt time. It is there because a device holding an unpushed local edit to an entity it has just been told is deleted has to resolve that itself, by the same last-write-wins rule §4 applies server-side, and it cannot do that against a timestamp whose clock it does not share. The server's own `deletedAt` is bookkeeping and does not cross the wire, for the same reason `createdAt` and `updatedAt` do not (§7.2).
 
 `cursor` is the highest sequence the server is willing to let the client advance to (§5.3) — not necessarily the highest in `changes`, and never derived by the client from the rows it received.
 
@@ -255,19 +257,30 @@ Conflating them is how "a batch never fails as a unit" turns into "a malformed b
 
 ### 6.1 Protocol errors — whole request fails
 
-| Condition | Status |
-| --- | --- |
-| Malformed JSON, missing required top-level field, unknown `entityType` or `operationType` | `400` |
-| `clientTimestamp` array not non-descending | `400` |
-| `payload` present on a delete, or absent on a create/update | `400` |
-| Missing, expired, or invalid token | `401` |
-| More than `SYNC_PUSH_MAX_OPERATIONS` operations | `413` |
+| Condition | `code` | Status |
+| --- | --- | --- |
+| Malformed JSON, missing required top-level field, unknown `entityType` or `operationType` | `MALFORMED_REQUEST` | `400` |
+| `clientTimestamp` array not non-descending | `BATCH_OUT_OF_ORDER` | `400` |
+| `payload` present on a delete, or absent on a create/update | `PAYLOAD_PRESENCE_INVALID` | `400` |
+| `payload.id` does not equal the operation's `entityId` (§7.2) | `ENTITY_ID_MISMATCH` | `400` |
+| Missing, expired, or invalid token | `UNAUTHENTICATED` | `401` |
+| More than `SYNC_PUSH_MAX_OPERATIONS` operations | `BATCH_TOO_LARGE` | `413` |
+
+The body is minimal and fixed:
+
+```json
+{ "error": { "code": "BATCH_OUT_OF_ORDER" } }
+```
+
+**No prose, no field path, no echoed request content, and no index into the offending operation.** The same §6.3 rule applies here and applies harder: a protocol error is exactly where an implementation reaches for "helpful" diagnostics, and the request it would quote is a batch of clinical values. What a client needs is a stable code it can log and report; what it must not be handed is anything derived from what it sent. The code exists so that two independent client implementations log the same thing for the same server condition — without it, P2.S1b and P2.S2b each invent a shape and neither can read the other's diagnostics.
 
 A protocol error applies **no** operations. The client retains the whole batch and must not retry it unchanged; retrying a `400` unchanged is an infinite loop against a bug the server has already diagnosed.
 
 ### 6.2 Data errors — one operation rejected
 
-`reasonCode` is machine-readable and stable. `field` is a dotted path into `payload`, using the wire field names exactly as §7 spells them.
+`reasonCode` is machine-readable and stable. `field` names **one operation-level or payload-level field**, spelled exactly as §3.1 and §7 spell it, with payload paths unprefixed (`valueQuantity.value`, not `payload.valueQuantity.value`). Not every rejection is about the payload: `CLIENT_TIMESTAMP_OUT_OF_RANGE` names `clientTimestamp`, and `ENTITY_NOT_FOUND` and `ENTITY_ID_CONFLICT` name `entityId`, none of which are payload paths at all.
+
+The set of legal `field` values is closed and enumerated in `packages/core/src/sync`. This is a §6.3 control, not a tidiness preference — a free-string `field` is a field a clinical value fits in, and `` field: `valueQuantity.value (${value})` `` typechecks perfectly.
 
 | `reasonCode` | Raised when |
 | --- | --- |
@@ -276,7 +289,8 @@ A protocol error applies **no** operations. The client retains the whole batch a
 | `ENTITY_NOT_FOUND` | An update or delete naming an entity id that does not exist for this patient. |
 | `ENTITY_ID_CONFLICT` | A create naming an entity id that already exists with different content — distinct from a replay, which is matched on operation id and never reaches validation. |
 | `UNSUPPORTED_CODE` | An observation `code` outside the set the current release accepts. |
-| `PAYLOAD_FIELD_UNRECOGNIZED` | A field not in §7. Rejected rather than ignored: silently dropping a field a newer client thought it was sending is a data-loss path with no signal on either side. |
+| `UNSUPPORTED_STATUS` | An observation `status` outside the set the current release accepts (§7.2). |
+| `PAYLOAD_FIELD_UNRECOGNIZED` | A field not in §7. Rejected rather than ignored: silently dropping a field a newer client thought it was sending is a data-loss path with no signal on either side. **Reports `field: "payload"` and never the unrecognized key** — the key is client-supplied content, and echoing client-supplied content into a response the client persists and logs is the shape §6.3 forbids. A client that sent the field already knows which one it sent. |
 
 **Tier 2 warnings never appear here.** A soft warning is not a rejection and never becomes one (SRS §3.8). An operation that trips the >2,000 mL threshold is `accepted`; the warning was the client's job to show at entry time, and a real 2,500 mL day is the data point the care team most needs. There is no wire representation of a Tier 2 outcome in a push response, deliberately — a field for it is a field someone will eventually branch on.
 
@@ -316,7 +330,7 @@ The only entity type P2 exchanges. `Profile` and `EffectiveRange` are synced ent
 | --- | --- | --- | --- |
 | `resourceType` | FHIR | yes | Always the literal `"Observation"`. |
 | `id` | FHIR | yes | Equals the operation's `entityId`. Present in the payload because FHIR puts it there; a mismatch between the two is a protocol error. |
-| `status` | FHIR | yes | FHIR `ObservationStatus`, lowercase on the wire (`"final"`). |
+| `status` | FHIR | yes | FHIR `ObservationStatus`, lowercase on the wire. The wire type is the full eight-member FHIR value set, mirroring storage; **P2 accepts `"final"` only**, and anything else is rejected with `UNSUPPORTED_STATUS`. The type is wider than the accepted set on purpose — widening what a release accepts is additive under §8, whereas widening the type later is not. |
 | `code` | FHIR | yes | Bare LOINC code. P2 accepts `79560-9` (stoma output) only; other codes are `UNSUPPORTED_CODE` until their sprint lands. |
 | `valueQuantity.value` | FHIR | yes | **Canonical units always** — mL for volume, kg for weight (ADR-0004). The client converts before sending; the server never receives ounces. A decimal, not an integer (ADR-0005). |
 | `valueQuantity.unit` | FHIR | yes | `"mL"` or `"kg"`. Determined by `code`, transmitted anyway because FHIR requires it and a stored unit makes a future misreading recoverable rather than guessed at. |
