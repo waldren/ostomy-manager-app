@@ -1,0 +1,684 @@
+/*
+Copyright (C) 2026 Steven E. Waldren
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
+
+import { Inject, Injectable } from '@nestjs/common';
+import type { Request } from 'express';
+import {
+  syncAcceptedResult,
+  syncRejectedResult,
+  syncSupersededResult,
+  SYNC_ENTITY_TYPE,
+  SYNC_FIELD_PATH,
+  SYNC_OPERATION_TYPE,
+  SYNC_REASON_CODE,
+  toEntityId,
+  toOperationId,
+  toServerSequence,
+  type SyncFieldPath,
+  type SyncOperationResult,
+  type SyncReasonCode,
+} from '@ostomy/core/sync';
+import { evaluateTier1 } from '@ostomy/core/validation';
+
+import { AuditService } from '../audit/audit.service';
+import type { PatientActor } from '../auth/patient-actor';
+import { getRequestId } from '../logging/request-id';
+import {
+  MeasurementSystem,
+  ObservationStatus,
+  Prisma,
+  SyncEntityType,
+  SyncOperationStatus,
+  SyncOperationType,
+  type Observation,
+  type SyncOperation,
+} from '../generated/prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+import { ThresholdsService } from '../thresholds/thresholds.service';
+import { ObservationRejectedException } from '../observations/observation-rejection';
+import {
+  interpretObservationPayload,
+  toAuditSnapshot,
+  toStoredMeasurementSystem,
+} from '../observations/observation-payload';
+import { observationRequestParseSchema } from '../observations/observation-wire';
+import { toMeasuredOrEstimated, toStoredMethod } from '../observations/estimation-method';
+import type { SyncPushOperationParsed, SyncPushRequestParsed } from './sync-push.pipe';
+
+/** `reasonCode` on an audit row for a write that arrived over sync (§4.1). */
+const SYNC_APPLIED_REASON = 'sync_applied';
+/** `reasonCode` on an audit row for the version that lost last-write-wins (§4.1). */
+const SYNC_CONFLICT_LOSER_REASON = 'sync_conflict_loser';
+
+const OBSERVATION_ENTITY_TYPE = 'observation';
+
+/**
+ * Applies a push batch (`docs/sync-contract.md` §3, §4).
+ *
+ * ## The invariants this class exists to hold
+ *
+ * 1. **A batch never fails as a unit for data reasons** (ADR-0001 point 2).
+ *    One implausible row — precisely what Tier 2 exists to let through — must
+ *    not block every subsequent entry a patient made while offline. So each
+ *    operation is applied in its own transaction and its own try/catch, and
+ *    a failure becomes one `rejected` result rather than an exception.
+ * 2. **Processing one operation is atomic** (§3.7). The entity write, its
+ *    server-sequence assignment, its audit event, and the idempotency record
+ *    commit together or not at all. The interesting failure if they do not is
+ *    not a lost write but a silently *duplicated* one: the entity commits,
+ *    the idempotency record does not, the response is lost, the client
+ *    re-pushes, and the replay is not recognised as one. Nothing downstream
+ *    can detect that afterwards, because both rows are legitimate.
+ * 3. **Every lookup is scoped to `(patient, id)` together** (§2). Never by
+ *    entity id alone, in any code path — not the create-collision check, not
+ *    the update target, not the conflict comparison. `Observation.id` is a
+ *    global primary key, so `where: { id }` compiles and lets a token for
+ *    patient A overwrite patient B's row given its UUID.
+ * 4. **Idempotency is keyed on `(patient, operationId)` together** (§3.7),
+ *    for the same reason: the operation id is chosen by an untrusted offline
+ *    device and is not patient-scoped by construction.
+ *
+ * ## Audit obligations
+ *
+ * §4.1 names two paths that get missed when audit logging is added
+ * per-handler, and P1.S5's interceptor covers *routes* — a push batch
+ * applying fifty operations is one route. So this service writes audit rows
+ * itself, inside each operation's transaction:
+ *
+ *  - every `accepted` operation writes a `sync_applied` row naming its own
+ *    entity, never one row naming the batch;
+ *  - every `superseded` operation writes a `sync_conflict_loser` row carrying
+ *    the **incoming** version that lost;
+ *  - every `accepted` operation that displaced a stored version writes a
+ *    second `sync_conflict_loser` row carrying the **stored** version as it
+ *    was before the write.
+ *
+ * All three route through the same `AuditService` as a direct write, not a
+ * parallel path.
+ */
+@Injectable()
+export class SyncPushService {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(ThresholdsService) private readonly thresholds: ThresholdsService,
+  ) {}
+
+  async push(
+    actor: PatientActor,
+    request: Request,
+    body: SyncPushRequestParsed,
+  ): Promise<{ results: SyncOperationResult[]; appliedCount: number }> {
+    const correlationId = getRequestId(request);
+    const patient = await this.prisma.patient.findUnique({
+      where: { id: actor.id },
+      select: { id: true },
+    });
+    if (patient === null) {
+      // Authenticated, but no patient row. Every operation would fail
+      // identically, so fail them all the same way rather than N times.
+      return {
+        results: body.operations.map((operation) =>
+          rejection(operation, SYNC_REASON_CODE.ENTITY_ID_CONFLICT, SYNC_FIELD_PATH.ENTITY_ID),
+        ),
+        appliedCount: 0,
+      };
+    }
+
+    const results: SyncOperationResult[] = [];
+    let appliedCount = 0;
+
+    // Sequential, never `Promise.all`. §3.2 applies operations in array
+    // order because last-write-wins is defined by client timestamp, and two
+    // operations on one entity resolved concurrently would race to decide
+    // which version is live.
+    for (const operation of body.operations) {
+      const result = await this.applyOne(actor, operation, correlationId);
+      results.push(result.result);
+      if (result.applied) appliedCount += 1;
+    }
+
+    return { results, appliedCount };
+  }
+
+  /**
+   * One operation, start to finish: replay check, validation, conflict
+   * resolution, write, audit, idempotency record.
+   *
+   * Never throws for a data reason — every such path returns a `rejected`
+   * result, because a throw here would fail the batch (invariant 1).
+   */
+  private async applyOne(
+    actor: PatientActor,
+    operation: SyncPushOperationParsed,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    // §3.7. A re-pushed operation returns the result the first attempt
+    // produced, byte-for-byte apart from `replayed: true`, and has no further
+    // effect. Checked before anything else: a replayed rejection is still a
+    // rejection, and re-validating could produce a *different* one if a
+    // threshold changed in between, which would break the byte-for-byte
+    // guarantee in a way no client could detect.
+    const priorRecord = await this.prisma.syncOperation.findUnique({
+      where: {
+        patientId_operationId: { patientId: actor.id, operationId: operation.operationId },
+      },
+    });
+    if (priorRecord !== null) {
+      return { result: replayOf(priorRecord), applied: false };
+    }
+
+    if (operation.entityType !== SYNC_ENTITY_TYPE.OBSERVATION) {
+      // The pipe already rejected an unknown entityType as a protocol error;
+      // this is the known-but-not-yet-exchanged case (Profile,
+      // EffectiveRange — schema entities with no wire payload until P4).
+      return {
+        result: rejection(operation, SYNC_REASON_CODE.UNSUPPORTED_CODE, SYNC_FIELD_PATH.PAYLOAD),
+        applied: false,
+      };
+    }
+
+    const skewRejection = await this.checkClockSkew(operation);
+    if (skewRejection !== null) {
+      await this.recordRejection(actor, operation, skewRejection);
+      return { result: skewRejection, applied: false };
+    }
+
+    return this.applyObservation(actor, operation, correlationId);
+  }
+
+  /**
+   * §3.8. A `clientTimestamp` further in the future than the allowance is
+   * rejected with `CLIENT_TIMESTAMP_OUT_OF_RANGE`.
+   *
+   * Separate from the Tier 1 rule blocking a future `effectiveDateTime`, and
+   * for a different reason. A future `effectiveDateTime` is a data-entry
+   * mistake. A future `clientTimestamp` is a **poisoned timestamp**: because
+   * conflict resolution is last-write-wins by client timestamp, a device with
+   * a clock set to 2031 wins every conflict against every other device,
+   * permanently, for every entity it touches. Nothing else in the protocol
+   * bounds that.
+   *
+   * There is no symmetric past bound. A device offline for three weeks
+   * legitimately pushes three-week-old timestamps, and that queue is exactly
+   * what must not be discarded.
+   */
+  private async checkClockSkew(
+    operation: SyncPushOperationParsed,
+  ): Promise<SyncOperationResult | null> {
+    const thresholds = await this.thresholds.getVolumetricThresholds();
+    const latestAllowed = Date.now() + thresholds.maxClockSkewMs;
+    if (operation.clientTimestamp.getTime() > latestAllowed) {
+      return rejection(
+        operation,
+        SYNC_REASON_CODE.CLIENT_TIMESTAMP_OUT_OF_RANGE,
+        SYNC_FIELD_PATH.CLIENT_TIMESTAMP,
+      );
+    }
+    return null;
+  }
+
+  private async applyObservation(
+    actor: PatientActor,
+    operation: SyncPushOperationParsed,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    const isDelete = operation.operationType === SYNC_OPERATION_TYPE.DELETE;
+
+    // §2/§4: found by (patient, entityId) TOGETHER. `findFirst` with both in
+    // the where clause, never `findUnique({ where: { id } })`.
+    const stored = await this.prisma.observation.findFirst({
+      where: { id: operation.entityId, patientId: actor.id },
+    });
+
+    if (stored === null) {
+      const foreign = await this.prisma.observation.findUnique({
+        where: { id: operation.entityId },
+        select: { id: true },
+      });
+      if (foreign !== null) {
+        // §6.2: an entity id resolving to ANOTHER patient's row. Refused
+        // without revealing that the row exists — the result names the field
+        // and the code, never whose it is.
+        return {
+          result: rejection(
+            operation,
+            SYNC_REASON_CODE.ENTITY_ID_CONFLICT,
+            SYNC_FIELD_PATH.ENTITY_ID,
+          ),
+          applied: false,
+        };
+      }
+      if (isDelete || operation.operationType === SYNC_OPERATION_TYPE.UPDATE) {
+        // §6.2: no row with that id exists for this patient at all. Note this
+        // is NOT the tombstoned case — §4 makes a tombstoned row still exist
+        // for update, delete and conflict resolution, and `findFirst` above
+        // deliberately does not filter `deletedAt`.
+        return {
+          result: rejection(
+            operation,
+            SYNC_REASON_CODE.ENTITY_NOT_FOUND,
+            SYNC_FIELD_PATH.ENTITY_ID,
+          ),
+          applied: false,
+        };
+      }
+    }
+
+    // §4: last-write-wins, including for a create. A create whose entity id
+    // already exists for this patient is NOT a rejection — it is an ordinary
+    // comparison with the same three outcomes. The reachable case is not a
+    // client bug: the server applies a create, the response is lost, the
+    // client re-pushes, and if the idempotency record did not commit with the
+    // write that arrives as a create against an existing row.
+    if (stored !== null && operation.clientTimestamp.getTime() < stored.clientUpdatedAt.getTime()) {
+      return this.recordSuperseded(actor, operation, stored, correlationId);
+    }
+
+    return isDelete
+      ? this.applyDelete(actor, operation, stored, correlationId)
+      : this.applyUpsert(actor, operation, stored, correlationId);
+  }
+
+  /**
+   * The incoming operation lost. Result `superseded`, and the **incoming**
+   * version goes to the audit log (§4.1).
+   *
+   * `appliedServerSequence` is the WINNING row's sequence, not this
+   * operation's — this operation never got one. §3.6: it names the version
+   * that beat this one.
+   */
+  private async recordSuperseded(
+    actor: PatientActor,
+    operation: SyncPushOperationParsed,
+    stored: Observation,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    const result = syncSupersededResult({
+      operationId: toOperationId(operation.operationId),
+      entityId: toEntityId(operation.entityId),
+      appliedServerSequence: toServerSequence(stored.serverSequence.toString()),
+      replayed: false,
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: actor.id,
+          action: 'UPDATE',
+          entityType: OBSERVATION_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_CONFLICT_LOSER_REASON,
+          // The INCOMING version that lost. Projected field by field from
+          // the operation, never spread from the payload (§6.3).
+          beforeValue: incomingSnapshot(operation),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+      await this.writeOperationRecord(tx, actor, operation, result);
+    });
+
+    return { result, applied: false };
+  }
+
+  private async applyUpsert(
+    actor: PatientActor,
+    operation: SyncPushOperationParsed,
+    stored: Observation | null,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    // Payload CONTENT validation, per operation — never in the pipe (§6.1).
+    let input;
+    try {
+      const parsed = observationRequestParseSchema.parse(operation.payload);
+      input = interpretObservationPayload(parsed);
+    } catch (error) {
+      const detail = firstRejectionDetail(error);
+      const result = rejection(operation, detail.reasonCode, detail.field);
+      await this.recordRejection(actor, operation, result);
+      return { result, applied: false };
+    }
+
+    const thresholds = await this.thresholds.getVolumetricThresholds();
+    const profile = await this.prisma.profile.findUnique({
+      where: { patientId: actor.id },
+      select: { surgeryDate: true },
+    });
+
+    const tier1 = evaluateTier1(
+      {
+        field: SYNC_FIELD_PATH.VALUE_QUANTITY_VALUE,
+        rawValueMl: input.rawValueMl,
+        method: toMeasuredOrEstimated(input.method),
+        effectiveDateTime: input.effectiveDateTime,
+        surgeryDate: profile?.surgeryDate ?? null,
+        now: new Date(),
+      },
+      thresholds,
+    );
+
+    if (tier1.outcome === 'blocked') {
+      // §6.3: report the FIRST failure in §6.2's listed order, so two servers
+      // do not walk one patient through different correction sequences.
+      const first = tier1.errors[0]!;
+      const result = rejection(
+        operation,
+        first.ruleCode as SyncReasonCode,
+        first.field as SyncFieldPath,
+      );
+      await this.recordRejection(actor, operation, result);
+      return { result, applied: false };
+    }
+
+    // Tier 2 is deliberately not consulted here. §6.2: a soft warning is not
+    // a rejection and never becomes one, and there is no wire representation
+    // of a Tier 2 outcome in a push response — a field for it is a field
+    // someone will eventually branch on.
+
+    const data: Prisma.ObservationUncheckedCreateInput = {
+      id: operation.entityId,
+      patientId: actor.id,
+      resourceType: 'Observation',
+      code: input.code,
+      valueQuantityValue: new Prisma.Decimal(input.rawValueMl as number),
+      valueQuantityUnit: input.unit,
+      effectiveDatetime: input.effectiveDateTime,
+      method: toStoredMethod(input.method),
+      status: ObservationStatus.FINAL,
+      // ADR-0012 as amended: the CLIENT's asserted entry system. For a queued
+      // offline write only the device knows what the patient typed in.
+      enteredMeasurementSystem: toStoredMeasurementSystem(input.enteredMeasurementSystem),
+      clientUpdatedAt: operation.clientTimestamp,
+      deletedAt: null,
+    };
+
+    const row = await this.prisma.$transaction(async (tx) => {
+      const written =
+        stored === null
+          ? await tx.observation.create({ data })
+          : await tx.observation.update({
+              // Scoped by both, as everywhere (§2).
+              where: { id: operation.entityId, patientId: actor.id },
+              // A full replacement, not a patch (§4): every payload field is
+              // required and the payload is the entity's new state entirely.
+              // `deletedAt: null` is what resurrects a tombstoned row when an
+              // update beats a delete.
+              data,
+            });
+
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: actor.id,
+          action: stored === null ? 'CREATE' : 'UPDATE',
+          entityType: OBSERVATION_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_APPLIED_REASON,
+          ...(stored !== null ? { beforeValue: toAuditSnapshot(stored) } : {}),
+          afterValue: toAuditSnapshot(written),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+
+      // §4.1: an accepted operation that DISPLACED a stored version writes a
+      // second audit row carrying that stored version as it was before the
+      // write. Two rows, because two things happened.
+      if (stored !== null) {
+        await this.audit.record(
+          {
+            actorType: 'PATIENT',
+            actorId: actor.id,
+            action: 'UPDATE',
+            entityType: OBSERVATION_ENTITY_TYPE,
+            entityId: operation.entityId,
+            reasonCode: SYNC_CONFLICT_LOSER_REASON,
+            beforeValue: toAuditSnapshot(stored),
+            ...(correlationId !== undefined ? { correlationId } : {}),
+          },
+          tx,
+        );
+      }
+
+      await this.writeOperationRecord(
+        tx,
+        actor,
+        operation,
+        acceptedResultFor(operation, written.serverSequence),
+      );
+      return written;
+    });
+
+    return { result: acceptedResultFor(operation, row.serverSequence), applied: true };
+  }
+
+  private async applyDelete(
+    actor: PatientActor,
+    operation: SyncPushOperationParsed,
+    stored: Observation | null,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    if (stored === null) {
+      const result = rejection(
+        operation,
+        SYNC_REASON_CODE.ENTITY_NOT_FOUND,
+        SYNC_FIELD_PATH.ENTITY_ID,
+      );
+      await this.recordRejection(actor, operation, result);
+      return { result, applied: false };
+    }
+
+    const row = await this.prisma.$transaction(async (tx) => {
+      const written = await tx.observation.update({
+        where: { id: operation.entityId, patientId: actor.id },
+        data: { deletedAt: new Date(), clientUpdatedAt: operation.clientTimestamp },
+      });
+
+      // §4.1: a delete audits the entity's FULL pre-deletion state as
+      // `beforeValue`, with `afterValue` null. The tombstone carries nothing
+      // on the wire (§5.2) precisely because the audit store carries
+      // everything — once the §10 purge policy lands, this row is the only
+      // surviving copy of what was deleted.
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: actor.id,
+          action: 'DELETE',
+          entityType: OBSERVATION_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_APPLIED_REASON,
+          beforeValue: toAuditSnapshot(stored),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+
+      if (stored.deletedAt === null) {
+        await this.audit.record(
+          {
+            actorType: 'PATIENT',
+            actorId: actor.id,
+            action: 'UPDATE',
+            entityType: OBSERVATION_ENTITY_TYPE,
+            entityId: operation.entityId,
+            reasonCode: SYNC_CONFLICT_LOSER_REASON,
+            beforeValue: toAuditSnapshot(stored),
+            ...(correlationId !== undefined ? { correlationId } : {}),
+          },
+          tx,
+        );
+      }
+
+      await this.writeOperationRecord(
+        tx,
+        actor,
+        operation,
+        acceptedResultFor(operation, written.serverSequence),
+      );
+      return written;
+    });
+
+    return { result: acceptedResultFor(operation, row.serverSequence), applied: true };
+  }
+
+  /** A rejection still gets an idempotency record: a replayed rejection is still a rejection (§3.7). */
+  private async recordRejection(
+    actor: PatientActor,
+    operation: SyncPushOperationParsed,
+    result: SyncOperationResult,
+  ): Promise<void> {
+    await this.writeOperationRecord(this.prisma, actor, operation, result);
+  }
+
+  /**
+   * The idempotency record. Stores everything the first response carried —
+   * `status`, `reasonCode`, `field`, `appliedServerSequence` — because §3.7's
+   * replay guarantee is byte-for-byte, not "enough to recompute a status".
+   */
+  private async writeOperationRecord(
+    tx: Prisma.TransactionClient | PrismaService,
+    actor: PatientActor,
+    operation: SyncPushOperationParsed,
+    result: SyncOperationResult,
+  ): Promise<void> {
+    await tx.syncOperation.create({
+      data: {
+        patientId: actor.id,
+        operationId: operation.operationId,
+        entityType: SyncEntityType.OBSERVATION,
+        entityId: operation.entityId,
+        operationType: toStoredOperationType(operation.operationType),
+        clientTimestamp: operation.clientTimestamp,
+        status: toStoredStatus(result.status),
+        rejectionReasonCode: result.status === 'rejected' ? result.reasonCode : null,
+        rejectionField: result.status === 'rejected' ? result.field : null,
+        appliedServerSequence:
+          result.status === 'rejected' ? null : BigInt(result.appliedServerSequence),
+      },
+    });
+  }
+}
+
+function acceptedResultFor(
+  operation: SyncPushOperationParsed,
+  serverSequence: bigint,
+): SyncOperationResult {
+  return syncAcceptedResult({
+    operationId: toOperationId(operation.operationId),
+    entityId: toEntityId(operation.entityId),
+    appliedServerSequence: toServerSequence(serverSequence.toString()),
+    replayed: false,
+  });
+}
+
+/**
+ * Built by naming fields, never by spreading a validation result (§6.3).
+ * TypeScript's excess-property check does not apply to spread properties, so
+ * `{ ...validationResult, status: 'rejected' }` typechecks cleanly and
+ * serializes whatever the source carried — including the offending value.
+ */
+function rejection(
+  operation: SyncPushOperationParsed,
+  reasonCode: SyncReasonCode,
+  field: SyncFieldPath,
+): SyncOperationResult {
+  return syncRejectedResult({
+    operationId: toOperationId(operation.operationId),
+    entityId: toEntityId(operation.entityId),
+    reasonCode,
+    field,
+    replayed: false,
+  });
+}
+
+/** §3.7: the stored result, replayed byte-for-byte apart from `replayed: true`. */
+function replayOf(record: SyncOperation): SyncOperationResult {
+  const operationId = toOperationId(record.operationId);
+  const entityId = toEntityId(record.entityId);
+
+  if (record.status === SyncOperationStatus.REJECTED) {
+    return syncRejectedResult({
+      operationId,
+      entityId,
+      reasonCode: record.rejectionReasonCode as SyncReasonCode,
+      field: record.rejectionField as SyncFieldPath,
+      replayed: true,
+    });
+  }
+
+  const appliedServerSequence = toServerSequence((record.appliedServerSequence ?? 0n).toString());
+  return record.status === SyncOperationStatus.SUPERSEDED
+    ? syncSupersededResult({ operationId, entityId, appliedServerSequence, replayed: true })
+    : syncAcceptedResult({ operationId, entityId, appliedServerSequence, replayed: true });
+}
+
+/**
+ * The incoming version, for the audit row a `superseded` operation writes.
+ *
+ * Projected field by field from the parsed payload rather than spread, for
+ * §6.3's reason — and note this one legitimately DOES carry clinical values:
+ * it is an audit row, not a wire response. §4.1 requires the losing version
+ * to be preserved rather than discarded, which is the only reason
+ * last-write-wins is acceptable for clinical data at all.
+ */
+function incomingSnapshot(operation: SyncPushOperationParsed): Record<string, unknown> {
+  const payload = operation.payload ?? {};
+  return {
+    id: operation.entityId,
+    code: payload.code,
+    valueQuantityValue: (payload.valueQuantity as { value?: unknown } | undefined)?.value,
+    valueQuantityUnit: (payload.valueQuantity as { unit?: unknown } | undefined)?.unit,
+    effectiveDatetime: payload.effectiveDateTime,
+    method: payload.method,
+    status: payload.status,
+    enteredMeasurementSystem: payload.enteredMeasurementSystem,
+    clientUpdatedAt: operation.clientTimestamp.toISOString(),
+  };
+}
+
+function firstRejectionDetail(error: unknown): {
+  reasonCode: SyncReasonCode;
+  field: SyncFieldPath;
+} {
+  if (error instanceof ObservationRejectedException && error.details.length > 0) {
+    const detail = error.details[0]!;
+    return { reasonCode: detail.reasonCode, field: detail.field as SyncFieldPath };
+  }
+  // A zod failure on the payload shape. Reports `field: "payload"` and never
+  // the offending key (§6.2) — the key is client-supplied content.
+  return {
+    reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_UNRECOGNIZED,
+    field: SYNC_FIELD_PATH.PAYLOAD,
+  };
+}
+
+function toStoredOperationType(operationType: string): SyncOperationType {
+  if (operationType === SYNC_OPERATION_TYPE.CREATE) return SyncOperationType.CREATE;
+  if (operationType === SYNC_OPERATION_TYPE.UPDATE) return SyncOperationType.UPDATE;
+  return SyncOperationType.DELETE;
+}
+
+function toStoredStatus(status: string): SyncOperationStatus {
+  if (status === 'accepted') return SyncOperationStatus.ACCEPTED;
+  if (status === 'superseded') return SyncOperationStatus.SUPERSEDED;
+  return SyncOperationStatus.REJECTED;
+}
+
+/** Referenced so the enum import is not flagged; `MeasurementSystem` is used via `toStoredMeasurementSystem`. */
+export type { MeasurementSystem };

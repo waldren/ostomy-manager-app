@@ -54,6 +54,9 @@ const GENERATOR_CONFIG: AppConfig = {
   port: 0,
   logLevel: 'silent',
   oidcClockToleranceSeconds: 30,
+  syncPushMaxOperations: 500,
+  syncDeltaDefaultLimit: 200,
+  syncDeltaMaxLimit: 1000,
   databaseUrl: 'postgresql://openapi-generator:unused@127.0.0.1:1/unused',
   oidc: {
     issuer: 'https://openapi-generator.invalid/patient',

@@ -28,6 +28,7 @@ import { HealthModule } from './health/health.module';
 import { LoggingModule } from './logging/logging.module';
 import { ObservationsModule } from './observations/observations.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { SyncModule } from './sync/sync.module';
 import { ThresholdsModule } from './thresholds/thresholds.module';
 
 @Module({})
@@ -87,6 +88,7 @@ export class AppModule {
         ...(config.nodeEnv !== 'production' ? [AuditStubModule] : []),
         ThresholdsModule,
         ObservationsModule,
+        SyncModule,
       ],
     };
   }

@@ -55,6 +55,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         subjectClaim: env.ADMIN_OIDC_SUBJECT_CLAIM,
       },
     },
+    syncPushMaxOperations: env.SYNC_PUSH_MAX_OPERATIONS,
+    syncDeltaDefaultLimit: env.SYNC_DELTA_DEFAULT_LIMIT,
+    syncDeltaMaxLimit: env.SYNC_DELTA_MAX_LIMIT,
     objectStorage: {
       endpoint: env.OBJECT_STORAGE_ENDPOINT,
       region: env.OBJECT_STORAGE_REGION,
