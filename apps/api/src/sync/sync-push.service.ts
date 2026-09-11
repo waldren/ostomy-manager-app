@@ -47,6 +47,7 @@ import {
   type Observation,
   type SyncOperation,
 } from '../generated/prisma/client';
+import { SecurityLogService } from '../logging/security-log.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ThresholdsService } from '../thresholds/thresholds.service';
 import {
@@ -137,6 +138,7 @@ export class SyncPushService {
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(ThresholdsService) private readonly thresholds: ThresholdsService,
+    @Inject(SecurityLogService) private readonly securityLog: SecurityLogService,
   ) {}
 
   async push(
@@ -322,28 +324,41 @@ export class SyncPushService {
     });
 
     if (stored === null) {
+      // An id that resolves only to ANOTHER patient's row is **treated as not
+      // existing** (§2), so it takes the same branch below as an id that
+      // exists for nobody and returns a byte-identical result.
+      //
+      // `ENTITY_ID_CONFLICT` used to be returned here, and a distinct code IS
+      // the disclosure: it let an authenticated patient tell "this UUID
+      // belongs to someone else" from "no such row". §2 and §4 said the
+      // opposite of §6.2 and both could not be true; the contract was
+      // corrected toward §2, matching the precedent P2.S1a set on the direct
+      // endpoints, where returning the same refusal in both cases was chosen
+      // because it is structurally incapable of leaking.
+      //
+      // The lookup survives ONLY to record the attempt. It selects nothing
+      // but existence, feeds no branch a client can observe, and writes to
+      // the security log rather than the response — so the probe learns
+      // nothing and the operator still sees it.
       const foreign = await this.prisma.observation.findUnique({
         where: { id: operation.entityId },
         select: { id: true },
       });
       if (foreign !== null) {
-        // §6.2: an entity id resolving to ANOTHER patient's row. Refused
-        // without revealing that the row exists — the result names the field
-        // and the code, never whose it is.
-        return {
-          result: rejection(
-            operation,
-            SYNC_REASON_CODE.ENTITY_ID_CONFLICT,
-            SYNC_FIELD_PATH.ENTITY_ID,
-          ),
-          applied: false,
-        };
+        this.securityLog.crossPatientEntityAccess({
+          actorSubject: context.actorId,
+          patientId: context.patientId,
+          entityId: operation.entityId,
+          requestId: correlationId,
+        });
       }
+
       if (isDelete || operation.operationType === SYNC_OPERATION_TYPE.UPDATE) {
-        // §6.2: no row with that id exists for this patient at all. Note this
-        // is NOT the tombstoned case — §4 makes a tombstoned row still exist
-        // for update, delete and conflict resolution, and `findFirst` above
-        // deliberately does not filter `deletedAt`.
+        // §6.2: no row with that id exists for this patient — whether because
+        // it exists for nobody, or because it belongs to someone else. Note
+        // this is NOT the tombstoned case: §4 makes a tombstoned row still
+        // exist for update, delete and conflict resolution, and `findFirst`
+        // above deliberately does not filter `deletedAt`.
         return {
           result: rejection(
             operation,
@@ -353,6 +368,10 @@ export class SyncPushService {
           applied: false,
         };
       }
+
+      // A CREATE against a foreign id falls through to the create path below,
+      // where the (patient, id) unique constraint refuses it — again without
+      // the response distinguishing it from any other refusal.
     }
 
     // §4: last-write-wins, including for a create. A create whose entity id

@@ -27,6 +27,7 @@ import {
 } from '@ostomy/core/sync';
 
 import { Prisma, type Observation } from '../generated/prisma/client';
+import { SecurityLogService } from '../logging/security-log.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { toObservationResource } from '../observations/observation-payload';
 import { patientNotProvisioned } from '../observations/observation-rejection';
@@ -118,9 +119,16 @@ import type { SyncDeltaQueryParsed } from './sync-delta.pipe';
  */
 @Injectable()
 export class SyncDeltaService {
-  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(SecurityLogService) private readonly securityLog: SecurityLogService,
+  ) {}
 
-  async delta(actorSubject: string, query: SyncDeltaQueryParsed): Promise<SyncDeltaResponse> {
+  async delta(
+    actorSubject: string,
+    query: SyncDeltaQueryParsed,
+    requestId: string | undefined,
+  ): Promise<SyncDeltaResponse> {
     // `PatientActor.id` is the OIDC subject, not the patients row UUID.
     // Resolving it here rather than taking a patient id from the controller
     // keeps the (patient, id) scope one lookup away from the token and gives
@@ -133,6 +141,21 @@ export class SyncDeltaService {
       throw patientNotProvisioned();
     }
     const patientId = patient.id;
+
+    // §2. `since=0` returns the patient's entire clinical history in pages —
+    // legitimate exactly at install and reinstall, and also what a stolen
+    // token is worth. Recorded so the two can be told apart afterwards by
+    // frequency and timing, which is the determination the
+    // breach-notification clock runs on. Deliberately not `audit_events`: a
+    // read is not an SRS §5.2 event.
+    if (query.since === 0n) {
+      this.securityLog.fullHistoryPull({
+        actorSubject,
+        patientId,
+        requestId,
+        limit: query.limit,
+      });
+    }
 
     // BOTH reads take ONE snapshot. This is the whole point of the
     // transaction and it is not an optimisation — see the class comment's

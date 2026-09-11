@@ -42,14 +42,14 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-import type { INestApplication } from '@nestjs/common';
+import { Logger as NestLogger, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { createApiClient, ApiError } from '@ostomy/core/api-client';
 import { SYNC_FIELD_PATH } from '@ostomy/core/sync';
 import { Client as PgClient } from 'pg';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../app.module';
 import { applyJsonBodyLimit } from '../http/body-limit';
@@ -57,6 +57,7 @@ import { PATIENT_JWKS_RESOLVER } from '../auth/patient-jwks-resolver.token';
 import type { AppConfig } from '../config/env.schema';
 import { createTestOidcIssuer, type TestOidcIssuer } from '../test-support/oidc-test-tokens';
 import { THRESHOLD_KEY } from '../thresholds/thresholds.service';
+import { SYNC_THROTTLE } from './sync-throttle';
 
 const API_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -858,7 +859,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
           createOp({ entityId: randomUUID(), operationType: 'update' }),
       ],
       [
-        'ENTITY_ID_CONFLICT against another patient',
+        'a cross-patient entity id, which is treated as not existing',
         async (): Promise<Record<string, unknown>> => {
           const theirs = createOp();
           await push(patientB, [theirs]).expect(200);
@@ -947,9 +948,11 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       });
       const response = await push(patientA, [steal]);
 
+      // §2/§4 as corrected at P2.S1b: byte-identical to an id that exists for
+      // nobody. A distinct code would be the disclosure §2 forbids.
       expect(response.body.results[0]).toMatchObject({
         status: 'rejected',
-        reasonCode: 'ENTITY_ID_CONFLICT',
+        reasonCode: 'ENTITY_NOT_FOUND',
         field: 'entityId',
       });
 
@@ -959,6 +962,21 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       const rows = await observationRows(mine.entityId as string);
       expect(rows[0]!.patient_id).toBe(patientB.patientId);
       expect(Number(rows[0]!.value_quantity_value)).toBe(350.5);
+
+      // And the refusal is byte-identical to one for an id that exists for
+      // nobody — which is the whole control. Any difference here, including a
+      // different reason code, is an oracle: an authenticated patient could
+      // tell "someone else has this UUID" from "no such row".
+      const nonexistent = await push(patientA, [
+        createOp({
+          entityId: randomUUID(),
+          operationType: 'update',
+          clientTimestamp: '2026-09-08T10:00:00.000Z',
+        }),
+      ]);
+      const { operationId: _a, entityId: _b, ...foreignResult } = response.body.results[0];
+      const { operationId: _c, entityId: _d, ...missingResult } = nonexistent.body.results[0];
+      expect(foreignResult).toEqual(missingResult);
     });
 
     it('reports ENTITY_NOT_FOUND for an id that exists for nobody', async () => {
@@ -1438,17 +1456,22 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
      * unconditionally, so a passing run is not luck.
      */
     it('never skips a row when an update commits during a paged pull', async () => {
-      const fresh = await seedPatient();
       const at = '2026-09-07T12:00:00.000Z';
-      const ops = Array.from({ length: 12 }, () => createOp({ clientTimestamp: at }));
-      await push(fresh, ops).expect(200);
-      const allIds = ops.map((op) => op.entityId as string);
-
       const writer = new PgClient({ connectionString: runtimeDatabaseUrl });
       await writer.connect();
 
       try {
         for (let attempt = 0; attempt < 6; attempt += 1) {
+          // A fresh patient per attempt. The rate limit is keyed per patient
+          // (§2), and a paged pull under churn legitimately takes many
+          // requests — reusing one patient across attempts trips the limit
+          // rather than the invariant, which would make this test fail for a
+          // reason that has nothing to do with what it checks.
+          const fresh = await seedPatient();
+          const ops = Array.from({ length: 12 }, () => createOp({ clientTimestamp: at }));
+          await push(fresh, ops).expect(200);
+          const allIds = ops.map((op) => op.entityId as string);
+
           let churning = true;
 
           // A writer re-stamping sequences CONTINUOUSLY for the whole
@@ -1587,6 +1610,123 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       // §6.3 applies here as it does everywhere: nothing derived from the
       // request reaches a serialized error.
       expect(JSON.stringify(apiError)).not.toContain('not-a-number');
+    });
+  });
+  /**
+   * §2: *"Both endpoints are rate-limited, and a `since=0` delta pull is
+   * recorded in the security log."* Those two sit in one sentence for a
+   * reason — a `since=0` pull returns a patient's entire clinical history
+   * and is what a stolen token is worth, so the limit bounds how fast that
+   * can happen and the log makes it visible afterwards.
+   */
+  describe('§2 — rate limiting and the security log', () => {
+    it('refuses a patient who exceeds the window, with 429', async () => {
+      const fresh = await seedPatient();
+
+      let limited = 0;
+      let lastStatus = 0;
+      // Comfortably past the limit. Sequential, because the point is the
+      // per-patient budget rather than concurrency behaviour.
+      for (let i = 0; i < SYNC_THROTTLE.limit + 5; i += 1) {
+        const response = await delta(fresh, { since: 0 });
+        lastStatus = response.status;
+        if (response.status === 429) limited += 1;
+      }
+
+      expect(limited).toBeGreaterThan(0);
+      expect(lastStatus).toBe(429);
+    });
+
+    it('keys the limit on the patient, not the connection', async () => {
+      // Mobile clients share carrier NAT. An IP-keyed limit would throttle
+      // unrelated patients together, which is both a correctness problem and
+      // the reason a useful limit would be impossible to set.
+      const heavy = await seedPatient();
+      for (let i = 0; i < SYNC_THROTTLE.limit + 2; i += 1) {
+        await delta(heavy, { since: 0 });
+      }
+      expect((await delta(heavy, { since: 0 })).status).toBe(429);
+
+      // Same process, same connection, different patient: unaffected.
+      const bystander = await seedPatient();
+      expect((await delta(bystander, { since: 0 })).status).toBe(200);
+    });
+
+    it('records a since=0 pull to the security log, and an incremental pull not at all', async () => {
+      const fresh = await seedPatient();
+      const op = createOp();
+      await push(fresh, [op]).expect(200);
+
+      const lines: string[] = [];
+      const spy = vi.spyOn(NestLogger.prototype, 'log').mockImplementation((message: unknown) => {
+        lines.push(String(message));
+      });
+
+      try {
+        const full = await delta(fresh, { since: 0 });
+        expect(full.status).toBe(200);
+
+        const recorded = lines.filter((line) => line.includes('sync.delta.full_history_pull'));
+        expect(recorded).toHaveLength(1);
+
+        const event = JSON.parse(recorded[0]!) as Record<string, unknown>;
+        expect(event.actorSubject).toBe(fresh.subject);
+        expect(event.patientId).toBe(fresh.patientId);
+        // Who and when, never what. A security log line carries no clinical
+        // value — the volume this patient logged is not in it.
+        expect(recorded[0]).not.toContain('350.5');
+
+        // An incremental pull is ordinary use and is not recorded; otherwise
+        // the signal is buried in every poll every client makes.
+        lines.length = 0;
+        await delta(fresh, { since: full.body.cursor });
+        expect(lines.filter((l) => l.includes('sync.delta.full_history_pull'))).toHaveLength(0);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('records a cross-patient entity probe, which the client is told nothing about', async () => {
+      const owner = await seedPatient();
+      const prober = await seedPatient();
+      const theirs = createOp();
+      await push(owner, [theirs]).expect(200);
+
+      const lines: string[] = [];
+      const spy = vi.spyOn(NestLogger.prototype, 'warn').mockImplementation((message: unknown) => {
+        lines.push(String(message));
+      });
+
+      try {
+        const response = await push(prober, [
+          createOp({
+            entityId: theirs.entityId,
+            operationType: 'update',
+            clientTimestamp: '2026-09-08T10:00:00.000Z',
+          }),
+        ]);
+
+        // The client learns only that no such entity exists (§2).
+        expect(response.body.results[0]).toMatchObject({
+          status: 'rejected',
+          reasonCode: 'ENTITY_NOT_FOUND',
+        });
+
+        // The operator sees the attempt. That asymmetry is the whole design:
+        // the probe learns nothing and the event is still recorded.
+        const recorded = lines.filter((line) => line.includes('sync.push.cross_patient_entity'));
+        expect(recorded).toHaveLength(1);
+        const event = JSON.parse(recorded[0]!) as Record<string, unknown>;
+        expect(event.actorSubject).toBe(prober.subject);
+        expect(event.entityId).toBe(theirs.entityId);
+        // The owner is NOT named — knowing someone else holds the id is the
+        // disclosure this whole change removes, and it does not belong in a
+        // log line either.
+        expect(recorded[0]).not.toContain(owner.patientId);
+        expect(recorded[0]).not.toContain(owner.subject);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

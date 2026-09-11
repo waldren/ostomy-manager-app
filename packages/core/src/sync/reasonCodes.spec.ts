@@ -47,6 +47,11 @@ describe('§6.2 — the rejection reason-code set', () => {
     }
   });
 
+  // ENTITY_ID_CONFLICT is listed in §6.2 but marked "never emitted by this
+  // surface" (corrected at P2.S1b: a distinct code for a cross-patient id was
+  // itself the disclosure §2 forbids). It stays in the set because the DIRECT
+  // endpoint uses it for its own duplicate-id refusal, and both surfaces
+  // deliberately share one reason-code vocabulary.
   it('contains the seven sync-specific codes §6.2 names, and no others beyond Tier 1', () => {
     expect(Object.keys(SYNC_SPECIFIC_REASON_CODE).sort()).toEqual([
       'CLIENT_TIMESTAMP_OUT_OF_RANGE',

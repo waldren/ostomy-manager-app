@@ -44,6 +44,7 @@ import type { Request } from 'express';
 import { Audited } from '../audit/audited.decorator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { getPatientActor } from '../auth/patient-actor';
+import { getRequestId } from '../logging/request-id';
 import { SyncDeltaPipe, type SyncDeltaQueryParsed } from './sync-delta.pipe';
 import { SyncDeltaService } from './sync-delta.service';
 import { SyncExceptionFilter } from './sync-exception.filter';
@@ -55,6 +56,7 @@ import {
 } from './sync-openapi';
 import { SyncPushPipe, type SyncPushRequestParsed } from './sync-push.pipe';
 import { SyncPushService } from './sync-push.service';
+import { SyncThrottlerGuard } from './sync-throttle';
 
 /**
  * The offline sync surface (`docs/sync-contract.md`).
@@ -71,7 +73,10 @@ import { SyncPushService } from './sync-push.service';
 @ApiTags('sync')
 @ApiBearerAuth('patient-oidc')
 @Controller('sync')
-@UseGuards(JwtAuthGuard)
+// Order matters: `JwtAuthGuard` first, because `SyncThrottlerGuard` keys on
+// the authenticated patient and an unauthenticated request must be refused
+// before it can consume anyone's budget.
+@UseGuards(JwtAuthGuard, SyncThrottlerGuard)
 // Every non-2xx leaving this surface becomes `{ error: { code } }` from §6.1's
 // closed set — including the framework defaults that never pass through the
 // type that makes the shape safe. See `SyncExceptionFilter`.
@@ -138,6 +143,6 @@ export class SyncController {
     @Query(SyncDeltaPipe) query: SyncDeltaQueryParsed,
   ): Promise<SyncDeltaResponse> {
     // The OIDC subject; the service resolves it to a patient row.
-    return this.deltaService.delta(getPatientActor(request).id, query);
+    return this.deltaService.delta(getPatientActor(request).id, query, getRequestId(request));
   }
 }

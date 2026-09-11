@@ -208,6 +208,12 @@ as an opaque object and does not parse it; `sync-push.service.ts` validates each
   last-write-wins comparison. The reachable case is not a client bug — the server applies a create,
   the response is lost, the client re-pushes. Rejecting puts a correct entry in the correction inbox
   carrying a code §6.4 says must not be shown to the patient.
+- **A cross-patient entity id returns `ENTITY_NOT_FOUND`, not a distinct code.** §6.2 once defined
+  `ENTITY_ID_CONFLICT` for it while §2 and §4 said the refusal happened "without revealing that the row
+  exists" — and those cannot both be true, because a distinct code *is* the disclosure. Corrected
+  toward §2 at P2.S1b. The code still exists in `packages/core/src/sync` because the **direct**
+  endpoint uses it for its own duplicate-id refusal; that surface is create-only and has no
+  last-write-wins to fall back on.
 - **A tombstoned row still exists** for update, delete, and conflict resolution. ADR-0001 tells
   implementers to filter tombstones from every read path, and an implementer who applies that here
   returns `ENTITY_NOT_FOUND` for exactly the operation §4's resurrection rule says must succeed.
@@ -231,6 +237,30 @@ as an opaque object and does not parse it; `sync-push.service.ts` validates each
    middleware, before routing, so `@UseFilters` never sees a malformed or oversized push body. The
    sync envelope decision lives in the **global** filter, keyed on the request path. P2.S1a learned
    this once already for `ErrorSanitizerFilter` itself.
+
+### Rate limiting and the security log (§2)
+
+Both endpoints are rate-limited, **keyed on the patient rather than the IP** — mobile clients share
+carrier NAT, so an IP-keyed limit would throttle unrelated patients together and would have to be set
+so loosely it stopped bounding anything. `SyncThrottlerGuard` runs after `JwtAuthGuard`, so the actor
+is always present. Storage is in-memory and therefore **per task**, not global: on Fargate, N tasks
+means N times the configured rate. That is a deliberate v1 limitation, recorded so nobody reads the
+configured number as a system-wide guarantee; making it global needs a shared store at P9.
+
+`SecurityLogService` (`logging/`) records two events, and neither goes in `audit_events` — §2 says a
+read is not an SRS §5.2 audit event:
+
+- **`sync.delta.full_history_pull`** — a `since=0` pull. It returns the patient's entire clinical
+  history and is legitimate exactly at install and reinstall; it is also what a stolen token is worth.
+  Recording it is what makes "did a bulk export happen, and when" answerable, which is the
+  determination the breach-notification clock runs on.
+- **`sync.push.cross_patient_entity`** — a token used against an entity id belonging to someone else.
+  The client is told only that no such entity exists (§2), so this line is the only place the attempt
+  survives. It deliberately does **not** name the owning patient.
+
+Lines carry who, when, and which entity — **never a clinical value**. `SecurityLogService` lives in its
+own module rather than on `LoggingModule`, because integration suites override the latter wholesale to
+capture Pino output, and anything added there is invisible to them.
 
 ### The batch bound is coupled to the body limit
 
