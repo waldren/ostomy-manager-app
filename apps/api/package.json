@@ -12,6 +12,9 @@
   "//files": "CI-audit follow-up to P1.S3: this whitelist briefly held \"prisma\" and \"prisma.config.ts\" alongside \"dist\", because `pnpm deploy` (infra/docker/api.Dockerfile's prod-deps stage) packs a workspace's own files by this field and, at the time, `migrate` ran `prisma migrate deploy` inside that SAME pruned image `api` runs from. It no longer does — `migrate` is now its own Dockerfile stage/image (`migrate-deps` -> `migrate`) — so a single shared `files` list is no longer the right mechanism: it cannot express \"pack prisma/ and prisma.config.ts for the migrate image only, not for runtime,\" and leaving them here would silently hand the runtime image schema/migration files it no longer has any CLI to use. `files` now names only what every `pnpm deploy` invocation of this package should ever pack (\"dist\"); infra/docker/api.Dockerfile's `migrate` stage COPYs prisma/schema.prisma, prisma/migrations/, and prisma.config.ts directly from the `build` stage's source checkout instead, so only that stage receives them.",
   "scripts": {
     "prisma:generate": "prisma generate",
+    "openapi:generate": "prisma generate && tsx src/openapi/emit-openapi.ts",
+    "api-client:generate": "pnpm run openapi:generate && node scripts/generate-api-client.cjs",
+    "api-client:check": "pnpm run openapi:generate && node scripts/generate-api-client.cjs --check",
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=.env dist/main.js",
     "start:dev": "prisma generate && tsx watch --env-file=.env src/main.ts",

@@ -59,9 +59,13 @@ These fail the build rather than warn, each because a project constraint depends
 
 `apps/web` and `apps/mobile` currently hold README stubs, and there is no `apps/admin`.
 
-- **API, standalone (no Docker):** scaffolded at P1.S1. `cp apps/api/.env.example apps/api/.env`,
-  fill in real values, then `pnpm --filter @ostomy/api start:dev`. No database yet — that lands at
-  P1.S3. See `apps/api/README.md`.
+- **API, standalone (no Docker):** `cp apps/api/.env.example apps/api/.env`, fill in real values, then
+  `pnpm --filter @ostomy/api start:dev`. It needs a reachable PostgreSQL (P1.S3 onward) — point
+  `DATABASE_URL` at the Docker stack's database, or bring up the whole stack below. Serves
+  `POST`/`GET /api/v1/observations` (P2.S1a) and Swagger UI at `/api-docs` outside production.
+  `pnpm --filter @ostomy/api openapi:generate` writes `openapi.json` without a server or a database;
+  `api-client:generate` then regenerates `packages/core/src/api-client`, which is never hand-edited.
+  See `apps/api/README.md`.
 - Web: `TBD` — lands with P2.S3
 - Mobile (Expo): `TBD` — lands with P2.S2a. Set `EXPO_PUBLIC_API_URL` to the development server's LAN address; the test device must be on the same network
 - **Local Docker stack:** scaffolded at P1.S2. From the repo root:
@@ -75,8 +79,8 @@ These fail the build rather than warn, each because a project constraint depends
   ```
 
   Brings up `postgres`, `db-roles` (one-shot; applies the migration-owner/runtime-role split —
-  see `infra/db/README.md`), `minio`, `mock-oidc`, a one-shot `migrate` (a TCP-connectivity check
-  today, a placeholder until P1.S3 — there is no schema yet), `api`, and static placeholder
+  see `infra/db/README.md`), `minio`, `mock-oidc`, a one-shot `migrate` (applies the Prisma
+  migrations as the owner role — P1.S3 onward), `api`, and static placeholder
   `web`/`admin` containers — see `docs/deployment-development.md` for the full topology and
   `infra/docker-compose.yml` for the wiring. `.env.example`'s `DEV_HOST_ADDRESS` comment explains
   a real dev-host gotcha specific to the mock OIDC provider — there is no default that "just

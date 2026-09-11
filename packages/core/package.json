@@ -26,12 +26,16 @@
       "types": "./dist/sync/index.d.ts",
       "default": "./dist/sync/index.js"
     },
+    "./api-client": {
+      "types": "./dist/api-client/index.d.ts",
+      "default": "./dist/api-client/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
-  "//exports": "No root '.' export on purpose (ADR-0007): validation, units, hydration and i18n came from P1.S4, and ./sync from P2.S0 — five owned, independent entry points, each with exactly one authoring agent. fhir-data-modeler adds ./fhir when its sprint lands; ./api-client is generated. A root barrel is deliberately not introduced — see packages/config/eslint/index.js's admin-boundary comment on why an all-encompassing '@ostomy/core' specifier is exactly the thing to avoid reintroducing casually.",
+  "//exports": "No root '.' export on purpose (ADR-0007): validation, units, hydration and i18n came from P1.S4, ./sync from P2.S0, and ./api-client from P2.S1a — six independent entry points. Five have exactly one authoring agent; ./api-client has none, because it is generated from apps/api/openapi.json by `pnpm --filter @ostomy/api api-client:generate` and is never hand-edited (ADR-0007). fhir-data-modeler adds ./fhir when its sprint lands. A root barrel is deliberately not introduced — see packages/config/eslint/index.js's admin-boundary comment on why an all-encompassing '@ostomy/core' specifier is exactly the thing to avoid reintroducing casually.",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

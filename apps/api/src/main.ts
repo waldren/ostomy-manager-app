@@ -22,7 +22,7 @@ import path from 'node:path';
 
 import type { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { SwaggerModule } from '@nestjs/swagger';
 import pino from 'pino';
 import { Logger } from 'nestjs-pino';
 
@@ -31,6 +31,7 @@ import { ConfigValidationError } from './config/config-validation.error';
 import { loadConfig } from './config/load-config';
 import { CREDENTIAL_REDACTION_PATHS, PHI_SHAPED_REDACTION_PATHS } from './logging/redaction';
 import { errSerializer } from './logging/serializers';
+import { buildOpenApiDocument } from './openapi/build-openapi-document';
 import { writeOpenApiDocument } from './openapi/write-openapi-document';
 import { PrismaService } from './prisma/prisma.service';
 
@@ -64,24 +65,20 @@ async function bootstrap(): Promise<void> {
     app.setGlobalPrefix(API_PREFIX);
 
     if (config.nodeEnv !== 'production') {
-      const swaggerConfig = new DocumentBuilder()
-        .setTitle('Ostomy API')
-        .setDescription('Patient and admin REST API for the ostomy care tracking application.')
-        .setVersion('1')
-        .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'patient-oidc')
-        .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'admin-oidc')
-        .build();
-      const document = SwaggerModule.createDocument(app, swaggerConfig);
+      // Built by the same function `openapi:generate` uses, so the document
+      // served here and the one the typed client is generated from cannot
+      // diverge (openapi/build-openapi-document.ts).
+      const document = buildOpenApiDocument(app);
       SwaggerModule.setup('api-docs', app, document);
 
       // Best-effort only: a read-only container filesystem is normal
       // hardening, and the dev stack itself runs with NODE_ENV=development,
       // so an unguarded write here would mean the API never starts in the
-      // one environment where this branch runs. The typed client generator
-      // (P2.S1a) that actually consumes this file does not need a running
-      // server for it — moving emission to a dedicated `openapi:generate`
-      // script is the better long-term shape; this keeps boot from
-      // depending on a writable `process.cwd()` in the meantime.
+      // one environment where this branch runs. Nothing depends on this
+      // file any more — P2.S1a moved emission to `pnpm --filter @ostomy/api
+      // openapi:generate` (openapi/emit-openapi.ts), which needs neither a
+      // listening port nor a reachable database — so a failure here is a
+      // developer convenience lost, not a broken build.
       try {
         writeOpenApiDocument(document, path.join(process.cwd(), 'openapi.json'));
       } catch (error) {

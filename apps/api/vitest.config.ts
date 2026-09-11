@@ -7,7 +7,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.spec.ts'],
+    // `scripts/` too: the API client generator lives there and its
+    // schema-rendering failure mode is silent (bad output still compiles),
+    // so it needs coverage as much as anything under src/.
+    include: ['src/**/*.spec.ts', 'scripts/**/*.spec.ts'],
     exclude: ['**/node_modules/**', '**/*.integration.spec.ts'],
     restoreMocks: true,
   },

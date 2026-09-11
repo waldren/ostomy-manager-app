@@ -37,6 +37,12 @@ export const validationErrors = {
   // S8: the previous copy ("Choose whether this amount was measured or
   // estimated") tested at roughly a 9.7 grade level (passive, formal
   // "whether"). Rewritten as a direct, active instruction.
+  // P2.S1a: both of these replace what used to be a server error the
+  // patient could not act on. Kept short and concrete — the patient's
+  // realistic route here is a typo (an extra digit, or a pasted value),
+  // so the copy says what to do rather than naming a storage limit.
+  VALUE_EXCEEDS_MAX_MAGNITUDE: 'Enter a smaller amount.',
+  VALUE_EXCEEDS_MAX_PRECISION: 'Use no more than 4 numbers after the decimal point.',
   METHOD_REQUIRED: 'Tell us if you measured this amount or estimated it.',
   // S8: simplified from "Choose a date and time that has already happened."
   EFFECTIVE_DATE_TIME_IN_FUTURE: 'Choose a date and time in the past.',

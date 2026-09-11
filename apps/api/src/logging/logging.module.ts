@@ -15,6 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { randomUUID } from 'node:crypto';
+
 import { Module } from '@nestjs/common';
 import { LoggerModule as PinoLoggerModule } from 'nestjs-pino';
 
@@ -51,6 +53,21 @@ import { errSerializer, reqSerializer, resSerializer } from './serializers';
         pinoHttp: {
           level: config.logLevel,
           autoLogging: true,
+          // Server-generated, globally unique, per request.
+          //
+          // pino-http's default `genReqId` is a per-PROCESS counter
+          // (`nextReqId = (nextReqId + 1) & maxInt`), so without this every
+          // task emits "1", "2", "3" … and resets on restart. That value is
+          // not merely a log label: `getRequestId()` feeds it to
+          // `audit_events.correlation_id` (P2.S1a), where "which records did
+          // request X touch" is the first question a breach-notification
+          // determination asks. Across four Fargate tasks a counter answers
+          // it with four unrelated patients' rows.
+          //
+          // Deliberately NOT pino-http's documented `req.headers['x-request-id']`
+          // variant: that puts an unbounded, client-controlled string into an
+          // append-only column with no DELETE grant to remove it (ADR-0011).
+          genReqId: () => randomUUID(),
           redact: {
             paths: [...CREDENTIAL_REDACTION_PATHS, ...PHI_SHAPED_REDACTION_PATHS],
             censor: '[REDACTED]',

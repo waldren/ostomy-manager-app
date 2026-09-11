@@ -19,7 +19,17 @@ Zero clinical rows existed at the time of this decision. That is the only reason
 
 `observations` carries **`entered_measurement_system`**, a `NOT NULL` column using the existing `MeasurementSystem` enum (`METRIC` / `IMPERIAL`) — the same enum `profiles.measurement_system` uses.
 
-Every write path resolves the patient's measurement system **at write time** and stores it on the row. Never at render time: the whole point is that the profile value may have changed since.
+Every write path resolves the patient's measurement system **at entry time** and stores it on the row. Never at render time: the whole point is that the profile value may have changed since.
+
+> **Amendment (P2.S1a, 2026-09-10) — "entry time," not "write time."**
+>
+> As originally written this sentence said *write time*, and P2.S1a's first implementation read it literally: the server re-derived the value from `profiles.measurement_system` at the moment of the insert and refused any payload that disagreed. That is wrong for the offline client, and `docs/sync-contract.md` §7.2 already said so — "resolved from their profile at entry time **on the device**, never re-derived server-side from the current profile."
+>
+> The two readings coincide for an online write, where entry and write are the same moment, which is why the direct endpoint could not reveal the difference. They diverge exactly where this ADR's own invariant bites: a patient logs three days of entries offline in imperial, switches to metric, then reconnects. Re-deriving server-side attributes every queued row to a system the patient did not type in — and the refusal variant rejects them on a field no entry form contains and the patient cannot edit, using a reason code §6.2 does not define for that case, with §9 forbidding both dropping the operation and retrying it unchanged.
+>
+> **The client's asserted value governs.** The server validates only that it is one of the two enum members, which is the sole domain check §6.2 defines for this field. This is not a new position: the invariant below already states that the canonical value and the entry system together are "the only record of what the patient actually typed," and for a queued write the device is the only party that knows what that was. The original wording predates offline entry and was imprecise, not mistaken in intent.
+>
+> The concern this trades against — an untrusted device deciding how a row is rounded on display — is real but small and bounded: canonical storage is unaffected (always mL/kg per ADR-0004), and the blast radius of a lying client is display rounding on that client's own rows. Weighed against a class of permanently uncorrectable rejections for every patient who ever changes the setting, it is the better trade. `docs/sync-contract.md` governs per CLAUDE.md, and this amendment brings the ADR into line with it rather than the reverse.
 
 **The system, not the unit.** A unit-level column (`mL`/`oz`/`kg`/`lb`) would store no fact this column plus `code` does not already determine — ADR-0004 fixes the code-to-canonical-unit mapping, and §3.10 makes mixed-system combinations unselectable. It would also need a second CHECK cross-validating unit against code. And `packages/core` consumes the system directly: `unitsForMeasurementSystem(system)` is the one function that turns this value into what `convertVolumeForDisplay` needs, so a write path reads the column and passes it straight through with no translation.
 

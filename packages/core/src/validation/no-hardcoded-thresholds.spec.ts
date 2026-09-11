@@ -58,6 +58,13 @@ const ALLOWLISTED_NON_RULE_FILES = new Set([
   'types.ts',
   // A barrel: re-exports only, no rule-evaluation logic of its own.
   'index.ts',
+  // Storage representability, not clinical judgement: the bounds of what
+  // `observations.value_quantity_value` (DECIMAL(12,4)) can hold. An admin
+  // changing a configured value would not change the column, so modelling
+  // these as injectable thresholds would misrepresent them as adjustable.
+  // Same category as `tier1.ts`'s exempt `0`. The test below pins this
+  // file's exported surface so it cannot become a home for a real threshold.
+  'representableRange.ts',
 ]);
 
 function isSpecOrTypeTestFile(fileName: string): boolean {
@@ -138,6 +145,34 @@ describe('threshold injection — no hardcoded numeric thresholds in the rule-ev
         expect(matches.length).toBeGreaterThan(0);
         expect(literalNumericValue(matches[0] as string)).toBe(0);
       }
+    });
+  });
+  /**
+   * `representableRange.ts` is allow-listed above, which makes it the one
+   * place in this directory a non-zero literal may live. That is a door,
+   * so it gets a lock: this pins the module's entire exported surface. A
+   * clinical threshold smuggled in as a third constant fails here, and the
+   * failure names the rule it broke rather than looking like an unrelated
+   * snapshot mismatch.
+   */
+  describe('the allow-listed representableRange.ts cannot become a home for a clinical threshold', () => {
+    it('exports exactly the storage-shape constants and predicates, and nothing else', async () => {
+      const module = (await import('./representableRange.js')) as Record<string, unknown>;
+      expect(Object.keys(module).sort()).toEqual([
+        'MAX_REPRESENTABLE_VALUE_ML',
+        'MAX_VALUE_DECIMAL_PLACES',
+        'decimalPlaces',
+        'exceedsMaxMagnitude',
+        'exceedsMaxPrecision',
+      ]);
+    });
+
+    it('its two constants still match the DECIMAL(12,4) column they describe', async () => {
+      const { MAX_REPRESENTABLE_VALUE_ML, MAX_VALUE_DECIMAL_PLACES } =
+        await import('./representableRange.js');
+      // Postgres: "must round to an absolute value less than 10^8".
+      expect(MAX_REPRESENTABLE_VALUE_ML).toBe(10 ** 8);
+      expect(MAX_VALUE_DECIMAL_PLACES).toBe(4);
     });
   });
 });

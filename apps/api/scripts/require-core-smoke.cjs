@@ -42,3 +42,4 @@ require('@ostomy/core/units');
 require('@ostomy/core/hydration');
 require('@ostomy/core/i18n');
 require('@ostomy/core/sync');
+require('@ostomy/core/api-client');

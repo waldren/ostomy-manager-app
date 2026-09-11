@@ -148,6 +148,13 @@ export class AuditInterceptor implements NestInterceptor {
       );
     }
     for (const entry of entries) {
+      // Already written by the handler, inside the PHI write's own
+      // transaction (P2.S1a). It counted toward the trip-wire above;
+      // persisting it again would duplicate a row in a table with no DELETE
+      // grant to correct it.
+      if (entry.persisted) {
+        continue;
+      }
       // Conditional spread, not `correlationId` assigned directly: with
       // `exactOptionalPropertyTypes`, `AuditContext.correlationId` (an
       // optional key) must be omitted rather than explicitly set to
@@ -185,6 +192,13 @@ export class AuditInterceptor implements NestInterceptor {
   ): Promise<never> {
     const entries = drainAuditEntries(request);
     for (const entry of entries) {
+      // A committed entry's transaction either landed with its PHI write or
+      // rolled back with it. Re-persisting here would create an audit row
+      // for a write that may never have happened — the mirror image of the
+      // gap the flag closes.
+      if (entry.persisted) {
+        continue;
+      }
       await this.tryPersistOnError(entry, correlationId);
     }
     throw error;

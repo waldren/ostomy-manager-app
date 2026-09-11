@@ -81,7 +81,7 @@ describe('AuditService.record()', () => {
     });
   });
 
-  it('leaves beforeValue/afterValue undefined (column NULL) when no correlationId is supplied', async () => {
+  it('leaves beforeValue/afterValue undefined (column NULL) when it is not given one', async () => {
     const prisma = fakePrisma();
     const service = new AuditService(prisma as never);
 
@@ -92,7 +92,14 @@ describe('AuditService.record()', () => {
     expect(call.data.afterValue).toEqual({ note: 'synthetic' });
   });
 
-  it('nests correlationId into afterValue when both are present, preserving a NULL beforeValue for a CREATE', async () => {
+  // P1.S5 wrote the correlation id *inside* whichever JSON value column was
+  // populated, as `{ correlationId, entity }`, because that sprint could not
+  // touch prisma/. The column landed in migration
+  // 20260906203344_add_audit_correlation_id and P2.S1a — the first sprint
+  // writing real clinical rows — starts using it, before the wrapped shape
+  // could become permanent in a table with no UPDATE grant (ADR-0011). These
+  // three cases are the old nesting tests, rewritten against the column.
+  it('writes correlationId to its own column and leaves afterValue holding the entity alone', async () => {
     const prisma = fakePrisma();
     const service = new AuditService(prisma as never);
 
@@ -101,14 +108,14 @@ describe('AuditService.record()', () => {
     );
 
     const call = prisma.auditEvent.create.mock.calls[0]![0];
+    expect(call.data.correlationId).toBe('req-123');
     expect(call.data.beforeValue).toBeUndefined();
-    expect(call.data.afterValue).toEqual({
-      correlationId: 'req-123',
-      entity: { note: 'synthetic' },
-    });
+    // No wrapper: a future reader reconstructing a record's history reads
+    // the entity's fields directly rather than unwrapping an `entity` key.
+    expect(call.data.afterValue).toEqual({ note: 'synthetic' });
   });
 
-  it('falls back to nesting correlationId into beforeValue for a DELETE (no afterValue)', async () => {
+  it('does the same for a DELETE, whose populated side is beforeValue', async () => {
     const prisma = fakePrisma();
     const service = new AuditService(prisma as never);
 
@@ -121,20 +128,36 @@ describe('AuditService.record()', () => {
     );
 
     const call = prisma.auditEvent.create.mock.calls[0]![0];
+    expect(call.data.correlationId).toBe('req-456');
     expect(call.data.afterValue).toBeUndefined();
-    expect(call.data.beforeValue).toEqual({
-      correlationId: 'req-456',
-      entity: { note: 'synthetic' },
-    });
+    expect(call.data.beforeValue).toEqual({ note: 'synthetic' });
   });
 
-  it('still records correlationId when neither beforeValue nor afterValue is supplied', async () => {
+  it('records correlationId even when neither beforeValue nor afterValue is supplied', async () => {
     const prisma = fakePrisma();
     const service = new AuditService(prisma as never);
 
     await service.record(baseContext({ correlationId: 'req-789' }));
 
     const call = prisma.auditEvent.create.mock.calls[0]![0];
-    expect(call.data.afterValue).toEqual({ correlationId: 'req-789', entity: null });
+    expect(call.data.correlationId).toBe('req-789');
+    // Both value columns stay genuinely absent. Under the old nesting they
+    // could not: the correlation id had to be smuggled into `afterValue` as
+    // `{ correlationId, entity: null }`, which read as "there was an after
+    // state and it was null".
+    expect(call.data.afterValue).toBeUndefined();
+    expect(call.data.beforeValue).toBeUndefined();
+  });
+
+  it('writes an explicit NULL correlationId when the caller has no request context', async () => {
+    const prisma = fakePrisma();
+    const service = new AuditService(prisma as never);
+
+    await service.record(baseContext({ afterValue: { note: 'synthetic' } }));
+
+    // `null`, not `undefined`: ADR-0001's conflict-loser row is audited with
+    // no originating request, and the column must say so rather than be
+    // omitted from the INSERT and left to a default.
+    expect(prisma.auditEvent.create.mock.calls[0]![0].data.correlationId).toBeNull();
   });
 });

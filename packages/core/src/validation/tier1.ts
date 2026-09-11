@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import type { Tier1Result, ValidationError } from './types.js';
 import type { VolumetricValidationThresholds } from './thresholds.js';
+import { exceedsMaxMagnitude, exceedsMaxPrecision } from './representableRange.js';
 
 /**
  * Tier 1 (hard block) rule codes for a volumetric entry (SRS §3.8, AC 2.1
@@ -26,6 +27,8 @@ import type { VolumetricValidationThresholds } from './thresholds.js';
 export const TIER1_RULE_CODE = {
   VALUE_NOT_NUMERIC: 'VALUE_NOT_NUMERIC',
   VALUE_NOT_POSITIVE: 'VALUE_NOT_POSITIVE',
+  VALUE_EXCEEDS_MAX_MAGNITUDE: 'VALUE_EXCEEDS_MAX_MAGNITUDE',
+  VALUE_EXCEEDS_MAX_PRECISION: 'VALUE_EXCEEDS_MAX_PRECISION',
   METHOD_REQUIRED: 'METHOD_REQUIRED',
   EFFECTIVE_DATE_TIME_IN_FUTURE: 'EFFECTIVE_DATE_TIME_IN_FUTURE',
   EFFECTIVE_DATE_TIME_BEFORE_SURGERY: 'EFFECTIVE_DATE_TIME_BEFORE_SURGERY',
@@ -85,6 +88,34 @@ function checkValueIsPositive(input: VolumetricEntryInput): ValidationError | nu
   return null;
 }
 
+/**
+ * A value the canonical column cannot hold is structurally impossible input,
+ * in the same sense as a negative volume — see `representableRange.ts` for
+ * why these two rules exist at Tier 1 rather than as a database error, and
+ * why their bounds are literals there rather than injected thresholds.
+ */
+function checkValueIsRepresentable(input: VolumetricEntryInput): ValidationError | null {
+  if (!isFiniteNumber(input.rawValueMl)) return null; // covered by checkValueIsNumeric
+  if (exceedsMaxMagnitude(input.rawValueMl)) {
+    return { field: input.field, ruleCode: TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_MAGNITUDE };
+  }
+  return null;
+}
+
+/**
+ * Rejects a value carrying more fractional digits than the column preserves.
+ * Postgres would otherwise round it silently and store something the patient
+ * did not enter, breaking ADR-0005's "stored values keep their entered
+ * precision" with no error on either side.
+ */
+function checkValuePrecision(input: VolumetricEntryInput): ValidationError | null {
+  if (!isFiniteNumber(input.rawValueMl)) return null; // covered by checkValueIsNumeric
+  if (exceedsMaxPrecision(input.rawValueMl)) {
+    return { field: input.field, ruleCode: TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_PRECISION };
+  }
+  return null;
+}
+
 /** SRS AC 2.2 AC1 — Mandatory Selection: saving without choosing Measured or Estimated is blocked. */
 function checkMethodProvided(input: VolumetricEntryInput): ValidationError | null {
   if (input.method === null) {
@@ -126,6 +157,8 @@ export function evaluateTier1(
   const errors = [
     checkValueIsNumeric(input),
     checkValueIsPositive(input),
+    checkValueIsRepresentable(input),
+    checkValuePrecision(input),
     checkMethodProvided(input),
     checkNotInFuture(input, thresholds),
     checkNotBeforeSurgery(input),

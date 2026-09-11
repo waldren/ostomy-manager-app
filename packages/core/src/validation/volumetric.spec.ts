@@ -105,6 +105,86 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
     });
   });
 
+  /**
+   * Every value in this block passes every other Tier 1 rule, which is what
+   * made them 500s before P2.S1a: they reached Postgres and failed there,
+   * and `docs/sync-contract.md` §9 tells a client to re-push a 5xx forever.
+   * The two magnitudes and the rounding case below were confirmed against a
+   * real DECIMAL(12,4) column, not inferred.
+   */
+  describe('values the canonical DECIMAL(12,4) column cannot hold (representableRange.ts)', () => {
+    it('blocks a value that overflows the column — Postgres: "must round to an absolute value less than 10^8"', () => {
+      const result = evaluateTier1(validEntry({ rawValueMl: 123456789 }), THRESHOLDS);
+      expect(result).toMatchObject({
+        outcome: 'blocked',
+        errors: [
+          {
+            field: 'stomaOutputVolumeMl',
+            ruleCode: TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_MAGNITUDE,
+          },
+        ],
+      });
+    });
+
+    it('accepts the largest value that still fits', () => {
+      expect(evaluateTier1(validEntry({ rawValueMl: 99999999.9999 }), THRESHOLDS).outcome).toBe(
+        'pass',
+      );
+    });
+
+    it('blocks exactly 10^8 — the bound is exclusive', () => {
+      const result = evaluateTier1(validEntry({ rawValueMl: 10 ** 8 }), THRESHOLDS);
+      expect(result).toMatchObject({
+        outcome: 'blocked',
+        errors: [{ ruleCode: TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_MAGNITUDE }],
+      });
+    });
+
+    it('blocks a value with more decimal places than the column keeps, rather than letting Postgres round it silently', () => {
+      // 350.12345 was verified to store as 350.1235 — no error, no signal.
+      const result = evaluateTier1(validEntry({ rawValueMl: 350.12345 }), THRESHOLDS);
+      expect(result).toMatchObject({
+        outcome: 'blocked',
+        errors: [
+          {
+            field: 'stomaOutputVolumeMl',
+            ruleCode: TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_PRECISION,
+          },
+        ],
+      });
+    });
+
+    it('accepts exactly 4 decimal places', () => {
+      expect(evaluateTier1(validEntry({ rawValueMl: 350.1234 }), THRESHOLDS).outcome).toBe('pass');
+    });
+
+    it('blocks a sub-scale value that would round to zero and trip the positivity CHECK', () => {
+      // 0.00004 rounds to 0.0000 and violates the column's `> 0` constraint.
+      // It is positive, so `VALUE_NOT_POSITIVE` never fires — this is the
+      // rule that catches it, and without it the row 500s.
+      const result = evaluateTier1(validEntry({ rawValueMl: 0.00004 }), THRESHOLDS);
+      expect(result).toMatchObject({
+        outcome: 'blocked',
+        errors: [{ ruleCode: TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_PRECISION }],
+      });
+    });
+
+    it('measures decimal places through exponent notation rather than mis-reading it as zero', () => {
+      // String(1e-7) is "1e-7", whose indexOf('.') is -1.
+      const result = evaluateTier1(validEntry({ rawValueMl: 1e-7 }), THRESHOLDS);
+      expect(result).toMatchObject({
+        outcome: 'blocked',
+        errors: [{ ruleCode: TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_PRECISION }],
+      });
+    });
+
+    it('leaves an ordinary entry untouched — these rules must not narrow what a real patient can log', () => {
+      for (const value of [1, 12.5, 350, 2500, 0.0001, 99999.25]) {
+        expect(evaluateTier1(validEntry({ rawValueMl: value }), THRESHOLDS).outcome).toBe('pass');
+      }
+    });
+  });
+
   describe('AC 2.2 AC1 — mandatory Measured/Estimated selection', () => {
     it('blocks a missing method', () => {
       const result = evaluateTier1(validEntry({ method: null }), THRESHOLDS);

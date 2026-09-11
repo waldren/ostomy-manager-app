@@ -25,7 +25,38 @@ import type { AuditContext } from './audit-context';
  * request (`logging/request-id.ts`) rather than trusting a handler to copy
  * it correctly on every call.
  */
-export type StagedAuditEntry = Omit<AuditContext, 'correlationId'>;
+export type StagedAuditEntry = Omit<AuditContext, 'correlationId'> & {
+  /**
+   * `true` when the handler already persisted this audit row itself, inside
+   * the same database transaction as the PHI write it describes
+   * (`AuditService.record(context, tx)`).
+   *
+   * Added at P2.S1a, the first real PHI write path, to close the gap P1.S5
+   * documented and could not act on: `AuditInterceptor` runs *after* the
+   * handler's observable emits, so a plain staged entry is always a second
+   * transaction, committed after the PHI row is already durable. Between the
+   * two commits, a crash, a connection reset or a disk-full leaves a
+   * clinical row with no audit row — the one outcome this whole apparatus
+   * exists to prevent, and one that is undetectable afterwards because the
+   * PHI row looks perfectly legitimate.
+   *
+   * A handler that owns its own `$transaction` therefore records inside it
+   * and stages the entry with this flag. The interceptor skips persisting it
+   * (persisting again would duplicate the row in an append-only table with
+   * no DELETE grant to fix it) but still **counts** it toward the
+   * "@Audited() route staged nothing" trip-wire — which is the whole point:
+   * moving the write into the transaction must not cost the coverage check
+   * that catches a PHI write with no audit row at all.
+   */
+  readonly persisted?: true;
+
+  /**
+   * The `audit_events.id` returned by the `AuditService.record()` call that
+   * wrote this entry. Present exactly when `persisted` is — it is what makes
+   * that flag a fact rather than an assertion. See `stageCommittedAuditEntry()`.
+   */
+  readonly auditEventId?: string;
+};
 
 /**
  * Request-object staging, the same pattern this codebase already uses for
@@ -53,6 +84,46 @@ declare module 'express-serve-static-core' {
 /** Stages one audit entry for `AuditInterceptor` to persist once the current handler completes. */
 export function stageAuditEntry(request: Request, entry: StagedAuditEntry): void {
   (request.auditEntries ??= []).push(entry);
+}
+
+/**
+ * Declares an audit row this handler **already committed**, inside the same
+ * transaction as the PHI write it describes.
+ *
+ * Call this instead of `stageAuditEntry()` — never as well as — from a
+ * handler that passed a `Prisma.TransactionClient` to
+ * `AuditService.record()`. The interceptor will not write it a second time,
+ * and the route still satisfies the `@Audited()` coverage check. See
+ * `StagedAuditEntry.persisted` for why this exists.
+ *
+ * **`auditEventId` is the proof, and it is required (P2.S1a review).** The
+ * first version of this function took the caller's word for it, which turned
+ * P1.S5's guarantee — "an `@Audited()` route *produced* an audit row",
+ * because the interceptor wrote it — into "an `@Audited()` route *claimed*
+ * one." A handler that called this and forgot `record(ctx, tx)` passed every
+ * trip-wire while writing PHI with no audit row: the route is decorated,
+ * entries were staged so `persistStagedEntries` does not throw, and the
+ * interceptor skips them all because `persisted` is set. Before the flag
+ * existed, that same bug was a loud 500.
+ *
+ * Requiring the id `AuditService.record()` returns closes it structurally:
+ * there is no way to produce one without having called `record()`. This
+ * matters most for P2.S1b, where one route applies many operations in a loop
+ * and a dropped call on one branch would otherwise be silent.
+ */
+export function stageCommittedAuditEntry(
+  request: Request,
+  entry: Omit<AuditContext, 'correlationId'>,
+  auditEventId: string,
+): void {
+  if (typeof auditEventId !== 'string' || auditEventId.length === 0) {
+    throw new Error(
+      'stageCommittedAuditEntry() requires the id returned by AuditService.record(). ' +
+        'An empty id means the audit row was not actually written, and staging it as ' +
+        'committed would defeat the @Audited() coverage check.',
+    );
+  }
+  (request.auditEntries ??= []).push({ ...entry, persisted: true, auditEventId });
 }
 
 /**
