@@ -101,6 +101,7 @@ export class SyncController {
     @Req() request: Request,
     @Query(SyncDeltaPipe) query: SyncDeltaQueryParsed,
   ): Promise<SyncDeltaResponse> {
+    // The OIDC subject; the service resolves it to a patient row.
     return this.deltaService.delta(getPatientActor(request).id, query);
   }
 }

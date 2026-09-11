@@ -29,6 +29,7 @@ import {
 import type { Observation } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { toObservationResource } from '../observations/observation-payload';
+import { patientNotProvisioned } from '../observations/observation-rejection';
 import type { SyncDeltaQueryParsed } from './sync-delta.pipe';
 
 /**
@@ -83,7 +84,20 @@ import type { SyncDeltaQueryParsed } from './sync-delta.pipe';
 export class SyncDeltaService {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
-  async delta(patientId: string, query: SyncDeltaQueryParsed): Promise<SyncDeltaResponse> {
+  async delta(actorSubject: string, query: SyncDeltaQueryParsed): Promise<SyncDeltaResponse> {
+    // `PatientActor.id` is the OIDC subject, not the patients row UUID.
+    // Resolving it here rather than taking a patient id from the controller
+    // keeps the (patient, id) scope one lookup away from the token and gives
+    // the caller no way to pass in something else.
+    const patient = await this.prisma.patient.findUnique({
+      where: { oidcSubject: actorSubject },
+      select: { id: true, profile: { select: { deletedAt: true } } },
+    });
+    if (!patient?.profile || patient.profile.deletedAt !== null) {
+      throw patientNotProvisioned();
+    }
+    const patientId = patient.id;
+
     // Two steps on purpose. The visibility predicate needs the `xmin` system
     // column, which Prisma's typed API cannot express, so it runs as raw SQL
     // — but only to decide WHICH rows are servable. The rows themselves come

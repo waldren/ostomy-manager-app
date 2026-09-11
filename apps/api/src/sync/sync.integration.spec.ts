@@ -1,0 +1,1213 @@
+/*
+Copyright (C) 2026 Steven E. Waldren
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
+
+/**
+ * P2.S1b — `POST /api/v1/sync/push` and `GET /api/v1/sync/delta` against a
+ * real PostgreSQL instance.
+ *
+ * Everything `docs/sync-contract.md` explicitly owed this sprint is proven
+ * here rather than asserted in a comment:
+ *
+ *  - §5.3's cursor invariant, with the interleaved out-of-order commit the
+ *    contract demands. That test fails against a naive `ORDER BY
+ *    server_sequence` and is the reason the delta query is not one.
+ *  - §3.7's byte-for-byte replay, and that a replayed batch creates no
+ *    second row.
+ *  - §4.1's two count-equality obligations: `sync_applied` rows equal
+ *    `accepted` results, and `sync_conflict_loser` rows equal conflicts
+ *    resolved.
+ *  - §3.5's closed-set obligation: every stored `rejection_field` is a member
+ *    of `SYNC_FIELD_PATH`. Storage is free text; the wire type is closed; the
+ *    replay guarantee is served from those columns, so a value outside the
+ *    set would be replayed to a client verbatim forever.
+ *  - §6.1's seven protocol conditions, each returning a body whose only keys
+ *    are `error` -> `code`.
+ */
+
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+
+import type { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { SYNC_FIELD_PATH } from '@ostomy/core/sync';
+import { Client as PgClient } from 'pg';
+import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { AppModule } from '../app.module';
+import { applyJsonBodyLimit } from '../http/body-limit';
+import { PATIENT_JWKS_RESOLVER } from '../auth/patient-jwks-resolver.token';
+import type { AppConfig } from '../config/env.schema';
+import { createTestOidcIssuer, type TestOidcIssuer } from '../test-support/oidc-test-tokens';
+import { THRESHOLD_KEY } from '../thresholds/thresholds.service';
+
+const API_ROOT = path.resolve(__dirname, '..', '..');
+
+function isDockerAvailable(): boolean {
+  try {
+    execFileSync('docker', ['version', '--format', '{{.Server.Version}}'], {
+      stdio: 'ignore',
+      timeout: 5_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const dockerAvailable = isDockerAvailable();
+if (!dockerAvailable) {
+  if (process.env.CI) {
+    throw new Error(
+      "[sync.integration.spec.ts] Docker is not reachable, but CI is set — refusing to silently skip P2.S1b's sync proof.",
+    );
+  }
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[sync.integration.spec.ts] Docker is not reachable — skipping. Run with a Docker daemon available (e.g. `pnpm --filter @ostomy/api test:integration`).',
+  );
+}
+
+const RUNTIME_ROLE = 'ostomy_runtime';
+const RUNTIME_PASSWORD = 'sync-integration-test-only-password';
+const ISSUER = 'https://mock-oidc.test/patient-issuer';
+const AUDIENCE = 'ostomy-patient-app';
+const SOFT_WARNING_ML = 2000;
+const CLOCK_SKEW_SECONDS = 300;
+const STOMA_OUTPUT_CODE = '79560-9';
+
+interface SeededPatient {
+  readonly patientId: string;
+  readonly subject: string;
+  readonly token: string;
+}
+
+describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
+  let container: StartedPostgreSqlContainer;
+  let app: INestApplication;
+  let db: PgClient;
+  let runtimeDatabaseUrl: string;
+  let issuer: TestOidcIssuer;
+  let patientA: SeededPatient;
+  let patientB: SeededPatient;
+
+  function testConfig(): AppConfig {
+    return {
+      nodeEnv: 'test',
+      port: 0,
+      logLevel: 'silent',
+      oidcClockToleranceSeconds: 30,
+      syncPushMaxOperations: 500,
+      syncDeltaDefaultLimit: 200,
+      syncDeltaMaxLimit: 1000,
+      databaseUrl: runtimeDatabaseUrl,
+      oidc: {
+        issuer: ISSUER,
+        jwksUri: `${ISSUER}/.well-known/jwks.json`,
+        audience: AUDIENCE,
+        claimMapping: { subjectClaim: 'sub' },
+      },
+      adminOidc: {
+        issuer: 'https://mock-oidc.test/admin-issuer',
+        jwksUri: 'https://mock-oidc.test/admin-issuer/.well-known/jwks.json',
+        audience: 'ostomy-admin-console',
+        claimMapping: { subjectClaim: 'sub' },
+      },
+      objectStorage: {
+        endpoint: 'http://minio.test:9000',
+        region: 'us-east-1',
+        accessKeyId: 'test',
+        secretAccessKey: 'test',
+        forcePathStyle: true,
+      },
+    };
+  }
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer('postgres:17-alpine')
+      .withDatabase('ostomy_sync_test')
+      .withUsername('ostomy_owner')
+      .withPassword('owner-test-only-password')
+      .start();
+    const ownerDatabaseUrl = container.getConnectionUri();
+
+    execFileSync(
+      process.execPath,
+      [require.resolve('prisma/build/index.js'), 'migrate', 'deploy'],
+      {
+        cwd: API_ROOT,
+        env: { ...process.env, MIGRATION_DATABASE_URL: ownerDatabaseUrl },
+        stdio: 'pipe',
+      },
+    );
+
+    const owner = new PgClient({ connectionString: ownerDatabaseUrl });
+    await owner.connect();
+    try {
+      await owner.query(`ALTER ROLE "${RUNTIME_ROLE}" WITH LOGIN PASSWORD '${RUNTIME_PASSWORD}'`);
+      await owner.query(
+        `INSERT INTO validation_thresholds (id, threshold_key, tier, value, unit, updated_at)
+         VALUES
+           (gen_random_uuid(), $1, 'TIER_2_SOFT_WARNING', $3, 'mL', now()),
+           (gen_random_uuid(), $2, 'OPERATIONAL', $4, 'seconds', now())`,
+        [
+          THRESHOLD_KEY.STOMA_OUTPUT_SOFT_WARNING_ML,
+          THRESHOLD_KEY.SYNC_CLOCK_SKEW_ALLOWANCE_SECONDS,
+          SOFT_WARNING_ML,
+          CLOCK_SKEW_SECONDS,
+        ],
+      );
+    } finally {
+      await owner.end();
+    }
+
+    const host = container.getHost();
+    const port = container.getPort();
+    const database = container.getDatabase();
+    runtimeDatabaseUrl = `postgresql://${RUNTIME_ROLE}:${RUNTIME_PASSWORD}@${host}:${port}/${database}`;
+
+    db = new PgClient({ connectionString: runtimeDatabaseUrl });
+    await db.connect();
+
+    issuer = await createTestOidcIssuer();
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule.register(testConfig())],
+    })
+      .overrideProvider(PATIENT_JWKS_RESOLVER)
+      .useValue(issuer.getKey)
+      .compile();
+
+    app = moduleRef.createNestApplication();
+    // Exactly what main.ts does. Without it this suite would run against
+    // Express's 100 KB default while production ran with 1 MB, and the
+    // maximum-batch test below would prove nothing about either.
+    applyJsonBodyLimit(app);
+    app.setGlobalPrefix('api/v1');
+    await app.init();
+
+    patientA = await seedPatient();
+    patientB = await seedPatient();
+  }, 180_000);
+
+  afterAll(async () => {
+    await app?.close();
+    await db?.end();
+    await container?.stop();
+  });
+
+  async function seedPatient(): Promise<SeededPatient> {
+    const patientId = randomUUID();
+    const subject = `patient-${randomUUID()}`;
+    await db.query(`INSERT INTO patients (id, oidc_subject, updated_at) VALUES ($1, $2, now())`, [
+      patientId,
+      subject,
+    ]);
+    await db.query(
+      `INSERT INTO profiles (id, patient_id, ostomy_type, surgery_date, measurement_system, client_updated_at, updated_at)
+       VALUES ($1, $2, 'ILEOSTOMY', DATE '2026-01-15', 'METRIC', now(), now())`,
+      [randomUUID(), patientId],
+    );
+    const token = await issuer.sign({ issuer: ISSUER, audience: AUDIENCE, subject });
+    return { patientId, subject, token };
+  }
+
+  // -------------------------------------------------------------------------
+  // Request builders
+  // -------------------------------------------------------------------------
+
+  function payload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      resourceType: 'Observation',
+      status: 'final',
+      code: STOMA_OUTPUT_CODE,
+      valueQuantity: { value: 350.5, unit: 'mL' },
+      effectiveDateTime: '2026-09-07T14:00:00.000Z',
+      method: null,
+      enteredMeasurementSystem: 'metric',
+      ...overrides,
+    };
+  }
+
+  function createOp(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    const entityId = (overrides.entityId as string | undefined) ?? randomUUID();
+    return {
+      operationId: randomUUID(),
+      entityType: 'Observation',
+      entityId,
+      operationType: 'create',
+      clientTimestamp: '2026-09-07T22:04:11.412Z',
+      payload: payload({ id: entityId }),
+      ...overrides,
+      // `payload.id` must track `entityId` even when the caller overrode one
+      // of them; §7.2 makes a mismatch a protocol error, which is its own
+      // test rather than an accident in every other one.
+      ...(overrides.payload === undefined && overrides.entityId !== undefined
+        ? { payload: payload({ id: entityId }) }
+        : {}),
+    };
+  }
+
+  function push(patient: SeededPatient, operations: unknown[]) {
+    return request(app.getHttpServer())
+      .post('/api/v1/sync/push')
+      .set('Authorization', `Bearer ${patient.token}`)
+      .send({ operations });
+  }
+
+  function delta(patient: SeededPatient, query: Record<string, string | number>) {
+    return request(app.getHttpServer())
+      .get('/api/v1/sync/delta')
+      .set('Authorization', `Bearer ${patient.token}`)
+      .query(query);
+  }
+
+  async function observationRows(entityId: string): Promise<Array<Record<string, unknown>>> {
+    const result = await db.query(`SELECT * FROM observations WHERE id = $1`, [entityId]);
+    return result.rows;
+  }
+
+  async function auditRows(entityId: string): Promise<Array<Record<string, unknown>>> {
+    const result = await db.query(
+      `SELECT action, reason_code, before_value, after_value, correlation_id
+       FROM audit_events WHERE entity_id = $1 ORDER BY occurred_at ASC, id ASC`,
+      [entityId],
+    );
+    return result.rows;
+  }
+
+  async function operationRow(operationId: string): Promise<Record<string, unknown> | undefined> {
+    const result = await db.query(`SELECT * FROM sync_operations WHERE operation_id = $1`, [
+      operationId,
+    ]);
+    return result.rows[0];
+  }
+
+  // -------------------------------------------------------------------------
+
+  describe('§3.4 — one result per operation, in request order', () => {
+    it('applies a create and reports accepted with a server-sequence receipt', async () => {
+      const op = createOp();
+      const response = await push(patientA, [op]);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results).toHaveLength(1);
+      expect(response.body.results[0]).toEqual({
+        operationId: op.operationId,
+        status: 'accepted',
+        entityId: op.entityId,
+        appliedServerSequence: expect.any(String),
+        replayed: false,
+      });
+
+      const rows = await observationRows(op.entityId as string);
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0]!.value_quantity_value)).toBe(350.5);
+      expect(rows[0]!.patient_id).toBe(patientA.patientId);
+    });
+
+    it('returns results in request order, and one bad operation does not block the rest', async () => {
+      // ADR-0001 point 2: a batch never fails as a unit for data reasons. One
+      // implausible row must not block every subsequent entry a patient made
+      // while offline — which is the whole reason push is not all-or-nothing.
+      const good1 = createOp();
+      const bad = createOp();
+      (bad.payload as Record<string, unknown>).valueQuantity = { value: -5, unit: 'mL' };
+      const good2 = createOp();
+
+      const response = await push(patientA, [good1, bad, good2]);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results.map((r: { status: string }) => r.status)).toEqual([
+        'accepted',
+        'rejected',
+        'accepted',
+      ]);
+      expect(response.body.results.map((r: { operationId: string }) => r.operationId)).toEqual([
+        good1.operationId,
+        bad.operationId,
+        good2.operationId,
+      ]);
+
+      expect(await observationRows(good1.entityId as string)).toHaveLength(1);
+      expect(await observationRows(bad.entityId as string)).toHaveLength(0);
+      expect(await observationRows(good2.entityId as string)).toHaveLength(1);
+    });
+
+    it('accepts a Tier 2 value and never represents the warning on the wire', async () => {
+      // §6.2: a soft warning is not a rejection and never becomes one. There
+      // is no wire representation of a Tier 2 outcome in a push response,
+      // deliberately — a field for it is a field someone will branch on.
+      const op = createOp();
+      (op.payload as Record<string, unknown>).valueQuantity = {
+        value: SOFT_WARNING_ML + 500,
+        unit: 'mL',
+      };
+
+      const response = await push(patientA, [op]);
+
+      expect(response.body.results[0].status).toBe('accepted');
+      expect(JSON.stringify(response.body)).not.toContain('warning');
+      expect(await observationRows(op.entityId as string)).toHaveLength(1);
+    });
+  });
+
+  describe('§4 — last-write-wins by client timestamp', () => {
+    it('applies a newer update and audits the displaced stored version', async () => {
+      const create = createOp({ clientTimestamp: '2026-09-07T10:00:00.000Z' });
+      await push(patientA, [create]).expect(200);
+
+      const update = createOp({
+        entityId: create.entityId,
+        operationType: 'update',
+        clientTimestamp: '2026-09-07T12:00:00.000Z',
+      });
+      (update.payload as Record<string, unknown>).valueQuantity = { value: 900, unit: 'mL' };
+
+      const response = await push(patientA, [update]);
+      expect(response.body.results[0].status).toBe('accepted');
+
+      const rows = await observationRows(create.entityId as string);
+      expect(Number(rows[0]!.value_quantity_value)).toBe(900);
+
+      // §4.1: the STORED version, as it was before the write, goes to the
+      // audit log — the only reason last-write-wins is acceptable for
+      // clinical data at all.
+      const loser = (await auditRows(create.entityId as string)).filter(
+        (row) => row.reason_code === 'sync_conflict_loser',
+      );
+      expect(loser).toHaveLength(1);
+      expect((loser[0]!.before_value as { valueQuantityValue: unknown }).valueQuantityValue).toBe(
+        350.5,
+      );
+    });
+
+    it('refuses to apply an older update, reports superseded, and audits the incoming loser', async () => {
+      const create = createOp({ clientTimestamp: '2026-09-07T12:00:00.000Z' });
+      await push(patientA, [create]).expect(200);
+      const winningSequence = (await observationRows(create.entityId as string))[0]!
+        .server_sequence;
+
+      const stale = createOp({
+        entityId: create.entityId,
+        operationType: 'update',
+        clientTimestamp: '2026-09-07T09:00:00.000Z',
+      });
+      (stale.payload as Record<string, unknown>).valueQuantity = { value: 111, unit: 'mL' };
+
+      const response = await push(patientA, [stale]);
+
+      // Not `accepted` (which would tell the client its version is live when
+      // it is not) and not `rejected` (which would send a correct entry to
+      // the correction inbox). §3.5: it is a third outcome because it is a
+      // third thing.
+      expect(response.body.results[0]).toEqual({
+        operationId: stale.operationId,
+        status: 'superseded',
+        entityId: stale.entityId,
+        // §3.6: the WINNING row's sequence, not this operation's — this
+        // operation never got one.
+        appliedServerSequence: String(winningSequence),
+        replayed: false,
+      });
+
+      // The stored row is untouched.
+      expect(
+        Number((await observationRows(create.entityId as string))[0]!.value_quantity_value),
+      ).toBe(350.5);
+
+      const loser = (await auditRows(create.entityId as string)).filter(
+        (row) => row.reason_code === 'sync_conflict_loser',
+      );
+      expect(loser).toHaveLength(1);
+      // The INCOMING version that lost, not the stored one.
+      expect((loser[0]!.before_value as { valueQuantityValue: unknown }).valueQuantityValue).toBe(
+        111,
+      );
+    });
+
+    it('resolves an equal timestamp in favour of the incoming operation', async () => {
+      // §4: the alternative makes a legitimate correction made inside the
+      // same millisecond disappear with no signal, and ties are a
+      // millisecond-resolution artifact rather than real simultaneity.
+      const at = '2026-09-07T11:11:11.111Z';
+      const create = createOp({ clientTimestamp: at });
+      await push(patientA, [create]).expect(200);
+
+      const tie = createOp({
+        entityId: create.entityId,
+        operationType: 'update',
+        clientTimestamp: at,
+      });
+      (tie.payload as Record<string, unknown>).valueQuantity = { value: 777, unit: 'mL' };
+
+      const response = await push(patientA, [tie]);
+
+      expect(response.body.results[0].status).toBe('accepted');
+      expect(
+        Number((await observationRows(create.entityId as string))[0]!.value_quantity_value),
+      ).toBe(777);
+    });
+
+    it('treats a create against an existing row as last-write-wins, never a rejection', async () => {
+      // §4: the reachable case is not a client bug — the server applies a
+      // create, the response is lost, the client re-pushes with a NEW
+      // operation id. Rejecting would put a correct entry in the correction
+      // inbox carrying a code §6.4 says must not be shown to the patient.
+      const first = createOp({ clientTimestamp: '2026-09-07T10:00:00.000Z' });
+      await push(patientA, [first]).expect(200);
+
+      const again = createOp({
+        entityId: first.entityId,
+        clientTimestamp: '2026-09-07T11:00:00.000Z',
+      });
+      (again.payload as Record<string, unknown>).valueQuantity = { value: 222, unit: 'mL' };
+
+      const response = await push(patientA, [again]);
+
+      expect(response.body.results[0].status).toBe('accepted');
+      expect(await observationRows(first.entityId as string)).toHaveLength(1);
+      expect(
+        Number((await observationRows(first.entityId as string))[0]!.value_quantity_value),
+      ).toBe(222);
+    });
+
+    it('lets an update at T2 resurrect a row deleted at T1', async () => {
+      // §4: deletes participate like any other operation. A patient who
+      // deletes an entry offline and then edits it before reconnecting must
+      // not have the edit rejected — that is AC 13.1 AC4's failure arriving
+      // through the back door.
+      const create = createOp({ clientTimestamp: '2026-09-07T08:00:00.000Z' });
+      await push(patientA, [create]).expect(200);
+
+      const del = {
+        operationId: randomUUID(),
+        entityType: 'Observation',
+        entityId: create.entityId,
+        operationType: 'delete',
+        clientTimestamp: '2026-09-07T09:00:00.000Z',
+      };
+      await push(patientA, [del]).expect(200);
+      expect((await observationRows(create.entityId as string))[0]!.deleted_at).not.toBeNull();
+
+      const resurrect = createOp({
+        entityId: create.entityId,
+        operationType: 'update',
+        clientTimestamp: '2026-09-07T10:00:00.000Z',
+      });
+      const response = await push(patientA, [resurrect]);
+
+      expect(response.body.results[0].status).toBe('accepted');
+      const rows = await observationRows(create.entityId as string);
+      expect(rows[0]!.deleted_at).toBeNull();
+    });
+
+    it('audits a delete with the full pre-deletion state', async () => {
+      // §4.1: the tombstone carries nothing on the wire (§5.2) precisely
+      // because the audit store carries everything. Once the §10 purge policy
+      // lands, this row is the only surviving copy of what was deleted.
+      const create = createOp({ clientTimestamp: '2026-09-07T08:00:00.000Z' });
+      await push(patientA, [create]).expect(200);
+
+      const del = {
+        operationId: randomUUID(),
+        entityType: 'Observation',
+        entityId: create.entityId,
+        operationType: 'delete',
+        clientTimestamp: '2026-09-07T09:00:00.000Z',
+      };
+      await push(patientA, [del]).expect(200);
+
+      const applied = (await auditRows(create.entityId as string)).filter(
+        (row) => row.action === 'DELETE',
+      );
+      expect(applied).toHaveLength(1);
+      expect(applied[0]!.after_value).toBeNull();
+      expect((applied[0]!.before_value as { valueQuantityValue: unknown }).valueQuantityValue).toBe(
+        350.5,
+      );
+    });
+  });
+  describe('§3.7 — idempotency on (patient, operationId)', () => {
+    it('returns the first result byte-for-byte with replayed: true, and creates no second row', async () => {
+      // The ordinary case on a phone, not the exotic one: push, lose the
+      // connection before reading the response, push again.
+      const op = createOp();
+      const first = await push(patientA, [op]);
+      expect(first.body.results[0].replayed).toBe(false);
+
+      const second = await push(patientA, [op]);
+
+      expect(second.status).toBe(200);
+      expect(second.body.results[0]).toEqual({ ...first.body.results[0], replayed: true });
+      // Byte-for-byte apart from `replayed` — including the server sequence,
+      // which a re-derivation would have changed.
+      expect(second.body.results[0].appliedServerSequence).toBe(
+        first.body.results[0].appliedServerSequence,
+      );
+      expect(await observationRows(op.entityId as string)).toHaveLength(1);
+    });
+
+    it('replays a rejection as a rejection, carrying the original reason and field', async () => {
+      const op = createOp();
+      (op.payload as Record<string, unknown>).valueQuantity = { value: -1, unit: 'mL' };
+
+      const first = await push(patientA, [op]);
+      expect(first.body.results[0].status).toBe('rejected');
+
+      const second = await push(patientA, [op]);
+      expect(second.body.results[0]).toEqual({ ...first.body.results[0], replayed: true });
+      expect(second.body.results[0].reasonCode).toBe('VALUE_NOT_POSITIVE');
+    });
+
+    it('replays a superseded result as superseded, not as accepted', async () => {
+      const create = createOp({ clientTimestamp: '2026-09-07T12:00:00.000Z' });
+      await push(patientA, [create]).expect(200);
+      const stale = createOp({
+        entityId: create.entityId,
+        operationType: 'update',
+        clientTimestamp: '2026-09-07T09:00:00.000Z',
+      });
+
+      const first = await push(patientA, [stale]);
+      expect(first.body.results[0].status).toBe('superseded');
+
+      const second = await push(patientA, [stale]);
+      expect(second.body.results[0]).toEqual({ ...first.body.results[0], replayed: true });
+    });
+
+    it('scopes the replay check to the patient, so one patient cannot consume another operation id', async () => {
+      // §3.7: the operation id is chosen by an untrusted offline device and
+      // is not patient-scoped by construction. A global uniqueness check
+      // would let patient A's write cause patient B's distinct push to be
+      // refused as a replay.
+      const sharedOperationId = randomUUID();
+      const opA = createOp({ operationId: sharedOperationId });
+      const opB = createOp({ operationId: sharedOperationId });
+
+      const a = await push(patientA, [opA]);
+      const b = await push(patientB, [opB]);
+
+      expect(a.body.results[0].status).toBe('accepted');
+      expect(a.body.results[0].replayed).toBe(false);
+      // B's is a distinct write, not a replay of A's.
+      expect(b.body.results[0].status).toBe('accepted');
+      expect(b.body.results[0].replayed).toBe(false);
+      expect(await observationRows(opA.entityId as string)).toHaveLength(1);
+      expect(await observationRows(opB.entityId as string)).toHaveLength(1);
+    });
+
+    it('refuses a batch containing two operations with the same operationId', async () => {
+      // §3.7: MALFORMED_REQUEST for the whole request, NOT a replay of the
+      // first — an id is minted once at enqueue, so two in one batch means
+      // the queue is broken, and treating the second as a replay would
+      // silently discard a write the client believed it had sent.
+      const sharedId = randomUUID();
+      const response = await push(patientA, [
+        createOp({ operationId: sharedId }),
+        createOp({ operationId: sharedId }),
+      ]);
+
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({ error: { code: 'MALFORMED_REQUEST' } });
+    });
+  });
+
+  describe('§4.1 — the audit obligations, counted', () => {
+    it('writes one sync_applied row per accepted operation, each naming its own entity', async () => {
+      // A batch-level event would satisfy a route-scoped trip-wire while
+      // making "what happened to this record?" unanswerable for every write
+      // that arrived over sync — which on the only offline-capable client is
+      // most of them.
+      const ops = [createOp(), createOp(), createOp()];
+      const response = await push(patientA, ops);
+
+      const accepted = response.body.results.filter(
+        (r: { status: string }) => r.status === 'accepted',
+      );
+      expect(accepted).toHaveLength(3);
+
+      let appliedRows = 0;
+      for (const op of ops) {
+        const rows = (await auditRows(op.entityId as string)).filter(
+          (row) => row.reason_code === 'sync_applied',
+        );
+        expect(rows).toHaveLength(1);
+        appliedRows += rows.length;
+      }
+
+      // The count equality §4.1 owed this sprint.
+      expect(appliedRows).toBe(accepted.length);
+    });
+
+    it('writes one sync_conflict_loser row per conflict resolved, in both directions', async () => {
+      // Two conflicts, one of each kind: an accepted operation that displaced
+      // a stored version, and a superseded operation that lost.
+      const base = createOp({ clientTimestamp: '2026-09-07T10:00:00.000Z' });
+      await push(patientA, [base]).expect(200);
+
+      const newer = createOp({
+        entityId: base.entityId,
+        operationType: 'update',
+        clientTimestamp: '2026-09-07T11:00:00.000Z',
+      });
+      const older = createOp({
+        entityId: base.entityId,
+        operationType: 'update',
+        clientTimestamp: '2026-09-07T09:00:00.000Z',
+      });
+
+      // Two pushes, not one batch: [newer, older] is DESCENDING in
+      // clientTimestamp, which §3.2 makes a protocol error — the server
+      // cannot reorder, so it cannot repair it. Splitting at the
+      // discontinuity is precisely what §3.2 tells a client to do, and an
+      // earlier draft of this test got it wrong and was refused, correctly.
+      const first = await push(patientA, [newer]);
+      const second = await push(patientA, [older]);
+      expect(first.body.results[0].status).toBe('accepted');
+      expect(second.body.results[0].status).toBe('superseded');
+
+      const losers = (await auditRows(base.entityId as string)).filter(
+        (row) => row.reason_code === 'sync_conflict_loser',
+      );
+      // Exactly two conflicts were resolved, so exactly two losers were
+      // preserved. Nothing a patient recorded is destroyed.
+      expect(losers).toHaveLength(2);
+    });
+
+    it('carries the batch correlation id on every row the batch produced', async () => {
+      const ops = [createOp(), createOp()];
+      await push(patientA, ops).expect(200);
+
+      const ids = new Set<unknown>();
+      for (const op of ops) {
+        for (const row of await auditRows(op.entityId as string)) {
+          ids.add(row.correlation_id);
+        }
+      }
+
+      // One id, shared — that is what makes "reconstruct which resolution
+      // belonged to which push" answerable (ADR-0001).
+      expect(ids.size).toBe(1);
+      expect([...ids][0]).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      );
+    });
+  });
+
+  describe('§3.5 / §6.3 — what a rejection may carry', () => {
+    it('stores only closed-set field values in sync_operations.rejection_field', async () => {
+      // The test §3.5 owed this sprint. Storage is free text, the wire type
+      // is closed, and §3.7 serves the byte-for-byte replay FROM these
+      // columns — so a value outside the set would be replayed to a client
+      // verbatim, forever.
+      const cases: Array<Record<string, unknown>> = [
+        { valueQuantity: { value: -1, unit: 'mL' } },
+        { valueQuantity: { value: 0, unit: 'mL' } },
+        { valueQuantity: { value: 'lots', unit: 'mL' } },
+        { valueQuantity: { value: 123456789, unit: 'mL' } },
+        { valueQuantity: { value: 350.12345, unit: 'mL' } },
+        { effectiveDateTime: '2099-01-01T00:00:00.000Z' },
+        { effectiveDateTime: '2020-01-01T00:00:00.000Z' },
+        { status: 'amended' },
+        { code: '11111-1' },
+        { method: 'not-a-code' },
+      ];
+
+      const ops = cases.map((override) => {
+        const op = createOp();
+        Object.assign(op.payload as Record<string, unknown>, override);
+        return op;
+      });
+
+      const response = await push(patientA, ops);
+      const rejected = response.body.results.filter(
+        (r: { status: string }) => r.status === 'rejected',
+      );
+      // Non-vacuity: if these all started passing, the assertion below would
+      // hold over an empty set and prove nothing.
+      expect(rejected.length).toBe(cases.length);
+
+      const legalFields = new Set<string>(Object.values(SYNC_FIELD_PATH));
+      for (const op of ops) {
+        const row = await operationRow(op.operationId as string);
+        expect(row).toBeDefined();
+        expect(row!.status).toBe('REJECTED');
+        expect(legalFields.has(row!.rejection_field as string)).toBe(true);
+      }
+      for (const result of rejected) {
+        expect(legalFields.has(result.field as string)).toBe(true);
+      }
+    });
+
+    it('never echoes the offending clinical value, in the result or the stored record', async () => {
+      const op = createOp();
+      (op.payload as Record<string, unknown>).valueQuantity = { value: -998877.5, unit: 'mL' };
+
+      const response = await push(patientA, [op]);
+
+      expect(response.body.results[0].status).toBe('rejected');
+      expect(JSON.stringify(response.body)).not.toContain('998877');
+
+      const row = await operationRow(op.operationId as string);
+      expect(JSON.stringify(row)).not.toContain('998877');
+    });
+
+    it('rejects a clock timestamp beyond the allowance, naming clientTimestamp', async () => {
+      // §3.8: a poisoned timestamp. Because conflict resolution is
+      // last-write-wins by client timestamp, a device with a clock set to
+      // 2031 wins every conflict against every other device, permanently.
+      const future = new Date(Date.now() + (CLOCK_SKEW_SECONDS + 600) * 1000);
+      const op = createOp({ clientTimestamp: future.toISOString() });
+
+      const response = await push(patientA, [op]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'CLIENT_TIMESTAMP_OUT_OF_RANGE',
+        field: 'clientTimestamp',
+      });
+      expect(await observationRows(op.entityId as string)).toHaveLength(0);
+    });
+  });
+  describe('§2 — every lookup is scoped to (patient, entityId) together', () => {
+    it('refuses an entity id belonging to another patient, without revealing that it exists', async () => {
+      const mine = createOp();
+      await push(patientB, [mine]).expect(200);
+
+      const steal = createOp({
+        entityId: mine.entityId,
+        operationType: 'update',
+        clientTimestamp: '2026-09-08T10:00:00.000Z',
+      });
+      const response = await push(patientA, [steal]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'ENTITY_ID_CONFLICT',
+        field: 'entityId',
+      });
+
+      // B's row is untouched and still B's. `Observation.id` is a global
+      // primary key, so `update({ where: { id } })` compiles and would have
+      // let A overwrite it given the UUID.
+      const rows = await observationRows(mine.entityId as string);
+      expect(rows[0]!.patient_id).toBe(patientB.patientId);
+      expect(Number(rows[0]!.value_quantity_value)).toBe(350.5);
+    });
+
+    it('reports ENTITY_NOT_FOUND for an id that exists for nobody', async () => {
+      const update = createOp({
+        entityId: randomUUID(),
+        operationType: 'update',
+      });
+      const response = await push(patientA, [update]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'ENTITY_NOT_FOUND',
+        field: 'entityId',
+      });
+    });
+
+    it('does not treat a tombstoned row as not-found — §4 keeps it existing for update and delete', async () => {
+      const create = createOp({ clientTimestamp: '2026-09-07T08:00:00.000Z' });
+      await push(patientA, [create]).expect(200);
+      await push(patientA, [
+        {
+          operationId: randomUUID(),
+          entityType: 'Observation',
+          entityId: create.entityId,
+          operationType: 'delete',
+          clientTimestamp: '2026-09-07T09:00:00.000Z',
+        },
+      ]).expect(200);
+
+      const update = createOp({
+        entityId: create.entityId,
+        operationType: 'update',
+        clientTimestamp: '2026-09-07T10:00:00.000Z',
+      });
+      const response = await push(patientA, [update]);
+
+      // An implementer who applies ADR-0001's "filter tombstones from every
+      // read path" here returns ENTITY_NOT_FOUND for exactly the operation
+      // §4's resurrection rule says must succeed.
+      expect(response.body.results[0].status).toBe('accepted');
+    });
+  });
+
+  describe('§6.1 — protocol errors fail the whole request with a code and nothing else', () => {
+    function expectProtocolBody(body: unknown, code: string): void {
+      // The only keys are `error` -> `code`. No prose, no field path, no
+      // echoed request content, no index into the offending operation.
+      expect(body).toEqual({ error: { code } });
+      expect(Object.keys(body as object)).toEqual(['error']);
+      expect(Object.keys((body as { error: object }).error)).toEqual(['code']);
+    }
+
+    it('MALFORMED_REQUEST for an unrecognized key at the operation level', async () => {
+      const op = createOp();
+      (op as Record<string, unknown>).patientId = patientB.patientId;
+
+      const response = await push(patientA, [op]);
+
+      expect(response.status).toBe(400);
+      expectProtocolBody(response.body, 'MALFORMED_REQUEST');
+      // §2: the absence of the field is the control. Nothing was applied.
+      expect(await observationRows(op.entityId as string)).toHaveLength(0);
+    });
+
+    it('MALFORMED_REQUEST for malformed JSON, without echoing the body', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/v1/sync/push')
+        .set('Authorization', `Bearer ${patientA.token}`)
+        .set('Content-Type', 'application/json')
+        .send('{"operations":[{"valueQuantity":{"value":4471.25q}}]}');
+
+      expect(response.status).toBe(400);
+      expectProtocolBody(response.body, 'MALFORMED_REQUEST');
+      expect(JSON.stringify(response.body)).not.toContain('4471');
+    });
+
+    it('MALFORMED_REQUEST for an unknown entityType', async () => {
+      const response = await push(patientA, [createOp({ entityType: 'Sasquatch' })]);
+      expect(response.status).toBe(400);
+      expectProtocolBody(response.body, 'MALFORMED_REQUEST');
+    });
+
+    it('BATCH_OUT_OF_ORDER for a descending clientTimestamp array', async () => {
+      const response = await push(patientA, [
+        createOp({ clientTimestamp: '2026-09-07T12:00:00.000Z' }),
+        createOp({ clientTimestamp: '2026-09-07T09:00:00.000Z' }),
+      ]);
+
+      expect(response.status).toBe(400);
+      expectProtocolBody(response.body, 'BATCH_OUT_OF_ORDER');
+    });
+
+    it('accepts equal timestamps, which are permitted and resolved by array order', async () => {
+      const at = '2026-09-07T12:00:00.000Z';
+      const response = await push(patientA, [
+        createOp({ clientTimestamp: at }),
+        createOp({ clientTimestamp: at }),
+      ]);
+      expect(response.status).toBe(200);
+    });
+
+    it('PAYLOAD_PRESENCE_INVALID for a payload on a delete, and for one missing on a create', async () => {
+      const withPayload = await push(patientA, [
+        createOp({ operationType: 'delete', payload: payload({ id: randomUUID() }) }),
+      ]);
+      expect(withPayload.status).toBe(400);
+      expectProtocolBody(withPayload.body, 'PAYLOAD_PRESENCE_INVALID');
+
+      const op = createOp();
+      delete (op as Record<string, unknown>).payload;
+      const withoutPayload = await push(patientA, [op]);
+      expect(withoutPayload.status).toBe(400);
+      expectProtocolBody(withoutPayload.body, 'PAYLOAD_PRESENCE_INVALID');
+    });
+
+    it('ENTITY_ID_MISMATCH when payload.id does not equal the operation entityId', async () => {
+      const op = createOp();
+      (op.payload as Record<string, unknown>).id = randomUUID();
+
+      const response = await push(patientA, [op]);
+      expect(response.status).toBe(400);
+      expectProtocolBody(response.body, 'ENTITY_ID_MISMATCH');
+    });
+
+    it('BATCH_TOO_LARGE above SYNC_PUSH_MAX_OPERATIONS', async () => {
+      const at = '2026-09-07T12:00:00.000Z';
+      const operations = Array.from({ length: 501 }, () => createOp({ clientTimestamp: at }));
+
+      const response = await push(patientA, operations);
+
+      expect(response.status).toBe(413);
+      expectProtocolBody(response.body, 'BATCH_TOO_LARGE');
+      // §6.1: a protocol error applies NO operations.
+      expect(await observationRows(operations[0]!.entityId as string)).toHaveLength(0);
+    });
+
+    it('UNAUTHENTICATED for a missing token, collapsing the guard AUTH_* vocabulary', async () => {
+      // The §6.1 decision this sprint owed: the contract is the artifact two
+      // independent implementations read, and it says UNAUTHENTICATED. The
+      // guard keeps AUTH_MISSING_TOKEN everywhere else.
+      const response = await request(app.getHttpServer())
+        .post('/api/v1/sync/push')
+        .send({ operations: [] });
+
+      expect(response.status).toBe(401);
+      expectProtocolBody(response.body, 'UNAUTHENTICATED');
+      expect(JSON.stringify(response.body)).not.toContain('AUTH_MISSING_TOKEN');
+    });
+
+    it('MALFORMED_REQUEST for a missing or non-numeric since on delta', async () => {
+      const missing = await request(app.getHttpServer())
+        .get('/api/v1/sync/delta')
+        .set('Authorization', `Bearer ${patientA.token}`);
+      expect(missing.status).toBe(400);
+      expectProtocolBody(missing.body, 'MALFORMED_REQUEST');
+
+      const nonNumeric = await delta(patientA, { since: 'yesterday' });
+      expect(nonNumeric.status).toBe(400);
+      expectProtocolBody(nonNumeric.body, 'MALFORMED_REQUEST');
+    });
+  });
+
+  describe('§5 — delta', () => {
+    it('returns changes ordered by serverSequence with FHIR payloads, and advances the cursor', async () => {
+      const fresh = await seedPatient();
+      const at = '2026-09-07T12:00:00.000Z';
+      const ops = [createOp({ clientTimestamp: at }), createOp({ clientTimestamp: at })];
+      await push(fresh, ops).expect(200);
+
+      const response = await delta(fresh, { since: 0 });
+
+      expect(response.status).toBe(200);
+      expect(response.body.changes).toHaveLength(2);
+      expect(response.body.hasMore).toBe(false);
+
+      const sequences = response.body.changes.map((c: { serverSequence: string }) =>
+        BigInt(c.serverSequence),
+      );
+      expect(sequences[1]).toBeGreaterThan(sequences[0]);
+      // §7.3: server sequences are JSON STRINGS, not numbers — they are
+      // 64-bit and JSON.parse loses precision above 2^53.
+      expect(typeof response.body.changes[0].serverSequence).toBe('string');
+      expect(typeof response.body.cursor).toBe('string');
+      expect(response.body.cursor).toBe(String(sequences[1]));
+
+      // AC 2.5 AC1: FHIR field names on the wire.
+      expect(response.body.changes[0].payload).toMatchObject({
+        resourceType: 'Observation',
+        status: 'final',
+        code: STOMA_OUTPUT_CODE,
+        valueQuantity: { value: 350.5, unit: 'mL' },
+        method: null,
+        enteredMeasurementSystem: 'metric',
+      });
+      expect(response.body.changes[0].deleted).toBe(false);
+    });
+
+    it('sends a tombstone with no payload at all', async () => {
+      const fresh = await seedPatient();
+      const create = createOp({ clientTimestamp: '2026-09-07T08:00:00.000Z' });
+      await push(fresh, [create]).expect(200);
+      await push(fresh, [
+        {
+          operationId: randomUUID(),
+          entityType: 'Observation',
+          entityId: create.entityId,
+          operationType: 'delete',
+          clientTimestamp: '2026-09-07T09:00:00.000Z',
+        },
+      ]).expect(200);
+
+      const response = await delta(fresh, { since: 0 });
+      const change = response.body.changes.find(
+        (c: { entityId: string }) => c.entityId === create.entityId,
+      );
+
+      expect(change.deleted).toBe(true);
+      // Not an empty payload — no key at all. Sending the clinical values of
+      // a deleted entry would transmit PHI that serves no purpose (§5.2).
+      expect('payload' in change).toBe(false);
+      expect(JSON.stringify(change)).not.toContain('350.5');
+      // §5.2: a tombstone's clientUpdatedAt is the DELETING operation's
+      // client timestamp, so a device holding an unpushed local edit can
+      // resolve it by the same rule the server applies.
+      expect(change.clientUpdatedAt).toBe('2026-09-07T09:00:00.000Z');
+    });
+
+    it('pages, and hasMore is about the page rather than the high-water mark', async () => {
+      const fresh = await seedPatient();
+      const at = '2026-09-07T12:00:00.000Z';
+      await push(
+        fresh,
+        Array.from({ length: 3 }, () => createOp({ clientTimestamp: at })),
+      ).expect(200);
+
+      const first = await delta(fresh, { since: 0, limit: 2 });
+      expect(first.body.changes).toHaveLength(2);
+      expect(first.body.hasMore).toBe(true);
+
+      const second = await delta(fresh, { since: first.body.cursor, limit: 2 });
+      expect(second.body.changes).toHaveLength(1);
+      expect(second.body.hasMore).toBe(false);
+
+      const third = await delta(fresh, { since: second.body.cursor, limit: 2 });
+      expect(third.body.changes).toHaveLength(0);
+      // MUST be false whenever changes is empty — otherwise the client spins
+      // in a tight loop against the API (§5.2).
+      expect(third.body.hasMore).toBe(false);
+    });
+
+    it('clamps a limit above the maximum rather than refusing it', async () => {
+      // §5.1: a 400 here would permanently brick any fielded client whose
+      // hardcoded page size the server later lowered.
+      const response = await delta(patientA, { since: 0, limit: 999999 });
+      expect(response.status).toBe(200);
+    });
+
+    it('echoes since unchanged when it is higher than anything the server holds', async () => {
+      // Reachable through a device restore, a dev-reset, or a restore from
+      // backup. Returning the server maximum would move the cursor BACKWARDS
+      // into rows already applied; returning "0" would silently re-download
+      // the patient's entire history over cellular (§5.1).
+      const response = await delta(patientA, { since: '999999999' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.changes).toEqual([]);
+      expect(response.body.hasMore).toBe(false);
+      expect(response.body.cursor).toBe('999999999');
+    });
+
+    it('never returns another patient rows', async () => {
+      const fresh = await seedPatient();
+      const mine = createOp();
+      await push(fresh, [mine]).expect(200);
+
+      const otherView = await delta(patientA, { since: 0 });
+      const ids = otherView.body.changes.map((c: { entityId: string }) => c.entityId);
+      expect(ids).not.toContain(mine.entityId);
+    });
+  });
+  /**
+   * §5.3's normative invariant: *if a client's cursor is `C`, the client has
+   * been shown every change for that patient with server sequence ≤ `C`.*
+   *
+   * §5.3 is explicit that this does not hold for free, and requires this
+   * sprint to "prove it with a test that interleaves two concurrent writes
+   * and commits them out of order." That is what this block does.
+   *
+   * The rows are inserted through raw SQL rather than the push endpoint
+   * deliberately: the hazard is a property of the delta READ path, and
+   * reproducing it needs a transaction held open across a second one, which
+   * an HTTP request cannot do.
+   */
+  describe('§5.3 — the cursor guarantee under out-of-order commits', () => {
+    async function insertObservationInTransaction(
+      client: PgClient,
+      patientId: string,
+      entityId: string,
+    ): Promise<void> {
+      await client.query(
+        `INSERT INTO observations
+           (id, patient_id, resource_type, code, value_quantity_value, value_quantity_unit,
+            effective_datetime, status, entered_measurement_system, client_updated_at, updated_at)
+         VALUES ($1, $2, 'Observation', $3, 350.5, 'mL',
+            TIMESTAMPTZ '2026-09-07T14:00:00.000Z', 'final', 'METRIC', now(), now())`,
+        [entityId, patientId, STOMA_OUTPUT_CODE],
+      );
+    }
+
+    it('withholds a committed row whose lower-sequenced sibling is still in flight, then releases both in order', async () => {
+      const fresh = await seedPatient();
+      const earlyId = randomUUID();
+      const lateId = randomUUID();
+
+      const slow = new PgClient({ connectionString: runtimeDatabaseUrl });
+      const fast = new PgClient({ connectionString: runtimeDatabaseUrl });
+      await slow.connect();
+      await fast.connect();
+
+      try {
+        // A takes the LOWER sequence and does not commit.
+        await slow.query('BEGIN');
+        await insertObservationInTransaction(slow, fresh.patientId, earlyId);
+
+        // B takes the HIGHER sequence and commits first. This is the
+        // out-of-order commit: sequence order and commit order now disagree.
+        await fast.query('BEGIN');
+        await insertObservationInTransaction(fast, fresh.patientId, lateId);
+        await fast.query('COMMIT');
+
+        // What a naive `ORDER BY server_sequence` would serve: B alone. The
+        // client would persist B's sequence as its cursor, never ask for
+        // anything lower again, and A's row would be permanently invisible to
+        // that device — with no error, no retry, and no way for either side to
+        // detect it afterwards.
+        const naive = await db.query(
+          `SELECT id FROM observations WHERE patient_id = $1 ORDER BY server_sequence ASC`,
+          [fresh.patientId],
+        );
+        expect(naive.rows.map((row) => row.id)).toEqual([lateId]);
+
+        // What the endpoint actually serves: nothing. The in-flight window is
+        // withheld, so no cursor is issued that would skip A.
+        const duringFlight = await delta(fresh, { since: 0 });
+        expect(duringFlight.status).toBe(200);
+        expect(duringFlight.body.changes).toEqual([]);
+        expect(duringFlight.body.hasMore).toBe(false);
+        // The cursor did not advance past anything, so a client re-polling
+        // asks for the same window again rather than skipping ahead.
+        expect(duringFlight.body.cursor).toBe('0');
+
+        await slow.query('COMMIT');
+
+        // Once A commits, BOTH become visible, in sequence order — A first,
+        // which is the row the naive query had already skipped past.
+        const afterCommit = await delta(fresh, { since: 0 });
+        expect(afterCommit.body.changes.map((c: { entityId: string }) => c.entityId)).toEqual([
+          earlyId,
+          lateId,
+        ]);
+        const sequences = afterCommit.body.changes.map((c: { serverSequence: string }) =>
+          BigInt(c.serverSequence),
+        );
+        expect(sequences[0]).toBeLessThan(sequences[1]);
+        expect(afterCommit.body.cursor).toBe(String(sequences[1]));
+      } finally {
+        // `ROLLBACK` after a successful `COMMIT` is a no-op warning, not an
+        // error — safe on both the pass and fail paths.
+        await slow.query('ROLLBACK').catch(() => undefined);
+        await fast.query('ROLLBACK').catch(() => undefined);
+        await slow.end();
+        await fast.end();
+      }
+    });
+
+    it('never issues a cursor that skips a row, across a paged pull with concurrent writers', async () => {
+      // The same invariant stated as the client sees it: every row the
+      // patient has must appear exactly once across a full pull loop, with no
+      // gap, even though a writer is committing throughout.
+      const fresh = await seedPatient();
+      const at = '2026-09-07T12:00:00.000Z';
+      const ops = Array.from({ length: 5 }, () => createOp({ clientTimestamp: at }));
+      await push(fresh, ops).expect(200);
+
+      const seen: string[] = [];
+      let cursor = '0';
+      for (let page = 0; page < 10; page += 1) {
+        const response = await delta(fresh, { since: cursor, limit: 2 });
+        for (const change of response.body.changes as Array<{ entityId: string }>) {
+          seen.push(change.entityId);
+        }
+        cursor = response.body.cursor;
+        if (!response.body.hasMore) break;
+      }
+
+      // Every entity, exactly once, and nothing else.
+      expect(seen.sort()).toEqual(ops.map((op) => op.entityId as string).sort());
+      expect(new Set(seen).size).toBe(seen.length);
+    });
+  });
+});

@@ -62,16 +62,18 @@ export class SyncProtocolException extends HttpException {
     const body: SyncProtocolErrorResponse = { error: { code } };
     super(body, status);
     this.code = code;
-  }
-
-  /**
-   * Names the code only. `HttpException` sets `message` from the body when
-   * it is a string, and this body is an object, so without this a log line
-   * reads "Http Exception" — true and useless. Nothing here is derived from
-   * the request.
-   */
-  override get message(): string {
-    return `Sync protocol error (${this.code})`;
+    // Assigned, NOT a `get message()` override. A getter-only accessor on the
+    // prototype shadows the own property `Error`'s constructor assigns, and
+    // that assignment then throws `TypeError: Cannot set property message of
+    // Error which has only a getter` in strict mode — turning every protocol
+    // error into a 500. The integration suite caught it on the first test
+    // that threw one.
+    //
+    // Worth having at all because `HttpException` derives `message` from the
+    // body only when the body is a string; this body is an object, so a log
+    // line would otherwise read "Http Exception" — true and useless. Nothing
+    // here is derived from the request.
+    this.message = `Sync protocol error (${code})`;
   }
 }
 

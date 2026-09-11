@@ -49,7 +49,10 @@ import {
 } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ThresholdsService } from '../thresholds/thresholds.service';
-import { ObservationRejectedException } from '../observations/observation-rejection';
+import {
+  ObservationRejectedException,
+  patientNotProvisioned,
+} from '../observations/observation-rejection';
 import {
   interpretObservationPayload,
   toAuditSnapshot,
@@ -65,6 +68,23 @@ const SYNC_APPLIED_REASON = 'sync_applied';
 const SYNC_CONFLICT_LOSER_REASON = 'sync_conflict_loser';
 
 const OBSERVATION_ENTITY_TYPE = 'observation';
+
+/**
+ * Everything about the acting patient that the per-operation path needs,
+ * resolved once per batch.
+ *
+ * `patientId` and `actorId` are deliberately separate fields rather than one:
+ * `PatientActor.id` is the OIDC **subject**, which is what an audit row's
+ * `actorId` records, while every (patient, id) scope needs the `patients` row
+ * UUID. Conflating them is not a type error — both are strings — and the
+ * result is a `findUnique` that throws on a malformed UUID in the lucky case
+ * and silently matches nothing in the unlucky one.
+ */
+interface PatientContext {
+  readonly patientId: string;
+  readonly actorId: string;
+  readonly surgeryDate: Date | null;
+}
 
 /**
  * Applies a push batch (`docs/sync-contract.md` §3, §4).
@@ -124,20 +144,32 @@ export class SyncPushService {
     body: SyncPushRequestParsed,
   ): Promise<{ results: SyncOperationResult[]; appliedCount: number }> {
     const correlationId = getRequestId(request);
+
+    // `PatientActor.id` is the OIDC SUBJECT, not the patient row's UUID.
+    // Resolved once per batch rather than per operation: it is the same
+    // lookup fifty times otherwise, and every (patient, id) scope below
+    // depends on getting it right exactly once.
     const patient = await this.prisma.patient.findUnique({
-      where: { id: actor.id },
-      select: { id: true },
+      where: { oidcSubject: actor.id },
+      select: { id: true, profile: { select: { surgeryDate: true, deletedAt: true } } },
     });
-    if (patient === null) {
-      // Authenticated, but no patient row. Every operation would fail
-      // identically, so fail them all the same way rather than N times.
-      return {
-        results: body.operations.map((operation) =>
-          rejection(operation, SYNC_REASON_CODE.ENTITY_ID_CONFLICT, SYNC_FIELD_PATH.ENTITY_ID),
-        ),
-        appliedCount: 0,
-      };
+
+    if (!patient?.profile || patient.profile.deletedAt !== null) {
+      // Authenticated, but no provisioned patient. A request-level refusal
+      // rather than N identical per-operation rejections: nothing about the
+      // operations is wrong, and §6.2 has no reason code for "this token has
+      // no patient", because it is not a property of an operation.
+      throw patientNotProvisioned();
     }
+
+    const context: PatientContext = {
+      patientId: patient.id,
+      // The OIDC subject, which is what an audit row records as its actor —
+      // matching the direct write path (`ObservationsService`) so one
+      // patient's rows carry one actor identity whichever endpoint wrote them.
+      actorId: actor.id,
+      surgeryDate: patient.profile.surgeryDate,
+    };
 
     const results: SyncOperationResult[] = [];
     let appliedCount = 0;
@@ -147,7 +179,7 @@ export class SyncPushService {
     // operations on one entity resolved concurrently would race to decide
     // which version is live.
     for (const operation of body.operations) {
-      const result = await this.applyOne(actor, operation, correlationId);
+      const result = await this.applyOne(context, operation, correlationId);
       results.push(result.result);
       if (result.applied) appliedCount += 1;
     }
@@ -163,7 +195,7 @@ export class SyncPushService {
    * result, because a throw here would fail the batch (invariant 1).
    */
   private async applyOne(
-    actor: PatientActor,
+    context: PatientContext,
     operation: SyncPushOperationParsed,
     correlationId: string | undefined,
   ): Promise<{ result: SyncOperationResult; applied: boolean }> {
@@ -175,7 +207,7 @@ export class SyncPushService {
     // guarantee in a way no client could detect.
     const priorRecord = await this.prisma.syncOperation.findUnique({
       where: {
-        patientId_operationId: { patientId: actor.id, operationId: operation.operationId },
+        patientId_operationId: { patientId: context.patientId, operationId: operation.operationId },
       },
     });
     if (priorRecord !== null) {
@@ -194,11 +226,11 @@ export class SyncPushService {
 
     const skewRejection = await this.checkClockSkew(operation);
     if (skewRejection !== null) {
-      await this.recordRejection(actor, operation, skewRejection);
+      await this.recordRejection(context, operation, skewRejection);
       return { result: skewRejection, applied: false };
     }
 
-    return this.applyObservation(actor, operation, correlationId);
+    return this.applyObservation(context, operation, correlationId);
   }
 
   /**
@@ -233,7 +265,7 @@ export class SyncPushService {
   }
 
   private async applyObservation(
-    actor: PatientActor,
+    context: PatientContext,
     operation: SyncPushOperationParsed,
     correlationId: string | undefined,
   ): Promise<{ result: SyncOperationResult; applied: boolean }> {
@@ -242,7 +274,7 @@ export class SyncPushService {
     // §2/§4: found by (patient, entityId) TOGETHER. `findFirst` with both in
     // the where clause, never `findUnique({ where: { id } })`.
     const stored = await this.prisma.observation.findFirst({
-      where: { id: operation.entityId, patientId: actor.id },
+      where: { id: operation.entityId, patientId: context.patientId },
     });
 
     if (stored === null) {
@@ -286,12 +318,12 @@ export class SyncPushService {
     // client re-pushes, and if the idempotency record did not commit with the
     // write that arrives as a create against an existing row.
     if (stored !== null && operation.clientTimestamp.getTime() < stored.clientUpdatedAt.getTime()) {
-      return this.recordSuperseded(actor, operation, stored, correlationId);
+      return this.recordSuperseded(context, operation, stored, correlationId);
     }
 
     return isDelete
-      ? this.applyDelete(actor, operation, stored, correlationId)
-      : this.applyUpsert(actor, operation, stored, correlationId);
+      ? this.applyDelete(context, operation, stored, correlationId)
+      : this.applyUpsert(context, operation, stored, correlationId);
   }
 
   /**
@@ -303,7 +335,7 @@ export class SyncPushService {
    * that beat this one.
    */
   private async recordSuperseded(
-    actor: PatientActor,
+    context: PatientContext,
     operation: SyncPushOperationParsed,
     stored: Observation,
     correlationId: string | undefined,
@@ -319,7 +351,7 @@ export class SyncPushService {
       await this.audit.record(
         {
           actorType: 'PATIENT',
-          actorId: actor.id,
+          actorId: context.actorId,
           action: 'UPDATE',
           entityType: OBSERVATION_ENTITY_TYPE,
           entityId: operation.entityId,
@@ -331,14 +363,14 @@ export class SyncPushService {
         },
         tx,
       );
-      await this.writeOperationRecord(tx, actor, operation, result);
+      await this.writeOperationRecord(tx, context, operation, result);
     });
 
     return { result, applied: false };
   }
 
   private async applyUpsert(
-    actor: PatientActor,
+    context: PatientContext,
     operation: SyncPushOperationParsed,
     stored: Observation | null,
     correlationId: string | undefined,
@@ -351,15 +383,11 @@ export class SyncPushService {
     } catch (error) {
       const detail = firstRejectionDetail(error);
       const result = rejection(operation, detail.reasonCode, detail.field);
-      await this.recordRejection(actor, operation, result);
+      await this.recordRejection(context, operation, result);
       return { result, applied: false };
     }
 
     const thresholds = await this.thresholds.getVolumetricThresholds();
-    const profile = await this.prisma.profile.findUnique({
-      where: { patientId: actor.id },
-      select: { surgeryDate: true },
-    });
 
     const tier1 = evaluateTier1(
       {
@@ -367,7 +395,7 @@ export class SyncPushService {
         rawValueMl: input.rawValueMl,
         method: toMeasuredOrEstimated(input.method),
         effectiveDateTime: input.effectiveDateTime,
-        surgeryDate: profile?.surgeryDate ?? null,
+        surgeryDate: context.surgeryDate,
         now: new Date(),
       },
       thresholds,
@@ -382,7 +410,7 @@ export class SyncPushService {
         first.ruleCode as SyncReasonCode,
         first.field as SyncFieldPath,
       );
-      await this.recordRejection(actor, operation, result);
+      await this.recordRejection(context, operation, result);
       return { result, applied: false };
     }
 
@@ -393,7 +421,7 @@ export class SyncPushService {
 
     const data: Prisma.ObservationUncheckedCreateInput = {
       id: operation.entityId,
-      patientId: actor.id,
+      patientId: context.patientId,
       resourceType: 'Observation',
       code: input.code,
       valueQuantityValue: new Prisma.Decimal(input.rawValueMl as number),
@@ -414,7 +442,7 @@ export class SyncPushService {
           ? await tx.observation.create({ data })
           : await tx.observation.update({
               // Scoped by both, as everywhere (§2).
-              where: { id: operation.entityId, patientId: actor.id },
+              where: { id: operation.entityId, patientId: context.patientId },
               // A full replacement, not a patch (§4): every payload field is
               // required and the payload is the entity's new state entirely.
               // `deletedAt: null` is what resurrects a tombstoned row when an
@@ -425,7 +453,7 @@ export class SyncPushService {
       await this.audit.record(
         {
           actorType: 'PATIENT',
-          actorId: actor.id,
+          actorId: context.actorId,
           action: stored === null ? 'CREATE' : 'UPDATE',
           entityType: OBSERVATION_ENTITY_TYPE,
           entityId: operation.entityId,
@@ -444,7 +472,7 @@ export class SyncPushService {
         await this.audit.record(
           {
             actorType: 'PATIENT',
-            actorId: actor.id,
+            actorId: context.actorId,
             action: 'UPDATE',
             entityType: OBSERVATION_ENTITY_TYPE,
             entityId: operation.entityId,
@@ -458,7 +486,7 @@ export class SyncPushService {
 
       await this.writeOperationRecord(
         tx,
-        actor,
+        context,
         operation,
         acceptedResultFor(operation, written.serverSequence),
       );
@@ -469,7 +497,7 @@ export class SyncPushService {
   }
 
   private async applyDelete(
-    actor: PatientActor,
+    context: PatientContext,
     operation: SyncPushOperationParsed,
     stored: Observation | null,
     correlationId: string | undefined,
@@ -480,13 +508,13 @@ export class SyncPushService {
         SYNC_REASON_CODE.ENTITY_NOT_FOUND,
         SYNC_FIELD_PATH.ENTITY_ID,
       );
-      await this.recordRejection(actor, operation, result);
+      await this.recordRejection(context, operation, result);
       return { result, applied: false };
     }
 
     const row = await this.prisma.$transaction(async (tx) => {
       const written = await tx.observation.update({
-        where: { id: operation.entityId, patientId: actor.id },
+        where: { id: operation.entityId, patientId: context.patientId },
         data: { deletedAt: new Date(), clientUpdatedAt: operation.clientTimestamp },
       });
 
@@ -498,7 +526,7 @@ export class SyncPushService {
       await this.audit.record(
         {
           actorType: 'PATIENT',
-          actorId: actor.id,
+          actorId: context.actorId,
           action: 'DELETE',
           entityType: OBSERVATION_ENTITY_TYPE,
           entityId: operation.entityId,
@@ -513,7 +541,7 @@ export class SyncPushService {
         await this.audit.record(
           {
             actorType: 'PATIENT',
-            actorId: actor.id,
+            actorId: context.actorId,
             action: 'UPDATE',
             entityType: OBSERVATION_ENTITY_TYPE,
             entityId: operation.entityId,
@@ -527,7 +555,7 @@ export class SyncPushService {
 
       await this.writeOperationRecord(
         tx,
-        actor,
+        context,
         operation,
         acceptedResultFor(operation, written.serverSequence),
       );
@@ -539,11 +567,11 @@ export class SyncPushService {
 
   /** A rejection still gets an idempotency record: a replayed rejection is still a rejection (§3.7). */
   private async recordRejection(
-    actor: PatientActor,
+    context: PatientContext,
     operation: SyncPushOperationParsed,
     result: SyncOperationResult,
   ): Promise<void> {
-    await this.writeOperationRecord(this.prisma, actor, operation, result);
+    await this.writeOperationRecord(this.prisma, context, operation, result);
   }
 
   /**
@@ -553,13 +581,13 @@ export class SyncPushService {
    */
   private async writeOperationRecord(
     tx: Prisma.TransactionClient | PrismaService,
-    actor: PatientActor,
+    context: PatientContext,
     operation: SyncPushOperationParsed,
     result: SyncOperationResult,
   ): Promise<void> {
     await tx.syncOperation.create({
       data: {
-        patientId: actor.id,
+        patientId: context.patientId,
         operationId: operation.operationId,
         entityType: SyncEntityType.OBSERVATION,
         entityId: operation.entityId,

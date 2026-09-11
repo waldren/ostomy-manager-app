@@ -31,6 +31,7 @@ import { ConfigValidationError } from './config/config-validation.error';
 import { loadConfig } from './config/load-config';
 import { CREDENTIAL_REDACTION_PATHS, PHI_SHAPED_REDACTION_PATHS } from './logging/redaction';
 import { errSerializer } from './logging/serializers';
+import { applyJsonBodyLimit } from './http/body-limit';
 import { buildOpenApiDocument } from './openapi/build-openapi-document';
 import { writeOpenApiDocument } from './openapi/write-openapi-document';
 import { PrismaService } from './prisma/prisma.service';
@@ -62,6 +63,8 @@ async function bootstrap(): Promise<void> {
     // `app.listen()` ever opens a port — never be logged and continued past.
     await app.get(PrismaService).assertRuntimeRoleIsNotOverPrivileged();
 
+    // Coupled to SYNC_PUSH_MAX_OPERATIONS — see `applyJsonBodyLimit`.
+    applyJsonBodyLimit(app);
     app.setGlobalPrefix(API_PREFIX);
 
     if (config.nodeEnv !== 'production') {

@@ -24,6 +24,7 @@ import {
   type ExceptionFilter,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { SYNC_PROTOCOL_ERROR_CODE } from '@ostomy/core/sync';
 
 /**
  * Global filter. Guarantees that **no framework- or library-authored error
@@ -80,10 +81,26 @@ export class ErrorSanitizerFilter implements ExceptionFilter {
   private readonly logger = new Logger(ErrorSanitizerFilter.name);
 
   catch(exception: unknown, host: ArgumentsHost): void {
-    const response = host.switchToHttp().getResponse<Response>();
+    const http = host.switchToHttp();
+    const response = http.getResponse<Response>();
+    const status = statusOf(exception);
+
+    // The sync surface has its own closed code vocabulary (§6.1), and the
+    // decision has to happen HERE rather than only in the controller-bound
+    // `SyncExceptionFilter` — because the failures that most need it never
+    // reach a controller. `express.json()` runs as middleware, before
+    // routing, so a malformed or oversized push body is refused while the
+    // request is still nobody's route. P2.S1a learned this once for this very
+    // filter; the sync suite caught the same shape a second time.
+    if (isSyncRequest(http.getRequest<{ originalUrl?: string; url?: string }>())) {
+      if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+        this.logServerError(exception);
+      }
+      response.status(status).json({ error: { code: syncCodeForStatus(status) } });
+      return;
+    }
 
     if (exception instanceof HttpException) {
-      const status = exception.getStatus();
       const body = exception.getResponse();
 
       // Authored by this codebase, so its shape is a closed vocabulary and
@@ -99,11 +116,12 @@ export class ErrorSanitizerFilter implements ExceptionFilter {
       return;
     }
 
-    // Not an HttpException: a bug, or an error that escaped its wrapper.
-    this.logServerError(exception);
-    response
-      .status(HttpStatus.INTERNAL_SERVER_ERROR)
-      .json({ error: { code: codeForStatus(HttpStatus.INTERNAL_SERVER_ERROR) } });
+    // Not an HttpException, or one carrying its own status: a bug, a
+    // body-parser failure, or an error that escaped its wrapper.
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      this.logServerError(exception);
+    }
+    response.status(status).json({ error: { code: codeForStatus(status) } });
   }
 
   /**
@@ -184,6 +202,65 @@ const STATUS_CODE: Readonly<Record<number, string>> = {
   [HttpStatus.PAYLOAD_TOO_LARGE]: 'PAYLOAD_TOO_LARGE',
   [HttpStatus.TOO_MANY_REQUESTS]: 'TOO_MANY_REQUESTS',
 };
+
+/**
+ * The status a thrown value should produce.
+ *
+ * The `status`/`statusCode` branch is not incidental. Express's body parser
+ * throws plain `Error`s carrying their own status — `PayloadTooLargeError`
+ * (413) and a failed JSON parse among them — and they are NOT
+ * `HttpException`s. Without this they all became **500**, which the P2.S1a
+ * review flagged for the oversized-body case: a client error with a defined
+ * status, reported as a server failure and logged with a stack.
+ *
+ * It matters more on the sync surface, where §9.3 tells a client to treat a
+ * 5xx as an unknown outcome and **re-push**. A 413 mis-reported as a 500 is
+ * an oversized batch re-pushed forever instead of being split.
+ */
+function statusOf(exception: unknown): number {
+  if (exception instanceof HttpException) {
+    return exception.getStatus();
+  }
+  const candidate = exception as { status?: unknown; statusCode?: unknown } | null | undefined;
+  const raw = candidate?.status ?? candidate?.statusCode;
+  if (typeof raw === 'number' && raw >= 400 && raw < 600) {
+    return raw;
+  }
+  return HttpStatus.INTERNAL_SERVER_ERROR;
+}
+
+/**
+ * `true` for a request under the sync surface, decided from the URL because
+ * a body-parser failure never reaches a controller. Query string stripped so
+ * `/api/v1/sync/delta?since=0` matches.
+ */
+function isSyncRequest(request: { originalUrl?: string; url?: string }): boolean {
+  const target = request.originalUrl ?? request.url ?? '';
+  return (target.split('?')[0] ?? '').startsWith('/api/v1/sync/');
+}
+
+/**
+ * §6.1's closed protocol-error vocabulary, keyed off HTTP status.
+ *
+ * Imported from `@ostomy/core/sync` rather than from `apps/api/src/sync`: the
+ * generic HTTP layer must not depend on a feature module, and these are
+ * contract constants that already live in the shared package.
+ *
+ * A 5xx deliberately falls OUTSIDE that set. §6.1 enumerates client bugs, and
+ * §9.3 tells a client to treat a 5xx as an unknown outcome and re-push — the
+ * opposite instruction from any protocol error. Handing it
+ * `MALFORMED_REQUEST` would route a server failure into the client's
+ * do-not-retry path and strand the batch.
+ */
+function syncCodeForStatus(status: number): string {
+  if (status >= HttpStatus.INTERNAL_SERVER_ERROR) return 'INTERNAL_ERROR';
+  if (status === HttpStatus.UNAUTHORIZED || status === HttpStatus.FORBIDDEN) {
+    return SYNC_PROTOCOL_ERROR_CODE.UNAUTHENTICATED;
+  }
+  if (status === HttpStatus.PAYLOAD_TOO_LARGE) return SYNC_PROTOCOL_ERROR_CODE.BATCH_TOO_LARGE;
+  if (status === HttpStatus.CONFLICT) return SYNC_PROTOCOL_ERROR_CODE.CURSOR_TOO_OLD;
+  return SYNC_PROTOCOL_ERROR_CODE.MALFORMED_REQUEST;
+}
 
 function codeForStatus(status: number): string {
   return STATUS_CODE[status] ?? (status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_REFUSED');
