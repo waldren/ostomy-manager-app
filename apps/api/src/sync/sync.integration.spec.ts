@@ -45,6 +45,7 @@ import path from 'node:path';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { createApiClient, ApiError } from '@ostomy/core/api-client';
 import { SYNC_FIELD_PATH } from '@ostomy/core/sync';
 import { Client as PgClient } from 'pg';
 import request from 'supertest';
@@ -104,6 +105,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
   let db: PgClient;
   let runtimeDatabaseUrl: string;
   let issuer: TestOidcIssuer;
+  let baseUrl: string;
   let patientA: SeededPatient;
   let patientB: SeededPatient;
 
@@ -200,7 +202,10 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
     // maximum-batch test below would prove nothing about either.
     applyJsonBodyLimit(app);
     app.setGlobalPrefix('api/v1');
-    await app.init();
+    // A real listener, not just `init()`: the generated client speaks HTTP to
+    // a URL rather than to a supertest handle.
+    await app.listen(0);
+    baseUrl = (await app.getUrl()).replace('[::1]', '127.0.0.1');
 
     patientA = await seedPatient();
     patientB = await seedPatient();
@@ -1489,6 +1494,99 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       } finally {
         await writer.end();
       }
+    });
+  });
+  /**
+   * The generated typed client, exercised against the running API.
+   *
+   * `packages/core/src/api-client` is what `apps/mobile` (P2.S2) compiles
+   * against, and it is the only consumer of this protocol. It shipped
+   * unusable — `SyncController` carried only `@ApiOperation`, so the
+   * generator emitted `push(): Promise<void>` (no body, no results) and
+   * `delta(): Promise<void>` (no way to pass the required `since`).
+   *
+   * Nothing caught it. The stale-client check proves the client matches the
+   * document; the document was faithfully describing an under-annotated
+   * controller. So this block exercises the client the way a client author
+   * would — if the annotations regress, these stop compiling or stop
+   * returning data, rather than silently emitting a `void` method again.
+   */
+  describe('the generated typed client speaks this protocol', () => {
+    it('pushes a batch and reads the results back, typed', async () => {
+      const fresh = await seedPatient();
+      const client = createApiClient({
+        baseUrl,
+        getAccessToken: () => fresh.token,
+      });
+
+      const entityId = randomUUID();
+      const response = await client.sync.push({
+        operations: [
+          {
+            operationId: randomUUID(),
+            entityType: 'Observation',
+            entityId,
+            operationType: 'create',
+            clientTimestamp: '2026-09-07T22:04:11.412Z',
+            payload: {
+              resourceType: 'Observation',
+              id: entityId,
+              status: 'final',
+              code: STOMA_OUTPUT_CODE,
+              valueQuantity: { value: 350.5, unit: 'mL' },
+              effectiveDateTime: '2026-09-07T14:00:00.000Z',
+              method: null,
+              enteredMeasurementSystem: 'metric',
+            },
+          },
+        ],
+      });
+
+      // Typed all the way through: `results` exists, is an array, and carries
+      // the discriminated fields. Under the old emission this was `void` and
+      // the next line would not have compiled.
+      expect(response.results).toHaveLength(1);
+      expect(response.results[0]!.status).toBe('accepted');
+      expect(response.results[0]!.entityId).toBe(entityId);
+      expect(typeof response.results[0]!.appliedServerSequence).toBe('string');
+      expect(response.results[0]!.replayed).toBe(false);
+    });
+
+    it('pulls a delta page, with since required by the type', async () => {
+      const fresh = await seedPatient();
+      const op = createOp();
+      await push(fresh, [op]).expect(200);
+
+      const client = createApiClient({ baseUrl, getAccessToken: () => fresh.token });
+
+      // `since` is required on `SyncDeltaQuery`, and the query bag itself is
+      // required because of it — `client.sync.delta()` does not compile.
+      const page = await client.sync.delta({ since: '0' });
+
+      expect(page.changes).toHaveLength(1);
+      expect(page.changes[0]!.entityId).toBe(op.entityId);
+      expect(page.changes[0]!.deleted).toBe(false);
+      expect(typeof page.cursor).toBe('string');
+      expect(page.hasMore).toBe(false);
+      // §7.3: a string, so a 64-bit sequence survives JSON.parse.
+      expect(typeof page.changes[0]!.serverSequence).toBe('string');
+    });
+
+    it('surfaces a protocol error as a typed ApiError a client can route on', async () => {
+      const fresh = await seedPatient();
+      const client = createApiClient({ baseUrl, getAccessToken: () => fresh.token });
+
+      const error = await client.sync.delta({ since: 'not-a-number' }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ApiError);
+      const apiError = error as ApiError;
+      expect(apiError.status).toBe(400);
+      expect(apiError.rejectionForCorrectionQueue()).toEqual({
+        error: { code: 'MALFORMED_REQUEST' },
+      });
+      // §6.3 applies here as it does everywhere: nothing derived from the
+      // request reaches a serialized error.
+      expect(JSON.stringify(apiError)).not.toContain('not-a-number');
     });
   });
 });

@@ -26,6 +26,10 @@ import type {
   ObservationCreateResponse,
   ObservationListResponse,
   ObservationsListQuery,
+  SyncDeltaQuery,
+  SyncDeltaResponse,
+  SyncPushRequest,
+  SyncPushResponse,
 } from './types.js';
 
 /**
@@ -252,10 +256,11 @@ export function createApiClient(options: ApiClientOptions) {
        *
        * Returns changes with server sequence greater than `since`, ordered ascending. The client pulls in a loop until hasMore is false, persisting cursor after each page. A tombstone carries no payload. See docs/sync-contract.md §5.
        */
-      delta: (): Promise<void> =>
-        request<void>({
+      delta: (query: SyncDeltaQuery): Promise<SyncDeltaResponse> =>
+        request<SyncDeltaResponse>({
           method: 'GET',
           path: `/api/v1/sync/delta`,
+          query,
           requiresAuth: true,
         }),
 
@@ -264,10 +269,11 @@ export function createApiClient(options: ApiClientOptions) {
        *
        * Applies operations in array order, one result per operation in request order. A batch never fails as a unit for data reasons: one rejected operation does not block the rest. Idempotent on (patient, operationId) — a re-pushed operation returns the first attempt’s result byte-for-byte with replayed: true. See docs/sync-contract.md §3 and §4.
        */
-      push: (): Promise<void> =>
-        request<void>({
+      push: (body: SyncPushRequest): Promise<SyncPushResponse> =>
+        request<SyncPushResponse>({
           method: 'POST',
           path: `/api/v1/sync/push`,
+          body,
           requiresAuth: true,
         }),
     },

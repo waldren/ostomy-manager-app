@@ -28,7 +28,16 @@ import {
   UseFilters,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiBody,
+  ApiOkResponse,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+  ApiUnauthorizedResponse,
+} from '@nestjs/swagger';
 import type { SyncDeltaResponse, SyncPushResponse } from '@ostomy/core/sync';
 import type { Request } from 'express';
 
@@ -38,6 +47,12 @@ import { getPatientActor } from '../auth/patient-actor';
 import { SyncDeltaPipe, type SyncDeltaQueryParsed } from './sync-delta.pipe';
 import { SyncDeltaService } from './sync-delta.service';
 import { SyncExceptionFilter } from './sync-exception.filter';
+import {
+  SYNC_DELTA_RESPONSE_SCHEMA,
+  SYNC_PROTOCOL_ERROR_SCHEMA,
+  SYNC_PUSH_REQUEST_SCHEMA,
+  SYNC_PUSH_RESPONSE_SCHEMA,
+} from './sync-openapi';
 import { SyncPushPipe, type SyncPushRequestParsed } from './sync-push.pipe';
 import { SyncPushService } from './sync-push.service';
 
@@ -83,6 +98,10 @@ export class SyncController {
     description:
       'Applies operations in array order, one result per operation in request order. A batch never fails as a unit for data reasons: one rejected operation does not block the rest. Idempotent on (patient, operationId) — a re-pushed operation returns the first attempt’s result byte-for-byte with replayed: true. See docs/sync-contract.md §3 and §4.',
   })
+  @ApiBody({ schema: SYNC_PUSH_REQUEST_SCHEMA })
+  @ApiOkResponse({ schema: SYNC_PUSH_RESPONSE_SCHEMA })
+  @ApiBadRequestResponse({ schema: SYNC_PROTOCOL_ERROR_SCHEMA })
+  @ApiUnauthorizedResponse({ schema: SYNC_PROTOCOL_ERROR_SCHEMA })
   async push(
     @Req() request: Request,
     @Body(SyncPushPipe) body: SyncPushRequestParsed,
@@ -97,6 +116,23 @@ export class SyncController {
     description:
       'Returns changes with server sequence greater than `since`, ordered ascending. The client pulls in a loop until hasMore is false, persisting cursor after each page. A tombstone carries no payload. See docs/sync-contract.md §5.',
   })
+  @ApiQuery({
+    name: 'since',
+    required: true,
+    schema: { type: 'string' },
+    description:
+      'Server sequence, EXCLUSIVE. "0" requests everything — the initial sync of a newly installed app. A string, not a number (§7.3). Absent or non-numeric is MALFORMED_REQUEST.',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    schema: { type: 'string' },
+    description:
+      'Page size. A value above the server maximum is CLAMPED, never refused (§5.1) — the client discovers the real page size from the response.',
+  })
+  @ApiOkResponse({ schema: SYNC_DELTA_RESPONSE_SCHEMA })
+  @ApiBadRequestResponse({ schema: SYNC_PROTOCOL_ERROR_SCHEMA })
+  @ApiUnauthorizedResponse({ schema: SYNC_PROTOCOL_ERROR_SCHEMA })
   async delta(
     @Req() request: Request,
     @Query(SyncDeltaPipe) query: SyncDeltaQueryParsed,

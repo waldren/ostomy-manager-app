@@ -22,7 +22,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // Owner: nobody. ADR-0007 makes this path generated and never hand-edited.
 
 /**
- * One observation, FHIR R4 field names, identical to the sync wire payload (docs/sync-contract.md §7.2).
+ * Absent entirely on a tombstone — not null, not empty (§5.2).
  */
 export type Observation = {
   readonly resourceType: 'Observation';
@@ -103,4 +103,109 @@ export type ObservationValueQuantity = {
 export type ObservationWarning = {
   readonly field: string;
   readonly ruleCode: string;
+};
+
+export type SyncDeltaChange = {
+  readonly entityType: 'Observation';
+  readonly entityId: string;
+  /** A server sequence. A JSON string, never a number — 64-bit (§7.3). */
+  readonly serverSequence: string;
+  readonly deleted: boolean;
+  /** For a tombstone, the client timestamp of the operation that DELETED the row — not a server receipt time (§5.2). */
+  readonly clientUpdatedAt: string;
+  /** Absent entirely on a tombstone — not null, not empty (§5.2). */
+  readonly payload?: Observation;
+};
+
+export type SyncDeltaQuery = {
+  /** Page size. A value above the server maximum is CLAMPED, never refused (§5.1) — the client discovers the real page size from the response. */
+  readonly limit?: string;
+  /** Server sequence, EXCLUSIVE. "0" requests everything — the initial sync of a newly installed app. A string, not a number (§7.3). Absent or non-numeric is MALFORMED_REQUEST. */
+  readonly since: string;
+};
+
+export type SyncDeltaResponse = {
+  /** Ordered by serverSequence ascending. */
+  readonly changes: ReadonlyArray<SyncDeltaChange>;
+  /** The highest sequence the server is willing to let the client advance to — not necessarily the highest in changes, and never derived by the client from the rows it received (§5.2). */
+  readonly cursor: string;
+  /** About THIS PAGE, not the server high-water mark. Always false when changes is empty (§5.2). */
+  readonly hasMore: boolean;
+};
+
+export type SyncOperationResult = {
+  readonly operationId: string;
+  readonly status: 'accepted' | 'superseded' | 'rejected';
+  readonly entityId: string;
+  /** Present on accepted and superseded, absent on rejected. A RECEIPT, never a cursor — a client MUST NOT advance its delta cursor from it (§3.6). */
+  readonly appliedServerSequence?: string;
+  /** Present only on rejected. Never carries the offending value (§6.3). */
+  readonly reasonCode?:
+    | 'VALUE_NOT_NUMERIC'
+    | 'VALUE_NOT_POSITIVE'
+    | 'VALUE_EXCEEDS_MAX_MAGNITUDE'
+    | 'VALUE_EXCEEDS_MAX_PRECISION'
+    | 'METHOD_REQUIRED'
+    | 'EFFECTIVE_DATE_TIME_IN_FUTURE'
+    | 'EFFECTIVE_DATE_TIME_BEFORE_SURGERY'
+    | 'CLIENT_TIMESTAMP_OUT_OF_RANGE'
+    | 'ENTITY_NOT_FOUND'
+    | 'ENTITY_ID_CONFLICT'
+    | 'UNSUPPORTED_CODE'
+    | 'UNSUPPORTED_STATUS'
+    | 'PAYLOAD_FIELD_INVALID'
+    | 'PAYLOAD_FIELD_UNRECOGNIZED';
+  /** Present only on rejected. A closed set (§6.2). */
+  readonly field?:
+    | 'operationId'
+    | 'entityType'
+    | 'entityId'
+    | 'operationType'
+    | 'clientTimestamp'
+    | 'payload'
+    | 'resourceType'
+    | 'id'
+    | 'status'
+    | 'code'
+    | 'valueQuantity.value'
+    | 'valueQuantity.unit'
+    | 'effectiveDateTime'
+    | 'method'
+    | 'enteredMeasurementSystem';
+  /** Diagnostic. A client MUST NOT branch clinical behaviour on it (§3.7). */
+  readonly replayed: boolean;
+};
+
+export type SyncProtocolErrorResponse = {
+  readonly error: {
+    readonly code:
+      | 'MALFORMED_REQUEST'
+      | 'BATCH_OUT_OF_ORDER'
+      | 'PAYLOAD_PRESENCE_INVALID'
+      | 'ENTITY_ID_MISMATCH'
+      | 'UNAUTHENTICATED'
+      | 'CURSOR_TOO_OLD'
+      | 'BATCH_TOO_LARGE';
+  };
+};
+
+export type SyncPushOperation = {
+  /** Client-generated at enqueue. Never the entity id (§1). */
+  readonly operationId: string;
+  readonly entityType: 'Observation';
+  readonly entityId: string;
+  readonly operationType: 'create' | 'update' | 'delete';
+  /** When the WRITE was made. Orders the batch and decides last-write-wins — distinct from effectiveDateTime, the clinical moment (§1). */
+  readonly clientTimestamp: string;
+  /** Absent for a delete, required otherwise (§3.1). */
+  readonly payload?: Observation;
+};
+
+export type SyncPushRequest = {
+  /** Applied in array order, and MUST be non-descending in clientTimestamp (§3.2). At most SYNC_PUSH_MAX_OPERATIONS (§3.3). */
+  readonly operations: ReadonlyArray<SyncPushOperation>;
+};
+
+export type SyncPushResponse = {
+  readonly results: ReadonlyArray<SyncOperationResult>;
 };
