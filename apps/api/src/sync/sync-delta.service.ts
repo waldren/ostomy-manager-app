@@ -57,11 +57,23 @@ import type { SyncDeltaQueryParsed } from './sync-delta.pipe';
  * ## The mechanism
  *
  * §5.3's option 1 — **withhold the in-flight window.** A row is served only
- * when its assigning transaction is known to have completed, which is exactly
- * `xmin < pg_snapshot_xmin(pg_current_snapshot())`: every transaction with an
- * id below the current snapshot's xmin has finished, so no row it wrote can
- * still be pending, and no *lower* sequence can still arrive behind one that
- * is served.
+ * when its assigning transaction is known to have completed: every
+ * transaction older than the current snapshot's xmin has finished, so no row
+ * it wrote can still be pending, and no *lower* sequence can still arrive
+ * behind one that is served.
+ *
+ * Expressed with `age()` on both sides rather than as a numeric `<`, and that
+ * is not cosmetic. `xmin` is an `xid` — 32 bits, wrapping, no epoch — while
+ * `pg_snapshot_xmin()` returns an `xid8`, which is epoch-extended to 64 bits.
+ * The first version of this predicate cast both through `text` to `bigint`,
+ * comparing two different domains. It agrees in epoch 0, which is why every
+ * test passed. Past the cluster's first ~4.3 billion transactions the
+ * snapshot value exceeds 2^32 while no row's `xmin` can, the predicate
+ * becomes unconditionally true, and this query silently degrades to exactly
+ * the naive `ORDER BY server_sequence` it exists to replace — **failing
+ * open**, with no error and nothing that would notice. `age()` does modular
+ * comparison in the 32-bit domain for both operands, which is what makes it
+ * wraparound-safe.
  *
  * Chosen over §5.3's option 2 (per-patient counter with `SELECT … FOR
  * UPDATE`) because it needs no schema change and keeps the global
@@ -141,7 +153,7 @@ export class SyncDeltaService {
           FROM observations
           WHERE patient_id = ${patientId}::uuid
             AND server_sequence > ${query.since}
-            AND xmin::text::bigint < pg_snapshot_xmin(pg_current_snapshot())::text::bigint
+            AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)
           ORDER BY server_sequence ASC
           LIMIT ${query.limit + 1}
         `;

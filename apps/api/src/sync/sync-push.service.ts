@@ -56,6 +56,7 @@ import {
 import {
   interpretObservationPayload,
   toAuditSnapshot,
+  toRejectionDetails,
   toStoredMeasurementSystem,
 } from '../observations/observation-payload';
 import { observationRequestParseSchema } from '../observations/observation-wire';
@@ -214,19 +215,62 @@ export class SyncPushService {
       return { result: replayOf(priorRecord), applied: false };
     }
 
+    const outcome = await this.evaluate(context, operation, correlationId);
+
+    // **Every** rejection gets its idempotency record, in ONE place.
+    //
+    // This used to be the caller's job at each `return`, and three paths
+    // forgot — the unsupported `entityType`, `ENTITY_ID_CONFLICT`, and
+    // `ENTITY_NOT_FOUND` on an update — while the identical
+    // `ENTITY_NOT_FOUND` condition on the delete branch remembered. Both
+    // reviewers found it.
+    //
+    // The consequence was not just a wrong `replayed` flag. A re-push is
+    // re-evaluated against live state, so an update refused with
+    // `ENTITY_NOT_FOUND` before its create landed would, on redelivery with
+    // the same `operationId`, be **applied** — carrying its original stale
+    // `clientTimestamp` into a conflict comparison the server had already
+    // declined to run, while the client's stored first result still said
+    // "rejected, retain for correction". That is §3.7's silently-duplicated
+    // write in its documented form.
+    //
+    // A rejection has no entity write to be atomic with, so this is
+    // deliberately outside a transaction; the accepted and superseded paths
+    // write their record *inside* the operation's transaction instead.
+    if (outcome.result.status === 'rejected') {
+      await this.recordRejection(context, operation, outcome.result);
+    }
+
+    return outcome;
+  }
+
+  /** The decision, with no persistence of its own for the rejection paths — see `applyOne`. */
+  private async evaluate(
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
     if (operation.entityType !== SYNC_ENTITY_TYPE.OBSERVATION) {
-      // The pipe already rejected an unknown entityType as a protocol error;
-      // this is the known-but-not-yet-exchanged case (Profile,
-      // EffectiveRange — schema entities with no wire payload until P4).
+      // Currently UNREACHABLE, and kept deliberately: `SYNC_ENTITY_TYPE` has
+      // one member today, so the pipe's enum refuses anything else as a
+      // protocol error before this runs. It becomes live at P4, when Profile
+      // and EffectiveRange gain wire payloads and the enum grows — at which
+      // point this is the known-but-not-yet-exchanged case, and a rejection
+      // rather than a 400 is what keeps one unsupported entity type from
+      // failing a whole batch. `entityType` is the offending field, not the
+      // payload.
       return {
-        result: rejection(operation, SYNC_REASON_CODE.UNSUPPORTED_CODE, SYNC_FIELD_PATH.PAYLOAD),
+        result: rejection(
+          operation,
+          SYNC_REASON_CODE.UNSUPPORTED_CODE,
+          SYNC_FIELD_PATH.ENTITY_TYPE,
+        ),
         applied: false,
       };
     }
 
     const skewRejection = await this.checkClockSkew(operation);
     if (skewRejection !== null) {
-      await this.recordRejection(context, operation, skewRejection);
       return { result: skewRejection, applied: false };
     }
 
@@ -382,9 +426,7 @@ export class SyncPushService {
       input = interpretObservationPayload(parsed);
     } catch (error) {
       const detail = firstRejectionDetail(error);
-      const result = rejection(operation, detail.reasonCode, detail.field);
-      await this.recordRejection(context, operation, result);
-      return { result, applied: false };
+      return { result: rejection(operation, detail.reasonCode, detail.field), applied: false };
     }
 
     const thresholds = await this.thresholds.getVolumetricThresholds();
@@ -404,14 +446,25 @@ export class SyncPushService {
     if (tier1.outcome === 'blocked') {
       // §6.3: report the FIRST failure in §6.2's listed order, so two servers
       // do not walk one patient through different correction sequences.
-      const first = tier1.errors[0]!;
-      const result = rejection(
-        operation,
-        first.ruleCode as SyncReasonCode,
-        first.field as SyncFieldPath,
-      );
-      await this.recordRejection(context, operation, result);
-      return { result, applied: false };
+      //
+      // Routed through `toRejectionDetails`, which is the SAME remapper the
+      // direct endpoint uses, rather than reading `evaluateTier1`'s output
+      // directly. `evaluateTier1` stamps its single `input.field` onto every
+      // error it returns, so reading `error.field` here reported
+      // `valueQuantity.value` for METHOD_REQUIRED and both
+      // EFFECTIVE_DATE_TIME_* codes — the correction inbox would highlight
+      // the volume for an entry rejected because it predates the surgery
+      // date, the patient would edit the volume, and it would be rejected
+      // again forever (§9.2's retry-unchanged loop, through a mislabelled
+      // field). `toRejectionDetails` also closes the reason code against
+      // `Tier1ReasonCode` with no fallback, so a new rule in `packages/core`
+      // is a compile error here rather than an unlisted code persisted to
+      // `sync_operations` and replayed verbatim.
+      const detail = toRejectionDetails(tier1.errors)[0]!;
+      return {
+        result: rejection(operation, detail.reasonCode, detail.field as SyncFieldPath),
+        applied: false,
+      };
     }
 
     // Tier 2 is deliberately not consulted here. §6.2: a soft warning is not
@@ -502,14 +555,15 @@ export class SyncPushService {
     stored: Observation | null,
     correlationId: string | undefined,
   ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    // `stored` is non-null by construction: `applyObservation` returns
+    // ENTITY_NOT_FOUND for a delete against a row this patient does not have,
+    // before this method is reached. An earlier version repeated that check
+    // here, which was dead code — and, worse, the dead copy was the one that
+    // recorded the idempotency row while the live path did not.
     if (stored === null) {
-      const result = rejection(
-        operation,
-        SYNC_REASON_CODE.ENTITY_NOT_FOUND,
-        SYNC_FIELD_PATH.ENTITY_ID,
+      throw new Error(
+        'applyDelete reached with no stored row; applyObservation should have rejected it.',
       );
-      await this.recordRejection(context, operation, result);
-      return { result, applied: false };
     }
 
     const row = await this.prisma.$transaction(async (tx) => {

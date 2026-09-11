@@ -769,6 +769,150 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       expect(JSON.stringify(row)).not.toContain('998877');
     });
 
+    /**
+     * The closed-set test above is necessary and was not sufficient: it
+     * asserts only that `rejection_field` is A member of `SYNC_FIELD_PATH`,
+     * and `valueQuantity.value` is a member. Two of its ten cases were
+     * mis-fielded and it passed anyway.
+     *
+     * `evaluateTier1` stamps its single `input.field` onto every error it
+     * returns, so reading `error.field` directly reported the volume field
+     * for rules about the method and the clinical date. §6.2 requires `field`
+     * to name the offending field, and says why: "so two servers do not walk
+     * one patient through different correction sequences for the same
+     * payload" — which had become two ENDPOINTS in one server.
+     */
+    it.each([
+      [
+        'a clinical date before the surgery date',
+        { effectiveDateTime: '2020-01-01T00:00:00.000Z' },
+        'EFFECTIVE_DATE_TIME_BEFORE_SURGERY',
+        'effectiveDateTime',
+      ],
+      [
+        'a clinical date in the future',
+        { effectiveDateTime: '2099-01-01T00:00:00.000Z' },
+        'EFFECTIVE_DATE_TIME_IN_FUTURE',
+        'effectiveDateTime',
+      ],
+      [
+        'a negative volume',
+        { valueQuantity: { value: -1, unit: 'mL' } },
+        'VALUE_NOT_POSITIVE',
+        'valueQuantity.value',
+      ],
+    ])('names the offending field for %s', async (_label, override, reasonCode, field) => {
+      const op = createOp();
+      Object.assign(op.payload as Record<string, unknown>, override);
+
+      const response = await push(patientA, [op]);
+
+      expect(response.body.results[0]).toMatchObject({ status: 'rejected', reasonCode, field });
+
+      // And the stored record agrees — §3.7 replays the response from these
+      // columns, so a wrong field there is wrong forever.
+      const row = await operationRow(op.operationId as string);
+      expect(row!.rejection_field).toBe(field);
+      expect(row!.rejection_reason_code).toBe(reasonCode);
+    });
+
+    it('matches the direct endpoint exactly for a byte-identical payload', async () => {
+      // The property §6.2 is protecting. Two surfaces over one table must not
+      // walk a patient through two different correction sequences.
+      const entityId = randomUUID();
+      const body = payload({ id: entityId, effectiveDateTime: '2020-01-01T00:00:00.000Z' });
+
+      const direct = await request(app.getHttpServer())
+        .post('/api/v1/observations')
+        .set('Authorization', `Bearer ${patientA.token}`)
+        .send(body);
+
+      const op = createOp({ entityId });
+      Object.assign(op.payload as Record<string, unknown>, {
+        effectiveDateTime: '2020-01-01T00:00:00.000Z',
+      });
+      const synced = await push(patientA, [op]);
+
+      expect(direct.status).toBe(422);
+      const directDetail = direct.body.error.errors[0];
+      const syncedResult = synced.body.results[0];
+
+      expect(syncedResult.reasonCode).toBe(directDetail.reasonCode);
+      expect(syncedResult.field).toBe(directDetail.field);
+    });
+
+    /**
+     * §3.7 applies to rejections too, and three paths used to skip the
+     * idempotency record entirely — so a re-push returned `replayed: false`
+     * and, worse, was re-evaluated against live state.
+     */
+    it.each([
+      [
+        'ENTITY_NOT_FOUND on an update',
+        async (): Promise<Record<string, unknown>> =>
+          createOp({ entityId: randomUUID(), operationType: 'update' }),
+      ],
+      [
+        'ENTITY_ID_CONFLICT against another patient',
+        async (): Promise<Record<string, unknown>> => {
+          const theirs = createOp();
+          await push(patientB, [theirs]).expect(200);
+          return createOp({ entityId: theirs.entityId, operationType: 'update' });
+        },
+      ],
+    ])('records and replays a rejection from %s', async (_label, build) => {
+      const op = await build();
+
+      const first = await push(patientA, [op]);
+      expect(first.body.results[0].status).toBe('rejected');
+      expect(first.body.results[0].replayed).toBe(false);
+
+      const second = await push(patientA, [op]);
+      expect(second.body.results[0]).toEqual({ ...first.body.results[0], replayed: true });
+
+      // The record exists, which is what makes the replay possible and what
+      // stops a redelivery being re-evaluated against changed state.
+      const row = await operationRow(op.operationId as string);
+      expect(row).toBeDefined();
+      expect(row!.status).toBe('REJECTED');
+    });
+
+    it('does not apply an operation on re-push that was rejected as not-found before its create landed', async () => {
+      // The concrete consequence of the missing record. An update arrives
+      // before the create (reordered delivery, a split batch); it is refused.
+      // The create then lands. A redelivery of the SAME operationId must
+      // still be a rejection — not an apply carrying the original stale
+      // clientTimestamp into a comparison the server already declined.
+      const entityId = randomUUID();
+      const update = createOp({
+        entityId,
+        operationType: 'update',
+        clientTimestamp: '2026-09-07T08:00:00.000Z',
+      });
+
+      const refused = await push(patientA, [update]);
+      expect(refused.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'ENTITY_NOT_FOUND',
+      });
+
+      await push(patientA, [
+        createOp({ entityId, clientTimestamp: '2026-09-07T12:00:00.000Z' }),
+      ]).expect(200);
+      const afterCreate = Number((await observationRows(entityId))[0]!.value_quantity_value);
+
+      const redelivered = await push(patientA, [update]);
+
+      expect(redelivered.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'ENTITY_NOT_FOUND',
+        replayed: true,
+      });
+      // The row is untouched: the stale operation did not win a conflict it
+      // was never allowed to enter.
+      expect(Number((await observationRows(entityId))[0]!.value_quantity_value)).toBe(afterCreate);
+    });
+
     it('rejects a clock timestamp beyond the allowance, naming clientTimestamp', async () => {
       // §3.8: a poisoned timestamp. Because conflict resolution is
       // last-write-wins by client timestamp, a device with a clock set to

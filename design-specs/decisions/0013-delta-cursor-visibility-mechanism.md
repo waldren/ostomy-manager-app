@@ -20,7 +20,7 @@ This was reproduced against real PostgreSQL before any code was written, and aga
 | Read, while A is in flight | Returns |
 | --- | --- |
 | naive `ORDER BY server_sequence` | B only — the client's cursor advances past A, permanently |
-| `WHERE xmin < pg_snapshot_xmin(pg_current_snapshot())` | nothing |
+| the predicate above | nothing |
 | the same filter, after A commits | A, B — in sequence order |
 
 **Why close it now rather than watch it.** For v1 the exposure is narrow: `apps/mobile` is the only writer and one patient's writes come from one device. It is not zero — the same patient on a second device, a `packages/seed` bulk load, and any future server-side write all produce it — and it is invisible when it happens. A defect that silently drops a clinical row and leaves no trace is not one to discover from a support ticket.
@@ -32,10 +32,12 @@ Settled already and not reopened here: the monotonic sequence itself (ADR-0001),
 We will serve a delta row **only once its assigning transaction is known to have completed**, by filtering on PostgreSQL's `xmin` system column against the current snapshot's `xmin`:
 
 ```sql
-AND xmin::text::bigint < pg_snapshot_xmin(pg_current_snapshot())::text::bigint
+AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)
 ```
 
-Every transaction with an id below the current snapshot's `xmin` has finished, so no row it wrote can still be pending — and, critically, no *lower* sequence can still arrive behind a row that is served. Rows from the in-flight era are withheld as a group rather than judged individually, which is why the filter is sound even though transaction-id order and sequence order are not guaranteed to agree in general.
+Every transaction older than the current snapshot's `xmin` has finished, so no row it wrote can still be pending — and, critically, no *lower* sequence can still arrive behind a row that is served. Rows from the in-flight era are withheld as a group rather than judged individually, which is why the filter is sound even though transaction-id order and sequence order are not guaranteed to agree in general.
+
+**`age()` on both sides, not a numeric comparison.** `xmin` is an `xid`: 32 bits, wrapping, no epoch. `pg_snapshot_xmin()` returns an `xid8`, epoch-extended to 64. The first implementation cast both through `text` to `bigint` and compared them directly, which is two different domains. It agrees in epoch 0 — which is why it passed every test, including the mutation-checked one. Past the cluster's first ~4.3 billion transactions the snapshot value exceeds 2^32 while no row's `xmin` can, so the predicate becomes unconditionally true and this query silently degrades to the naive form this ADR exists to replace. **It fails open**, years from now, with no error and no test that would notice — the exact failure class this repo writes ADRs about. `age()` compares both operands modulo 2^32, which is wraparound-safe. Verified against real PostgreSQL to withhold and release identically to the original form in the interleaved case.
 
 This is §5.3's option 1. No schema change; the global `sync_sequence` and the triggers P1.S3 built and tested are unchanged.
 
