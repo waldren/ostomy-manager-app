@@ -1209,5 +1209,142 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       expect(seen.sort()).toEqual(ops.map((op) => op.entityId as string).sort());
       expect(new Set(seen).size).toBe(seen.length);
     });
+
+    /**
+     * The mechanism the fix depends on, pinned on its own.
+     *
+     * This does not go through the endpoint — it demonstrates the PostgreSQL
+     * behaviour `SyncDeltaService` relies on, so a future reader can see what
+     * the `RepeatableRead` transaction is actually for. Deterministic: the
+     * concurrent update commits between two reads that are explicitly
+     * sequenced.
+     *
+     * Under READ COMMITTED the two reads disagree, which is exactly how the
+     * cursor came to be taken from a different database state than the page.
+     */
+    it.each([
+      ['READ COMMITTED', 'READ COMMITTED', true],
+      ['REPEATABLE READ', 'REPEATABLE READ', false],
+    ])(
+      'under %s, a committed update between two reads is visible to the second: %s',
+      async (_label, isolation, expectDisagreement) => {
+        const fresh = await seedPatient();
+        const entityId = randomUUID();
+        await db.query(
+          `INSERT INTO observations
+             (id, patient_id, resource_type, code, value_quantity_value, value_quantity_unit,
+              effective_datetime, status, entered_measurement_system, client_updated_at, updated_at)
+           VALUES ($1, $2, 'Observation', $3, 350.5, 'mL',
+              TIMESTAMPTZ '2026-09-07T14:00:00.000Z', 'final', 'METRIC', now(), now())`,
+          [entityId, fresh.patientId, STOMA_OUTPUT_CODE],
+        );
+
+        const reader = new PgClient({ connectionString: runtimeDatabaseUrl });
+        const writer = new PgClient({ connectionString: runtimeDatabaseUrl });
+        await reader.connect();
+        await writer.connect();
+
+        try {
+          await reader.query(`BEGIN ISOLATION LEVEL ${isolation}`);
+          const first = await reader.query(
+            `SELECT server_sequence FROM observations WHERE id = $1`,
+            [entityId],
+          );
+
+          // The trigger is BEFORE INSERT OR UPDATE, so this re-stamps
+          // server_sequence — which is why an update, not just an insert,
+          // can move a row out from under a paged read.
+          await writer.query(`UPDATE observations SET value_quantity_value = 999 WHERE id = $1`, [
+            entityId,
+          ]);
+
+          const second = await reader.query(
+            `SELECT server_sequence FROM observations WHERE id = $1`,
+            [entityId],
+          );
+
+          const disagreed =
+            String(first.rows[0].server_sequence) !== String(second.rows[0].server_sequence);
+          expect(disagreed).toBe(expectDisagreement);
+        } finally {
+          await reader.query('ROLLBACK').catch(() => undefined);
+          await reader.end();
+          await writer.end();
+        }
+      },
+    );
+
+    /**
+     * The end-to-end invariant, under a writer committing throughout.
+     *
+     * This is the test that catches the defect both reviewers found: the
+     * `xmin` predicate alone does not hold §5.3, because the cursor used to
+     * be derived from a second, unsynchronized read. With the two reads
+     * outside one snapshot this fails — an entity gets skipped and never
+     * reappears, because the cursor advanced past it.
+     *
+     * Repeated, because hitting the window is a race rather than something
+     * the test can sequence from outside the service. It cannot fail in the
+     * other direction: with the reads in one snapshot the invariant holds
+     * unconditionally, so a passing run is not luck.
+     */
+    it('never skips a row when an update commits during a paged pull', async () => {
+      const fresh = await seedPatient();
+      const at = '2026-09-07T12:00:00.000Z';
+      const ops = Array.from({ length: 12 }, () => createOp({ clientTimestamp: at }));
+      await push(fresh, ops).expect(200);
+      const allIds = ops.map((op) => op.entityId as string);
+
+      const writer = new PgClient({ connectionString: runtimeDatabaseUrl });
+      await writer.connect();
+
+      try {
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          let churning = true;
+
+          // A writer re-stamping sequences CONTINUOUSLY for the whole
+          // duration of the pull, not a fixed burst. The window this has to
+          // land in is between the delta query's two statements, which is
+          // sub-millisecond — a few updates never hit it, and a test that
+          // does not hit it passes against the defect and proves nothing.
+          // (Verified: an earlier burst-of-four version passed with the
+          // isolation level downgraded.)
+          const churn = (async () => {
+            while (churning) {
+              await writer.query(
+                `UPDATE observations SET value_quantity_value = value_quantity_value + 1
+                 WHERE id = $1`,
+                [allIds[Math.floor(Math.random() * allIds.length)]],
+              );
+            }
+          })();
+
+          const seen: string[] = [];
+          let cursor = '0';
+          // Generous bound: churn moves rows to new sequences, so a full pull
+          // legitimately takes more pages than there are rows.
+          for (let page = 0; page < 60; page += 1) {
+            const response = await delta(fresh, { since: cursor, limit: 2 });
+            expect(response.status).toBe(200);
+            for (const change of response.body.changes as Array<{ entityId: string }>) {
+              seen.push(change.entityId);
+            }
+            cursor = response.body.cursor;
+            if (!response.body.hasMore) break;
+          }
+
+          churning = false;
+          await churn;
+
+          // Every entity this patient has must have been served at least
+          // once. A skipped row is invisible to that device forever — §5.3's
+          // invariant, stated as the client experiences it.
+          const missing = allIds.filter((id) => !seen.includes(id));
+          expect(missing).toEqual([]);
+        }
+      } finally {
+        await writer.end();
+      }
+    });
   });
 });

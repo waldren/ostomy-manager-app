@@ -39,6 +39,10 @@ Every transaction with an id below the current snapshot's `xmin` has finished, s
 
 This is §5.3's option 1. No schema change; the global `sync_sequence` and the triggers P1.S3 built and tested are unchanged.
 
+**The predicate alone is not sufficient, and both reviewers found the gap independently.** The delta query reads in two steps — raw SQL for the visibility predicate (which needs the `xmin` system column that Prisma's typed API cannot express), then the typed client for the rows. The first implementation ran those as two unsynchronized statements and derived the cursor from the second. Because `assign_sync_sequence()` is a `BEFORE INSERT **OR UPDATE**` trigger, an update landing between them re-stamps `server_sequence`, and the cursor could advance past a row the client had not been shown — the same permanent invisibility, arriving through the read path instead of the write path.
+
+**So both reads take one snapshot, in a `RepeatableRead` transaction.** That is part of this decision, not an implementation detail: dropping the isolation level or moving either read outside the transaction reopens the hazard this ADR exists to close. `sync.integration.spec.ts` races a continuously-committing writer against a paged pull to catch exactly that, and it is mutation-checked in both directions — it fails (four rows skipped) with the isolation level downgraded to `ReadCommitted`, and passes stably with it restored. An earlier version of that test used a short burst of updates rather than a continuous writer, and **passed against the defect**, which is worth recording: the window is between two statements and a test that does not saturate it proves nothing.
+
 The predicate lives in `apps/api/src/sync/sync-delta.service.ts`, in raw SQL because Prisma's typed API cannot express a system column. It selects only the ids of servable rows; the rows themselves are then fetched through the typed client, so nothing downstream is hand-mapped out of snake_case.
 
 ## Consequences

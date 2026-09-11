@@ -26,7 +26,7 @@ import {
   type SyncDeltaResponse,
 } from '@ostomy/core/sync';
 
-import type { Observation } from '../generated/prisma/client';
+import { Prisma, type Observation } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { toObservationResource } from '../observations/observation-payload';
 import { patientNotProvisioned } from '../observations/observation-rejection';
@@ -70,6 +70,30 @@ import type { SyncDeltaQueryParsed } from './sync-delta.pipe';
  * rather than closing it, and fails exactly under the load that makes the
  * race likely.
  *
+ * ## Why one snapshot, and why the two-query split was not enough
+ *
+ * The predicate above is necessary and was not sufficient. The first version
+ * of this method ran the `xmin` filter in one statement (ids only) and
+ * re-fetched the rows in a second, unsynchronized statement — taking the
+ * cursor from the second. Both reviewers found the same hole independently.
+ *
+ * `assign_sync_sequence()` is a `BEFORE INSERT **OR UPDATE**` trigger, so any
+ * update re-stamps `server_sequence`. Under READ COMMITTED each statement
+ * takes its own snapshot, so: a patient has A(10), B(11), C(12); a pull with
+ * `limit=2` selects ids [A, B] and sets `hasMore`; the patient's second
+ * device updates B, which becomes sequence 20 and commits; the row re-fetch
+ * returns A(10) and B(20); the cursor is taken from the last row and becomes
+ * **20**. The client asks for `since=20` and **C(12) is never served to that
+ * device again** — the same silent, permanent invisibility, arriving through
+ * the read path instead of the write path.
+ *
+ * So both reads run inside one `RepeatableRead` transaction. That is a
+ * correctness requirement, not a performance choice: dropping the isolation
+ * level, or moving either query outside the transaction, reopens the hole.
+ * `sync.integration.spec.ts` races a committed update against a delta pull
+ * specifically to catch that, and a sibling test pins the isolation
+ * behaviour itself so a future reader can see what the transaction is for.
+ *
  * **Two costs a future reader should know about.** A just-written row may
  * need one more poll to appear — harmless, because §9.5 forbids a client
  * confirming a save from a network response anyway. And
@@ -98,37 +122,49 @@ export class SyncDeltaService {
     }
     const patientId = patient.id;
 
-    // Two steps on purpose. The visibility predicate needs the `xmin` system
-    // column, which Prisma's typed API cannot express, so it runs as raw SQL
-    // — but only to decide WHICH rows are servable. The rows themselves come
-    // back through the typed client, so nothing downstream is hand-mapped
-    // from snake_case and `toObservationResource` keeps its real argument
-    // type rather than a cast.
-    //
-    // One extra id, to decide `hasMore` without a second count query.
-    const visible = await this.prisma.$queryRaw<{ id: string }[]>`
-      SELECT id
-      FROM observations
-      WHERE patient_id = ${patientId}::uuid
-        AND server_sequence > ${query.since}
-        AND xmin::text::bigint < pg_snapshot_xmin(pg_current_snapshot())::text::bigint
-      ORDER BY server_sequence ASC
-      LIMIT ${query.limit + 1}
-    `;
+    // BOTH reads take ONE snapshot. This is the whole point of the
+    // transaction and it is not an optimisation — see the class comment's
+    // "Why one snapshot" section. Read-only, so it costs a connection for
+    // the duration of two indexed queries and nothing else.
+    const { page, hasMore } = await this.prisma.$transaction(
+      async (tx) => {
+        // Two steps on purpose. The visibility predicate needs the `xmin`
+        // system column, which Prisma's typed API cannot express, so it runs
+        // as raw SQL — but only to decide WHICH rows are servable. The rows
+        // themselves come back through the typed client, so nothing
+        // downstream is hand-mapped from snake_case and
+        // `toObservationResource` keeps its real argument type.
+        //
+        // One extra id, to decide `hasMore` without a second count query.
+        const visible = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id
+          FROM observations
+          WHERE patient_id = ${patientId}::uuid
+            AND server_sequence > ${query.since}
+            AND xmin::text::bigint < pg_snapshot_xmin(pg_current_snapshot())::text::bigint
+          ORDER BY server_sequence ASC
+          LIMIT ${query.limit + 1}
+        `;
 
-    const hasMore = visible.length > query.limit;
-    const pageIds = (hasMore ? visible.slice(0, query.limit) : visible).map((row) => row.id);
+        const more = visible.length > query.limit;
+        const pageIds = (more ? visible.slice(0, query.limit) : visible).map((row) => row.id);
 
-    // Re-scoped to the patient here as well as above. Belt and braces at a
-    // seam where a future edit could plausibly drop one of the two, and §2
-    // admits no exception: every entity lookup is by (patient, id) together.
-    const page =
-      pageIds.length === 0
-        ? []
-        : await this.prisma.observation.findMany({
-            where: { id: { in: pageIds }, patientId },
-            orderBy: { serverSequence: 'asc' },
-          });
+        // Re-scoped to the patient here as well as above. Belt and braces at
+        // a seam where a future edit could plausibly drop one of the two, and
+        // §2 admits no exception: every entity lookup is by (patient, id)
+        // together.
+        const rows =
+          pageIds.length === 0
+            ? []
+            : await tx.observation.findMany({
+                where: { id: { in: pageIds }, patientId },
+                orderBy: { serverSequence: 'asc' },
+              });
+
+        return { page: rows, hasMore: more };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
 
     const changes = page.map(toChange);
 
