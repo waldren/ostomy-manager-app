@@ -169,60 +169,75 @@ export function PhysicianOutputView() {
   );
 
   return (
-    <main id="main-content" tabIndex={-1}>
-      <h1>{t('physicianView.heading')}</h1>
-      <p>{t('physicianView.intro')}</p>
+    <>
+      {/*
+        Sign-out lives in a banner ABOVE `<main>`, not inside it.
+        
+        It was the first control in the main region, so every keyboard and
+        screen-reader user who followed the skip link — the users the skip
+        link exists for — landed one Tab press from ending their session,
+        before reaching any of the day's data. Tab order follows the DOM, so
+        the fix is structural rather than a `tabindex`: a site-wide control
+        belongs in the banner landmark, and `<main>` starts at the content
+        the page is about.
+      */}
+      <header>
+        <Button variant="secondary" onClick={() => signOut()}>
+          {t('auth.signOutButton')}
+        </Button>
+      </header>
 
-      <Button variant="secondary" onClick={() => signOut()}>
-        {t('auth.signOutButton')}
-      </Button>
+      <main id="main-content" tabIndex={-1}>
+        <h1>{t('physicianView.heading')}</h1>
+        <p>{t('physicianView.intro')}</p>
 
-      <DateNav isoDate={isoDate} onChangeDate={setIsoDate} />
-      <UnitToggle value={displaySystem} onChange={setDisplaySystem} />
+        <DateNav isoDate={isoDate} onChangeDate={setIsoDate} />
+        <UnitToggle value={displaySystem} onChange={setDisplaySystem} />
 
-      <DailyBalanceNotice />
+        <DailyBalanceNotice />
 
-      {state.status === 'loading' ? (
-        <p role="status" aria-live="polite">
-          {t('physicianView.loading')}
-        </p>
-      ) : null}
+        {state.status === 'loading' ? (
+          <p role="status" aria-live="polite">
+            {t('physicianView.loading')}
+          </p>
+        ) : null}
 
-      {state.status === 'error' ? (
-        <InlineNotice variant="error" icon={<NoticeIcon />} live="assertive">
-          <p>{t('physicianView.loadError')}</p>
-          <Button variant="secondary" onClick={load}>
-            {t('physicianView.retryButton')}
-          </Button>
-        </InlineNotice>
-      ) : null}
+        {state.status === 'error' ? (
+          <InlineNotice variant="error" icon={<NoticeIcon />} live="assertive">
+            <p>{t('physicianView.loadError')}</p>
+            <Button variant="secondary" onClick={load}>
+              {t('physicianView.retryButton')}
+            </Button>
+          </InlineNotice>
+        ) : null}
 
-      {state.status === 'loaded' && state.observations.length === 0 ? (
-        <InlineNotice variant="info" title={t('physicianView.emptyState.heading')}>
-          <p>{t('physicianView.emptyState.body')}</p>
-        </InlineNotice>
-      ) : null}
+        {state.status === 'loaded' && state.observations.length === 0 ? (
+          <InlineNotice variant="info" title={t('physicianView.emptyState.heading')}>
+            <p>{t('physicianView.emptyState.body')}</p>
+          </InlineNotice>
+        ) : null}
 
-      {state.status === 'loaded' && state.observations.length > 0 ? (
-        <>
-          {state.truncated ? (
-            <InlineNotice
-              variant="warning"
-              icon={<NoticeIcon />}
-              title={t('physicianView.truncated.heading')}
-              live="polite"
-            >
-              <p>{t('physicianView.truncated.body')}</p>
-            </InlineNotice>
-          ) : null}
-          <OutputChart entries={entries} />
-          <h2>{t('physicianView.table.heading')}</h2>
-          <OutputTable
-            entries={entries}
-            total={toDisplayDailyTotal(state.observations, targetSystem)}
-          />
-        </>
-      ) : null}
-    </main>
+        {state.status === 'loaded' && state.observations.length > 0 ? (
+          <>
+            {state.truncated ? (
+              <InlineNotice
+                variant="warning"
+                icon={<NoticeIcon />}
+                title={t('physicianView.truncated.heading')}
+                live="polite"
+              >
+                <p>{t('physicianView.truncated.body')}</p>
+              </InlineNotice>
+            ) : null}
+            <OutputChart entries={entries} />
+            <h2>{t('physicianView.table.heading')}</h2>
+            <OutputTable
+              entries={entries}
+              total={toDisplayDailyTotal(state.observations, targetSystem)}
+            />
+          </>
+        ) : null}
+      </main>
+    </>
   );
 }

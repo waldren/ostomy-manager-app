@@ -54,26 +54,44 @@ function DocumentTitle() {
   return null;
 }
 
-export function App() {
+/**
+ * Everything inside the router, exported separately so tests can mount it
+ * under a `MemoryRouter` at a chosen path.
+ *
+ * `App` used to be one component containing its own `BrowserRouter`, which
+ * made routing, the per-route document title, and the skip link's target
+ * unreachable from a test: mounting `App` gave whatever path jsdom happened
+ * to be on, and a nested router is not a supported way to override it. The
+ * split is the whole reason those three now have tests.
+ */
+export function AppRoutes() {
   const { t } = useTranslation();
 
   return (
+    <>
+      <DocumentTitle />
+      <SkipLink targetId="main-content">{t('app.skipToMainContent')}</SkipLink>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/"
+          element={
+            <RequireAuth>
+              <PhysicianOutputView />
+            </RequireAuth>
+          }
+        />
+        <Route path="*" element={<NotFoundPage />} />
+      </Routes>
+    </>
+  );
+}
+
+export function App() {
+  return (
     <BrowserRouter>
       <AuthProvider>
-        <DocumentTitle />
-        <SkipLink targetId="main-content">{t('app.skipToMainContent')}</SkipLink>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route
-            path="/"
-            element={
-              <RequireAuth>
-                <PhysicianOutputView />
-              </RequireAuth>
-            }
-          />
-          <Route path="*" element={<NotFoundPage />} />
-        </Routes>
+        <AppRoutes />
       </AuthProvider>
     </BrowserRouter>
   );

@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { Button, VisuallyHidden } from '@ostomy/ui';
+import { Button, TextField, VisuallyHidden } from '@ostomy/ui';
 import { useTranslation } from 'react-i18next';
 
 export interface DateNavProps {
@@ -44,19 +44,28 @@ export function DateNav({ isoDate, onChangeDate }: DateNavProps) {
       <Button variant="secondary" onClick={() => onChangeDate(shiftIsoDate(isoDate, -1))}>
         {t('physicianView.previousDay')}
       </Button>
-      <label>
-        {t('physicianView.selectedDate')}
-        <input
-          type="date"
-          value={isoDate}
-          max={todayIsoDate()}
-          onChange={(event) => {
-            if (event.target.value) {
-              onChangeDate(event.target.value);
-            }
-          }}
-        />
-      </label>
+      {/*
+        `TextField`, not a bare <input>. This was a hand-rolled
+        label-wrapping-input with no classes at all, so it took the browser's
+        default control: no 44px minimum target (a requirement here, not
+        polish — the patient population skews older and post-surgical), no
+        shared two-tone focus ring, and a border that matched nothing else on
+        the page. A date input is still a form field, and the reason
+        `packages/ui` owns field chrome is so no screen has to remember any
+        of that.
+      */}
+      <TextField
+        id="date-nav-selected-date"
+        label={t('physicianView.selectedDate')}
+        type="date"
+        value={isoDate}
+        max={todayIsoDate()}
+        onChange={(event) => {
+          if (event.target.value) {
+            onChangeDate(event.target.value);
+          }
+        }}
+      />
       <Button
         variant="secondary"
         onClick={() => {

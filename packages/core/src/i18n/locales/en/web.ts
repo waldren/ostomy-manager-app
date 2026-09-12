@@ -118,7 +118,10 @@ export const web = {
   'physicianView.chart.caption':
     'A chart of stoma output volume by time of day. The same values are listed in the table below this chart.',
   'physicianView.chart.axisTime': 'Time of day',
-  'physicianView.chart.axisVolume': 'Output volume',
+  // Names its unit. Without it the scale was ambiguous on a page carrying a
+  // metric/imperial toggle: the same bar means 350 mL or 12 fl oz depending
+  // on a control elsewhere, and the chart said neither.
+  'physicianView.chart.axisVolume': 'Output volume ({{unit}})',
   // The trailing clause promised "…and anyone who prefers reading numbers to
   // a picture" from inside a visually-hidden block no sighted user can reach.
   'physicianView.chart.longDescriptionIntro': 'Text description of the chart above.',

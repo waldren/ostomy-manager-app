@@ -25,7 +25,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * which day's heading.
  */
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -182,5 +182,44 @@ describe('PhysicianOutputView — a day bigger than one page', () => {
     // passes against the loading state and proves nothing.
     await screen.findByRole('heading', { name: /output entries|entries/i });
     expect(screen.queryByText(/more entries than are shown/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('PhysicianOutputView — keyboard order', () => {
+  /**
+   * Sign-out was the first control inside `<main>`, so every keyboard and
+   * screen-reader user who followed the skip link — the users the skip link
+   * exists for — arrived one Tab press from ending their session, before
+   * reaching any of the day's data.
+   */
+  it('does not put sign-out inside the main landmark', async () => {
+    listMock.mockResolvedValue({ observations: [] });
+    render(<PhysicianOutputView />);
+
+    const main = await screen.findByRole('main');
+    expect(within(main).queryByRole('button', { name: /sign out/i })).not.toBeInTheDocument();
+  });
+
+  it('puts the first main-region control on the day being viewed, not on leaving', async () => {
+    // Tab order follows the DOM, so asserting on document order is
+    // asserting on tab order. The first control a user reaches inside the
+    // content region should act on the content.
+    listMock.mockResolvedValue({ observations: [] });
+    render(<PhysicianOutputView />);
+
+    const main = await screen.findByRole('main');
+    const firstControl = within(main).getAllByRole('button')[0];
+    expect(firstControl).toHaveAccessibleName(/previous day/i);
+  });
+
+  it('keeps sign-out reachable, in the banner', async () => {
+    // Moving it must not lose it: the control still has to exist, and after
+    // the RP-initiated-logout work it is the only way to end a session
+    // deliberately.
+    listMock.mockResolvedValue({ observations: [] });
+    render(<PhysicianOutputView />);
+
+    const banner = await screen.findByRole('banner');
+    expect(within(banner).getByRole('button', { name: /sign out/i })).toBeVisible();
   });
 });
