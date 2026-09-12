@@ -31,6 +31,9 @@ function testConfig(): AppConfig {
     port: 3000,
     logLevel: 'silent',
     oidcClockToleranceSeconds: 30,
+    syncPushMaxOperations: 500,
+    syncDeltaDefaultLimit: 200,
+    syncDeltaMaxLimit: 1000,
     // Deliberately unreachable — `PrismaModule` is part of AppModule's graph
     // as of P1.S5 (see app.module.ts's comment), but `PrismaService` still
     // connects lazily on first query (see that class's own comment) and

@@ -86,6 +86,25 @@ export const rawEnvSchema = z.object({
   // application code, so it has no field here.
   databaseUrl: urlString('databaseUrl'),
 
+  /**
+   * Sync transport bounds (`docs/sync-contract.md` §3.3, §5.1).
+   *
+   * Ordinary configuration, deliberately NOT `validation_thresholds` rows:
+   * these bound the transport, not a clinical judgement. An admin lowering
+   * the batch size changes how many operations fit in one request; it does
+   * not change what counts as a plausible stoma output. `packages/core/src/sync`
+   * names none of them for the same reason — §5.1's own comment calls them
+   * "server configuration".
+   *
+   * `syncClockSkewAllowanceSeconds` is the exception and is NOT here: §3.8
+   * makes it an admin-managed threshold read from `validation_thresholds`,
+   * because it is the same clinical quantity as `maxClockSkewMs` and both
+   * must derive from one row.
+   */
+  syncPushMaxOperations: z.coerce.number().int().positive().default(500),
+  syncDeltaDefaultLimit: z.coerce.number().int().positive().default(200),
+  syncDeltaMaxLimit: z.coerce.number().int().positive().default(1000),
+
   objectStorage: z.object({
     endpoint: urlString('endpoint'),
     region: z.string().min(1, 'region is required'),

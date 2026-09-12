@@ -164,6 +164,9 @@ describe.skipIf(!dockerAvailable)(
         port: 3000,
         logLevel: 'silent',
         oidcClockToleranceSeconds: 30,
+        syncPushMaxOperations: 500,
+        syncDeltaDefaultLimit: 200,
+        syncDeltaMaxLimit: 1000,
         databaseUrl: runtimeDatabaseUrl,
         oidc: {
           issuer: 'https://mock-oidc.test/patient-issuer',

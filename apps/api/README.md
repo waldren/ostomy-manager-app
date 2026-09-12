@@ -8,8 +8,9 @@ generation, and a structured Pino logger. P1.S3 added the FHIR-shaped Postgres s
 `PrismaService`. P1.S5 added the audit interceptor and `ThresholdsService` — see "Structure" below.
 P2.S1a added the first business-logic (PHI) endpoints — `POST` and `GET /api/v1/observations`, stoma
 output only — along with the dedicated OpenAPI emitter and the generator that produces the typed
-client in `packages/core/src/api-client`. Sync (`/api/v1/sync/push`, `/api/v1/sync/delta`) lands at
-P2.S1b per `design-specs/planning/v1-implementation-plan.md`.
+client in `packages/core/src/api-client`. P2.S1b added the offline sync surface,
+`POST /api/v1/sync/push` and `GET /api/v1/sync/delta` — see "Sync" below, and read
+`docs/sync-contract.md` before changing anything under `src/sync/`.
 
 ## Commands
 
@@ -74,8 +75,11 @@ src/
   thresholds/                 — ThresholdsService: validation_thresholds/value_sets as injected data
   observations/               — POST/GET /api/v1/observations (stoma output): wire mapping, validation
                                  pipes, rejection shaping, persistence — see below
+  sync/                       — POST /api/v1/sync/push, GET /api/v1/sync/delta: the offline
+                                 protocol for apps/mobile — see below
   http/                       — ErrorSanitizerFilter (global, APP_FILTER): no framework-authored
-                                 error message reaches a client or a log line — see below
+                                 error message reaches a client or a log line — see below.
+                                 body-limit.ts, whose limit is coupled to SYNC_PUSH_MAX_OPERATIONS
   openapi/                    — document builder (shared by boot and the emitter), file writer, and the
                                  standalone `openapi:generate` entry point
   test-support/               — test-only fixtures (mocked JWKS, fake ExecutionContext)
@@ -158,6 +162,114 @@ Three rules that are easy to undo by accident:
   a queued offline write only the device knows that — re-deriving it server-side attributes every
   queued row to a system the patient may have switched away from since, and refusing on a mismatch
   rejects on a field no entry form contains and the patient cannot edit.
+
+## Sync (`sync/`)
+
+`POST /api/v1/sync/push` and `GET /api/v1/sync/delta` (P2.S1b). `apps/mobile` is the only client —
+`apps/web` is online-only by explicit decision and never speaks this protocol.
+
+**`docs/sync-contract.md` is normative and governs.** Where it and this code disagree, the code is
+wrong. It is 458 lines and worth reading in full before changing anything here; most of what follows
+is a pointer to the part of it that explains why the code looks the way it does.
+
+### The distinction the whole module is organised around
+
+A **data error** fails **one operation**, with a `rejected` result inside a `200`, and is surfaced to
+the patient for correction. A **protocol error** fails the **whole request** with a `4xx` carrying a
+code and nothing else, and there is nothing a patient could correct.
+
+Conflating them is how "a batch never fails as a unit" turns into "a malformed batch silently
+half-applies", and how a client bug reaches a patient as a confusing correction prompt. The practical
+consequence, which §6.1 names explicitly: **payload content is validated per operation, never by a
+whole-body validator over the operations array.** A DTO validator applied to the array escalates one
+bad row from an old app version into a `400` that blocks every entry a patient made while offline —
+exactly the all-or-nothing batching ADR-0001 rejected. `sync-push.pipe.ts` therefore treats `payload`
+as an opaque object and does not parse it; `sync-push.service.ts` validates each one per operation.
+
+### Files, in the order a request touches them
+
+- `sync-push.pipe.ts` / `sync-delta.pipe.ts` — whitelist-strict decoding (§2), ordering (§3.2),
+  duplicate `operationId` (§3.7), batch size (§3.3), payload presence (§3.1), `payload.id` equality
+  (§7.2). Nothing from zod reaches a response: a parse failure's `error` is discarded rather than
+  inspected, because zod's `message` names the offending key and often its value.
+- `sync-protocol.error.ts` — §6.1's seven codes, each paired with its status in one place so the two
+  cannot drift.
+- `sync-push.service.ts` — replay check, clock skew, last-write-wins, the write, the audit rows, the
+  idempotency record.
+- `sync-delta.service.ts` — paging and the cursor, including the visibility predicate (ADR-0013).
+- `sync-exception.filter.ts` — the §6.1 envelope for anything a handler or pipe throws.
+
+### Things that look wrong and are not
+
+- **The replay check runs before validation.** Deliberate (§3.7): re-validating could produce a
+  *different* rejection if a threshold changed between the two pushes, which breaks the byte-for-byte
+  replay guarantee in a way no client could detect.
+- **A create against an existing same-patient row is accepted, not rejected.** §4: it is an ordinary
+  last-write-wins comparison. The reachable case is not a client bug — the server applies a create,
+  the response is lost, the client re-pushes. Rejecting puts a correct entry in the correction inbox
+  carrying a code §6.4 says must not be shown to the patient.
+- **A cross-patient entity id returns `ENTITY_NOT_FOUND`, not a distinct code.** §6.2 once defined
+  `ENTITY_ID_CONFLICT` for it while §2 and §4 said the refusal happened "without revealing that the row
+  exists" — and those cannot both be true, because a distinct code *is* the disclosure. Corrected
+  toward §2 at P2.S1b. The code still exists in `packages/core/src/sync` because the **direct**
+  endpoint uses it for its own duplicate-id refusal; that surface is create-only and has no
+  last-write-wins to fall back on.
+- **A tombstoned row still exists** for update, delete, and conflict resolution. ADR-0001 tells
+  implementers to filter tombstones from every read path, and an implementer who applies that here
+  returns `ENTITY_NOT_FOUND` for exactly the operation §4's resurrection rule says must succeed.
+- **`@Audited({ allowEmpty: true })` on push.** A batch in which every operation is rejected
+  legitimately stages nothing. The per-entity guarantee this route needs is stronger than the
+  route-scoped trip-wire can express, and is held by the service writing one audit row per applied
+  operation inside that operation's own transaction — with count-equality tests in
+  `sync.integration.spec.ts` (§4.1).
+- **A 5xx carries `INTERNAL_ERROR`, which is not in §6.1's set.** That table enumerates client bugs.
+  §9.3 tells a client to treat a 5xx as an unknown outcome and **re-push** — the opposite instruction
+  from any protocol error, so giving it `MALFORMED_REQUEST` would route a server failure into the
+  client's do-not-retry path and strand the batch.
+
+### Two traps this sprint hit, recorded so the next author does not
+
+1. **`PatientActor.id` is the OIDC subject, not the `patients` row id.** Both sync services resolve it
+   and carry `patientId` and `actorId` separately. Conflating them is not a type error — both are
+   strings — and the failure is a lookup that throws on a malformed UUID in the lucky case and
+   silently matches nothing in the unlucky one.
+2. **A controller-bound exception filter cannot catch body-parser failures.** `express.json()` runs as
+   middleware, before routing, so `@UseFilters` never sees a malformed or oversized push body. The
+   sync envelope decision lives in the **global** filter, keyed on the request path. P2.S1a learned
+   this once already for `ErrorSanitizerFilter` itself.
+
+### Rate limiting and the security log (§2)
+
+Both endpoints are rate-limited, **keyed on the patient rather than the IP** — mobile clients share
+carrier NAT, so an IP-keyed limit would throttle unrelated patients together and would have to be set
+so loosely it stopped bounding anything. `SyncThrottlerGuard` runs after `JwtAuthGuard`, so the actor
+is always present. Storage is in-memory and therefore **per task**, not global: on Fargate, N tasks
+means N times the configured rate. That is a deliberate v1 limitation, recorded so nobody reads the
+configured number as a system-wide guarantee; making it global needs a shared store at P9.
+
+`SecurityLogService` (`logging/`) records two events, and neither goes in `audit_events` — §2 says a
+read is not an SRS §5.2 audit event:
+
+- **`sync.delta.full_history_pull`** — a `since=0` pull. It returns the patient's entire clinical
+  history and is legitimate exactly at install and reinstall; it is also what a stolen token is worth.
+  Recording it is what makes "did a bulk export happen, and when" answerable, which is the
+  determination the breach-notification clock runs on.
+- **`sync.push.cross_patient_entity`** — a token used against an entity id belonging to someone else.
+  The client is told only that no such entity exists (§2), so this line is the only place the attempt
+  survives. It deliberately does **not** name the owning patient.
+
+Lines carry who, when, and which entity — **never a clinical value**. `SecurityLogService` lives in its
+own module rather than on `LoggingModule`, because integration suites override the latter wholesale to
+capture Pino output, and anything added there is invisible to them.
+
+### The batch bound is coupled to the body limit
+
+`SYNC_PUSH_MAX_OPERATIONS` (default 500, §3.3) and `http/body-limit.ts` constrain the same thing from
+two directions. One operation serialises to roughly 460 bytes, so a full batch is about 226 KB —
+over twice Express's 100 KB default. Left at the default the configured bound is a lie: a client
+batching to the documented 500 is refused at around 215 by the body parser, `BATCH_TOO_LARGE` is never
+reached, and §6.1's `413` is never returned. Raise one and check the other;
+`sync.integration.spec.ts` pushes a maximum-size batch so the two cannot silently diverge.
 
 ## Error responses (`http/`)
 

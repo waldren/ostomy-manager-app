@@ -31,6 +31,7 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0010](0010-api-commonjs-module-system.md) | Build `apps/api` as CommonJS with `nodenext` resolution, against an ESM monorepo | Accepted |
 | [0011](0011-database-roles-and-audit-immutability.md) | Separate migration-owner and runtime database roles, and enforce audit immutability by grant | Accepted |
 | [0012](0012-entered-measurement-system-provenance.md) | Store the entered measurement system on every observation | Accepted |
+| [0013](0013-delta-cursor-visibility-mechanism.md) | Close the delta cursor's visibility gap by withholding the in-flight transaction window | Accepted |
 
 **ADR-0012 completes ADR-0005** rather than superseding it. ADR-0005's decisions all stand; it simply had no source of truth for the entry measurement system, and ADR-0012 supplies one. ADR-0005 is not edited, per the immutability rule above.
 

@@ -63,6 +63,9 @@ function testConfig(): AppConfig {
     port: 3000,
     logLevel: 'silent',
     oidcClockToleranceSeconds: 30,
+    syncPushMaxOperations: 500,
+    syncDeltaDefaultLimit: 200,
+    syncDeltaMaxLimit: 1000,
     // Deliberately unreachable — see app.module.spec.ts's identical field
     // for why this still never needs a live Postgres despite PrismaModule
     // being part of AppModule's graph as of P1.S5.

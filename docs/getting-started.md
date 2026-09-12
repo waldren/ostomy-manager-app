@@ -62,7 +62,9 @@ These fail the build rather than warn, each because a project constraint depends
 - **API, standalone (no Docker):** `cp apps/api/.env.example apps/api/.env`, fill in real values, then
   `pnpm --filter @ostomy/api start:dev`. It needs a reachable PostgreSQL (P1.S3 onward) — point
   `DATABASE_URL` at the Docker stack's database, or bring up the whole stack below. Serves
-  `POST`/`GET /api/v1/observations` (P2.S1a) and Swagger UI at `/api-docs` outside production.
+  `POST`/`GET /api/v1/observations` (P2.S1a), `POST /api/v1/sync/push` and `GET /api/v1/sync/delta`
+  (P2.S1b — see `docs/sync-contract.md`, which governs that surface), and Swagger UI at `/api-docs`
+  outside production.
   `pnpm --filter @ostomy/api openapi:generate` writes `openapi.json` without a server or a database;
   `api-client:generate` then regenerates `packages/core/src/api-client`, which is never hand-edited.
   See `apps/api/README.md`.

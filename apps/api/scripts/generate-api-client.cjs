@@ -363,6 +363,7 @@ function collectOperations(document) {
         description: operation.description,
         pathParams,
         queryTypeName,
+        queryRequired: queryParams.some((parameter) => parameter.required === true),
         bodyType: bodySchema ? renderType(bodySchema) : undefined,
         response: successResponse(operation),
         requiresAuth: Array.isArray(operation.security) && operation.security.length > 0,
@@ -406,7 +407,11 @@ function methodSignature(operation) {
     args.push(`body: ${operation.bodyType}`);
   }
   if (operation.queryTypeName) {
-    args.push(`query?: ${operation.queryTypeName}`);
+    // Optional only when EVERY query parameter is. `GET /sync/delta` requires
+    // `since`, and emitting `query?:` there let `delta()` typecheck with no
+    // arguments and fail at runtime with MALFORMED_REQUEST — a generated
+    // client that compiles into a guaranteed 400 is worse than no client.
+    args.push(`query${operation.queryRequired ? '' : '?'}: ${operation.queryTypeName}`);
   }
   return args.join(', ');
 }

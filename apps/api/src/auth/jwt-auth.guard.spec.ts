@@ -50,6 +50,9 @@ function makeConfig(): AppConfig {
     port: 3000,
     logLevel: 'silent',
     oidcClockToleranceSeconds: 30,
+    syncPushMaxOperations: 500,
+    syncDeltaDefaultLimit: 200,
+    syncDeltaMaxLimit: 1000,
     databaseUrl: 'postgresql://ostomy_runtime:unused@localhost:5432/unused',
     oidc: {
       issuer: ISSUER,

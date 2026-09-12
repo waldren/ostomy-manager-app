@@ -1,0 +1,13 @@
+-- P2.S1b, owed by docs/sync-contract.md §3.5.
+--
+-- `superseded` is a third push result, not a flavour of `accepted`: an
+-- operation that lost last-write-wins was valid and was processed, but was
+-- not applied. Recording it as ACCEPTED in storage would leave "this
+-- operation lost a conflict" recoverable only by correlating against the
+-- audit log, which is exactly the kind of fact that should be a column.
+--
+-- Additive and cheap: ALTER TYPE ... ADD VALUE cannot break an existing
+-- row, and `sync_operations` is empty until this sprint's handlers write to
+-- it. Postgres appends the new label after the existing ones; enum order is
+-- not semantic here (nothing sorts by it), so the position does not matter.
+ALTER TYPE "sync_operation_status" ADD VALUE IF NOT EXISTS 'SUPERSEDED';
