@@ -16,23 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 /**
- * `apps/web`'s own i18n namespace.
+ * The `web` namespace: `apps/web`'s app-shell copy.
  *
- * ADR-0006 calls for ONE shared catalog in `packages/core/src/i18n`, with
- * "no per-app catalogs." This sprint's scope explicitly excludes modifying
- * `packages/core/src/**` (that subpath is owned elsewhere under ADR-0007),
- * so app-shell copy that has no clinical meaning — navigation labels,
- * sign-in screen text, table/column headings — lives here instead, as a
- * deliberate, reported deviation rather than a silent workaround. Anything
- * with clinical or cross-app meaning (the Measured/Estimated labels, a
- * validation message, a red-flag prompt) stays sourced from
- * `@ostomy/core/i18n`, never duplicated here.
+ * Per-app namespace, **shared catalog**. ADR-0006 requires one catalog in
+ * this package with no per-app catalogs, and that is what this is — the
+ * namespace is scoped to one app because a web table heading is not mobile
+ * shell copy, but it lives here so a reviewer auditing patient-facing text
+ * reads all of it in one place. That single-place-to-audit property is the
+ * ADR's actual argument, and it survives namespacing by app; it would not
+ * survive a catalog inside `apps/web`.
  *
- * Follow-up: fold this namespace into `packages/core/src/i18n` once
- * `apps/mobile` needs the same app-shell copy, so ADR-0006's "one shared
- * catalog" becomes true again rather than "true except apps/web."
+ * Scope discipline, which is what keeps this from drifting back toward two
+ * catalogs: **only copy with no clinical meaning belongs here** —
+ * navigation, sign-in, table and column headings, empty states. Anything
+ * clinical or cross-app (the Measured/Estimated labels, a validation
+ * message, a red-flag prompt) belongs in `common`, `validationErrors`,
+ * `validationWarnings` or `redFlags`, and is never duplicated here.
  *
- * Same key-naming convention as the core catalog (see
+ * Same key-naming convention as the rest of the catalog (see
  * `packages/core/src/i18n/index.ts`): `*.label` is visible text,
  * `*.a11yLabel` is an accessible name only when it must differ from the
  * visible label, `*.hint` is supplementary text.

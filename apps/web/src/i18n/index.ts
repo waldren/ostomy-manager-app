@@ -18,27 +18,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
-import { DEFAULT_LOCALE, en } from '@ostomy/core/i18n';
-
-import { web } from './locales/en/web.js';
+import { DEFAULT_LOCALE, en, resources } from '@ostomy/core/i18n';
 
 /**
- * Merges the shared `@ostomy/core/i18n` catalog (common/validation/red-flag/
- * clinical-caveat namespaces, ADR-0006) with this app's own `web` namespace
- * — see `./locales/en/web.ts`'s doc comment for why that namespace exists
- * and is not yet folded into the shared catalog.
+ * Every namespace comes from the shared catalog (ADR-0006: one catalog, no
+ * per-app catalogs). This app's own shell copy is the `web` namespace
+ * *inside* that catalog — see `packages/core/src/i18n/locales/en/web.ts`.
+ *
+ * Nothing is merged in here on purpose: the moment this file composes a
+ * local resource bundle, there are two catalogs again regardless of where
+ * the files sit.
  */
 void i18next.use(initReactI18next).init({
   lng: DEFAULT_LOCALE,
   fallbackLng: DEFAULT_LOCALE,
   defaultNS: 'web',
-  ns: [...Object.keys(en), 'web'],
-  resources: {
-    [DEFAULT_LOCALE]: {
-      ...en,
-      web,
-    },
-  },
+  ns: Object.keys(en),
+  resources,
   interpolation: {
     // React already escapes rendered output.
     escapeValue: false,
