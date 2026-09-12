@@ -32,10 +32,18 @@ describe('DateNav', () => {
     expect(onChangeDate).toHaveBeenCalledWith('2026-09-10');
   });
 
-  it('disables the next-day control when the selected date is today, and never navigates into the future', () => {
+  it('marks the next-day control aria-disabled (not the native disabled attribute) so its explanatory hint stays reachable, and never navigates into the future', async () => {
     const today = new Date().toISOString().slice(0, 10);
-    render(<DateNav isoDate={today} onChangeDate={() => {}} />);
-    expect(screen.getByRole('button', { name: 'Show the next day' })).toBeDisabled();
+    const onChangeDate = vi.fn();
+    const user = userEvent.setup();
+    render(<DateNav isoDate={today} onChangeDate={onChangeDate} />);
+
+    const nextButton = screen.getByRole('button', { name: 'Show the next day' });
+    expect(nextButton).toHaveAttribute('aria-disabled', 'true');
+    expect(nextButton).toHaveAccessibleDescription('You cannot view a day in the future.');
+
+    await user.click(nextButton);
+    expect(onChangeDate).not.toHaveBeenCalled();
   });
 
   it('enables the next-day control for a past date', async () => {

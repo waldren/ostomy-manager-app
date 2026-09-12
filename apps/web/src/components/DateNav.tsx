@@ -59,8 +59,12 @@ export function DateNav({ isoDate, onChangeDate }: DateNavProps) {
       </label>
       <Button
         variant="secondary"
-        onClick={() => onChangeDate(shiftIsoDate(isoDate, 1))}
-        disabled={isToday}
+        onClick={() => {
+          if (!isToday) {
+            onChangeDate(shiftIsoDate(isoDate, 1));
+          }
+        }}
+        aria-disabled={isToday}
         aria-describedby={isToday ? 'date-nav-next-disabled-hint' : undefined}
       >
         {t('physicianView.nextDay')}

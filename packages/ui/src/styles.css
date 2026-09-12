@@ -120,7 +120,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   justify-content: center;
   gap: var(--ostomy-space-sm);
 }
-.ostomyButton:disabled {
+.ostomyButton:disabled,
+.ostomyButton[aria-disabled='true'] {
   cursor: not-allowed;
   opacity: 0.6;
 }
