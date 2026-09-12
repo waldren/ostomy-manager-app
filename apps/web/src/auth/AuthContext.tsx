@@ -61,18 +61,45 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 /** Refresh this far ahead of the token's stated expiry, to absorb request latency. */
 const EXPIRY_SAFETY_MARGIN_MS = 30_000;
 
+/**
+ * Fails **closed**: a non-finite `expiresAt` counts as expired.
+ *
+ * `expires_in` is RECOMMENDED, not REQUIRED, by RFC 6749 §5.1, and the token
+ * response was cast straight from JSON. When it was absent, `expiresAt`
+ * became `NaN` — and every comparison against `NaN` is `false`, so this
+ * returned "not expired" **forever**. The app would never refresh, keep
+ * sending a dead token, and 401 on every request with no path to recovery.
+ * A stored `{}` left over from an earlier schema behaved identically.
+ */
 function isExpired(tokens: StoredTokens): boolean {
+  if (!Number.isFinite(tokens.expiresAt)) {
+    return true;
+  }
   return Date.now() >= tokens.expiresAt - EXPIRY_SAFETY_MARGIN_MS;
 }
 
+/** Conservative lifetime when an issuer omits `expires_in`. Short on purpose: a wrong-and-short guess costs one refresh, a wrong-and-long one costs a broken session. */
+const FALLBACK_TOKEN_LIFETIME_SECONDS = 300;
+
 function toStoredTokens(response: {
   access_token: string;
-  expires_in: number;
+  expires_in?: number;
   refresh_token?: string;
 }): StoredTokens {
+  if (typeof response.access_token !== 'string' || response.access_token.length === 0) {
+    throw new Error('Token response contained no access token.');
+  }
+  // Validated at the boundary rather than trusted: this is the one place an
+  // issuer's JSON becomes application state, and the failure mode of a bad
+  // value here is silent and permanent (see `isExpired`).
+  const lifetimeSeconds =
+    typeof response.expires_in === 'number' && Number.isFinite(response.expires_in)
+      ? response.expires_in
+      : FALLBACK_TOKEN_LIFETIME_SECONDS;
+
   return {
     accessToken: response.access_token,
-    expiresAt: Date.now() + response.expires_in * 1000,
+    expiresAt: Date.now() + lifetimeSeconds * 1000,
     ...(response.refresh_token ? { refreshToken: response.refresh_token } : {}),
   };
 }
@@ -90,7 +117,20 @@ function clearAuthQueryParams(): void {
 export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('initializing');
   const [error, setError] = useState<string | undefined>(undefined);
-  const [tokens, setTokens] = useState<StoredTokens | undefined>(undefined);
+  /**
+   * Tokens live in a ref, not state, and that is deliberate.
+   *
+   * `getAccessToken`'s identity must not change when tokens change — see its
+   * doc comment — and nothing renders from the token values themselves;
+   * `status` is what drives the UI. Holding them in state would mean either
+   * an unstable callback (the refetch-loop defect) or a state variable no
+   * one reads. `signOutRef` does the same for `signOut`, which is declared
+   * after the callback that needs it.
+   */
+  const tokensRef = useRef<StoredTokens | undefined>(undefined);
+  const signOutRef = useRef<() => void>(() => undefined);
+  /** The in-flight refresh, shared by concurrent callers. See `getAccessToken`. */
+  const refreshInFlight = useRef<Promise<string | undefined> | undefined>(undefined);
   // StrictMode/dev double-invokes effects; the authorization code is single-use,
   // so the callback must be handled at most once per code.
   const handledCallback = useRef(false);
@@ -136,7 +176,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
           clearPkceState();
           const next = toStoredTokens(response);
           saveTokens(next);
-          setTokens(next);
+          tokensRef.current = next;
           setStatus('authenticated');
         } catch {
           setError('auth-exchange-failed');
@@ -147,7 +187,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
 
       const existing = loadTokens();
       if (existing && !isExpired(existing)) {
-        setTokens(existing);
+        tokensRef.current = existing;
         setStatus('authenticated');
         return;
       }
@@ -163,7 +203,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
           });
           const next = toStoredTokens(response);
           saveTokens(next);
-          setTokens(next);
+          tokensRef.current = next;
           setStatus('authenticated');
           return;
         } catch {
@@ -174,7 +214,21 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       setStatus('unauthenticated');
     }
 
-    void initialize();
+    // Any throw leaves the app usable rather than stuck.
+    //
+    // `initialize()` was invoked bare, and three synchronous throws are
+    // reachable: `loadOidcConfig()` when any VITE_OIDC_* is unset (the state
+    // of a fresh `.env.local`), and the two `JSON.parse` calls behind
+    // `loadPkceState`/`loadTokens` on any malformed stored value — a
+    // truncated write, a schema change between deploys, another app on the
+    // same origin. The promise rejected unhandled, `status` stayed
+    // `'initializing'`, and `RequireAuth` rendered "Signing you in…"
+    // permanently. There is no error boundary, so nothing was rendered that
+    // could tell the user to clear site data.
+    void initialize().catch((cause: unknown) => {
+      setError(cause instanceof Error ? cause.message : 'initialization_failed');
+      setStatus('unauthenticated');
+    });
   }, []);
 
   const signIn = useCallback(async () => {
@@ -206,39 +260,80 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const signOut = useCallback(() => {
     clearTokens();
     clearPkceState();
-    setTokens(undefined);
+    tokensRef.current = undefined;
     setStatus('unauthenticated');
   }, []);
 
+  /**
+   * Identity-stable, and single-flight on refresh.
+   *
+   * Two defects fixed here, both consequences of closing over `tokens`:
+   *
+   * 1. **The identity changed on every refresh.** `PhysicianOutputView`
+   *    memoizes its API client on this function, and its load effect depends
+   *    on that client — so a token refresh re-created the client and re-fired
+   *    the data fetch. With a clock skewed past the token lifetime, or an
+   *    issuer sending a very short `expires_in`, that becomes an unbounded
+   *    loop: every call takes the refresh branch, which changes the identity,
+   *    which re-runs the effect, which calls again. `apps/api` sets
+   *    `OIDC_CLOCK_TOLERANCE_SECONDS=30` precisely because skew is expected.
+   *
+   * 2. **Parallel callers each started their own refresh.** With any issuer
+   *    that rotates refresh tokens, the second exchange returns
+   *    `invalid_grant`, the catch calls `signOut()`, and the clinician is
+   *    bounced to the login page mid-session with their page state gone.
+   *    Nothing fires two parallel requests *today* — but SRS §3.5 requires
+   *    more signals on this view, and the second one added would have found
+   *    this the hard way.
+   *
+   * The ref mirrors the state so the callback can read current tokens with an
+   * empty dependency list; the state still drives rendering.
+   */
   const getAccessToken = useCallback(async (): Promise<string | undefined> => {
-    if (!tokens) {
+    const current = tokensRef.current;
+    if (!current) {
       return undefined;
     }
-    if (!isExpired(tokens)) {
-      return tokens.accessToken;
+    if (!isExpired(current)) {
+      return current.accessToken;
     }
-    if (!tokens.refreshToken) {
-      signOut();
+    if (!current.refreshToken) {
+      signOutRef.current();
       return undefined;
     }
-    try {
-      const config = loadOidcConfig();
-      const discovery = await fetchDiscoveryDocument(config.issuer);
-      const response = await refreshAccessToken({
-        tokenEndpoint: discovery.token_endpoint,
-        clientId: config.clientId,
-        audience: config.audience,
-        refreshToken: tokens.refreshToken,
-      });
-      const next = toStoredTokens(response);
-      saveTokens(next);
-      setTokens(next);
-      return next.accessToken;
-    } catch {
-      signOut();
-      return undefined;
+    // Join the in-flight refresh rather than starting a second one.
+    if (refreshInFlight.current) {
+      return refreshInFlight.current;
     }
-  }, [tokens, signOut]);
+
+    const refresh = (async () => {
+      try {
+        const config = loadOidcConfig();
+        const discovery = await fetchDiscoveryDocument(config.issuer);
+        const response = await refreshAccessToken({
+          tokenEndpoint: discovery.token_endpoint,
+          clientId: config.clientId,
+          audience: config.audience,
+          refreshToken: current.refreshToken as string,
+        });
+        const next = toStoredTokens(response);
+        saveTokens(next);
+        tokensRef.current = next;
+        return next.accessToken;
+      } catch {
+        signOutRef.current();
+        return undefined;
+      } finally {
+        refreshInFlight.current = undefined;
+      }
+    })();
+
+    refreshInFlight.current = refresh;
+    return refresh;
+  }, []);
+
+  // Kept current so `getAccessToken` can call it without depending on it.
+  signOutRef.current = signOut;
 
   const value = useMemo<AuthContextValue>(
     () => ({ status, error, signIn, signOut, getAccessToken }),

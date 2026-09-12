@@ -47,7 +47,7 @@ export function savePkceState(value: StoredPkceState): void {
 
 export function loadPkceState(): StoredPkceState | undefined {
   const raw = sessionStorage.getItem(PKCE_KEY);
-  return raw ? (JSON.parse(raw) as StoredPkceState) : undefined;
+  return parseOrClear<StoredPkceState>(raw, PKCE_KEY);
 }
 
 export function clearPkceState(): void {
@@ -60,9 +60,34 @@ export function saveTokens(value: StoredTokens): void {
 
 export function loadTokens(): StoredTokens | undefined {
   const raw = sessionStorage.getItem(TOKENS_KEY);
-  return raw ? (JSON.parse(raw) as StoredTokens) : undefined;
+  return parseOrClear<StoredTokens>(raw, TOKENS_KEY);
 }
 
 export function clearTokens(): void {
   sessionStorage.removeItem(TOKENS_KEY);
+}
+
+/**
+ * Parses a stored value, discarding it if it is not valid JSON.
+ *
+ * `JSON.parse` was called bare on both keys. Anything malformed under them —
+ * a truncated write, a schema change between deploys, another app on the same
+ * origin — threw out of `initialize()` and wedged the app on "Signing you
+ * in…" forever, with no error boundary and nothing rendered that could tell
+ * the user to clear site data.
+ *
+ * Clearing rather than merely returning `undefined` matters: a value that
+ * cannot be parsed will not parse on the next load either, so leaving it
+ * would make every subsequent visit fail the same way.
+ */
+function parseOrClear<T>(raw: string | null, key: string): T | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    window.sessionStorage.removeItem(key);
+    return undefined;
+  }
 }
