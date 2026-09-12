@@ -1,0 +1,52 @@
+{
+  "name": "@ostomy/mobile",
+  "version": "0.0.1",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "description": "Expo (managed workflow) patient app — the only offline-capable client (SRS_v2 §4.2, §4.5).",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "jest",
+    "test:unit": "jest",
+    "test:watch": "jest --watch"
+  },
+  "dependencies": {
+    "@ostomy/core": "workspace:*",
+    "@shopify/flash-list": "2.3.2",
+    "expo": "~57.0.22",
+    "expo-application": "~57.0.3",
+    "expo-auth-session": "~57.0.12",
+    "expo-constants": "~57.0.18",
+    "expo-crypto": "~57.0.3",
+    "expo-local-authentication": "~57.0.3",
+    "expo-network": "~57.0.2",
+    "expo-router": "~57.0.21",
+    "expo-secure-store": "~57.0.4",
+    "expo-splash-screen": "~57.0.9",
+    "expo-sqlite": "~57.0.3",
+    "expo-status-bar": "~57.0.1",
+    "expo-web-browser": "~57.0.3",
+    "i18next": "^26.4.2",
+    "react": "19.2.3",
+    "react-i18next": "^17.0.13",
+    "react-native": "0.86.3",
+    "react-native-gesture-handler": "~2.32.0",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@ostomy/config": "workspace:*",
+    "@types/jest": "^30.0.0",
+    "@types/react": "19.2.3",
+    "babel-preset-expo": "~57.0.11",
+    "jest": "^30.5.1",
+    "jest-expo": "~57.0.5",
+    "typescript": "^5.9.3"
+  }
+}

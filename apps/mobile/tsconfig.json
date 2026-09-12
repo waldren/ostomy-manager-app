@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@ostomy/config/tsconfig.base.json",
+  "compilerOptions": {
+    // Expo/Metro is the "bundler" the base config's moduleResolution
+    // already assumes — no override needed there. JSX and native-module
+    // typings are the RN-specific additions over the shared base.
+    "jsx": "react-jsx",
+    "lib": ["ES2022"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "app/**/*.ts", "app/**/*.tsx", "expo-env.d.ts"],
+  "exclude": ["node_modules", "dist", "build", "coverage", ".expo"]
+}
