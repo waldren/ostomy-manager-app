@@ -87,3 +87,22 @@ skeleton: never confirm a save from a network response (§9.5 — the local
 write already is the confirmation), and never store a token or PHI in
 `AsyncStorage` — only `expo-secure-store`, and only the refresh token, never
 an access token or any clinical value.
+
+## Why `@react-native/metro-config` is a devDependency here
+
+It is not imported by any code in this app. It is declared so that pnpm
+resolves `react-native-worklets`' peer requirement from a **dev** section
+rather than auto-linking it into the production dependency graph, where
+`pnpm audit --prod` then walks `metro -> image-size` and blocks CI on two
+high advisories that have no patched version at any point on the range.
+
+Metro is the bundler: it runs on a developer machine or in EAS Build and
+never ships in the binary. Declaring it as dev tooling is accurate, and it
+means no advisory has to be suppressed by ID for the gate to pass.
+
+**Its version must track `react-native` exactly** (both are 0.86.3 today).
+It is pinned, not a caret range, because `@react-native/metro-config` ships
+per React Native release and nothing in this repo would catch a mismatch —
+jest-expo does not run Metro, so the suite passes with a bundler config out
+of step with the runtime it configures and the failure appears on the next
+EAS build. Bump the two together.

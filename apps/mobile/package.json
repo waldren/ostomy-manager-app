@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "license": "AGPL-3.0-or-later",
-  "description": "Expo (managed workflow) patient app — the only offline-capable client (SRS_v2 §4.2, §4.5).",
+  "description": "Expo (managed workflow) patient app \u2014 the only offline-capable client (SRS_v2 \u00a74.2, \u00a74.5).",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
@@ -48,6 +48,7 @@
     "babel-preset-expo": "~57.0.11",
     "jest": "^30.5.1",
     "jest-expo": "~57.0.5",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@react-native/metro-config": "0.86.3"
   }
 }
