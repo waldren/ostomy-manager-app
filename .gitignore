@@ -3,6 +3,9 @@ dist/
 build/
 coverage/
 .expo/
+# TypeScript project-reference incremental build cache (apps/web's `tsc -b`
+# composite build writes these next to the tsconfig, not into dist/).
+*.tsbuildinfo
 .env*
 !.env.example
 .envrc

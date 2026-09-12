@@ -1,0 +1,94 @@
+/*
+Copyright (C) 2026 Steven E. Waldren
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
+
+import { formatDateTime, formatVolumeQuantity } from '@ostomy/core/i18n';
+import { VisuallyHidden } from '@ostomy/ui';
+import { useTranslation } from 'react-i18next';
+
+import type { DisplayOutputEntry } from '../format/formatObservationsForDisplay.js';
+
+export interface OutputChartProps {
+  readonly entries: readonly DisplayOutputEntry[];
+}
+
+const CHART_WIDTH = 600;
+const CHART_HEIGHT = 220;
+const MINUTES_PER_DAY = 24 * 60;
+
+/**
+ * A chronological plot of the day's stoma output (SRS §3.5).
+ *
+ * The `<svg>` itself is `aria-hidden`: rendering each bar as an
+ * individually-labelled accessible element does not hold up well across
+ * screen readers for a chart with an arbitrary number of bars, so instead —
+ * per CLAUDE.md's "Charts and data display" — the exact values are always
+ * available two other ways: a plain-text description immediately below the
+ * chart (`VisuallyHidden`, so it does not visually duplicate the chart for
+ * a sighted user) and the full `OutputTable` rendered right after it. A
+ * chart is never the only place a value lives.
+ */
+export function OutputChart({ entries }: OutputChartProps) {
+  const { t } = useTranslation();
+  const maxVolume = Math.max(1, ...entries.map((entry) => entry.display.value));
+
+  return (
+    <figure>
+      <figcaption>
+        <h3>{t('physicianView.chart.heading')}</h3>
+        <p>{t('physicianView.chart.caption')}</p>
+      </figcaption>
+
+      <p>{t('physicianView.chart.axisVolume')}</p>
+      <svg
+        viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+        width="100%"
+        role="presentation"
+        aria-hidden="true"
+      >
+        <line x1={0} y1={CHART_HEIGHT} x2={CHART_WIDTH} y2={CHART_HEIGHT} stroke="currentColor" />
+        {entries.map((entry) => {
+          const minutesOfDay =
+            entry.effectiveDateTime.getHours() * 60 + entry.effectiveDateTime.getMinutes();
+          const x = (minutesOfDay / MINUTES_PER_DAY) * CHART_WIDTH;
+          const barHeight = (entry.display.value / maxVolume) * (CHART_HEIGHT - 10);
+          return (
+            <rect
+              key={entry.id}
+              x={Math.max(0, x - 4)}
+              y={CHART_HEIGHT - barHeight}
+              width={8}
+              height={barHeight}
+              fill="currentColor"
+            />
+          );
+        })}
+      </svg>
+      <p>{t('physicianView.chart.axisTime')}</p>
+
+      <VisuallyHidden as="div">
+        <p>{t('physicianView.chart.longDescriptionIntro')}</p>
+        <ul>
+          {entries.map((entry) => (
+            <li key={entry.id}>
+              {formatDateTime(entry.effectiveDateTime)}: {formatVolumeQuantity(entry.display)}
+            </li>
+          ))}
+        </ul>
+      </VisuallyHidden>
+    </figure>
+  );
+}
