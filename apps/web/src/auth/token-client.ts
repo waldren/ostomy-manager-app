@@ -53,6 +53,8 @@ export function exchangeAuthorizationCode(params: {
   readonly code: string;
   readonly redirectUri: string;
   readonly codeVerifier: string;
+  /** The API's resource identifier — see `OidcConfig.audience`. */
+  readonly audience: string;
 }): Promise<TokenResponse> {
   return postToTokenEndpoint(params.tokenEndpoint, {
     grant_type: 'authorization_code',
@@ -60,6 +62,7 @@ export function exchangeAuthorizationCode(params: {
     code: params.code,
     redirect_uri: params.redirectUri,
     code_verifier: params.codeVerifier,
+    audience: params.audience,
   });
 }
 
@@ -67,10 +70,18 @@ export function refreshAccessToken(params: {
   readonly tokenEndpoint: string;
   readonly clientId: string;
   readonly refreshToken: string;
+  /**
+   * Sent on refresh as well as on the initial exchange. An issuer that scopes
+   * tokens by audience will otherwise mint a refreshed token with the default
+   * audience, so the session would work until the first refresh and then 401
+   * — a failure that looks like a session bug rather than a config one.
+   */
+  readonly audience: string;
 }): Promise<TokenResponse> {
   return postToTokenEndpoint(params.tokenEndpoint, {
     grant_type: 'refresh_token',
     client_id: params.clientId,
     refresh_token: params.refreshToken,
+    audience: params.audience,
   });
 }

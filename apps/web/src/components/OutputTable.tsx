@@ -19,7 +19,10 @@ import { formatDateTime, formatVolumeQuantity } from '@ostomy/core/i18n';
 import type { DisplayVolume } from '@ostomy/core/units';
 import { useTranslation } from 'react-i18next';
 
-import type { DisplayOutputEntry } from '../format/formatObservationsForDisplay.js';
+import {
+  CLINICAL_DATE_TIME_OPTIONS,
+  type DisplayOutputEntry,
+} from '../format/formatObservationsForDisplay.js';
 import { MethodBadge } from './MethodBadge.js';
 
 export interface OutputTableProps {
@@ -51,7 +54,7 @@ export function OutputTable({ entries, total }: OutputTableProps) {
           <tr key={entry.id}>
             <th scope="row">
               <time dateTime={entry.effectiveDateTime.toISOString()}>
-                {formatDateTime(entry.effectiveDateTime)}
+                {formatDateTime(entry.effectiveDateTime, undefined, CLINICAL_DATE_TIME_OPTIONS)}
               </time>
             </th>
             <td>{formatVolumeQuantity(entry.display)}</td>

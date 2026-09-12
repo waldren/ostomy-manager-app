@@ -42,12 +42,17 @@ describe('token-client', () => {
       code: 'the-code',
       redirectUri: 'https://app.example/callback',
       codeVerifier: 'the-verifier',
+      audience: 'ostomy-patient-app',
     });
 
     expect(result.access_token).toBe('a');
     const [, init] = fetchMock.mock.calls[0] ?? [];
     const body = new URLSearchParams(init?.body as string);
     expect(body.get('grant_type')).toBe('authorization_code');
+    // The regression this exists for: without an explicit audience the issuer
+    // mints a default-audience token, the API's `aud` check rejects it, and
+    // every call 401s after a sign-in that appeared to succeed.
+    expect(body.get('audience')).toBe('ostomy-patient-app');
     expect(body.get('code_verifier')).toBe('the-verifier');
     expect(body.get('client_secret')).toBeNull();
   });
@@ -63,6 +68,7 @@ describe('token-client', () => {
         code: 'bad-code',
         redirectUri: 'https://app.example/callback',
         codeVerifier: 'v',
+        audience: 'ostomy-patient-app',
       }),
     ).rejects.toBeInstanceOf(TokenExchangeError);
   });
@@ -79,6 +85,7 @@ describe('token-client', () => {
       tokenEndpoint: 'https://issuer.example/token',
       clientId: 'ostomy-web',
       refreshToken: 'the-refresh-token',
+      audience: 'ostomy-patient-app',
     });
 
     const [, init] = fetchMock.mock.calls[0] ?? [];

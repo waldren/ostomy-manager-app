@@ -42,7 +42,9 @@ function ControlledToggleGroup() {
 describe('ToggleGroup', () => {
   it('groups options under one accessible legend', () => {
     render(<ControlledToggleGroup />);
-    expect(screen.getByRole('group', { name: 'Was this measured or estimated?' })).toBeVisible();
+    expect(
+      screen.getByRole('radiogroup', { name: 'Was this measured or estimated?' }),
+    ).toBeVisible();
   });
 
   it('every option renders visible text, never an icon-only control (AC 2.2 AC2)', () => {
@@ -78,7 +80,25 @@ describe('ToggleGroup', () => {
       />,
     );
 
-    expect(screen.getByRole('group')).toHaveAttribute('aria-invalid', 'true');
+    // Queried by ROLE and by computed accessible description, not by DOM
+    // attribute. The previous assertion — `getByRole('group')` plus
+    // `toHaveAttribute('aria-invalid', 'true')` — passed against a real
+    // failure: the attribute was present in the DOM and ignored by assistive
+    // technology, because `role="group"` does not support it. Asserting the
+    // role is `radiogroup` is what makes the attribute meaningful, and
+    // asserting the description is what proves the error actually reaches a
+    // screen-reader user.
+    const group = screen.getByRole('radiogroup', {
+      description: 'Choose Measured or Estimated before saving',
+    });
+    expect(group).toHaveAttribute('aria-invalid', 'true');
+    expect(group).toHaveAttribute('aria-required', 'true');
+
+    // And each radio carries the description too, so it is announced on
+    // focus rather than only on group entry.
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio).toHaveAccessibleDescription('Choose Measured or Estimated before saving');
+    }
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Choose Measured or Estimated before saving',
     );

@@ -128,6 +128,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
           const response = await exchangeAuthorizationCode({
             tokenEndpoint: discovery.token_endpoint,
             clientId: config.clientId,
+            audience: config.audience,
             code,
             redirectUri: config.redirectUri,
             codeVerifier: pending.codeVerifier,
@@ -157,6 +158,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
           const response = await refreshAccessToken({
             tokenEndpoint: discovery.token_endpoint,
             clientId: config.clientId,
+            audience: config.audience,
             refreshToken: existing.refreshToken,
           });
           const next = toStoredTokens(response);
@@ -188,7 +190,12 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     authorizeUrl.searchParams.set('response_type', 'code');
     authorizeUrl.searchParams.set('client_id', config.clientId);
     authorizeUrl.searchParams.set('redirect_uri', config.redirectUri);
-    authorizeUrl.searchParams.set('scope', 'openid profile offline_access');
+    // Both from configuration, never hardcoded — see `OidcConfig.audience`
+    // and `.scope`. Without `audience` the issuer mints a default-audience
+    // token and every API call 401s; `offline_access` was hardcoded here and
+    // is rejected outright by Cognito.
+    authorizeUrl.searchParams.set('scope', config.scope);
+    authorizeUrl.searchParams.set('audience', config.audience);
     authorizeUrl.searchParams.set('state', state);
     authorizeUrl.searchParams.set('code_challenge', codeChallenge);
     authorizeUrl.searchParams.set('code_challenge_method', 'S256');
@@ -220,6 +227,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       const response = await refreshAccessToken({
         tokenEndpoint: discovery.token_endpoint,
         clientId: config.clientId,
+        audience: config.audience,
         refreshToken: tokens.refreshToken,
       });
       const next = toStoredTokens(response);

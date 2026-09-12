@@ -19,7 +19,10 @@ import { formatDateTime, formatVolumeQuantity } from '@ostomy/core/i18n';
 import { VisuallyHidden } from '@ostomy/ui';
 import { useTranslation } from 'react-i18next';
 
-import type { DisplayOutputEntry } from '../format/formatObservationsForDisplay.js';
+import {
+  CLINICAL_DATE_TIME_OPTIONS,
+  type DisplayOutputEntry,
+} from '../format/formatObservationsForDisplay.js';
 
 export interface OutputChartProps {
   readonly entries: readonly DisplayOutputEntry[];
@@ -61,8 +64,17 @@ export function OutputChart({ entries }: OutputChartProps) {
       >
         <line x1={0} y1={CHART_HEIGHT} x2={CHART_WIDTH} y2={CHART_HEIGHT} stroke="currentColor" />
         {entries.map((entry) => {
+          // UTC, not local. `packages/core`'s `formatDateTime` pins
+          // `timeZone: 'UTC'` deliberately, so the table beside this chart
+          // and this chart's own screen-reader description are both UTC.
+          // Positioning bars by local hours made them disagree: for a
+          // clinician at UTC-6, an entry listed as "2:00 AM" was drawn at the
+          // 21:00 position. A chart that contradicts its own accessible
+          // equivalent fails WCAG 1.1.1 on the terms this component set
+          // itself, and it breaks the output-over-time correlation the
+          // physician view exists to support (SRS §3.5).
           const minutesOfDay =
-            entry.effectiveDateTime.getHours() * 60 + entry.effectiveDateTime.getMinutes();
+            entry.effectiveDateTime.getUTCHours() * 60 + entry.effectiveDateTime.getUTCMinutes();
           const x = (minutesOfDay / MINUTES_PER_DAY) * CHART_WIDTH;
           const barHeight = (entry.display.value / maxVolume) * (CHART_HEIGHT - 10);
           return (
@@ -84,7 +96,8 @@ export function OutputChart({ entries }: OutputChartProps) {
         <ul>
           {entries.map((entry) => (
             <li key={entry.id}>
-              {formatDateTime(entry.effectiveDateTime)}: {formatVolumeQuantity(entry.display)}
+              {formatDateTime(entry.effectiveDateTime, undefined, CLINICAL_DATE_TIME_OPTIONS)}:{' '}
+              {formatVolumeQuantity(entry.display)}
             </li>
           ))}
         </ul>

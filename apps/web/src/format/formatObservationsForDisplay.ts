@@ -111,3 +111,34 @@ export function toDisplayDailyTotal(
 
   return convertVolumeForDisplay(totalMl, entrySystemForRounding, targetSystem);
 }
+
+/**
+ * Date/time options for every clinical timestamp this app renders.
+ *
+ * `timeZoneName` is the load-bearing part. `packages/core`'s `formatDateTime`
+ * pins `timeZone: 'UTC'` deliberately, but `timeStyle: 'short'` emits no zone
+ * — so a clinician read a UTC time as their own local time with nothing to
+ * signal otherwise. On a page whose purpose is correlating output against
+ * time of day, a silently-shifted clock is a clinical-reading error, not a
+ * formatting nit.
+ *
+ * Exported and shared rather than passed ad hoc at each call site, because
+ * the table and the chart's screen-reader description drifting apart is the
+ * exact defect this sprint's review found.
+ */
+export const CLINICAL_DATE_TIME_OPTIONS: Intl.DateTimeFormatOptions = {
+  // Explicit components, not `dateStyle`/`timeStyle`: `Intl.DateTimeFormat`
+  // rejects those shortcuts combined with `timeZoneName` outright ("Invalid
+  // option"), so the zone indicator is only reachable this way. The fields
+  // below reproduce `dateStyle: 'medium'` + `timeStyle: 'short'`, which is
+  // what `formatDateTime` defaults to, and the two `undefined`s clear those
+  // defaults through its option spread.
+  dateStyle: undefined,
+  timeStyle: undefined,
+  year: 'numeric',
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  timeZoneName: 'short',
+};

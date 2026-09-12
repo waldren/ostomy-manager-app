@@ -54,14 +54,34 @@ export function ToggleGroup<TValue extends string>({
 }: ToggleGroupProps<TValue>) {
   const errorId = error ? `${name}-error` : undefined;
 
+  const legendId = `${name}-legend`;
+
   return (
+    // `role="radiogroup"`, not the bare `<fieldset>` default of `role="group"`.
+    //
+    // ARIA 1.2 scopes `aria-required` and `aria-invalid` to widget roles;
+    // neither is supported on `role="group"`, so both were silently dropped
+    // from the accessibility tree. The mandatory Measured/Estimated error
+    // (SRS AC 2.2 AC 1) was highlighted visually and never announced — and
+    // `role="alert"` on the message below only covers a DYNAMIC insertion,
+    // so it did nothing when a caller re-rendered with the error already
+    // present. That is the ordinary case here, not an edge one: an offline
+    // queued operation rejected server-side is surfaced for correction with
+    // its error already set (AC 13.1 AC 4).
+    //
+    // `aria-labelledby` is explicit because a `radiogroup` does not take its
+    // name from `<legend>` the way a native `<fieldset>` does.
     <fieldset
       className="ostomyToggleGroup"
+      role="radiogroup"
+      aria-labelledby={legendId}
       aria-required={required || undefined}
       aria-invalid={error ? true : undefined}
       aria-describedby={errorId}
     >
-      <legend className="ostomyToggleGroup__legend">{legend}</legend>
+      <legend id={legendId} className="ostomyToggleGroup__legend">
+        {legend}
+      </legend>
       <div className="ostomyToggleGroup__options">
         {options.map((option) => {
           const optionId = `${name}-${option.value}`;
@@ -75,6 +95,12 @@ export function ToggleGroup<TValue extends string>({
                 value={option.value}
                 checked={value === option.value}
                 onChange={() => onChange(option.value)}
+                // Also on each radio, not only on the group. NVDA and JAWS
+                // announce group-level descriptions inconsistently when focus
+                // lands on a child radio, and the error text is precisely the
+                // instruction the user needs at the moment they arrive to fix
+                // it.
+                aria-describedby={errorId}
               />
               {option.label}
             </label>
