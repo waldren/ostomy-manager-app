@@ -59,7 +59,7 @@ export async function openExpoSqliteExecutor(
       const result = await db.runAsync(sql, params as SQLite.SQLiteBindParams);
       return { changes: result.changes };
     },
-    getAllAsync: <TRow,>(sql: string, params: readonly unknown[] = []) =>
+    getAllAsync: <TRow>(sql: string, params: readonly unknown[] = []) =>
       db.getAllAsync<TRow>(sql, params as SQLite.SQLiteBindParams),
     withTransactionAsync: (fn) => db.withTransactionAsync(fn),
     closeAsync: () => db.closeAsync(),

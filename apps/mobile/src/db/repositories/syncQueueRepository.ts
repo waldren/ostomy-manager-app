@@ -109,7 +109,10 @@ export async function listRejectedOperations(executor: SqliteExecutor): Promise<
 }
 
 /** `docs/sync-contract.md` §3.5: `accepted` and `superseded` are both "remove from the queue. Not [necessarily] an error; nothing to correct." */
-export async function removeOperation(executor: SqliteExecutor, operationId: string): Promise<void> {
+export async function removeOperation(
+  executor: SqliteExecutor,
+  operationId: string,
+): Promise<void> {
   await executor.runAsync('DELETE FROM sync_queue WHERE operation_id = ?;', [operationId]);
 }
 

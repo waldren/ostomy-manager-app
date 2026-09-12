@@ -57,7 +57,9 @@ describe('extractAuthorizationCode', () => {
   } as AuthRequest;
 
   it('returns undefined for a non-success result (cancel, dismiss, error)', () => {
-    expect(extractAuthorizationCode(request, { type: 'cancel' } as AuthSessionResult)).toBeUndefined();
+    expect(
+      extractAuthorizationCode(request, { type: 'cancel' } as AuthSessionResult),
+    ).toBeUndefined();
     expect(extractAuthorizationCode(request, null)).toBeUndefined();
   });
 

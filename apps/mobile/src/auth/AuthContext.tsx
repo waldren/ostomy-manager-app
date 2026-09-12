@@ -15,7 +15,15 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 
 import i18next from '../i18n/i18n';
 
@@ -23,7 +31,12 @@ import { authenticate, type BiometricUnlockOutcome } from './biometricUnlock';
 import { deriveAuthPhase, type AuthPhase } from './authPhase';
 import { getOidcClientConfig } from './oidcConfig';
 import { useAutoDiscovery, refreshAccessToken, type OidcTokens } from './oidcSession';
-import { clearRefreshToken, getRefreshToken, hasStoredRefreshToken, setRefreshToken } from './tokenStorage';
+import {
+  clearRefreshToken,
+  getRefreshToken,
+  hasStoredRefreshToken,
+  setRefreshToken,
+} from './tokenStorage';
 
 /**
  * **Design decision, stated here because it is the one a reviewer is most

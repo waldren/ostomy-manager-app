@@ -133,7 +133,11 @@ function PrimaryButton({
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={label}
-      style={({ pressed }) => [styles.button, disabled && styles.buttonDisabled, pressed && styles.buttonPressed]}
+      style={({ pressed }) => [
+        styles.button,
+        disabled && styles.buttonDisabled,
+        pressed && styles.buttonPressed,
+      ]}
     >
       <Text style={styles.buttonText}>{label}</Text>
     </Pressable>

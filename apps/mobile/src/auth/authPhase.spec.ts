@@ -19,23 +19,23 @@ import { deriveAuthPhase } from './authPhase';
 
 describe('deriveAuthPhase', () => {
   it('is signedOut with no stored refresh token, regardless of unlock state', () => {
-    expect(
-      deriveAuthPhase({ hasStoredRefreshToken: false, unlockedThisSession: false }),
-    ).toBe('signedOut');
-    expect(
-      deriveAuthPhase({ hasStoredRefreshToken: false, unlockedThisSession: true }),
-    ).toBe('signedOut');
+    expect(deriveAuthPhase({ hasStoredRefreshToken: false, unlockedThisSession: false })).toBe(
+      'signedOut',
+    );
+    expect(deriveAuthPhase({ hasStoredRefreshToken: false, unlockedThisSession: true })).toBe(
+      'signedOut',
+    );
   });
 
   it('is locked with a stored refresh token not yet unlocked this session', () => {
-    expect(
-      deriveAuthPhase({ hasStoredRefreshToken: true, unlockedThisSession: false }),
-    ).toBe('locked');
+    expect(deriveAuthPhase({ hasStoredRefreshToken: true, unlockedThisSession: false })).toBe(
+      'locked',
+    );
   });
 
   it('is authenticated with a stored refresh token unlocked this session', () => {
-    expect(
-      deriveAuthPhase({ hasStoredRefreshToken: true, unlockedThisSession: true }),
-    ).toBe('authenticated');
+    expect(deriveAuthPhase({ hasStoredRefreshToken: true, unlockedThisSession: true })).toBe(
+      'authenticated',
+    );
   });
 });

@@ -15,6 +15,11 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+// This file is plain CommonJS (Metro's own config-loading convention, and
+// this app's own package.json has no "type": "module" to change that) —
+// `require()` here is the point of the file, not a style slip, matching
+// the same exception already recorded in apps/api/scripts/require-core-smoke.cjs.
+/* eslint-disable @typescript-eslint/no-require-imports */
 const path = require('node:path');
 const { getDefaultConfig } = require('expo/metro-config');
 

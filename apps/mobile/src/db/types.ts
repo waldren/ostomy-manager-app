@@ -191,7 +191,9 @@ function decodeOperationType(value: string): SyncQueueOperationType {
   if ((SYNC_QUEUE_OPERATION_TYPE as readonly string[]).includes(value)) {
     return value as SyncQueueOperationType;
   }
-  throw new TypeError('sync_queue.operation_type held a value outside the schema CHECK constraint.');
+  throw new TypeError(
+    'sync_queue.operation_type held a value outside the schema CHECK constraint.',
+  );
 }
 
 function decodeQueueStatus(value: string): SyncQueueStatus {

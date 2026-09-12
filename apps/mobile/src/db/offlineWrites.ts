@@ -23,7 +23,11 @@ import { toWireInstant } from '../lib/utils/clock';
 import { generateUuid } from '../lib/utils/uuid';
 
 import type { SqliteExecutor } from './executor';
-import { insertObservation, replaceObservation, tombstoneObservation } from './repositories/observationsRepository';
+import {
+  insertObservation,
+  replaceObservation,
+  tombstoneObservation,
+} from './repositories/observationsRepository';
 import { enqueueOperation } from './repositories/syncQueueRepository';
 
 /**

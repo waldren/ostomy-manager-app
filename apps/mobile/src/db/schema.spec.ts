@@ -82,7 +82,9 @@ describe('local schema — applies and survives a close/reopen cycle', () => {
     await runMigrations(executor, () => new Date('2026-09-11T12:00:00.000Z'));
     await runMigrations(executor, () => new Date('2026-09-11T12:05:00.000Z'));
 
-    const rows = await executor.getAllAsync<{ version: number }>('SELECT version FROM schema_migrations;');
+    const rows = await executor.getAllAsync<{ version: number }>(
+      'SELECT version FROM schema_migrations;',
+    );
     expect(rows).toHaveLength(latestSchemaVersion());
 
     await executor.closeAsync();

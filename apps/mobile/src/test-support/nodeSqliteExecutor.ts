@@ -71,7 +71,7 @@ export function createNodeSqliteExecutor(filePath: string): SqliteExecutor {
       const result = statement.run(...(params as (string | number | bigint | null)[]));
       return { changes: Number(result.changes) };
     },
-    getAllAsync: async <TRow,>(sql: string, params: readonly unknown[] = []) => {
+    getAllAsync: async <TRow>(sql: string, params: readonly unknown[] = []) => {
       const statement = db.prepare(sql);
       return statement.all(...(params as (string | number | bigint | null)[])) as TRow[];
     },
