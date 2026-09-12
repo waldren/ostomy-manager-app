@@ -19,8 +19,6 @@ import { DEFAULT_LOCALE, en, NAMESPACES } from '@ostomy/core/i18n';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
-import { mobile } from './localCatalog';
-
 /**
  * `i18next` + `react-i18next` (ADR-0006), initialized once at app start
  * (`app/_layout.tsx` imports this module for its side effect). Every
@@ -30,17 +28,22 @@ import { mobile } from './localCatalog';
  * `common`, but the sync worker's correction inbox (P2.S2b) will need
  * `validationErrors` immediately.
  *
- * `mobile` is this app's own stopgap namespace — see
- * `./localCatalog.ts`'s header comment for why it exists and why it
- * should not gain a sibling in `apps/web` or `apps/admin`.
+ * Every namespace comes from the shared catalog (ADR-0006: one catalog, no
+ * per-app catalogs). This app's shell copy is the `mobile` namespace
+ * *inside* that catalog — see
+ * `packages/core/src/i18n/locales/en/mobile.ts`.
+ *
+ * Nothing is merged in here on purpose: the moment this file composes a
+ * local resource bundle, there are two catalogs again regardless of where
+ * the files sit.
  */
 void i18next.use(initReactI18next).init({
   resources: {
-    [DEFAULT_LOCALE]: { ...en, mobile },
+    [DEFAULT_LOCALE]: en,
   },
   lng: DEFAULT_LOCALE,
   fallbackLng: DEFAULT_LOCALE,
-  ns: [...NAMESPACES, 'mobile'],
+  ns: [...NAMESPACES],
   defaultNS: 'mobile',
   interpolation: {
     // React already escapes rendered text; double-escaping breaks any

@@ -15,12 +15,13 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { web } from './locales/en/web.js';
 import { clinicalCaveats } from './locales/en/clinicalCaveats.js';
 import { common } from './locales/en/common.js';
+import { mobile } from './locales/en/mobile.js';
 import { redFlags } from './locales/en/redFlags.js';
 import { validationErrors } from './locales/en/validationErrors.js';
 import { validationWarnings } from './locales/en/validationWarnings.js';
+import { web } from './locales/en/web.js';
 import { DEFAULT_LOCALE } from './constants.js';
 
 /**
@@ -61,6 +62,13 @@ export const NAMESPACES = [
   'validationWarnings',
   'redFlags',
   'clinicalCaveats',
+  // Per-app shell copy. These two are the ONLY namespaces scoped to one
+  // client, and the scoping is by app rather than by audience: a web table
+  // heading is not mobile shell copy. Everything with clinical meaning —
+  // anything a patient acts on — stays in the namespaces above, shared, so
+  // the two clients cannot drift into saying different things about the
+  // same signal. Nothing may be duplicated between these two.
+  'mobile',
   'web',
 ] as const;
 export type Namespace = (typeof NAMESPACES)[number];
@@ -71,6 +79,7 @@ export const en = {
   validationWarnings,
   redFlags,
   clinicalCaveats,
+  mobile,
   web,
 } satisfies Record<Namespace, Record<string, string>>;
 
