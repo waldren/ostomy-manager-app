@@ -18,17 +18,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // An in-memory stand-in for the OS keychain/keystore `expo-secure-store`
 // wraps — enough to prove this module's own logic (key name, "has a
 // token" derivation) without a real device.
-const store = new Map<string, string>();
+const mockStore = new Map<string, string>();
 
 jest.mock('expo-secure-store', () => ({
   AFTER_FIRST_UNLOCK: 'AFTER_FIRST_UNLOCK',
-  getItemAsync: jest.fn((key: string) => Promise.resolve(store.get(key) ?? null)),
+  getItemAsync: jest.fn((key: string) => Promise.resolve(mockStore.get(key) ?? null)),
   setItemAsync: jest.fn((key: string, value: string) => {
-    store.set(key, value);
+    mockStore.set(key, value);
     return Promise.resolve();
   }),
   deleteItemAsync: jest.fn((key: string) => {
-    store.delete(key);
+    mockStore.delete(key);
     return Promise.resolve();
   }),
 }));
@@ -42,21 +42,21 @@ import {
 
 describe('tokenStorage', () => {
   beforeEach(() => {
-    store.clear();
+    mockStore.clear();
   });
 
-  it('reports no stored token before one is ever set', async () => {
+  it('reports no mockStored token before one is ever set', async () => {
     expect(await hasStoredRefreshToken()).toBe(false);
     expect(await getRefreshToken()).toBeNull();
   });
 
-  it('round-trips a stored refresh token', async () => {
+  it('round-trips a mockStored refresh token', async () => {
     await setRefreshToken('a-refresh-token');
     expect(await hasStoredRefreshToken()).toBe(true);
     expect(await getRefreshToken()).toBe('a-refresh-token');
   });
 
-  it('clears the stored token on sign-out', async () => {
+  it('clears the mockStored token on sign-out', async () => {
     await setRefreshToken('a-refresh-token');
     await clearRefreshToken();
     expect(await hasStoredRefreshToken()).toBe(false);

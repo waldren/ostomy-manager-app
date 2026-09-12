@@ -15,55 +15,55 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-const hasHardwareAsync = jest.fn();
-const isEnrolledAsync = jest.fn();
-const authenticateAsync = jest.fn();
+const mockHasHardwareAsync = jest.fn();
+const mockIsEnrolledAsync = jest.fn();
+const mockAuthenticateAsync = jest.fn();
 
 jest.mock('expo-local-authentication', () => ({
-  hasHardwareAsync: (...args: unknown[]) => hasHardwareAsync(...args),
-  isEnrolledAsync: (...args: unknown[]) => isEnrolledAsync(...args),
-  authenticateAsync: (...args: unknown[]) => authenticateAsync(...args),
+  hasHardwareAsync: (...args: unknown[]) => mockHasHardwareAsync(...args),
+  isEnrolledAsync: (...args: unknown[]) => mockIsEnrolledAsync(...args),
+  authenticateAsync: (...args: unknown[]) => mockAuthenticateAsync(...args),
 }));
 
 import { authenticate, isBiometricUnlockAvailable } from './biometricUnlock';
 
 describe('biometricUnlock', () => {
   beforeEach(() => {
-    hasHardwareAsync.mockReset();
-    isEnrolledAsync.mockReset();
-    authenticateAsync.mockReset();
+    mockHasHardwareAsync.mockReset();
+    mockIsEnrolledAsync.mockReset();
+    mockAuthenticateAsync.mockReset();
   });
 
   it('is unavailable with no hardware', async () => {
-    hasHardwareAsync.mockResolvedValue(false);
-    isEnrolledAsync.mockResolvedValue(true);
+    mockHasHardwareAsync.mockResolvedValue(false);
+    mockIsEnrolledAsync.mockResolvedValue(true);
     expect(await isBiometricUnlockAvailable()).toBe(false);
 
     const result = await authenticate('prompt');
     expect(result).toEqual({ outcome: 'unavailable' });
-    expect(authenticateAsync).not.toHaveBeenCalled();
+    expect(mockAuthenticateAsync).not.toHaveBeenCalled();
   });
 
   it('is unavailable with hardware but nothing enrolled', async () => {
-    hasHardwareAsync.mockResolvedValue(true);
-    isEnrolledAsync.mockResolvedValue(false);
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(false);
     expect(await isBiometricUnlockAvailable()).toBe(false);
   });
 
   it('succeeds when the OS prompt succeeds', async () => {
-    hasHardwareAsync.mockResolvedValue(true);
-    isEnrolledAsync.mockResolvedValue(true);
-    authenticateAsync.mockResolvedValue({ success: true });
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(true);
+    mockAuthenticateAsync.mockResolvedValue({ success: true });
 
     const result = await authenticate('Unlock your diary');
     expect(result).toEqual({ outcome: 'success' });
-    expect(authenticateAsync).toHaveBeenCalledWith({ promptMessage: 'Unlock your diary' });
+    expect(mockAuthenticateAsync).toHaveBeenCalledWith({ promptMessage: 'Unlock your diary' });
   });
 
   it('reports failure without throwing when the OS prompt is cancelled', async () => {
-    hasHardwareAsync.mockResolvedValue(true);
-    isEnrolledAsync.mockResolvedValue(true);
-    authenticateAsync.mockResolvedValue({ success: false, error: 'user_cancel' });
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockIsEnrolledAsync.mockResolvedValue(true);
+    mockAuthenticateAsync.mockResolvedValue({ success: false, error: 'user_cancel' });
 
     const result = await authenticate('prompt');
     expect(result).toEqual({ outcome: 'failed' });

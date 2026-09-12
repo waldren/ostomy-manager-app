@@ -87,8 +87,15 @@ export function extractAuthorizationCode(
 ): AuthorizationCodeResult | undefined {
   if (response?.type !== 'success') return undefined;
   if (request.codeVerifier === undefined) return undefined;
+  // `params` is `Record<string, string>`, and `noUncheckedIndexedAccess`
+  // (packages/config's base tsconfig) makes that index read
+  // `string | undefined` — a real provider always includes `code` on a
+  // `type: 'success'` result, but the type does not promise it, so this is
+  // checked rather than asserted.
+  const code = response.params.code;
+  if (code === undefined) return undefined;
   return {
-    code: response.params.code,
+    code,
     redirectUri: request.redirectUri,
     codeVerifier: request.codeVerifier,
   };

@@ -15,7 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import type { CanonicalWireUnit, MeasurementSystem } from '@ostomy/core/units';
+import type { MeasurementSystem } from '@ostomy/core/units';
+import type { CanonicalWireUnit } from '@ostomy/core/sync';
 import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
 
 import { toWireInstant } from '../lib/utils/clock';

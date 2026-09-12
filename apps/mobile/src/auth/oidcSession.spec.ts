@@ -45,6 +45,11 @@ describe('buildAuthRequestConfig', () => {
   });
 });
 
+/** Builds a well-formed `type: 'success'` `AuthSessionResult` with only `params` varying — the fields this app never reads (`errorCode`, `authentication`, `url`) are filled with the library's own "nothing here" values rather than cast away. */
+function successResult(params: Record<string, string>): AuthSessionResult {
+  return { type: 'success', errorCode: null, authentication: null, url: '', params };
+}
+
 describe('extractAuthorizationCode', () => {
   const request = {
     codeVerifier: 'a-code-verifier',
@@ -57,10 +62,7 @@ describe('extractAuthorizationCode', () => {
   });
 
   it('extracts the code, redirectUri, and codeVerifier on success', () => {
-    const response = {
-      type: 'success',
-      params: { code: 'auth-code-123' },
-    } as AuthSessionResult;
+    const response = successResult({ code: 'auth-code-123' });
 
     expect(extractAuthorizationCode(request, response)).toEqual({
       code: 'auth-code-123',
@@ -71,10 +73,7 @@ describe('extractAuthorizationCode', () => {
 
   it('returns undefined if PKCE was somehow not used (no codeVerifier)', () => {
     const requestWithoutVerifier = { redirectUri: 'ostomydiary://redirect' } as AuthRequest;
-    const response = {
-      type: 'success',
-      params: { code: 'auth-code-123' },
-    } as AuthSessionResult;
+    const response = successResult({ code: 'auth-code-123' });
 
     expect(extractAuthorizationCode(requestWithoutVerifier, response)).toBeUndefined();
   });
