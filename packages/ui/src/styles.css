@@ -1,0 +1,315 @@
+/*
+Copyright (C) 2026 Steven E. Waldren
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
+
+/*
+ * Global stylesheet for @ostomy/ui's DOM (web) primitives. Import this
+ * once, at the application root (apps/web's main.tsx does).
+ *
+ * Every custom property below has a matching value in ./tokens.ts, kept in
+ * sync by convention and asserted by tokens.spec.ts — see that file's own
+ * comment on why this is not generated from one source.
+ */
+
+:root {
+  --ostomy-color-primary: #0a4c8a;
+  --ostomy-color-primary-strong: #07335c;
+  --ostomy-color-text: #1b1b1b;
+  --ostomy-color-text-muted: #3d4551;
+  --ostomy-color-text-on-primary: #ffffff;
+  --ostomy-color-background: #ffffff;
+  --ostomy-color-surface: #f4f6f8;
+  --ostomy-color-border: #5b6572;
+  --ostomy-color-error: #a5140a;
+  --ostomy-color-warning: #7a4b00;
+  --ostomy-color-success: #1e6b30;
+
+  --ostomy-space-xs: 4px;
+  --ostomy-space-sm: 8px;
+  --ostomy-space-md: 12px;
+  --ostomy-space-lg: 16px;
+  --ostomy-space-xl: 24px;
+  --ostomy-space-xxl: 32px;
+  --ostomy-space-xxxl: 48px;
+
+  --ostomy-radius-sm: 4px;
+  --ostomy-radius-md: 8px;
+  --ostomy-radius-lg: 12px;
+  --ostomy-radius-pill: 999px;
+
+  --ostomy-font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --ostomy-font-size-base: 16px;
+  --ostomy-line-height: 1.5;
+
+  --ostomy-touch-target-min: 44px;
+
+  --ostomy-focus-width: 3px;
+  --ostomy-focus-offset: 2px;
+  --ostomy-focus-color: #2491ff;
+}
+
+/*
+ * A single, consistent focus style for every interactive primitive in this
+ * package, using :focus-visible so a mouse click does not paint the same
+ * ring a keyboard Tab press does — WCAG 2.4.7 wants the indicator visible
+ * for keyboard users, not a ring on every pointer interaction.
+ */
+.ostomyFocusable:focus {
+  outline: none;
+}
+.ostomyFocusable:focus-visible {
+  outline: var(--ostomy-focus-width) solid var(--ostomy-focus-color);
+  outline-offset: var(--ostomy-focus-offset);
+}
+
+.ostomyVisuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Reappears in the normal flow once focused, e.g. a "skip to main content" link. */
+.ostomySkipLink {
+  position: absolute;
+  top: -1000px;
+  left: 0;
+  z-index: 1000;
+  background: var(--ostomy-color-primary);
+  color: var(--ostomy-color-text-on-primary);
+  padding: var(--ostomy-space-sm) var(--ostomy-space-lg);
+  border-radius: var(--ostomy-radius-md);
+}
+.ostomySkipLink:focus {
+  top: var(--ostomy-space-sm);
+  left: var(--ostomy-space-sm);
+}
+
+.ostomyButton {
+  font-family: var(--ostomy-font-family);
+  font-size: 1rem;
+  line-height: var(--ostomy-line-height);
+  font-weight: 600;
+  min-height: var(--ostomy-touch-target-min);
+  min-width: var(--ostomy-touch-target-min);
+  padding: var(--ostomy-space-sm) var(--ostomy-space-lg);
+  border-radius: var(--ostomy-radius-md);
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ostomy-space-sm);
+}
+.ostomyButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.ostomyButton--primary {
+  background: var(--ostomy-color-primary);
+  color: var(--ostomy-color-text-on-primary);
+}
+.ostomyButton--primary:hover:not(:disabled) {
+  background: var(--ostomy-color-primary-strong);
+}
+
+.ostomyButton--secondary {
+  background: var(--ostomy-color-background);
+  color: var(--ostomy-color-primary);
+  border-color: var(--ostomy-color-primary);
+}
+.ostomyButton--secondary:hover:not(:disabled) {
+  background: var(--ostomy-color-surface);
+}
+
+.ostomyButton--danger {
+  background: var(--ostomy-color-background);
+  color: var(--ostomy-color-error);
+  border-color: var(--ostomy-color-error);
+}
+.ostomyButton--danger:hover:not(:disabled) {
+  background: var(--ostomy-color-surface);
+}
+
+.ostomyField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ostomy-space-xs);
+  margin-bottom: var(--ostomy-space-lg);
+}
+
+.ostomyField__label {
+  font-family: var(--ostomy-font-family);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ostomy-color-text);
+}
+
+.ostomyField__input {
+  font-family: var(--ostomy-font-family);
+  font-size: 1rem;
+  min-height: var(--ostomy-touch-target-min);
+  padding: var(--ostomy-space-sm) var(--ostomy-space-md);
+  border: 2px solid var(--ostomy-color-border);
+  border-radius: var(--ostomy-radius-md);
+  color: var(--ostomy-color-text);
+  background: var(--ostomy-color-background);
+}
+
+/* Never the only signal that a field is invalid: paired with the error
+   text below and with aria-invalid, so color is never the sole carrier. */
+.ostomyField__input[aria-invalid='true'] {
+  border-color: var(--ostomy-color-error);
+}
+
+.ostomyField__hint {
+  font-family: var(--ostomy-font-family);
+  font-size: 0.875rem;
+  color: var(--ostomy-color-text-muted);
+}
+
+.ostomyField__error {
+  font-family: var(--ostomy-font-family);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ostomy-color-error);
+  display: flex;
+  align-items: center;
+  gap: var(--ostomy-space-xs);
+}
+
+.ostomyToggleGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ostomy-space-xs);
+  margin-bottom: var(--ostomy-space-lg);
+  border: none;
+  padding: 0;
+  margin-inline: 0;
+}
+
+.ostomyToggleGroup__legend {
+  font-family: var(--ostomy-font-family);
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ostomy-color-text);
+  padding: 0;
+}
+
+.ostomyToggleGroup__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ostomy-space-sm);
+}
+
+.ostomyToggleGroup__option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ostomy-space-xs);
+  min-height: var(--ostomy-touch-target-min);
+  padding: var(--ostomy-space-sm) var(--ostomy-space-lg);
+  border: 2px solid var(--ostomy-color-border);
+  border-radius: var(--ostomy-radius-pill);
+  font-family: var(--ostomy-font-family);
+  font-size: 1rem;
+  color: var(--ostomy-color-text);
+  cursor: pointer;
+}
+
+.ostomyToggleGroup__option:has(input:checked) {
+  border-color: var(--ostomy-color-primary);
+  background: var(--ostomy-color-surface);
+  font-weight: 600;
+}
+
+.ostomyToggleGroup__radio {
+  width: 20px;
+  height: 20px;
+}
+
+.ostomyBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ostomy-space-xs);
+  padding: var(--ostomy-space-xs) var(--ostomy-space-md);
+  border-radius: var(--ostomy-radius-pill);
+  font-family: var(--ostomy-font-family);
+  font-size: 0.875rem;
+  font-weight: 600;
+  border: 2px solid var(--ostomy-color-border);
+  color: var(--ostomy-color-text);
+  background: var(--ostomy-color-surface);
+}
+
+.ostomyBadge--neutral {
+  border-color: var(--ostomy-color-border);
+}
+.ostomyBadge--info {
+  border-color: var(--ostomy-color-primary);
+  color: var(--ostomy-color-primary-strong);
+}
+.ostomyBadge--warning {
+  border-color: var(--ostomy-color-warning);
+  color: var(--ostomy-color-warning);
+}
+
+.ostomyBadge__icon {
+  flex: none;
+}
+
+.ostomyInlineNotice {
+  display: flex;
+  gap: var(--ostomy-space-md);
+  padding: var(--ostomy-space-lg);
+  border-radius: var(--ostomy-radius-md);
+  border: 2px solid var(--ostomy-color-border);
+  background: var(--ostomy-color-surface);
+  font-family: var(--ostomy-font-family);
+  color: var(--ostomy-color-text);
+  margin-bottom: var(--ostomy-space-lg);
+}
+
+.ostomyInlineNotice--warning {
+  border-color: var(--ostomy-color-warning);
+}
+.ostomyInlineNotice--error {
+  border-color: var(--ostomy-color-error);
+}
+.ostomyInlineNotice--success {
+  border-color: var(--ostomy-color-success);
+}
+
+.ostomyInlineNotice__icon {
+  flex: none;
+}
+
+.ostomyInlineNotice__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ostomy-space-xs);
+}
+
+.ostomyInlineNotice__title {
+  font-weight: 700;
+  margin: 0;
+}
