@@ -35,6 +35,8 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import prettierCompat from 'eslint-config-prettier';
 import i18next from 'eslint-plugin-i18next';
+import jsxA11y from 'eslint-plugin-jsx-a11y';
+import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 import ostomy from './plugin.js';
@@ -225,6 +227,49 @@ export default [
   {
     files: ['packages/core/i18n/**', 'packages/core/src/i18n/**'],
     rules: { 'i18next/no-literal-string': 'off' },
+  },
+
+  // 4. React accessibility and hooks correctness — added at P2.S3, the sprint
+  // that scaffolds the first React UI (packages/config's own prior comment
+  // flagged react/type-aware linting as deferred "to the sprint that
+  // scaffolds the first app," which this is). Scoped to the same `UI` glob
+  // as the no-literal-string rule above: these are JSX-authoring concerns,
+  // not something apps/api or packages/core has any use for.
+  //
+  // jsx-a11y is a static best-effort check (e.g. "this <img> has no `alt`
+  // attribute at all") — it cannot verify that an attribute's *content* is
+  // meaningful, is not the sole carrier of a state that also needs a text
+  // label, or reads at a 6th-8th grade level. It is a floor, not a
+  // replacement for `accessibility-copy-reviewer` or manual screen-reader
+  // testing.
+  //
+  // `react-hooks`'s own `configs.recommended` (v7) bundles the traditional
+  // `rules-of-hooks`/`exhaustive-deps` pair together with a dozen "React
+  // Compiler" static-analysis rules (`set-state-in-effect`,
+  // `set-state-in-render`, `immutability`, `gating`, ...). Those compiler
+  // rules assume the React Compiler is in the build (this repo has no
+  // `babel-plugin-react-compiler`) and, exercised against an ordinary
+  // hand-written data-fetching effect (`useEffect` that calls a loader,
+  // which calls a state setter from inside a `.then()`), `set-state-in-effect`
+  // flags it regardless of whether the update is synchronous or genuinely
+  // deferred to a microtask after a network round-trip — i.e. it flags the
+  // sanctioned "effect fetches, callback updates state on arrival" pattern
+  // React's own docs describe, not just the anti-pattern the rule's message
+  // names. Confirmed at P2.S3 against `apps/web`'s `PhysicianOutputView`
+  // before this narrowing was added. Only the two universally-applicable
+  // hook rules are enabled here; revisit if/when this repo adopts the React
+  // Compiler.
+  {
+    files: UI,
+    plugins: { 'jsx-a11y': jsxA11y, 'react-hooks': reactHooks },
+    languageOptions: {
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+    rules: {
+      ...jsxA11y.flatConfigs.recommended.rules,
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+    },
   },
 
   // Infrastructure and scripts: base rules apply, but they are not shipped

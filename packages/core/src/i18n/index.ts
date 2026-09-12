@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { web } from './locales/en/web.js';
 import { clinicalCaveats } from './locales/en/clinicalCaveats.js';
 import { common } from './locales/en/common.js';
 import { redFlags } from './locales/en/redFlags.js';
@@ -60,6 +61,7 @@ export const NAMESPACES = [
   'validationWarnings',
   'redFlags',
   'clinicalCaveats',
+  'web',
 ] as const;
 export type Namespace = (typeof NAMESPACES)[number];
 
@@ -69,6 +71,7 @@ export const en = {
   validationWarnings,
   redFlags,
   clinicalCaveats,
+  web,
 } satisfies Record<Namespace, Record<string, string>>;
 
 /**

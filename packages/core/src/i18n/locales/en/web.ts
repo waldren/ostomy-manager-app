@@ -1,0 +1,171 @@
+/*
+Copyright (C) 2026 Steven E. Waldren
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
+
+/**
+ * The `web` namespace: `apps/web`'s app-shell copy.
+ *
+ * Per-app namespace, **shared catalog**. ADR-0006 requires one catalog in
+ * this package with no per-app catalogs, and that is what this is — the
+ * namespace is scoped to one app because a web table heading is not mobile
+ * shell copy, but it lives here so a reviewer auditing patient-facing text
+ * reads all of it in one place. That single-place-to-audit property is the
+ * ADR's actual argument, and it survives namespacing by app; it would not
+ * survive a catalog inside `apps/web`.
+ *
+ * Scope discipline, which is what keeps this from drifting back toward two
+ * catalogs: **only copy with no clinical meaning belongs here** —
+ * navigation, sign-in, table and column headings, empty states. Anything
+ * clinical or cross-app (the Measured/Estimated labels, a validation
+ * message, a red-flag prompt) belongs in `common`, `validationErrors`,
+ * `validationWarnings` or `redFlags`, and is never duplicated here.
+ *
+ * Same key-naming convention as the rest of the catalog (see
+ * `packages/core/src/i18n/index.ts`): `*.label` is visible text,
+ * `*.a11yLabel` is an accessible name only when it must differ from the
+ * visible label, `*.hint` is supplementary text.
+ */
+export const web = {
+  // The table had no heading at all, so a screen-reader user navigating by
+  // heading met the chart's and then nothing.
+  // Shown when the day held more entries than one request returns. The total
+  // below it is then a total of what was fetched, not of the day — which is
+  // the whole reason this says so rather than letting the number stand.
+  // Announced when a day finishes loading. Without it the loading region
+  // was unmounted and the chart, heading and table appeared silently with
+  // focus unmoved — a screen-reader user pressed "previous day", heard
+  // "Loading…", then nothing, and had no way to know whether the rows under
+  // their cursor were the new day's or the old one's.
+  'physicianView.loadedStatus_one': '{{count}} entry loaded for {{date}}.',
+  'physicianView.loadedStatus_other': '{{count}} entries loaded for {{date}}.',
+  'physicianView.truncated.heading': 'This day may have more entries than are shown',
+  'physicianView.truncated.body':
+    'Only the {{limit}} most recent entries for this day were loaded, so the earliest ones are not shown and the total below may be lower than the true total. Check the full record before using this number.',
+  'physicianView.table.heading': 'All entries for this day',
+  'app.title': 'Ostomy Care',
+  // WCAG 2.4.2: the title names the page, not just the product. In an SPA it
+  // is also how a screen-reader user learns a route changed.
+  'app.documentTitle': '{{page}} — Ostomy Care',
+  'app.skipToMainContent': 'Skip to main content',
+
+  'auth.signInHeading': 'Sign in to your account',
+  // Second person removed throughout this namespace: every screen it serves
+  // is the PHYSICIAN view. "Your stoma output" told to a clinician is wrong,
+  // and it is the kind of wrong that erodes trust in a clinical tool on the
+  // first read.
+  'auth.signInBody': 'Sign in to see stoma output history.',
+  'auth.signInButton': 'Sign in',
+  // Shown during SESSION RESTORE, not sign-in. A returning user was told
+  // they were being signed in when they were not — and it was the only text
+  // on a page with no landmark and no heading.
+  'auth.restoringSessionHeading': 'Checking your sign-in',
+  'auth.restoringSession': 'One moment while we check you are still signed in.',
+  'auth.signOutButton': 'Sign out',
+  // "your care team" was addressed to a physician, who does not have one.
+  'auth.signInError':
+    'We could not sign you in. Please try again. If this keeps happening, contact support.',
+  'auth.sessionExpired': 'Your session ended. Please sign in again.',
+  // Says WHY, because a timeout with no explanation reads as a fault. Names
+  // the reason the timeout exists rather than the number of minutes: the
+  // timeout is deployment configuration, and copy that hardcodes "15
+  // minutes" goes silently wrong the moment a site changes it.
+  // The WCAG 2.2.1 warning. Written in the ROUTINE voice, not the red-flag
+  // voice: this is a housekeeping prompt, and dressing it as urgent would
+  // spend the alarm vocabulary P7's safety prompts need. It names no number
+  // of minutes because the timeout is deployment configuration — copy that
+  // hardcodes "15 minutes" goes silently wrong when a site changes it.
+  'auth.idleWarning.heading': 'Are you still there?',
+  'auth.idleWarning.body':
+    'This page has not been used for a little while, so it will sign you out soon. This keeps health information from being left on screen on a shared computer.',
+  'auth.idleWarning.stayButton': 'Stay signed in',
+  'auth.idleWarning.signOutButton': 'Sign out now',
+  'auth.sessionIdle':
+    'You were signed out because this page was not used for a while. This keeps patient information from staying on screen on a shared computer. Please sign in again.',
+
+  'nav.physicianView': 'Physician view',
+
+  // Deliberately names no audience and no patient.
+  //
+  // It read "Physician view — stoma output" over an intro saying "for this
+  // patient", and GET /api/v1/observations takes no patient identifier at
+  // all — the patient is the subject of the presented token. So the page
+  // can only ever render the signed-in account's own records, and both
+  // halves of that framing asserted something the data is not. Claiming a
+  // selected patient is the same class of defect as showing one day's
+  // figures under another day's heading.
+  'physicianView.heading': 'Stoma output',
+  'physicianView.intro': 'One day of stoma output, listed and charted by time of day.',
+  'physicianView.loading': 'Loading stoma output…',
+  'physicianView.loadError':
+    'We could not load stoma output right now. Please try again in a moment.',
+  'physicianView.retryButton': 'Try again',
+  'physicianView.previousDay': 'Show the previous day',
+  'physicianView.nextDay': 'Show the next day',
+  'physicianView.nextDayDisabledHint': 'Today is the most recent day that can be shown.',
+  // Two keys, because they name two different things. One key served as
+  // both the <nav> landmark's label and the date field's label, so a screen
+  // reader announced "Date shown navigation" — which describes nothing
+  // navigable — wrapping a field called "Date shown". It also meant a
+  // translator could not diverge them and an edit to one silently changed
+  // the other.
+  'physicianView.dateNavLabel': 'Choose which day to show',
+  'physicianView.selectedDate': 'Date shown',
+  'physicianView.unitsLabel': 'Show volumes in',
+  // Says plainly that the toggle is display-only. Without it a clinician can
+  // reasonably read a unit switch as changing what was recorded.
+  'physicianView.unitsHint':
+    'This changes how volumes are shown here. It does not change what was recorded.',
+  'physicianView.unitsMetric': 'Milliliters (mL)',
+  'physicianView.unitsImperial': 'Fluid ounces (oz)',
+
+  'physicianView.emptyState.heading': 'No stoma output logged for this day',
+  'physicianView.emptyState.body':
+    'No entries were recorded for this day. That does not always mean there was no output — it may not have been logged.',
+
+  // "not available yet" implied a loading or permissions problem that might
+  // resolve on refresh. It will not.
+  'physicianView.netBalance.heading': 'Daily net fluid balance: not shown',
+  // The refusal to render a number is correct and unchanged. The wording is
+  // not: "is not built yet" is roadmap language in a clinical view, and
+  // "could be trusted by mistake" is agentless — trusted by whom? — and puts
+  // the reader in the position of the person who might be mistaken. The
+  // replacement says what this page can and cannot tell you, then what to
+  // read instead.
+  'physicianView.netBalance.body':
+    'Net fluid balance needs fluid intake and stoma output together. This app does not record fluid intake yet, so there is no balance to show. The stoma output total for this day is listed below, and it is only one side of the balance.',
+
+  'physicianView.chart.heading': 'Stoma output over the day',
+  'physicianView.chart.caption':
+    'A chart of stoma output volume by time of day. The same values are listed in the table below this chart.',
+  'physicianView.chart.axisTime': 'Time of day',
+  // Names its unit. Without it the scale was ambiguous on a page carrying a
+  // metric/imperial toggle: the same bar means 350 mL or 12 fl oz depending
+  // on a control elsewhere, and the chart said neither.
+  'physicianView.chart.axisVolume': 'Output volume ({{unit}})',
+  // The trailing clause promised "…and anyone who prefers reading numbers to
+  // a picture" from inside a visually-hidden block no sighted user can reach.
+  'physicianView.chart.longDescriptionIntro': 'Text description of the chart above.',
+
+  'physicianView.table.caption': 'Stoma output entries for the selected day, earliest first',
+  'physicianView.table.columnTime': 'Time',
+  'physicianView.table.columnVolume': 'Volume',
+  'physicianView.table.columnMethod': 'Measured or estimated',
+  'physicianView.table.totalRowLabel': 'Total stoma output for this day',
+
+  'errors.notFoundHeading': 'Page not found',
+  'errors.notFoundBody': 'The page you are looking for does not exist.',
+  'errors.notFoundLinkHome': 'Go to the physician view',
+} as const;
