@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import {
   convertVolumeForDisplay,
-  sumCanonicalVolumesMl,
+  formatDailyVolumeTotalForDisplay,
   unitsForMeasurementSystem,
   type CanonicalVolume,
   type DisplayVolume,
@@ -102,14 +102,27 @@ export function toDisplayDailyTotal(
     value: entry.valueQuantity.value,
     unit: 'mL',
   }));
-  const totalMl = sumCanonicalVolumesMl(canonicalEntries);
 
   const uniformEntrySystem = resolveUniformEntrySystem(observations);
-  const entrySystemForRounding =
-    uniformEntrySystem ??
-    unitsForMeasurementSystem(targetSystem.system === 'metric' ? 'imperial' : 'metric');
+  if (uniformEntrySystem) {
+    // The ordinary case, deferred wholesale to core so ADR-0005's
+    // round-once rule has exactly one implementation.
+    return formatDailyVolumeTotalForDisplay(canonicalEntries, uniformEntrySystem, targetSystem);
+  }
 
-  return convertVolumeForDisplay(totalMl, entrySystemForRounding, targetSystem);
+  // A day mixing entered systems. There is no single same-system readback
+  // for the total to be exempt from rounding, so ADR-0005's whole-unit
+  // conversion rounding applies.
+  //
+  // Rounded explicitly here. It used to be produced by passing
+  // `convertVolumeForDisplay` the OPPOSITE of the target system — a value no
+  // entry was ever recorded in, chosen only because the cross-system branch
+  // happens to round. That worked, but it wrote a display decision into the
+  // slot that means "what the patient entered", so anyone reading it later
+  // sees a data fact where a rounding policy was intended, and any change to
+  // how core decides to round would silently change this total.
+  const total = formatDailyVolumeTotalForDisplay(canonicalEntries, targetSystem, targetSystem);
+  return { ...total, value: Math.round(total.value) };
 }
 
 /**

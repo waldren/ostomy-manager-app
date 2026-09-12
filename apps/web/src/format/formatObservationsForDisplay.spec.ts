@@ -103,6 +103,54 @@ describe('toDisplayDailyTotal', () => {
     expect(total.value).toBeGreaterThan(0);
   });
 
+  it('leaves a same-system total unrounded, because nothing was converted', () => {
+    // ADR-0005's whole-unit rounding applies to a CONVERSION. A metric
+    // patient reading a metric total is reading back what was entered, and
+    // rounding it would discard precision the record actually holds.
+    const total = toDisplayDailyTotal(
+      [
+        observation({ id: '1', valueQuantity: { value: 12.5, unit: 'mL' } }),
+        observation({ id: '2', valueQuantity: { value: 10.25, unit: 'mL' } }),
+      ],
+      unitsForMeasurementSystem('metric'),
+    );
+    expect(total).toEqual({ value: 22.75, unit: 'mL' });
+  });
+
+  it('rounds a total for a day that mixes entered systems, in either display system', () => {
+    // A patient who switched preference mid-day. There is no single
+    // same-system readback for the total, so it is a converted figure by
+    // definition and ADR-0005's rounding applies.
+    //
+    // This was previously achieved by handing the converter the OPPOSITE of
+    // the target system — a system no entry was recorded in — which meant
+    // the rounding depended on a fabricated data value rather than on a
+    // stated decision. Asserting on both display systems is what makes this
+    // test independent of that mechanism: the old trick and the current
+    // explicit rounding are only distinguishable if metric is checked too.
+    const mixedDay = [
+      observation({
+        id: '1',
+        valueQuantity: { value: 12.5, unit: 'mL' },
+        enteredMeasurementSystem: 'metric',
+      }),
+      observation({
+        id: '2',
+        valueQuantity: { value: 10.25, unit: 'mL' },
+        enteredMeasurementSystem: 'imperial',
+      }),
+    ];
+
+    const metricTotal = toDisplayDailyTotal(mixedDay, unitsForMeasurementSystem('metric'));
+    expect(metricTotal.unit).toBe('mL');
+    expect(Number.isInteger(metricTotal.value)).toBe(true);
+    expect(metricTotal.value).toBe(23);
+
+    const imperialTotal = toDisplayDailyTotal(mixedDay, unitsForMeasurementSystem('imperial'));
+    expect(imperialTotal.unit).toBe('oz');
+    expect(Number.isInteger(imperialTotal.value)).toBe(true);
+  });
+
   it('returns an exact metric total with no entries at all', () => {
     const total = toDisplayDailyTotal([], unitsForMeasurementSystem('metric'));
     expect(total).toEqual({ value: 0, unit: 'mL' });

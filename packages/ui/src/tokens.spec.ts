@@ -41,64 +41,95 @@ function cssCustomProperty(name: string): string {
   return captured.trim();
 }
 
+/**
+ * Every token leaf, and the custom property that must carry it.
+ *
+ * This map replaced three hand-maintained `it.each` lists, and the reason is
+ * the defect those lists had: they proved sync only for the names somebody
+ * remembered to add. A token added to `tokens.ts` with no corresponding CSS
+ * property — the exact drift a sync test exists to catch — passed silently,
+ * because nothing compared the set of tokens against the set of assertions.
+ *
+ * The completeness test below closes that. It fails both ways: a new token
+ * with no entry here, and an entry here for a token that no longer exists.
+ * The mapping is written out rather than derived because the names are not
+ * mechanical (`spacing.xs` is `--ostomy-space-xs`, `focus.outlineWidthPx` is
+ * `--ostomy-focus-width`), and inventing a transform to fit them would be a
+ * second thing that can silently be wrong.
+ */
+const CSS_PROPERTY_BY_TOKEN_PATH = {
+  'color.primary': 'color-primary',
+  'color.primaryStrong': 'color-primary-strong',
+  'color.text': 'color-text',
+  'color.textMuted': 'color-text-muted',
+  'color.textOnPrimary': 'color-text-on-primary',
+  'color.background': 'color-background',
+  'color.surface': 'color-surface',
+  'color.border': 'color-border',
+  'color.error': 'color-error',
+  'color.warning': 'color-warning',
+  'color.success': 'color-success',
+  'spacing.xs': 'space-xs',
+  'spacing.sm': 'space-sm',
+  'spacing.md': 'space-md',
+  'spacing.lg': 'space-lg',
+  'spacing.xl': 'space-xl',
+  'spacing.xxl': 'space-xxl',
+  'spacing.xxxl': 'space-xxxl',
+  'radius.sm': 'radius-sm',
+  'radius.md': 'radius-md',
+  'radius.lg': 'radius-lg',
+  'radius.pill': 'radius-pill',
+  'typography.baseFontSizePx': 'font-size-base',
+  'typography.lineHeight': 'line-height',
+  'typography.fontFamily': 'font-family',
+  'touchTarget.minSize': 'touch-target-min',
+  'focus.outlineWidthPx': 'focus-width',
+  'focus.outlineOffsetPx': 'focus-offset',
+  'focus.colorInner': 'focus-color-inner',
+  'focus.colorOuter': 'focus-color-outer',
+} as const satisfies Record<string, string>;
+
+/** Unitless by nature; every other number in `tokens` is a pixel measure. */
+const UNITLESS_TOKEN_PATHS = new Set(['typography.lineHeight']);
+
+/** Walks `tokens` to its leaves, yielding dotted paths. */
+function tokenLeafPaths(value: unknown, prefix = ''): string[] {
+  if (typeof value !== 'object' || value === null) {
+    return [prefix];
+  }
+  return Object.entries(value).flatMap(([key, child]) =>
+    tokenLeafPaths(child, prefix ? `${prefix}.${key}` : key),
+  );
+}
+
+function tokenValue(path: string): unknown {
+  return path
+    .split('.')
+    .reduce<unknown>(
+      (current, key) => (current as Record<string, unknown>)[key],
+      tokens as unknown,
+    );
+}
+
 describe('design tokens stay in sync with styles.css', () => {
-  it.each([
-    ['color-primary', tokens.color.primary],
-    ['color-primary-strong', tokens.color.primaryStrong],
-    ['color-text', tokens.color.text],
-    ['color-text-muted', tokens.color.textMuted],
-    ['color-text-on-primary', tokens.color.textOnPrimary],
-    ['color-background', tokens.color.background],
-    ['color-surface', tokens.color.surface],
-    ['color-border', tokens.color.border],
-    ['color-error', tokens.color.error],
-    ['color-warning', tokens.color.warning],
-    ['color-success', tokens.color.success],
-  ])('color custom property --ostomy-%s matches tokens.ts', (name, value) => {
-    expect(cssCustomProperty(name).toLowerCase()).toBe(value.toLowerCase());
+  it('maps every token in tokens.ts, and nothing that is not one', () => {
+    // The test that makes the rest of this block trustworthy. Without it,
+    // adding a token and forgetting its CSS property is invisible.
+    expect(tokenLeafPaths(tokens).sort()).toEqual(Object.keys(CSS_PROPERTY_BY_TOKEN_PATH).sort());
   });
 
-  it.each([
-    ['space-xs', tokens.spacing.xs],
-    ['space-sm', tokens.spacing.sm],
-    ['space-md', tokens.spacing.md],
-    ['space-lg', tokens.spacing.lg],
-    ['space-xl', tokens.spacing.xl],
-    ['space-xxl', tokens.spacing.xxl],
-    ['space-xxxl', tokens.spacing.xxxl],
-  ])('spacing custom property --ostomy-%s matches tokens.ts', (name, value) => {
-    expect(cssCustomProperty(name)).toBe(`${value}px`);
-  });
-
-  it.each([
-    ['radius-sm', tokens.radius.sm],
-    ['radius-md', tokens.radius.md],
-    ['radius-lg', tokens.radius.lg],
-    ['radius-pill', tokens.radius.pill],
-  ])('radius custom property --ostomy-%s matches tokens.ts', (name, value) => {
-    expect(cssCustomProperty(name)).toBe(`${value}px`);
-  });
-
-  it('touch-target minimum matches tokens.ts', () => {
-    expect(cssCustomProperty('touch-target-min')).toBe(`${tokens.touchTarget.minSize}px`);
-  });
-
-  it('focus ring values match tokens.ts', () => {
-    expect(cssCustomProperty('focus-width')).toBe(`${tokens.focus.outlineWidthPx}px`);
-    expect(cssCustomProperty('focus-offset')).toBe(`${tokens.focus.outlineOffsetPx}px`);
-    expect(cssCustomProperty('focus-color-inner').toLowerCase()).toBe(
-      tokens.focus.colorInner.toLowerCase(),
-    );
-    expect(cssCustomProperty('focus-color-outer').toLowerCase()).toBe(
-      tokens.focus.colorOuter.toLowerCase(),
-    );
-  });
-
-  it('typography values match tokens.ts', () => {
-    expect(cssCustomProperty('font-size-base')).toBe(`${tokens.typography.baseFontSizePx}px`);
-    expect(cssCustomProperty('line-height')).toBe(String(tokens.typography.lineHeight));
-    expect(cssCustomProperty('font-family')).toBe(tokens.typography.fontFamily);
-  });
+  it.each(Object.entries(CSS_PROPERTY_BY_TOKEN_PATH))(
+    'tokens.%s is carried by --ostomy-%s',
+    (path, property) => {
+      const value = tokenValue(path);
+      const expected =
+        typeof value === 'number' && !UNITLESS_TOKEN_PATHS.has(path) ? `${value}px` : String(value);
+      // Lowercased on both sides: hex colours and font-family names differ
+      // in case between the two files without differing in meaning.
+      expect(cssCustomProperty(property).toLowerCase()).toBe(expected.toLowerCase());
+    },
+  );
 });
 
 /**
