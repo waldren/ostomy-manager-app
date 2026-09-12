@@ -27,10 +27,24 @@ export function RequireAuth({ children }: { readonly children: ReactNode }) {
   const { t } = useTranslation();
 
   if (status === 'initializing') {
+    // A real `<main id="main-content">` with an `<h1>`, not a bare `<p>`.
+    //
+    // `App` renders the skip link unconditionally, so during every session
+    // restore the first tab stop was "Skip to main content" pointing at a
+    // target that did not exist (WCAG 2.4.1), on a page with no landmark and
+    // no heading (1.3.1, 2.4.6). Session restore is not an edge case — it is
+    // every returning visit.
+    //
+    // `tabIndex={-1}` because Safari/VoiceOver does not move the reading
+    // cursor on fragment navigation without it, and that combination is
+    // disproportionately common in this population.
     return (
-      <p role="status" aria-live="polite">
-        {t('auth.signingIn')}
-      </p>
+      <main id="main-content" tabIndex={-1}>
+        <h1>{t('auth.restoringSessionHeading')}</h1>
+        <p role="status" aria-live="polite">
+          {t('auth.restoringSession')}
+        </p>
+      </main>
     );
   }
 

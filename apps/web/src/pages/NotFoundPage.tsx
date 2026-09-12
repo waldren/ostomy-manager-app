@@ -22,7 +22,7 @@ export function NotFoundPage() {
   const { t } = useTranslation();
 
   return (
-    <main id="main-content">
+    <main id="main-content" tabIndex={-1}>
       <h1>{t('errors.notFoundHeading')}</h1>
       <p>{t('errors.notFoundBody')}</p>
       <Link to="/">{t('errors.notFoundLinkHome')}</Link>

@@ -49,59 +49,69 @@ export function OutputChart({ entries }: OutputChartProps) {
   const maxVolume = Math.max(1, ...entries.map((entry) => entry.display.value));
 
   return (
-    <figure>
-      <figcaption>
-        <h3>{t('physicianView.chart.heading')}</h3>
-        <p>{t('physicianView.chart.caption')}</p>
-      </figcaption>
+    // The heading is `<h2>` and sits OUTSIDE `<figure>`.
+    //
+    // Two defects in one line before: it was `<h3>` under the page's only
+    // `<h1>`, so the document skipped a level (WCAG 1.3.1) on a page a
+    // screen-reader user navigates by heading — and there were exactly two
+    // headings on it. And a heading inside `<figcaption>` is swallowed into
+    // the figure's accessible name, which computed to the heading
+    // concatenated with the whole caption sentence.
+    <>
+      <h2>{t('physicianView.chart.heading')}</h2>
+      <figure>
+        <figcaption>
+          <p>{t('physicianView.chart.caption')}</p>
+        </figcaption>
 
-      <p>{t('physicianView.chart.axisVolume')}</p>
-      <svg
-        viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
-        width="100%"
-        role="presentation"
-        aria-hidden="true"
-      >
-        <line x1={0} y1={CHART_HEIGHT} x2={CHART_WIDTH} y2={CHART_HEIGHT} stroke="currentColor" />
-        {entries.map((entry) => {
-          // UTC, not local. `packages/core`'s `formatDateTime` pins
-          // `timeZone: 'UTC'` deliberately, so the table beside this chart
-          // and this chart's own screen-reader description are both UTC.
-          // Positioning bars by local hours made them disagree: for a
-          // clinician at UTC-6, an entry listed as "2:00 AM" was drawn at the
-          // 21:00 position. A chart that contradicts its own accessible
-          // equivalent fails WCAG 1.1.1 on the terms this component set
-          // itself, and it breaks the output-over-time correlation the
-          // physician view exists to support (SRS §3.5).
-          const minutesOfDay =
-            entry.effectiveDateTime.getUTCHours() * 60 + entry.effectiveDateTime.getUTCMinutes();
-          const x = (minutesOfDay / MINUTES_PER_DAY) * CHART_WIDTH;
-          const barHeight = (entry.display.value / maxVolume) * (CHART_HEIGHT - 10);
-          return (
-            <rect
-              key={entry.id}
-              x={Math.max(0, x - 4)}
-              y={CHART_HEIGHT - barHeight}
-              width={8}
-              height={barHeight}
-              fill="currentColor"
-            />
-          );
-        })}
-      </svg>
-      <p>{t('physicianView.chart.axisTime')}</p>
+        <p>{t('physicianView.chart.axisVolume')}</p>
+        <svg
+          viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+          width="100%"
+          role="presentation"
+          aria-hidden="true"
+        >
+          <line x1={0} y1={CHART_HEIGHT} x2={CHART_WIDTH} y2={CHART_HEIGHT} stroke="currentColor" />
+          {entries.map((entry) => {
+            // UTC, not local. `packages/core`'s `formatDateTime` pins
+            // `timeZone: 'UTC'` deliberately, so the table beside this chart
+            // and this chart's own screen-reader description are both UTC.
+            // Positioning bars by local hours made them disagree: for a
+            // clinician at UTC-6, an entry listed as "2:00 AM" was drawn at the
+            // 21:00 position. A chart that contradicts its own accessible
+            // equivalent fails WCAG 1.1.1 on the terms this component set
+            // itself, and it breaks the output-over-time correlation the
+            // physician view exists to support (SRS §3.5).
+            const minutesOfDay =
+              entry.effectiveDateTime.getUTCHours() * 60 + entry.effectiveDateTime.getUTCMinutes();
+            const x = (minutesOfDay / MINUTES_PER_DAY) * CHART_WIDTH;
+            const barHeight = (entry.display.value / maxVolume) * (CHART_HEIGHT - 10);
+            return (
+              <rect
+                key={entry.id}
+                x={Math.max(0, x - 4)}
+                y={CHART_HEIGHT - barHeight}
+                width={8}
+                height={barHeight}
+                fill="currentColor"
+              />
+            );
+          })}
+        </svg>
+        <p>{t('physicianView.chart.axisTime')}</p>
 
-      <VisuallyHidden as="div">
-        <p>{t('physicianView.chart.longDescriptionIntro')}</p>
-        <ul>
-          {entries.map((entry) => (
-            <li key={entry.id}>
-              {formatDateTime(entry.effectiveDateTime, undefined, CLINICAL_DATE_TIME_OPTIONS)}:{' '}
-              {formatVolumeQuantity(entry.display)}
-            </li>
-          ))}
-        </ul>
-      </VisuallyHidden>
-    </figure>
+        <VisuallyHidden as="div">
+          <p>{t('physicianView.chart.longDescriptionIntro')}</p>
+          <ul>
+            {entries.map((entry) => (
+              <li key={entry.id}>
+                {formatDateTime(entry.effectiveDateTime, undefined, CLINICAL_DATE_TIME_OPTIONS)}:{' '}
+                {formatVolumeQuantity(entry.display)}
+              </li>
+            ))}
+          </ul>
+        </VisuallyHidden>
+      </figure>
+    </>
   );
 }

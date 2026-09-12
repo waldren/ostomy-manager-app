@@ -34,28 +34,38 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * semantic color (error, warning, success) pairs it with a text label or
  * icon at the call site.
  */
+/*
+ * Every ratio quoted below is ASSERTED by `tokens.spec.ts`, not estimated.
+ *
+ * The previous figures were all wrong — every one understated the real
+ * contrast (primary was documented at ~5.6:1 and measures 8.70:1). The
+ * palette passed regardless, which is exactly why it went unnoticed: a
+ * comment is not a control, and these numbers are the budget a future
+ * contributor tunes against. `success` documented at ~4.6:1 reads as having
+ * no headroom when it has 6.56:1.
+ */
 export const tokens = {
   color: {
-    /** Primary interactive color (buttons, links, focus accents). ~5.6:1 on white. */
+    /** Primary interactive color (buttons, links). 8.70:1 on white, 8.03:1 on `surface`. */
     primary: '#0a4c8a',
     /** Hover/active state for primary. Darker, so contrast only improves. */
     primaryStrong: '#07335c',
-    /** Body text. ~15.6:1 on white. */
+    /** Body text. 17.22:1 on white, 15.90:1 on `surface`. */
     text: '#1b1b1b',
-    /** Secondary/supporting text (hints, captions). Still >= 4.5:1 on white. */
+    /** Secondary/supporting text (hints, captions). 9.68:1 on white, 8.94:1 on `surface`. */
     textMuted: '#3d4551',
     /** Text rendered on a `primary`-colored surface. */
     textOnPrimary: '#ffffff',
     background: '#ffffff',
     /** Subtle surface for cards/panels, distinguishable from `background` without relying on color alone (paired with a border). */
     surface: '#f4f6f8',
-    /** Default border/divider color. >= 3:1 on white (WCAG 1.4.11, non-text contrast). */
+    /** Default border/divider color. 5.92:1 on white, 5.46:1 on `surface` (WCAG 1.4.11 needs 3:1). */
     border: '#5b6572',
-    /** Hard block / destructive state. ~6.1:1 on white. */
+    /** Hard block / destructive state. 7.77:1 on white, 7.17:1 on `surface`. */
     error: '#a5140a',
-    /** Soft-warning state. ~5.2:1 on white — never the sole carrier of the warning; always paired with text. */
+    /** Soft-warning state. 7.41:1 on white, 6.84:1 on `surface` — never the sole carrier of the warning; always paired with text. */
     warning: '#7a4b00',
-    /** Positive/confirmation state. ~4.6:1 on white. */
+    /** Positive/confirmation state. 6.56:1 on white, 6.06:1 on `surface`. */
     success: '#1e6b30',
   },
   spacing: {
@@ -95,10 +105,28 @@ export const tokens = {
   touchTarget: {
     minSize: 44,
   },
+  /**
+   * Two tones, not one, and the pair is load-bearing.
+   *
+   * No single solid colour clears WCAG 1.4.11's 3:1 against white,
+   * `surface` AND the primary button's own fill simultaneously — the
+   * previous single `#2491ff` measured 3.20:1 on white and **2.95:1 on
+   * `surface`**, a fail, and `surface` is exactly where focus lands (the
+   * "Try again" button inside an InlineNotice, the selected ToggleGroup
+   * option).
+   *
+   * A dark inner ring against a light outer one contrasts at 5.39:1 with
+   * each other, so the indicator is distinguishable from whatever it sits
+   * on: wherever one tone is low-contrast against the backdrop, the other
+   * is not.
+   */
   focus: {
     outlineWidthPx: 3,
     outlineOffsetPx: 2,
-    color: '#2491ff',
+    /** 17.22:1 on white, 15.90:1 on `surface`. */
+    colorInner: '#1b1b1b',
+    /** 5.39:1 against `colorInner`, which is what makes the pair work on any backdrop. */
+    colorOuter: '#2491ff',
   },
 } as const;
 

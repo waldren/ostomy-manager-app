@@ -86,12 +86,86 @@ describe('design tokens stay in sync with styles.css', () => {
   it('focus ring values match tokens.ts', () => {
     expect(cssCustomProperty('focus-width')).toBe(`${tokens.focus.outlineWidthPx}px`);
     expect(cssCustomProperty('focus-offset')).toBe(`${tokens.focus.outlineOffsetPx}px`);
-    expect(cssCustomProperty('focus-color').toLowerCase()).toBe(tokens.focus.color.toLowerCase());
+    expect(cssCustomProperty('focus-color-inner').toLowerCase()).toBe(
+      tokens.focus.colorInner.toLowerCase(),
+    );
+    expect(cssCustomProperty('focus-color-outer').toLowerCase()).toBe(
+      tokens.focus.colorOuter.toLowerCase(),
+    );
   });
 
   it('typography values match tokens.ts', () => {
     expect(cssCustomProperty('font-size-base')).toBe(`${tokens.typography.baseFontSizePx}px`);
     expect(cssCustomProperty('line-height')).toBe(String(tokens.typography.lineHeight));
     expect(cssCustomProperty('font-family')).toBe(tokens.typography.fontFamily);
+  });
+});
+
+/**
+ * Contrast, asserted rather than described.
+ *
+ * Every ratio in `tokens.ts` used to be a hand-written estimate, and every
+ * one was wrong — all understated, so the palette passed and nobody noticed.
+ * Meanwhile the single-tone focus ring measured 2.95:1 on `surface`, an
+ * actual WCAG 1.4.11 failure that a comment could not catch.
+ *
+ * This is the one accessibility property here that is genuinely
+ * machine-checkable, so it is checked. It is a floor, not coverage: no
+ * computation can tell you a state is carried by colour alone, that copy
+ * reads at the wrong level, or that a chart disagrees with its table.
+ */
+function relativeLuminance(hex: string): number {
+  const channels = (hex.replace('#', '').match(/../g) ?? []).map((pair) => {
+    const value = Number.parseInt(pair, 16) / 255;
+    return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!;
+}
+
+function contrastRatio(a: string, b: string): number {
+  const [high, low] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (high! + 0.05) / (low! + 0.05);
+}
+
+describe('colour contrast', () => {
+  const { background, surface } = tokens.color;
+
+  // Everything rendered as text, against both surfaces it can sit on.
+  it.each([
+    ['primary', tokens.color.primary],
+    ['text', tokens.color.text],
+    ['textMuted', tokens.color.textMuted],
+    ['error', tokens.color.error],
+    ['warning', tokens.color.warning],
+    ['success', tokens.color.success],
+  ])('%s clears 4.5:1 on background and on surface', (_name, colour) => {
+    expect(contrastRatio(colour, background)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(colour, surface)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('border clears 3:1 on background and on surface (WCAG 1.4.11, non-text)', () => {
+    expect(contrastRatio(tokens.color.border, background)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(tokens.color.border, surface)).toBeGreaterThanOrEqual(3);
+  });
+
+  it('text on a primary-coloured surface clears 4.5:1', () => {
+    expect(contrastRatio(tokens.color.textOnPrimary, tokens.color.primary)).toBeGreaterThanOrEqual(
+      4.5,
+    );
+  });
+
+  it('the two focus tones contrast with each other, which is what makes the ring work anywhere', () => {
+    // The pair is the control. A single tone cannot clear 3:1 against white,
+    // surface AND the primary button fill at once — so the indicator is
+    // judged by its own inner/outer boundary instead, and that boundary is
+    // backdrop-independent.
+    expect(contrastRatio(tokens.focus.colorInner, tokens.focus.colorOuter)).toBeGreaterThanOrEqual(
+      3,
+    );
+  });
+
+  it('the inner focus tone clears 3:1 on both page surfaces', () => {
+    expect(contrastRatio(tokens.focus.colorInner, background)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(tokens.focus.colorInner, surface)).toBeGreaterThanOrEqual(3);
   });
 });

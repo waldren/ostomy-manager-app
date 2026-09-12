@@ -124,7 +124,7 @@ export function PhysicianOutputView() {
   const targetSystem = unitsForMeasurementSystem(displaySystem);
 
   return (
-    <main id="main-content">
+    <main id="main-content" tabIndex={-1}>
       <h1>{t('physicianView.heading')}</h1>
       <p>{t('physicianView.intro')}</p>
 
@@ -161,6 +161,7 @@ export function PhysicianOutputView() {
       {state.status === 'loaded' && state.observations.length > 0 ? (
         <>
           <OutputChart entries={toDisplayOutputEntries(state.observations, targetSystem)} />
+          <h2>{t('physicianView.table.heading')}</h2>
           <OutputTable
             entries={toDisplayOutputEntries(state.observations, targetSystem)}
             total={toDisplayDailyTotal(state.observations, targetSystem)}

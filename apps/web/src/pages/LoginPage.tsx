@@ -30,7 +30,7 @@ export function LoginPage() {
   }
 
   return (
-    <main id="main-content">
+    <main id="main-content" tabIndex={-1}>
       <h1>{t('auth.signInHeading')}</h1>
       <p>{t('auth.signInBody')}</p>
 

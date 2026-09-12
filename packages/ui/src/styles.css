@@ -59,7 +59,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   --ostomy-focus-width: 3px;
   --ostomy-focus-offset: 2px;
-  --ostomy-focus-color: #2491ff;
+  --ostomy-focus-color-inner: #1b1b1b;
+  --ostomy-focus-color-outer: #2491ff;
 }
 
 /*
@@ -71,9 +72,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 .ostomyFocusable:focus {
   outline: none;
 }
+/*
+ * TWO-TONE, and that is the point: a dark inner ring plus a light outer one.
+ *
+ * A single hue cannot satisfy WCAG 1.4.11 here. The previous ring (#2491ff)
+ * measured 3.20:1 on white — marginal — and 2.95:1 on --ostomy-color-surface,
+ * a fail. Both surfaces are where focus actually lands: the "Try again"
+ * button sits inside an InlineNotice (surface), and the selected ToggleGroup
+ * option paints surface behind the control the user is on. No single solid
+ * colour clears 3:1 against white, surface AND the primary button's own fill
+ * at once, so the standard two-tone technique is used instead — whichever
+ * tone is low-contrast against a given backdrop, the other one is not.
+ */
 .ostomyFocusable:focus-visible {
-  outline: var(--ostomy-focus-width) solid var(--ostomy-focus-color);
+  outline: var(--ostomy-focus-width) solid var(--ostomy-focus-color-inner);
   outline-offset: var(--ostomy-focus-offset);
+  box-shadow: 0 0 0 calc(var(--ostomy-focus-width) + var(--ostomy-focus-offset))
+    var(--ostomy-focus-color-outer);
 }
 
 .ostomyVisuallyHidden {
@@ -120,17 +135,39 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   justify-content: center;
   gap: var(--ostomy-space-sm);
 }
-.ostomyButton:disabled,
-.ostomyButton[aria-disabled='true'] {
+/*
+ * `:disabled` may dim: WCAG 1.4.3 exempts inactive components, and a natively
+ * disabled control is out of the tab order entirely.
+ */
+.ostomyButton:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+/*
+ * `[aria-disabled]` may NOT. It is used precisely where a control must stay
+ * focusable so its explanatory hint remains reachable (DateNav's next-day
+ * button) — a control deliberately kept in the tab order and the
+ * accessibility tree is not "inactive", so the 1.4.3 exception does not
+ * apply. At opacity 0.6 the secondary button's label composited over white
+ * measured 3.21:1, and the whole design depends on a low-vision user
+ * READING that label to understand why the control will not move.
+ *
+ * Unavailability is conveyed by colour and cursor instead, both of which
+ * keep the text above 4.5:1.
+ */
+.ostomyButton[aria-disabled='true'] {
+  cursor: not-allowed;
+  color: var(--ostomy-color-text-muted);
+  border-color: var(--ostomy-color-border);
+  background: var(--ostomy-color-surface);
 }
 
 .ostomyButton--primary {
   background: var(--ostomy-color-primary);
   color: var(--ostomy-color-text-on-primary);
 }
-.ostomyButton--primary:hover:not(:disabled) {
+.ostomyButton--primary:hover:not(:disabled):not([aria-disabled='true']) {
   background: var(--ostomy-color-primary-strong);
 }
 
@@ -139,7 +176,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   color: var(--ostomy-color-primary);
   border-color: var(--ostomy-color-primary);
 }
-.ostomyButton--secondary:hover:not(:disabled) {
+.ostomyButton--secondary:hover:not(:disabled):not([aria-disabled='true']) {
   background: var(--ostomy-color-surface);
 }
 
@@ -148,7 +185,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   color: var(--ostomy-color-error);
   border-color: var(--ostomy-color-error);
 }
-.ostomyButton--danger:hover:not(:disabled) {
+.ostomyButton--danger:hover:not(:disabled):not([aria-disabled='true']) {
   background: var(--ostomy-color-surface);
 }
 

@@ -39,13 +39,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * visible label, `*.hint` is supplementary text.
  */
 export const web = {
+  // The table had no heading at all, so a screen-reader user navigating by
+  // heading met the chart's and then nothing.
+  'physicianView.table.heading': 'All entries for this day',
   'app.title': 'Ostomy Care',
+  // WCAG 2.4.2: the title names the page, not just the product. In an SPA it
+  // is also how a screen-reader user learns a route changed.
+  'app.documentTitle': '{{page}} — Ostomy Care',
   'app.skipToMainContent': 'Skip to main content',
 
   'auth.signInHeading': 'Sign in to your account',
   'auth.signInBody': 'Sign in to see your stoma output history.',
   'auth.signInButton': 'Sign in',
-  'auth.signingIn': 'Signing you in…',
+  // Shown during SESSION RESTORE, not sign-in. A returning user was told
+  // they were being signed in when they were not — and it was the only text
+  // on a page with no landmark and no heading.
+  'auth.restoringSessionHeading': 'Checking your sign-in',
+  'auth.restoringSession': 'One moment while we check you are still signed in.',
   'auth.signOutButton': 'Sign out',
   'auth.signInError':
     'We could not sign you in. Please try again, or contact your care team if this keeps happening.',
