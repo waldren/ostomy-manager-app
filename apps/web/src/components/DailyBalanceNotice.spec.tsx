@@ -23,8 +23,11 @@ import { DailyBalanceNotice } from './DailyBalanceNotice.js';
 describe('DailyBalanceNotice — Daily Net Fluid Balance renders as explicitly incomplete', () => {
   it('states plainly that the figure is not shown, rather than rendering any number', () => {
     render(<DailyBalanceNotice />);
-    expect(screen.getByText('Daily net fluid balance: not available yet')).toBeVisible();
-    expect(screen.getByText(/fluid intake logging is not built yet/i)).toBeVisible();
+    expect(screen.getByText('Daily net fluid balance: not shown')).toBeVisible();
+    // The substantive claim: it says WHY there is no number and what to read
+    // instead, rather than just omitting the figure.
+    expect(screen.getByText(/does not record fluid intake yet/i)).toBeVisible();
+    expect(screen.getByText(/only one side of the balance/i)).toBeVisible();
   });
 
   it('never renders a numeric balance value', () => {

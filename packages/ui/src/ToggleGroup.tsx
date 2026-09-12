@@ -29,6 +29,12 @@ export interface ToggleGroupProps<TValue extends string> {
   readonly value: TValue | undefined;
   readonly onChange: (value: TValue) => void;
   readonly required?: boolean;
+  /**
+   * Supplementary text explaining what the control does, rendered and
+   * associated via `aria-describedby`. Not the accessible name — that is
+   * `legend`.
+   */
+  readonly hint?: ReactNode;
   /** e.g. the "required field" message for AC 2.2 AC1 (SRS §7) when no option was selected. */
   readonly error?: ReactNode;
 }
@@ -50,9 +56,14 @@ export function ToggleGroup<TValue extends string>({
   value,
   onChange,
   required,
+  hint,
   error,
 }: ToggleGroupProps<TValue>) {
   const errorId = error ? `${name}-error` : undefined;
+  const hintId = hint ? `${name}-hint` : undefined;
+  // Both, when both exist. An error must never REPLACE a hint that explains
+  // what the control does — the user needs the instruction and the problem.
+  const describedBy = [hintId, errorId].filter(Boolean).join(' ') || undefined;
 
   const legendId = `${name}-legend`;
 
@@ -77,11 +88,16 @@ export function ToggleGroup<TValue extends string>({
       aria-labelledby={legendId}
       aria-required={required || undefined}
       aria-invalid={error ? true : undefined}
-      aria-describedby={errorId}
+      aria-describedby={describedBy}
     >
       <legend id={legendId} className="ostomyToggleGroup__legend">
         {legend}
       </legend>
+      {hint ? (
+        <p id={hintId} className="ostomyField__hint">
+          {hint}
+        </p>
+      ) : null}
       <div className="ostomyToggleGroup__options">
         {options.map((option) => {
           const optionId = `${name}-${option.value}`;
@@ -100,7 +116,7 @@ export function ToggleGroup<TValue extends string>({
                 // lands on a child radio, and the error text is precisely the
                 // instruction the user needs at the moment they arrive to fix
                 // it.
-                aria-describedby={errorId}
+                aria-describedby={describedBy}
               />
               {option.label}
             </label>

@@ -38,6 +38,7 @@ export function UnitToggle({ value, onChange }: UnitToggleProps) {
     <ToggleGroup<MeasurementSystem>
       name="display-units"
       legend={t('physicianView.unitsLabel')}
+      hint={t('physicianView.unitsHint')}
       value={value}
       onChange={onChange}
       options={[

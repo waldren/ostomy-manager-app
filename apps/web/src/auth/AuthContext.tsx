@@ -51,7 +51,8 @@ export interface AuthContextValue {
   /** Set only when sign-in itself failed (a rejected callback, a failed exchange) — not a routing decision. */
   readonly error: string | undefined;
   readonly signIn: () => Promise<void>;
-  readonly signOut: () => void;
+  /** `reason` is an error key set when the session ended on its own — see the implementation. Callers signing the user out on purpose pass nothing. */
+  readonly signOut: (reason?: string) => void;
   /** Passed directly to `createApiClient`'s `getAccessToken` option. Refreshes ahead of expiry when a refresh token is available. */
   readonly getAccessToken: () => Promise<string | undefined>;
 }
@@ -128,7 +129,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
    * after the callback that needs it.
    */
   const tokensRef = useRef<StoredTokens | undefined>(undefined);
-  const signOutRef = useRef<() => void>(() => undefined);
+  const signOutRef = useRef<(reason?: string) => void>(() => undefined);
   /** The in-flight refresh, shared by concurrent callers. See `getAccessToken`. */
   const refreshInFlight = useRef<Promise<string | undefined> | undefined>(undefined);
   // StrictMode/dev double-invokes effects; the authorization code is single-use,
@@ -257,10 +258,18 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     window.location.assign(authorizeUrl.toString());
   }, []);
 
-  const signOut = useCallback(() => {
+  /**
+   * `reason` is set when the session ended on its own rather than by the
+   * user asking. An expired or rejected refresh token dropped the clinician
+   * to the login page with no explanation at all, which reads as the app
+   * having logged them out at random; the catalog already carried
+   * `auth.sessionExpired` for exactly this and nothing used it.
+   */
+  const signOut = useCallback((reason?: string) => {
     clearTokens();
     clearPkceState();
     tokensRef.current = undefined;
+    setError(reason);
     setStatus('unauthenticated');
   }, []);
 
@@ -298,7 +307,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       return current.accessToken;
     }
     if (!current.refreshToken) {
-      signOutRef.current();
+      signOutRef.current('session_expired');
       return undefined;
     }
     // Join the in-flight refresh rather than starting a second one.
@@ -321,7 +330,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
         tokensRef.current = next;
         return next.accessToken;
       } catch {
-        signOutRef.current();
+        signOutRef.current('session_expired');
         return undefined;
       } finally {
         refreshInFlight.current = undefined;

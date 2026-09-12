@@ -49,7 +49,11 @@ export const web = {
   'app.skipToMainContent': 'Skip to main content',
 
   'auth.signInHeading': 'Sign in to your account',
-  'auth.signInBody': 'Sign in to see your stoma output history.',
+  // Second person removed throughout this namespace: every screen it serves
+  // is the PHYSICIAN view. "Your stoma output" told to a clinician is wrong,
+  // and it is the kind of wrong that erodes trust in a clinical tool on the
+  // first read.
+  'auth.signInBody': 'Sign in to see stoma output history.',
   'auth.signInButton': 'Sign in',
   // Shown during SESSION RESTORE, not sign-in. A returning user was told
   // they were being signed in when they were not — and it was the only text
@@ -57,15 +61,16 @@ export const web = {
   'auth.restoringSessionHeading': 'Checking your sign-in',
   'auth.restoringSession': 'One moment while we check you are still signed in.',
   'auth.signOutButton': 'Sign out',
+  // "your care team" was addressed to a physician, who does not have one.
   'auth.signInError':
-    'We could not sign you in. Please try again, or contact your care team if this keeps happening.',
+    'We could not sign you in. Please try again. If this keeps happening, contact your system administrator.',
   'auth.sessionExpired': 'Your session ended. Please sign in again.',
 
   'nav.physicianView': 'Physician view',
 
   'physicianView.heading': 'Physician view — stoma output',
   'physicianView.intro':
-    'This page shows your stoma output for one day. Each signal is shown on its own — nothing is combined into a single score.',
+    'This page shows one day of stoma output for this patient. Each hydration signal is shown on its own — nothing is combined into a single score.',
   'physicianView.loading': 'Loading stoma output…',
   'physicianView.loadError':
     'We could not load stoma output right now. Please try again in a moment.',
@@ -75,23 +80,36 @@ export const web = {
   'physicianView.nextDayDisabledHint': 'You cannot view a day in the future.',
   'physicianView.selectedDate': 'Date shown',
   'physicianView.unitsLabel': 'Show volumes in',
+  // Says plainly that the toggle is display-only. Without it a clinician can
+  // reasonably read a unit switch as changing what was recorded.
+  'physicianView.unitsHint':
+    'This changes how volumes are shown here. It does not change what was recorded.',
   'physicianView.unitsMetric': 'Milliliters (mL)',
   'physicianView.unitsImperial': 'Fluid ounces (oz)',
 
   'physicianView.emptyState.heading': 'No stoma output logged for this day',
-  'physicianView.emptyState.body': 'No entries were recorded for this date yet.',
+  'physicianView.emptyState.body': 'Nothing has been logged for this day.',
 
-  'physicianView.netBalance.heading': 'Daily net fluid balance: not available yet',
+  // "not available yet" implied a loading or permissions problem that might
+  // resolve on refresh. It will not.
+  'physicianView.netBalance.heading': 'Daily net fluid balance: not shown',
+  // The refusal to render a number is correct and unchanged. The wording is
+  // not: "is not built yet" is roadmap language in a clinical view, and
+  // "could be trusted by mistake" is agentless — trusted by whom? — and puts
+  // the reader in the position of the person who might be mistaken. The
+  // replacement says what this page can and cannot tell you, then what to
+  // read instead.
   'physicianView.netBalance.body':
-    'Net fluid balance needs both fluid intake and stoma output. Fluid intake logging is not built yet, so this number is not shown. Showing a number now could be wrong and could be trusted by mistake.',
+    'Net fluid balance needs fluid intake and stoma output together. This app does not record fluid intake yet, so there is no balance to show. The stoma output total for this day is listed below, and it is only one side of the balance.',
 
   'physicianView.chart.heading': 'Stoma output over the day',
   'physicianView.chart.caption':
     'A chart of stoma output volume by time of day. The same values are listed in the table below this chart.',
   'physicianView.chart.axisTime': 'Time of day',
   'physicianView.chart.axisVolume': 'Output volume',
-  'physicianView.chart.longDescriptionIntro':
-    'Text description of the chart above, for screen readers and anyone who prefers reading numbers to a picture:',
+  // The trailing clause promised "…and anyone who prefers reading numbers to
+  // a picture" from inside a visually-hidden block no sighted user can reach.
+  'physicianView.chart.longDescriptionIntro': 'Text description of the chart above.',
 
   'physicianView.table.caption': 'Stoma output entries for the selected day, earliest first',
   'physicianView.table.columnTime': 'Time',

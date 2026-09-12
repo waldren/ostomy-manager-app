@@ -36,7 +36,13 @@ export function LoginPage() {
 
       {error ? (
         <InlineNotice variant="error" icon={<NoticeIcon />} live="assertive">
-          <p>{t('auth.signInError')}</p>
+          {/*
+            A session that ended on its own is not a failed sign-in attempt,
+            and telling a clinician "we could not sign you in" when they were
+            already signed in reads as the app being broken. `signOut` sets
+            this reason when a refresh token is missing or rejected.
+          */}
+          <p>{t(error === 'session_expired' ? 'auth.sessionExpired' : 'auth.signInError')}</p>
         </InlineNotice>
       ) : null}
 

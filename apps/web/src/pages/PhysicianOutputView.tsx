@@ -128,7 +128,7 @@ export function PhysicianOutputView() {
       <h1>{t('physicianView.heading')}</h1>
       <p>{t('physicianView.intro')}</p>
 
-      <Button variant="secondary" onClick={signOut}>
+      <Button variant="secondary" onClick={() => signOut()}>
         {t('auth.signOutButton')}
       </Button>
 
