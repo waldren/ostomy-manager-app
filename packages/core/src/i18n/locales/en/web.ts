@@ -41,6 +41,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 export const web = {
   // The table had no heading at all, so a screen-reader user navigating by
   // heading met the chart's and then nothing.
+  // Shown when the day held more entries than one request returns. The total
+  // below it is then a total of what was fetched, not of the day — which is
+  // the whole reason this says so rather than letting the number stand.
+  'physicianView.truncated.heading': 'This day has more entries than are shown',
+  'physicianView.truncated.body':
+    'Only the first entries for this day were loaded, so the total below is lower than the real total. Narrow the date range or check the full record before using this number.',
   'physicianView.table.heading': 'All entries for this day',
   'app.title': 'Ostomy Care',
   // WCAG 2.4.2: the title names the page, not just the product. In an SPA it
@@ -65,6 +71,12 @@ export const web = {
   'auth.signInError':
     'We could not sign you in. Please try again. If this keeps happening, contact your system administrator.',
   'auth.sessionExpired': 'Your session ended. Please sign in again.',
+  // Says WHY, because a timeout with no explanation reads as a fault. Names
+  // the reason the timeout exists rather than the number of minutes: the
+  // timeout is deployment configuration, and copy that hardcodes "15
+  // minutes" goes silently wrong the moment a site changes it.
+  'auth.sessionIdle':
+    'You were signed out because this page was not used for a while. This keeps patient information from staying on screen on a shared computer. Please sign in again.',
 
   'nav.physicianView': 'Physician view',
 

@@ -56,10 +56,57 @@ export interface OidcConfig {
    * below is the portable subset; deployments that need more set it.
    */
   readonly scope: string;
+  /**
+   * Where the issuer returns the browser after ending its session.
+   *
+   * Must be registered with the issuer — an unregistered value makes the
+   * `end_session_endpoint` refuse the request outright, which is why this is
+   * configuration and why `signOut` clears local state BEFORE redirecting.
+   * Defaults to the app's own origin, which is the registered value in every
+   * deployment shape this repo has.
+   */
+  readonly postLogoutRedirectUri: string;
+  /**
+   * Minutes of inactivity after which the session is ended. `0` disables the
+   * timer.
+   *
+   * This is a shared-workstation control, not a token-lifetime control: the
+   * access token's own expiry says nothing about whether the person who
+   * signed in is still the person at the keyboard.
+   */
+  readonly idleTimeoutMinutes: number;
 }
 
 /** Portable across mock-oauth2-server and Cognito; see `OidcConfig.scope`. */
 const DEFAULT_SCOPE = 'openid profile';
+
+/**
+ * Fifteen minutes, matching the value HHS's own security guidance and the
+ * common EHR default converge on. Long enough not to interrupt a physician
+ * reading a chart, short enough that an unattended clinic workstation is not
+ * left showing one patient's stoma output to whoever sits down next.
+ */
+const DEFAULT_IDLE_TIMEOUT_MINUTES = 15;
+
+/**
+ * Parses the idle timeout, failing SAFE rather than open.
+ *
+ * A typo in the environment (`VITE_SESSION_IDLE_TIMEOUT_MINUTES=fifteen`)
+ * would otherwise become `NaN`, and a `NaN` millisecond delay passed to
+ * `setTimeout` is coerced to `0` — firing immediately and signing the user
+ * out on every keystroke. Falling back to the default keeps the control
+ * working; only an explicit `0` disables it.
+ */
+function parseIdleTimeoutMinutes(raw: string | undefined): number {
+  if (raw === undefined || raw === '') {
+    return DEFAULT_IDLE_TIMEOUT_MINUTES;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_IDLE_TIMEOUT_MINUTES;
+  }
+  return parsed;
+}
 
 export function loadOidcConfig(): OidcConfig {
   const issuer = import.meta.env.VITE_OIDC_ISSUER;
@@ -67,6 +114,11 @@ export function loadOidcConfig(): OidcConfig {
   const redirectUri = import.meta.env.VITE_OIDC_REDIRECT_URI;
   const audience = import.meta.env.VITE_OIDC_AUDIENCE;
   const scope = import.meta.env.VITE_OIDC_SCOPE || DEFAULT_SCOPE;
+  const postLogoutRedirectUri =
+    import.meta.env.VITE_OIDC_POST_LOGOUT_REDIRECT_URI || window.location.origin;
+  const idleTimeoutMinutes = parseIdleTimeoutMinutes(
+    import.meta.env.VITE_SESSION_IDLE_TIMEOUT_MINUTES,
+  );
 
   if (!issuer || !clientId || !redirectUri || !audience) {
     throw new Error(
@@ -75,5 +127,13 @@ export function loadOidcConfig(): OidcConfig {
     );
   }
 
-  return { issuer, clientId, redirectUri, audience, scope };
+  return {
+    issuer,
+    clientId,
+    redirectUri,
+    audience,
+    scope,
+    postLogoutRedirectUri,
+    idleTimeoutMinutes,
+  };
 }

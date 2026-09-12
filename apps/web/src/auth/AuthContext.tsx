@@ -39,7 +39,9 @@ import {
   loadPkceState,
   loadTokens,
   savePkceState,
+  saveSignOutReason,
   saveTokens,
+  takeSignOutReason,
   type StoredTokens,
 } from './session-storage.js';
 import { exchangeAuthorizationCode, refreshAccessToken } from './token-client.js';
@@ -82,11 +84,27 @@ function isExpired(tokens: StoredTokens): boolean {
 /** Conservative lifetime when an issuer omits `expires_in`. Short on purpose: a wrong-and-short guess costs one refresh, a wrong-and-long one costs a broken session. */
 const FALLBACK_TOKEN_LIFETIME_SECONDS = 300;
 
-function toStoredTokens(response: {
-  access_token: string;
-  expires_in?: number;
-  refresh_token?: string;
-}): StoredTokens {
+/**
+ * `previous` carries forward what a refresh response is allowed to omit.
+ *
+ * RFC 6749 §6: a refresh response MAY omit `refresh_token`, and the client
+ * is then required to keep using the one it has. This dropped it instead, so
+ * against any non-rotating issuer — Cognito included — the FIRST refresh
+ * erased the refresh token, and the next expiry (minutes later) signed the
+ * clinician out mid-session with no way back but a full sign-in. `id_token`
+ * is the same story: it is issued at the authorization-code exchange and
+ * usually absent from refresh responses, and losing it costs the
+ * `id_token_hint` that makes RP-initiated logout end the session silently.
+ */
+function toStoredTokens(
+  response: {
+    access_token: string;
+    expires_in?: number;
+    refresh_token?: string;
+    id_token?: string;
+  },
+  previous?: StoredTokens,
+): StoredTokens {
   if (typeof response.access_token !== 'string' || response.access_token.length === 0) {
     throw new Error('Token response contained no access token.');
   }
@@ -98,21 +116,36 @@ function toStoredTokens(response: {
       ? response.expires_in
       : FALLBACK_TOKEN_LIFETIME_SECONDS;
 
+  const refreshToken = response.refresh_token ?? previous?.refreshToken;
+  const idToken = response.id_token ?? previous?.idToken;
+
   return {
     accessToken: response.access_token,
     expiresAt: Date.now() + lifetimeSeconds * 1000,
-    ...(response.refresh_token ? { refreshToken: response.refresh_token } : {}),
+    ...(refreshToken ? { refreshToken } : {}),
+    ...(idToken ? { idToken } : {}),
   };
 }
 
 /** Strips `code`/`state`/`error` query parameters from the visible URL after the callback is handled, so a page refresh never re-submits a spent authorization code. */
 function clearAuthQueryParams(): void {
-  const url = new URL(window.location.href);
-  url.searchParams.delete('code');
-  url.searchParams.delete('state');
-  url.searchParams.delete('error');
-  url.searchParams.delete('error_description');
-  window.history.replaceState({}, '', url.toString());
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('code');
+    url.searchParams.delete('state');
+    url.searchParams.delete('error');
+    url.searchParams.delete('error_description');
+    window.history.replaceState({}, '', url.toString());
+  } catch {
+    // Tidying the address bar is cosmetic; the callback handling around it
+    // is not. `replaceState` throws a SecurityError whenever the computed
+    // URL is not same-origin with the document, and this runs between
+    // reading the PKCE state and clearing it — so an unhandled throw here
+    // skipped `clearPkceState`, left the verifier in storage, and replaced
+    // the specific auth error with a generic initialization failure.
+    // Leaving a spent code in the visible URL is the lesser outcome; it is
+    // single-use and the exchange has already been attempted.
+  }
 }
 
 export function AuthProvider({ children }: { readonly children: ReactNode }) {
@@ -160,6 +193,13 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
         const pending = loadPkceState();
         clearAuthQueryParams();
         if (!pending || pending.state !== returnedState) {
+          // Clear it. A verifier that survives a mismatch is a verifier
+          // waiting to be paired with someone else's authorization code:
+          // the next callback to arrive on this tab — including a forged
+          // one — finds a stored state to match against, and the CSRF
+          // defence PKCE state exists to provide is only as good as the
+          // window in which a stale value can be reused.
+          clearPkceState();
           setError('auth-state-mismatch');
           setStatus('unauthenticated');
           return;
@@ -180,6 +220,10 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
           tokensRef.current = next;
           setStatus('authenticated');
         } catch {
+          // Same reasoning as the mismatch branch above, plus: the code this
+          // verifier was minted for is now spent or rejected, so the pair
+          // has no further legitimate use.
+          clearPkceState();
           setError('auth-exchange-failed');
           setStatus('unauthenticated');
         }
@@ -202,7 +246,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
             audience: config.audience,
             refreshToken: existing.refreshToken,
           });
-          const next = toStoredTokens(response);
+          const next = toStoredTokens(response, existing);
           saveTokens(next);
           tokensRef.current = next;
           setStatus('authenticated');
@@ -212,6 +256,9 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
         }
       }
 
+      // A reason stashed before an RP-initiated logout redirect. The
+      // redirect leaves the origin, so React state cannot carry it.
+      setError((previous) => previous ?? takeSignOutReason());
       setStatus('unauthenticated');
     }
 
@@ -266,12 +313,146 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
    * `auth.sessionExpired` for exactly this and nothing used it.
    */
   const signOut = useCallback((reason?: string) => {
+    const endingTokens = tokensRef.current;
+
+    // Local state goes first, unconditionally. Everything below this point
+    // can fail — discovery can be unreachable, the issuer can refuse an
+    // unregistered post-logout URI, the redirect can be blocked — and the
+    // one outcome that must never depend on any of it is that this browser
+    // stops holding a usable token.
     clearTokens();
     clearPkceState();
     tokensRef.current = undefined;
     setError(reason);
     setStatus('unauthenticated');
+
+    if (reason) {
+      saveSignOutReason(reason);
+    }
+
+    // Then end the session at the issuer.
+    //
+    // Without this the sign-out was local only, and the consequence is
+    // specific rather than theoretical: the issuer's session cookie
+    // survives, so the next person at the same clinic workstation clicks
+    // "Sign in", is silently re-authenticated with no credential prompt,
+    // and lands on the previous clinician's patient. That is unauthorized
+    // PHI access produced by the app's own sign-out button.
+    void (async () => {
+      try {
+        const config = loadOidcConfig();
+        const discovery = await fetchDiscoveryDocument(config.issuer);
+        if (!discovery.end_session_endpoint) {
+          // Nothing more this app can do: RP-initiated logout is OPTIONAL
+          // and some issuers do not implement it. Local sign-out stands,
+          // and the residual risk is the issuer session cookie described
+          // above. Surfacing it here rather than failing silently.
+          // A security control silently degrading is the thing to avoid
+          // here: this is a deployment-configuration condition (the issuer
+          // implements no RP-initiated logout) that an operator needs to
+          // see, and it carries no PHI — only a fixed sentence.
+          // eslint-disable-next-line no-console
+          console.warn(
+            'Issuer advertises no end_session_endpoint; signed out locally only. ' +
+              'The identity provider session may still be active in this browser.',
+          );
+          return;
+        }
+
+        const logoutUrl = new URL(discovery.end_session_endpoint);
+        logoutUrl.searchParams.set('client_id', config.clientId);
+        logoutUrl.searchParams.set('post_logout_redirect_uri', config.postLogoutRedirectUri);
+        if (endingTokens?.idToken) {
+          // RECOMMENDED by RP-Initiated Logout §2, and load-bearing in
+          // practice: without it most issuers show a "do you want to sign
+          // out?" interstitial instead of ending the session — exactly the
+          // confirmation a clinician walking away will never complete.
+          logoutUrl.searchParams.set('id_token_hint', endingTokens.idToken);
+        }
+        window.location.assign(logoutUrl.toString());
+      } catch {
+        // Discovery failed. Local sign-out already happened, which is the
+        // part that protects this browser.
+      }
+    })();
   }, []);
+
+  /**
+   * Inactivity timeout for shared workstations.
+   *
+   * The access token's expiry is not this control. A token is valid for as
+   * long as the issuer says regardless of who is at the keyboard, and the
+   * physician view is a screen showing one named patient's stoma output. A
+   * clinic workstation left unattended on it is an unauthorized disclosure
+   * waiting for whoever sits down next — the ordinary case this guards, not
+   * an attacker.
+   *
+   * ## Elapsed time, not a timer
+   *
+   * The obvious implementation — `setTimeout(timeout)`, cleared and
+   * re-armed on each event — is wrong in the two situations that matter
+   * most. Browsers throttle timers in background tabs, and a suspended
+   * laptop does not run them at all, so a machine left locked overnight
+   * with the tab open is the exact case where a naive timer fires late or
+   * not at all. Comparing a recorded timestamp against `Date.now()` on a
+   * poll is correct across both: the clock advances even when the timer
+   * does not.
+   *
+   * ## Which events count as activity
+   *
+   * Deliberate interactions only. `mousemove` is excluded on purpose:
+   * a mouse nudged by a passing cart, or a jittery optical sensor on a
+   * shared desk, would keep an unattended session alive indefinitely —
+   * which is precisely the session this exists to end.
+   */
+  useEffect(() => {
+    if (status !== 'authenticated') {
+      return;
+    }
+
+    let idleTimeoutMinutes: number;
+    try {
+      idleTimeoutMinutes = loadOidcConfig().idleTimeoutMinutes;
+    } catch {
+      // Unreachable while authenticated (the same call succeeded during
+      // initialize), but the alternative to catching is an unhandled throw
+      // in an effect, which unmounts the tree.
+      return;
+    }
+    if (idleTimeoutMinutes <= 0) {
+      return;
+    }
+
+    const timeoutMs = idleTimeoutMinutes * 60_000;
+    let lastActivityAt = Date.now();
+    const noteActivity = () => {
+      lastActivityAt = Date.now();
+    };
+
+    const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
+    for (const event of ACTIVITY_EVENTS) {
+      window.addEventListener(event, noteActivity, { passive: true });
+    }
+
+    // Poll an order of magnitude finer than the timeout, so the session
+    // ends within a minute of the deadline rather than up to a full
+    // timeout late.
+    const interval = window.setInterval(
+      () => {
+        if (Date.now() - lastActivityAt >= timeoutMs) {
+          signOutRef.current('session_idle');
+        }
+      },
+      Math.min(30_000, timeoutMs),
+    );
+
+    return () => {
+      for (const event of ACTIVITY_EVENTS) {
+        window.removeEventListener(event, noteActivity);
+      }
+      window.clearInterval(interval);
+    };
+  }, [status]);
 
   /**
    * Identity-stable, and single-flight on refresh.
@@ -325,7 +506,7 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
           audience: config.audience,
           refreshToken: current.refreshToken as string,
         });
-        const next = toStoredTokens(response);
+        const next = toStoredTokens(response, current);
         saveTokens(next);
         tokensRef.current = next;
         return next.accessToken;

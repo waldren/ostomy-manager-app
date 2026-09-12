@@ -42,7 +42,19 @@ export function InlineNotice({ variant = 'info', title, icon, children, live }: 
   return (
     <div
       className={`ostomyInlineNotice ostomyInlineNotice--${variant}`}
-      role={live ? 'status' : undefined}
+      /*
+        The role must AGREE with the politeness, not contradict it.
+
+        Every live notice was `role="status"`, whose implicit live value is
+        `polite` — so an assertive notice shipped `role="status"` with
+        `aria-live="assertive"`, a combination ARIA does not define a winner
+        for. Real screen readers disagree about it: some honour the explicit
+        attribute, others take the role's implicit value and announce
+        politely, and a politely-announced validation error waits behind
+        whatever is already speaking. The pairing below is the one each role
+        already implies, so there is nothing left to resolve.
+      */
+      role={live === 'assertive' ? 'alert' : live ? 'status' : undefined}
       aria-live={live}
     >
       {icon ? <span className="ostomyInlineNotice__icon">{icon}</span> : null}

@@ -24,9 +24,35 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * change, never a code change.
  */
 export interface OidcDiscoveryDocument {
+  /**
+   * The issuer's own claim about its identity. REQUIRED by OpenID Connect
+   * Discovery 1.0 §3, and validated here — see `assertIssuerMatches`.
+   */
+  readonly issuer: string;
   readonly authorization_endpoint: string;
   readonly token_endpoint: string;
+  /**
+   * RP-initiated logout (OpenID Connect RP-Initiated Logout 1.0 §2).
+   * OPTIONAL: an issuer that does not advertise one cannot have its session
+   * ended by this app, and `signOut` says what that costs.
+   */
   readonly end_session_endpoint?: string;
+}
+
+/**
+ * Compares two issuer identifiers.
+ *
+ * Discovery §4.3 says the returned `issuer` MUST be *identical* to the URL
+ * used to retrieve the document. The one normalization applied here is a
+ * trailing slash, because `fetchDiscoveryDocument` strips it from the
+ * configured value before building the well-known URL, so a configured
+ * `https://idp.example/` would otherwise never match a document saying
+ * `https://idp.example`. That normalization cannot be used to point the
+ * comparison at a different host, scheme, or path, which is what the check
+ * is defending.
+ */
+function issuersMatch(a: string, b: string): boolean {
+  return a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
 }
 
 const discoveryCache = new Map<string, Promise<OidcDiscoveryDocument>>();
@@ -47,6 +73,24 @@ export function fetchDiscoveryDocument(issuer: string): Promise<OidcDiscoveryDoc
     if (!document.authorization_endpoint || !document.token_endpoint) {
       throw new Error(`OIDC discovery document from ${url} is missing required endpoints`);
     }
+
+    // OpenID Connect Discovery 1.0 §4.3, and the reason it is normative:
+    // this document is what tells the app where to send the user's
+    // credentials and where to redeem an authorization code. Fetching it
+    // over a hijacked DNS answer, a compromised proxy, or a misconfigured
+    // `VITE_OIDC_ISSUER` pointing at an attacker-controlled host yields a
+    // perfectly well-formed document naming an attacker's
+    // `authorization_endpoint`. Every later step then succeeds — the user
+    // signs in, a token comes back, the app looks normal — while the
+    // credentials went somewhere else. The issuer check is the only place
+    // in this flow where the document's self-declared identity is compared
+    // against the identity the deployment intended.
+    if (!document.issuer || !issuersMatch(document.issuer, issuer)) {
+      throw new Error(
+        `OIDC discovery document from ${url} declares a different issuer than the one configured.`,
+      );
+    }
+
     return document as OidcDiscoveryDocument;
   })();
 

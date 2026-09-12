@@ -33,6 +33,21 @@ const CHART_HEIGHT = 220;
 const MINUTES_PER_DAY = 24 * 60;
 
 /**
+ * Unit form for text that exists only to be spoken.
+ *
+ * Screen readers pronounce the abbreviated unit letter by letter: the
+ * default `'short'` turns "350 mL" into "three hundred fifty M L", which is
+ * not how a volume is said and not how a clinician hears one. `'long'`
+ * produces "350 milliliters". The visible table beside this chart keeps the
+ * short form, which is what a clinician expects to read.
+ *
+ * A named constant rather than an inline `'long'` because the copy lint
+ * cannot tell a formatter enum from a hardcoded user-facing string, and the
+ * distinction is worth stating rather than suppressing.
+ */
+const SPOKEN_UNIT_DISPLAY = 'long';
+
+/**
  * A chronological plot of the day's stoma output (SRS §3.5).
  *
  * The `<svg>` itself is `aria-hidden`: rendering each bar as an
@@ -106,7 +121,7 @@ export function OutputChart({ entries }: OutputChartProps) {
             {entries.map((entry) => (
               <li key={entry.id}>
                 {formatDateTime(entry.effectiveDateTime, undefined, CLINICAL_DATE_TIME_OPTIONS)}:{' '}
-                {formatVolumeQuantity(entry.display)}
+                {formatVolumeQuantity(entry.display, undefined, SPOKEN_UNIT_DISPLAY)}
               </li>
             ))}
           </ul>

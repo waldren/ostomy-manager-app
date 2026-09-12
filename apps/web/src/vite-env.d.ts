@@ -24,6 +24,14 @@ interface ImportMetaEnv {
   readonly VITE_OIDC_CLIENT_ID: string;
   /** Must exactly match a redirect URI registered with the issuer. */
   readonly VITE_OIDC_REDIRECT_URI: string;
+  /** The API's resource identifier, sent as the `audience` request parameter. NOT the client id — see `OidcConfig.audience`. */
+  readonly VITE_OIDC_AUDIENCE: string;
+  /** Space-delimited scopes. Optional; defaults to the portable `openid profile`. */
+  readonly VITE_OIDC_SCOPE?: string;
+  /** Where the issuer returns the browser after RP-initiated logout. Optional; defaults to the app origin. Must be registered with the issuer. */
+  readonly VITE_OIDC_POST_LOGOUT_REDIRECT_URI?: string;
+  /** Minutes of inactivity before the session ends. Optional; defaults to 15. `0` disables the timer. */
+  readonly VITE_SESSION_IDLE_TIMEOUT_MINUTES?: string;
   /** Origin the API is served from, no trailing slash (packages/core's ApiClientOptions.baseUrl). */
   readonly VITE_API_BASE_URL: string;
 }

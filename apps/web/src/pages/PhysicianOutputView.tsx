@@ -36,7 +36,33 @@ import {
 type LoadState =
   | { readonly status: 'loading' }
   | { readonly status: 'error' }
-  | { readonly status: 'loaded'; readonly observations: readonly Observation[] };
+  | {
+      readonly status: 'loaded';
+      readonly observations: readonly Observation[];
+      /** True when the day may hold more entries than were returned — see `DAILY_PAGE_SIZE`. */
+      readonly truncated: boolean;
+    };
+
+/**
+ * How many of a day's observations to ask for.
+ *
+ * The request sent no `limit` at all, which took the server's DEFAULT of
+ * 100 (`OBSERVATION_LIST_DEFAULT_LIMIT`). On a high-output ileostomy — the
+ * patients this view exists for — a day of frequent emptying can exceed
+ * that, and the failure was silent in the worst possible way: the chart and
+ * table simply ended, and the DAILY TOTAL was summed over the truncated set
+ * and rendered as if it were the day's total. A physician assessing
+ * hydration would read a confidently-wrong number that is low by however
+ * much was cut, with nothing on screen suggesting it.
+ *
+ * 500 is the server maximum (`OBSERVATION_LIST_MAX_LIMIT`). Duplicated as a
+ * literal rather than imported because `apps/web` cannot import from
+ * `apps/api`, and it degrades safely: the contract clamps an oversized limit
+ * rather than refusing it (`ObservationsListQuery.limit`), so if the server
+ * maximum is ever lowered this asks for more than it gets, `truncated`
+ * becomes true, and the user is warned instead of misinformed.
+ */
+const DAILY_PAGE_SIZE = 500;
 
 function dayBoundsUtc(isoDate: string): { from: string; to: string } {
   const from = new Date(`${isoDate}T00:00:00.000Z`);
@@ -94,10 +120,20 @@ export function PhysicianOutputView() {
     const { from, to } = dayBoundsUtc(isoDate);
 
     apiClient.observations
-      .list({ effectiveDateTimeFrom: from, effectiveDateTimeTo: to })
+      .list({ effectiveDateTimeFrom: from, effectiveDateTimeTo: to, limit: DAILY_PAGE_SIZE })
       .then((response) => {
         if (isStale()) return;
-        setState({ status: 'loaded', observations: response.observations });
+        // `ObservationListResponse` carries no `hasMore`, so a full page is
+        // the only truncation signal available. It over-reports by one case
+        // — a day holding exactly DAILY_PAGE_SIZE entries — and that is the
+        // right direction to be wrong in: warning that a correct total might
+        // be incomplete costs a physician a second look, while presenting an
+        // incomplete total as complete costs a clinical judgement.
+        setState({
+          status: 'loaded',
+          observations: response.observations,
+          truncated: response.observations.length >= DAILY_PAGE_SIZE,
+        });
       })
       .catch(() => {
         if (isStale()) return;
@@ -122,6 +158,15 @@ export function PhysicianOutputView() {
   const load = useCallback(() => setReloadNonce((n) => n + 1), []);
 
   const targetSystem = unitsForMeasurementSystem(displaySystem);
+
+  // Computed once. `toDisplayOutputEntries` was called twice per render —
+  // once for the chart, once for the table — converting and sorting the
+  // same day twice over.
+  const observations = state.status === 'loaded' ? state.observations : undefined;
+  const entries = useMemo(
+    () => (observations ? toDisplayOutputEntries(observations, targetSystem) : []),
+    [observations, targetSystem],
+  );
 
   return (
     <main id="main-content" tabIndex={-1}>
@@ -160,10 +205,20 @@ export function PhysicianOutputView() {
 
       {state.status === 'loaded' && state.observations.length > 0 ? (
         <>
-          <OutputChart entries={toDisplayOutputEntries(state.observations, targetSystem)} />
+          {state.truncated ? (
+            <InlineNotice
+              variant="warning"
+              icon={<NoticeIcon />}
+              title={t('physicianView.truncated.heading')}
+              live="polite"
+            >
+              <p>{t('physicianView.truncated.body')}</p>
+            </InlineNotice>
+          ) : null}
+          <OutputChart entries={entries} />
           <h2>{t('physicianView.table.heading')}</h2>
           <OutputTable
-            entries={toDisplayOutputEntries(state.observations, targetSystem)}
+            entries={entries}
             total={toDisplayDailyTotal(state.observations, targetSystem)}
           />
         </>

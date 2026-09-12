@@ -40,6 +40,25 @@ describe('InlineNotice', () => {
     expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
   });
 
+  it('uses role="alert" for an assertive notice, so the role agrees with the politeness', () => {
+    // The defect: every live notice was role="status", whose implicit live
+    // value is `polite`. An assertive notice therefore shipped
+    // role="status" + aria-live="assertive" — a combination ARIA leaves
+    // undefined and screen readers resolve inconsistently. Where the role
+    // wins, a validation error or safety prompt is announced politely and
+    // queues behind whatever is already speaking.
+    render(
+      <InlineNotice variant="error" live="assertive">
+        Enter a volume greater than zero.
+      </InlineNotice>,
+    );
+
+    const notice = screen.getByRole('alert');
+    expect(notice).toHaveAttribute('aria-live', 'assertive');
+    // Not merely "some other role": specifically not the polite one.
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
   it('does not add a live region role when live is unset', () => {
     render(<InlineNotice variant="info">Just context.</InlineNotice>);
     expect(screen.queryByRole('status')).not.toBeInTheDocument();

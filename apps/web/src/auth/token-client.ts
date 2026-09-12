@@ -21,6 +21,12 @@ export interface TokenResponse {
   readonly token_type: string;
   readonly expires_in: number;
   readonly refresh_token?: string;
+  /**
+   * Present whenever `openid` is among the requested scopes. Kept only to
+   * pass back as `id_token_hint` at RP-initiated logout — never decoded and
+   * never used for authorization (see `StoredTokens.idToken`).
+   */
+  readonly id_token?: string;
 }
 
 export class TokenExchangeError extends Error {

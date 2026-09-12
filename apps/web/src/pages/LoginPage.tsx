@@ -21,6 +21,20 @@ import { Navigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext.js';
 
+/**
+ * Reasons the session ended on its own, and the copy for each.
+ *
+ * These are not sign-in failures and must not be dressed as them. Telling a
+ * clinician "we could not sign you in" when they were already signed in
+ * reads as the app being broken, and an assertive red error for an expected
+ * fifteen-minute timeout trains people to ignore the one that is not
+ * expected. Anything not listed here really was a failed attempt.
+ */
+const SESSION_ENDED_COPY: Readonly<Record<string, string>> = {
+  session_expired: 'auth.sessionExpired',
+  session_idle: 'auth.sessionIdle',
+};
+
 export function LoginPage() {
   const { t } = useTranslation();
   const { status, error, signIn } = useAuth();
@@ -29,21 +43,23 @@ export function LoginPage() {
     return <Navigate to="/" replace />;
   }
 
+  const sessionEndedKey = error ? SESSION_ENDED_COPY[error] : undefined;
+
   return (
     <main id="main-content" tabIndex={-1}>
       <h1>{t('auth.signInHeading')}</h1>
       <p>{t('auth.signInBody')}</p>
 
       {error ? (
-        <InlineNotice variant="error" icon={<NoticeIcon />} live="assertive">
-          {/*
-            A session that ended on its own is not a failed sign-in attempt,
-            and telling a clinician "we could not sign you in" when they were
-            already signed in reads as the app being broken. `signOut` sets
-            this reason when a refresh token is missing or rejected.
-          */}
-          <p>{t(error === 'session_expired' ? 'auth.sessionExpired' : 'auth.signInError')}</p>
-        </InlineNotice>
+        sessionEndedKey ? (
+          <InlineNotice variant="info" live="polite">
+            <p>{t(sessionEndedKey)}</p>
+          </InlineNotice>
+        ) : (
+          <InlineNotice variant="error" icon={<NoticeIcon />} live="assertive">
+            <p>{t('auth.signInError')}</p>
+          </InlineNotice>
+        )
       ) : null}
 
       <Button onClick={() => void signIn()}>{t('auth.signInButton')}</Button>

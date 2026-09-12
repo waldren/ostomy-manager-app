@@ -28,6 +28,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 const PKCE_KEY = 'ostomy.auth.pkce';
 const TOKENS_KEY = 'ostomy.auth.tokens';
+const SIGN_OUT_REASON_KEY = 'ostomy.auth.signOutReason';
 
 export interface StoredPkceState {
   readonly codeVerifier: string;
@@ -39,6 +40,19 @@ export interface StoredTokens {
   /** Epoch milliseconds. */
   readonly expiresAt: number;
   readonly refreshToken?: string;
+  /**
+   * Kept solely to serve as `id_token_hint` at RP-initiated logout.
+   *
+   * OpenID Connect RP-Initiated Logout 1.0 §2 makes it RECOMMENDED, and the
+   * practical consequence of omitting it is that most issuers show an
+   * interstitial "do you want to sign out?" page instead of ending the
+   * session — which is precisely the confirmation step a clinician walking
+   * away from a shared workstation will not complete.
+   *
+   * Not decoded, not read for claims, never used for authorization: this
+   * app takes identity from the API, not from a token it parsed itself.
+   */
+  readonly idToken?: string;
 }
 
 export function savePkceState(value: StoredPkceState): void {
@@ -65,6 +79,33 @@ export function loadTokens(): StoredTokens | undefined {
 
 export function clearTokens(): void {
   sessionStorage.removeItem(TOKENS_KEY);
+}
+
+/**
+ * Carries the reason for a sign-out across an RP-initiated logout redirect.
+ *
+ * Sign-out leaves the origin entirely (to the issuer's `end_session_endpoint`
+ * and back), so in-memory React state cannot survive it — and a clinician
+ * whose session timed out would land back on the login page with no
+ * explanation, which reads as the app having logged them out at random.
+ *
+ * `sessionStorage` rather than a query parameter on `post_logout_redirect_uri`
+ * deliberately: issuers match that URI exactly against a registered value, so
+ * appending `?signed_out=...` is the kind of thing that works against the
+ * development mock and fails against Cognito. Nothing here is PHI — it is one
+ * of a small set of fixed message keys.
+ */
+export function saveSignOutReason(reason: string): void {
+  sessionStorage.setItem(SIGN_OUT_REASON_KEY, reason);
+}
+
+/** Reads and consumes the reason, so it is shown once rather than on every later load. */
+export function takeSignOutReason(): string | undefined {
+  const reason = sessionStorage.getItem(SIGN_OUT_REASON_KEY);
+  if (reason) {
+    sessionStorage.removeItem(SIGN_OUT_REASON_KEY);
+  }
+  return reason ?? undefined;
 }
 
 /**

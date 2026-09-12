@@ -139,3 +139,48 @@ describe('PhysicianOutputView — request ordering', () => {
     errorSpy.mockRestore();
   });
 });
+
+describe('PhysicianOutputView — a day bigger than one page', () => {
+  /**
+   * The defect this exists for: the request sent no `limit`, so the server
+   * applied its default of 100. A high-output ileostomy day can exceed that,
+   * and the truncation was invisible — the chart and table just ended, and
+   * the DAILY TOTAL was summed over the truncated set and presented as the
+   * day's total. A physician assessing hydration reads a confidently-wrong
+   * number, low by however much was cut, with nothing on screen saying so.
+   */
+  it('asks for the full page size rather than taking the server default', async () => {
+    listMock.mockResolvedValue({ observations: [observation()] });
+
+    render(<PhysicianOutputView />);
+
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    // The assertion is on the limit being SENT. Without it the server's
+    // default silently governs, and no assertion about rendering can see
+    // the difference until a day happens to exceed 100 entries.
+    expect(listMock.mock.calls[0]?.[0]).toMatchObject({ limit: 500 });
+  });
+
+  it('warns that the total is incomplete when the response fills the page', async () => {
+    const full = Array.from({ length: 500 }, (_, index) =>
+      observation({ id: `11111111-1111-4111-8111-${String(index).padStart(12, '0')}` }),
+    );
+    listMock.mockResolvedValue({ observations: full });
+
+    render(<PhysicianOutputView />);
+
+    expect(await screen.findByText(/more entries than are shown/i)).toBeVisible();
+    expect(screen.getByText(/lower than the real total/i)).toBeVisible();
+  });
+
+  it('does not warn on an ordinary day, so the warning keeps its meaning', async () => {
+    listMock.mockResolvedValue({ observations: [observation(), observation({ id: 'b' })] });
+
+    render(<PhysicianOutputView />);
+
+    // Wait for the load to settle before asserting an absence, or this
+    // passes against the loading state and proves nothing.
+    await screen.findByRole('heading', { name: /output entries|entries/i });
+    expect(screen.queryByText(/more entries than are shown/i)).not.toBeInTheDocument();
+  });
+});
