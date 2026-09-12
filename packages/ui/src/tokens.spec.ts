@@ -145,6 +145,17 @@ describe('design tokens stay in sync with styles.css', () => {
  * computation can tell you a state is carried by colour alone, that copy
  * reads at the wrong level, or that a chart disagrees with its table.
  */
+/** Extracts one rule's declarations. String slicing, not a RegExp — see VisuallyHidden.spec.tsx. */
+function ruleBody(selector: string): string {
+  const start = css.indexOf(`${selector} {`);
+  if (start === -1) {
+    throw new Error(`styles.css has no ${selector} rule`);
+  }
+  const open = css.indexOf('{', start);
+  const close = css.indexOf('}', open);
+  return css.slice(open + 1, close);
+}
+
 function relativeLuminance(hex: string): number {
   const channels = (hex.replace('#', '').match(/../g) ?? []).map((pair) => {
     const value = Number.parseInt(pair, 16) / 255;
@@ -195,8 +206,30 @@ describe('colour contrast', () => {
     );
   });
 
-  it('the inner focus tone clears 3:1 on both page surfaces', () => {
+  it('colorInner clears 3:1 on both page surfaces, because it renders OUTERMOST', () => {
+    // The naming is the trap here, so state the rendering rather than
+    // trusting it. `box-shadow` spreads outward from the border-box edge
+    // and the `outline` paints over its outer part, so `colorInner` — the
+    // outline's tone — is the ring that actually meets the page, and it is
+    // the one WCAG 1.4.11 judges against the backdrop.
     expect(contrastRatio(tokens.focus.colorInner, background)).toBeGreaterThanOrEqual(3);
     expect(contrastRatio(tokens.focus.colorInner, surface)).toBeGreaterThanOrEqual(3);
+  });
+
+  it('the stylesheet keeps colorInner on the outline, where the page can see it', () => {
+    // Without this the suite could not tell the difference. Swapping the two
+    // tones in styles.css to match a naive reading of "dark inner, light
+    // outer" puts #2491ff outermost, where it measures 2.95:1 on surface —
+    // a real 1.4.11 failure — and every assertion above still passes,
+    // because they read tokens.ts and the tokens did not change.
+    const rule = ruleBody('.ostomyFocusable:focus-visible');
+    const outline = rule.slice(rule.indexOf('outline:'), rule.indexOf('outline-offset'));
+    expect(outline).toContain('--ostomy-focus-color-inner');
+    expect(rule.slice(rule.indexOf('box-shadow'))).toContain('--ostomy-focus-color-outer');
+    // And the shadow must still reach past the outline, or there is no
+    // second tone at all.
+    expect(contrastRatio(tokens.focus.colorInner, tokens.focus.colorOuter)).toBeGreaterThanOrEqual(
+      3,
+    );
   });
 });

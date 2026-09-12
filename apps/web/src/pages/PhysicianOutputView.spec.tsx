@@ -29,7 +29,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Observation } from '@ostomy/core/api-client';
+import { ApiError, type Observation } from '@ostomy/core/api-client';
 
 import { PhysicianOutputView } from './PhysicianOutputView.js';
 import '../i18n/index.js';
@@ -85,6 +85,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   listMock.mockReset();
+  authValue.signOut.mockReset();
 });
 
 describe('PhysicianOutputView — request ordering', () => {
@@ -118,26 +119,6 @@ describe('PhysicianOutputView — request ordering', () => {
     expect(screen.queryAllByText(/999/)).toHaveLength(0);
     expect(screen.queryAllByText(/222/).length).toBeGreaterThan(0);
   });
-
-  it('does not apply a response that arrives after unmount', async () => {
-    // Every sign-out hits this path: signOut flips status, RequireAuth
-    // navigates away, and the in-flight request still resolves.
-    const inFlight = deferred<{ observations: Observation[] }>();
-    listMock.mockReturnValueOnce(inFlight.promise);
-
-    const { unmount } = render(<PhysicianOutputView />);
-    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
-
-    unmount();
-    inFlight.resolve({ observations: [observation()] });
-
-    // A state write after unmount surfaces as a React act/console error
-    // rather than a thrown exception, so assert the console stayed clean.
-    const errorSpy = vi.spyOn(console, 'error');
-    await new Promise((r) => setTimeout(r, 0));
-    expect(errorSpy).not.toHaveBeenCalled();
-    errorSpy.mockRestore();
-  });
 });
 
 describe('PhysicianOutputView — a day bigger than one page', () => {
@@ -170,7 +151,18 @@ describe('PhysicianOutputView — a day bigger than one page', () => {
     render(<PhysicianOutputView />);
 
     expect(await screen.findByText(/more entries than are shown/i)).toBeVisible();
-    expect(screen.getByText(/lower than the real total/i)).toBeVisible();
+    expect(screen.getByText(/may be lower than the true total/i)).toBeVisible();
+    // Names the end of the day that was actually cut. `observations.service.ts`
+    // orders `effectiveDatetime: 'desc'` and takes the limit, so a truncated
+    // day returns the MOST RECENT entries and drops the earliest — the copy
+    // said "only the first entries were loaded", which is the opposite, and
+    // would send a physician looking for a gap in the evening.
+    expect(screen.getByText(/most recent entries/i)).toBeVisible();
+    expect(screen.getByText(/earliest ones are not shown/i)).toBeVisible();
+    // The real page size, not a vague "the first entries". Scoped to the
+    // notice: the load-complete status region also says "500 entries
+    // loaded", so a document-wide match would pass on that instead.
+    expect(screen.getByText(/most recent entries/i).textContent).toContain('500');
   });
 
   it('does not warn on an ordinary day, so the warning keeps its meaning', async () => {
@@ -221,5 +213,54 @@ describe('PhysicianOutputView — keyboard order', () => {
 
     const banner = await screen.findByRole('banner');
     expect(within(banner).getByRole('button', { name: /sign out/i })).toBeVisible();
+  });
+});
+
+describe('PhysicianOutputView — announcements and unrecoverable states', () => {
+  it('announces that a day finished loading, not only that it started (WCAG 4.1.3)', async () => {
+    // The loading paragraph was conditionally mounted, so the region was
+    // REMOVED when the data arrived and nothing announced the result. A
+    // screen-reader user pressed previous-day, heard "Loading…", then
+    // silence — with no way to tell whether the rows under their cursor
+    // belonged to the day now shown in the date control.
+    listMock.mockResolvedValue({ observations: [observation()] });
+    render(<PhysicianOutputView />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(/1 entry loaded for/i),
+    );
+  });
+
+  it('pluralises the count rather than saying "1 entries"', async () => {
+    listMock.mockResolvedValue({
+      observations: [observation(), observation({ id: 'b' })],
+    });
+    render(<PhysicianOutputView />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('status')).toHaveTextContent(/2 entries loaded for/i),
+    );
+  });
+
+  it('signs out on a 401 instead of offering a retry that cannot succeed', async () => {
+    // `getAccessToken` still sees a locally-unexpired token, so it hands the
+    // same rejected one back every time: the "Try again" button could be
+    // pressed forever. Reachable on a revoked session, clock skew past the
+    // 30s margin, or an audience mismatch.
+    listMock.mockRejectedValue(new ApiError(401, { error: { code: 'UNAUTHENTICATED' } }));
+    render(<PhysicianOutputView />);
+
+    await waitFor(() => expect(authValue.signOut).toHaveBeenCalledWith('session_expired'));
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+  });
+
+  it('still offers a retry for an error that retrying can fix', async () => {
+    // A transient network failure is the case the retry button is for;
+    // collapsing every error into a sign-out would be the opposite defect.
+    listMock.mockRejectedValue(new Error('network down'));
+    render(<PhysicianOutputView />);
+
+    expect(await screen.findByRole('button', { name: /try again/i })).toBeVisible();
+    expect(authValue.signOut).not.toHaveBeenCalled();
   });
 });

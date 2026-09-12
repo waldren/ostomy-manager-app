@@ -27,6 +27,7 @@ import {
 } from 'react';
 
 import { fetchDiscoveryDocument } from './discovery.js';
+import { IdleWarningDialog } from './IdleWarningDialog.js';
 import { loadOidcConfig } from './oidc-config.js';
 import {
   generateCodeChallenge,
@@ -60,6 +61,17 @@ export interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+/**
+ * How long before the idle deadline the warning appears.
+ *
+ * WCAG 2.2.1 requires at least 20 seconds to extend; 60 gives a reader time
+ * to notice the dialog, read it, and reach the button with a switch device.
+ */
+const IDLE_WARNING_LEAD_MS = 60_000;
+
+/** Fine enough that the warning gets its full lead time and sign-out is punctual. */
+const IDLE_POLL_INTERVAL_MS = 5_000;
 
 /** Refresh this far ahead of the token's stated expiry, to absorb request latency. */
 const EXPIRY_SAFETY_MARGIN_MS = 30_000;
@@ -165,6 +177,26 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   const signOutRef = useRef<(reason?: string) => void>(() => undefined);
   /** The in-flight refresh, shared by concurrent callers. See `getAccessToken`. */
   const refreshInFlight = useRef<Promise<string | undefined> | undefined>(undefined);
+  /**
+   * Bumped on every sign-out. Anything that was in flight across one compares
+   * its captured value and discards its result.
+   *
+   * The defect this closes: `signOut` cleared tokens synchronously, but a
+   * refresh already awaiting the token endpoint resumed afterwards and ran
+   * `saveTokens(next)` — writing a brand-new VALID token set back into the
+   * storage sign-out had just emptied. The next load found it unexpired and
+   * restored the session, putting the previous clinician's record back on
+   * screen for whoever was at the workstation next.
+   *
+   * The window is one HTTP round trip, and it is widest in precisely the
+   * degraded paths this file already handles: when the issuer advertises no
+   * `end_session_endpoint`, or discovery fails, nothing navigates away, so
+   * the late write reliably lands and the document survives to use it.
+   */
+  const sessionEpoch = useRef(0);
+  /** Last deliberate interaction. A ref, so the poll reads it without re-arming the effect. */
+  const lastActivityAt = useRef(Date.now());
+  const [idleWarningVisible, setIdleWarningVisible] = useState(false);
   // StrictMode/dev double-invokes effects; the authorization code is single-use,
   // so the callback must be handled at most once per code.
   const handledCallback = useRef(false);
@@ -215,6 +247,10 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
             codeVerifier: pending.codeVerifier,
           });
           clearPkceState();
+          // A successful sign-in ends any prior session's story. Left in
+          // place, a reason stranded by a local-only sign-out would surface
+          // on a later reload of this new, healthy session.
+          takeSignOutReason();
           const next = toStoredTokens(response);
           saveTokens(next);
           tokensRef.current = next;
@@ -320,15 +356,16 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     // unregistered post-logout URI, the redirect can be blocked — and the
     // one outcome that must never depend on any of it is that this browser
     // stops holding a usable token.
+    // Bumped BEFORE clearing, so any refresh that resumes after this point
+    // sees a changed epoch no matter where in `signOut` it lands.
+    sessionEpoch.current += 1;
+    refreshInFlight.current = undefined;
+
     clearTokens();
     clearPkceState();
     tokensRef.current = undefined;
     setError(reason);
     setStatus('unauthenticated');
-
-    if (reason) {
-      saveSignOutReason(reason);
-    }
 
     // Then end the session at the issuer.
     //
@@ -359,6 +396,18 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
           return;
         }
 
+        // Stashed HERE, not at the top of `signOut`, and that placement is
+        // the fix for a real defect: the reason only needs to survive a
+        // NAVIGATION. Saving it unconditionally stranded it on the two
+        // paths that never navigate — no `end_session_endpoint`, or
+        // discovery failing — where React state already carries it to the
+        // login page. It then sat in storage until some unrelated later
+        // load announced "you were signed out because this page was not
+        // used for a while" about a session that ended normally.
+        if (reason) {
+          saveSignOutReason(reason);
+        }
+
         const logoutUrl = new URL(discovery.end_session_endpoint);
         logoutUrl.searchParams.set('client_id', config.clientId);
         logoutUrl.searchParams.set('post_logout_redirect_uri', config.postLogoutRedirectUri);
@@ -378,7 +427,8 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
   }, []);
 
   /**
-   * Inactivity timeout for shared workstations.
+   * Inactivity timeout for shared workstations, with the pre-expiry warning
+   * WCAG 2.2.1 (Timing Adjustable, Level A) requires.
    *
    * The access token's expiry is not this control. A token is valid for as
    * long as the issuer says regardless of who is at the keyboard, and the
@@ -404,6 +454,15 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
    * a mouse nudged by a passing cart, or a jittery optical sensor on a
    * shared desk, would keep an unattended session alive indefinitely —
    * which is precisely the session this exists to end.
+   *
+   * ## The warning, and why it is not optional
+   *
+   * Ending a session with no notice fails SC 2.2.1 at Level A, and the
+   * "essential" exception does not rescue it: a single keypress already
+   * extends this session, so extending it cannot invalidate the activity.
+   * See `IdleWarningDialog` for the full exception analysis. The lead time
+   * is 60 seconds against the SC's 20-second floor, and dismissing the
+   * warning is itself activity, so it can be extended repeatedly.
    */
   useEffect(() => {
     if (status !== 'authenticated') {
@@ -424,9 +483,13 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     }
 
     const timeoutMs = idleTimeoutMinutes * 60_000;
-    let lastActivityAt = Date.now();
+    // Never warn at or past the deadline, which is what a naive subtraction
+    // would do for any timeout under the lead time.
+    const warnAfterMs = Math.max(timeoutMs / 2, timeoutMs - IDLE_WARNING_LEAD_MS);
+
     const noteActivity = () => {
-      lastActivityAt = Date.now();
+      lastActivityAt.current = Date.now();
+      setIdleWarningVisible(false);
     };
 
     const ACTIVITY_EVENTS = ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
@@ -434,25 +497,34 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       window.addEventListener(event, noteActivity, { passive: true });
     }
 
+    noteActivity();
+
     // Poll an order of magnitude finer than the timeout, so the session
-    // ends within a minute of the deadline rather than up to a full
-    // timeout late.
-    const interval = window.setInterval(
-      () => {
-        if (Date.now() - lastActivityAt >= timeoutMs) {
-          signOutRef.current('session_idle');
-        }
-      },
-      Math.min(30_000, timeoutMs),
-    );
+    // ends within a few seconds of the deadline rather than up to a full
+    // poll late — and so the warning appears with its full lead time.
+    const interval = window.setInterval(() => {
+      const idleFor = Date.now() - lastActivityAt.current;
+      if (idleFor >= timeoutMs) {
+        signOutRef.current('session_idle');
+      } else if (idleFor >= warnAfterMs) {
+        setIdleWarningVisible(true);
+      }
+    }, IDLE_POLL_INTERVAL_MS);
 
     return () => {
       for (const event of ACTIVITY_EVENTS) {
         window.removeEventListener(event, noteActivity);
       }
       window.clearInterval(interval);
+      setIdleWarningVisible(false);
     };
   }, [status]);
+
+  /** Dismisses the warning and restarts the idle clock. Same bookkeeping a keypress does. */
+  const staySignedIn = useCallback(() => {
+    lastActivityAt.current = Date.now();
+    setIdleWarningVisible(false);
+  }, []);
 
   /**
    * Identity-stable, and single-flight on refresh.
@@ -496,7 +568,20 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
       return refreshInFlight.current;
     }
 
-    const refresh = (async () => {
+    const epoch = sessionEpoch.current;
+    // `Promise.resolve().then(...)`, not an immediately-invoked async
+    // function, and the difference is load-bearing twice over.
+    //
+    // An IIFE runs everything up to its first `await` SYNCHRONOUSLY, before
+    // `refreshInFlight.current = refresh` on the last line of this block. So
+    // a synchronous throw from `loadOidcConfig()` would run the whole
+    // try/catch/finally first — and then the assignment below would install
+    // an already-settled `undefined` promise, which every later caller
+    // joins forever: the session wedges with no refresh ever attempted and
+    // no recovery but a reload. Deferring the body to a microtask
+    // guarantees the ref is set before any of it runs, which also makes the
+    // identity comparison in `finally` meaningful.
+    const refresh: Promise<string | undefined> = Promise.resolve().then(async () => {
       try {
         const config = loadOidcConfig();
         const discovery = await fetchDiscoveryDocument(config.issuer);
@@ -506,17 +591,34 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
           audience: config.audience,
           refreshToken: current.refreshToken as string,
         });
+        if (epoch !== sessionEpoch.current) {
+          // Signed out while this was in flight. The issuer has minted a
+          // live token set; clearing rather than merely discarding it
+          // matters because `toStoredTokens` has already been told to carry
+          // the refresh token forward, and none of it may reach storage.
+          clearTokens();
+          return undefined;
+        }
         const next = toStoredTokens(response, current);
         saveTokens(next);
         tokensRef.current = next;
         return next.accessToken;
       } catch {
-        signOutRef.current('session_expired');
+        // Only sign out if this refresh still belongs to the current
+        // session; otherwise a failure after sign-out would overwrite the
+        // reason the user is already being shown.
+        if (epoch === sessionEpoch.current) {
+          signOutRef.current('session_expired');
+        }
         return undefined;
       } finally {
-        refreshInFlight.current = undefined;
+        // Guarded, because `signOut` may already have cleared it and a
+        // later call may have installed its own.
+        if (refreshInFlight.current === refresh) {
+          refreshInFlight.current = undefined;
+        }
       }
-    })();
+    });
 
     refreshInFlight.current = refresh;
     return refresh;
@@ -530,7 +632,20 @@ export function AuthProvider({ children }: { readonly children: ReactNode }) {
     [status, error, signIn, signOut, getAccessToken],
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+      {/*
+        Rendered by the provider rather than exposed through the context for
+        a route to mount. A Level A control that each new screen has to
+        remember to render is a control that will eventually be missing from
+        one of them.
+      */}
+      {idleWarningVisible ? (
+        <IdleWarningDialog onStaySignedIn={staySignedIn} onSignOut={() => signOut()} />
+      ) : null}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

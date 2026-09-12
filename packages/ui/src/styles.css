@@ -64,6 +64,76 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 }
 
 /*
+ * Page-level typography and table chrome.
+ *
+ * This stylesheet defined --ostomy-font-family, --ostomy-font-size-base and
+ * --ostomy-color-text and then applied none of them to page text: every
+ * heading, paragraph and table cell rendered in the browser's default serif
+ * at the default size, beside sans-serif controls that did use the tokens.
+ * Contrast was never at risk (default black on white is 21:1), so no
+ * automated check would ever have reported it — it is a legibility
+ * requirement under SRS 5.4 for a population skewing older and
+ * post-surgical, and the day's data table was the least readable
+ * presentation of a numeric table available: no cell padding, no rules.
+ */
+body {
+  margin: 0;
+  font-family: var(--ostomy-font-family);
+  font-size: var(--ostomy-font-size-base);
+  line-height: var(--ostomy-line-height);
+  color: var(--ostomy-color-text);
+  background: var(--ostomy-color-background);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+caption {
+  text-align: left;
+  font-weight: 600;
+  padding-bottom: var(--ostomy-space-sm);
+}
+
+th,
+td {
+  padding: var(--ostomy-space-sm) var(--ostomy-space-md);
+  text-align: left;
+  border-bottom: 1px solid var(--ostomy-color-border);
+}
+
+th[scope='col'] {
+  border-bottom-width: 2px;
+}
+
+/*
+ * The idle warning (WCAG 2.2.1). A plain centred panel rather than a
+ * <dialog>: the element is rendered conditionally by AuthProvider, and
+ * showModal() would need an imperative open/close dance for no gain here.
+ */
+.ostomyIdleWarning {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 50%);
+  padding: var(--ostomy-space-lg);
+}
+
+.ostomyIdleWarning__panel {
+  background: var(--ostomy-color-background);
+  color: var(--ostomy-color-text);
+  border-radius: var(--ostomy-radius-lg);
+  padding: var(--ostomy-space-xl);
+  max-width: 32rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ostomy-space-md);
+}
+
+/*
  * A single, consistent focus style for every interactive primitive in this
  * package, using :focus-visible so a mouse click does not paint the same
  * ring a keyboard Tab press does — WCAG 2.4.7 wants the indicator visible
@@ -73,7 +143,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   outline: none;
 }
 /*
- * TWO-TONE, and that is the point: a dark inner ring plus a light outer one.
+ * TWO-TONE, and that is the point.
+ *
+ * Read the layering carefully, because it is the inverse of what the
+ * shorthand suggests: `box-shadow` spreads from the border-box edge OUTWARD
+ * to 5px, and the `outline` then paints over 2px-5px of that. So what
+ * renders is a 2px LIGHT band against the element and a 3px DARK ring
+ * outermost. That ordering is what the contrast assertions must hold to —
+ * `colorInner` (#1b1b1b) is the outermost tone and is the one that has to
+ * clear 3:1 against the page, which it does at 17.22:1 on background and
+ * 15.90:1 on surface. Flipping the CSS to match a naive reading of "dark
+ * inner, light outer" would put #2491ff outermost, where it measures
+ * 2.95:1 on surface and FAILS WCAG 1.4.11.
  *
  * A single hue cannot satisfy WCAG 1.4.11 here. The previous ring (#2491ff)
  * measured 3.20:1 on white — marginal — and 2.95:1 on --ostomy-color-surface,

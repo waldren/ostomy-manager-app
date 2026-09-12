@@ -44,9 +44,16 @@ export const web = {
   // Shown when the day held more entries than one request returns. The total
   // below it is then a total of what was fetched, not of the day — which is
   // the whole reason this says so rather than letting the number stand.
-  'physicianView.truncated.heading': 'This day has more entries than are shown',
+  // Announced when a day finishes loading. Without it the loading region
+  // was unmounted and the chart, heading and table appeared silently with
+  // focus unmoved — a screen-reader user pressed "previous day", heard
+  // "Loading…", then nothing, and had no way to know whether the rows under
+  // their cursor were the new day's or the old one's.
+  'physicianView.loadedStatus_one': '{{count}} entry loaded for {{date}}.',
+  'physicianView.loadedStatus_other': '{{count}} entries loaded for {{date}}.',
+  'physicianView.truncated.heading': 'This day may have more entries than are shown',
   'physicianView.truncated.body':
-    'Only the first entries for this day were loaded, so the total below is lower than the real total. Narrow the date range or check the full record before using this number.',
+    'Only the {{limit}} most recent entries for this day were loaded, so the earliest ones are not shown and the total below may be lower than the true total. Check the full record before using this number.',
   'physicianView.table.heading': 'All entries for this day',
   'app.title': 'Ostomy Care',
   // WCAG 2.4.2: the title names the page, not just the product. In an SPA it
@@ -69,27 +76,52 @@ export const web = {
   'auth.signOutButton': 'Sign out',
   // "your care team" was addressed to a physician, who does not have one.
   'auth.signInError':
-    'We could not sign you in. Please try again. If this keeps happening, contact your system administrator.',
+    'We could not sign you in. Please try again. If this keeps happening, contact support.',
   'auth.sessionExpired': 'Your session ended. Please sign in again.',
   // Says WHY, because a timeout with no explanation reads as a fault. Names
   // the reason the timeout exists rather than the number of minutes: the
   // timeout is deployment configuration, and copy that hardcodes "15
   // minutes" goes silently wrong the moment a site changes it.
+  // The WCAG 2.2.1 warning. Written in the ROUTINE voice, not the red-flag
+  // voice: this is a housekeeping prompt, and dressing it as urgent would
+  // spend the alarm vocabulary P7's safety prompts need. It names no number
+  // of minutes because the timeout is deployment configuration — copy that
+  // hardcodes "15 minutes" goes silently wrong when a site changes it.
+  'auth.idleWarning.heading': 'Are you still there?',
+  'auth.idleWarning.body':
+    'This page has not been used for a little while, so it will sign you out soon. This keeps health information from being left on screen on a shared computer.',
+  'auth.idleWarning.stayButton': 'Stay signed in',
+  'auth.idleWarning.signOutButton': 'Sign out now',
   'auth.sessionIdle':
     'You were signed out because this page was not used for a while. This keeps patient information from staying on screen on a shared computer. Please sign in again.',
 
   'nav.physicianView': 'Physician view',
 
-  'physicianView.heading': 'Physician view — stoma output',
-  'physicianView.intro':
-    'This page shows one day of stoma output for this patient. Each hydration signal is shown on its own — nothing is combined into a single score.',
+  // Deliberately names no audience and no patient.
+  //
+  // It read "Physician view — stoma output" over an intro saying "for this
+  // patient", and GET /api/v1/observations takes no patient identifier at
+  // all — the patient is the subject of the presented token. So the page
+  // can only ever render the signed-in account's own records, and both
+  // halves of that framing asserted something the data is not. Claiming a
+  // selected patient is the same class of defect as showing one day's
+  // figures under another day's heading.
+  'physicianView.heading': 'Stoma output',
+  'physicianView.intro': 'One day of stoma output, listed and charted by time of day.',
   'physicianView.loading': 'Loading stoma output…',
   'physicianView.loadError':
     'We could not load stoma output right now. Please try again in a moment.',
   'physicianView.retryButton': 'Try again',
   'physicianView.previousDay': 'Show the previous day',
   'physicianView.nextDay': 'Show the next day',
-  'physicianView.nextDayDisabledHint': 'You cannot view a day in the future.',
+  'physicianView.nextDayDisabledHint': 'Today is the most recent day that can be shown.',
+  // Two keys, because they name two different things. One key served as
+  // both the <nav> landmark's label and the date field's label, so a screen
+  // reader announced "Date shown navigation" — which describes nothing
+  // navigable — wrapping a field called "Date shown". It also meant a
+  // translator could not diverge them and an edit to one silently changed
+  // the other.
+  'physicianView.dateNavLabel': 'Choose which day to show',
   'physicianView.selectedDate': 'Date shown',
   'physicianView.unitsLabel': 'Show volumes in',
   // Says plainly that the toggle is display-only. Without it a clinician can
@@ -100,7 +132,8 @@ export const web = {
   'physicianView.unitsImperial': 'Fluid ounces (oz)',
 
   'physicianView.emptyState.heading': 'No stoma output logged for this day',
-  'physicianView.emptyState.body': 'Nothing has been logged for this day.',
+  'physicianView.emptyState.body':
+    'No entries were recorded for this day. That does not always mean there was no output — it may not have been logged.',
 
   // "not available yet" implied a loading or permissions problem that might
   // resolve on refresh. It will not.

@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'danger';
 
@@ -27,6 +27,17 @@ export interface ButtonProps extends Omit<
   readonly variant?: ButtonVariant;
   /** Defaults to `'button'` — an explicit choice, since an un-typed `<button>` inside a `<form>` submits it. */
   readonly type?: 'button' | 'submit' | 'reset';
+  /**
+   * Forwarded to the underlying `<button>`.
+   *
+   * Needed by any pattern that must MOVE focus to a control rather than
+   * wait for the user to reach it: a dialog placing focus on its confirm
+   * button, an error summary sending focus to the first invalid field's
+   * label. React 19 passes `ref` as an ordinary prop, so this needs no
+   * `forwardRef` — but it does need declaring, or the prop is a type error
+   * at every call site.
+   */
+  readonly ref?: Ref<HTMLButtonElement>;
 }
 
 /**
@@ -35,9 +46,16 @@ export interface ButtonProps extends Omit<
  * copy of its own — `children` is required and supplied by the caller
  * through the i18n catalog (ADR-0006).
  */
-export function Button({ children, variant = 'primary', type = 'button', ...rest }: ButtonProps) {
+export function Button({
+  children,
+  variant = 'primary',
+  type = 'button',
+  ref,
+  ...rest
+}: ButtonProps) {
   return (
     <button
+      ref={ref}
       type={type}
       className={`ostomyButton ostomyButton--${variant} ostomyFocusable`}
       {...rest}

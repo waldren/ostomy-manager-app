@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -40,7 +40,9 @@ describe('DateNav', () => {
 
     const nextButton = screen.getByRole('button', { name: 'Show the next day' });
     expect(nextButton).toHaveAttribute('aria-disabled', 'true');
-    expect(nextButton).toHaveAccessibleDescription('You cannot view a day in the future.');
+    expect(nextButton).toHaveAccessibleDescription(
+      'Today is the most recent day that can be shown.',
+    );
 
     await user.click(nextButton);
     expect(onChangeDate).not.toHaveBeenCalled();
@@ -55,5 +57,31 @@ describe('DateNav', () => {
     expect(nextButton).toBeEnabled();
     await user.click(nextButton);
     expect(onChangeDate).toHaveBeenCalledWith('2020-01-02');
+  });
+
+  it('ignores a typed future date, which `max` alone does not prevent', () => {
+    // `max` on a date input is advisory: a typed out-of-range value still
+    // fires `change` with the value present. So the view loaded a future day
+    // while the next-day button sat beside it aria-disabled, explaining that
+    // a future day cannot be shown — a hint the app had just disproved.
+    const onChangeDate = vi.fn();
+    render(<DateNav isoDate="2026-09-11" onChangeDate={onChangeDate} />);
+
+    const input = screen.getByLabelText(/date shown/i);
+    fireEvent.change(input, { target: { value: '2099-01-01' } });
+
+    expect(onChangeDate).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a past date typed directly', () => {
+    // The guard must not swallow the control's ordinary use.
+    const onChangeDate = vi.fn();
+    render(<DateNav isoDate="2026-09-11" onChangeDate={onChangeDate} />);
+
+    fireEvent.change(screen.getByLabelText(/date shown/i), {
+      target: { value: '2026-09-01' },
+    });
+
+    expect(onChangeDate).toHaveBeenCalledWith('2026-09-01');
   });
 });

@@ -15,7 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import type { Observation } from '@ostomy/core/api-client';
+import { ApiError, type Observation } from '@ostomy/core/api-client';
+import { formatDateTime } from '@ostomy/core/i18n';
 import { unitsForMeasurementSystem, type MeasurementSystem } from '@ostomy/core/units';
 import { Button, InlineNotice, NoticeIcon } from '@ostomy/ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -135,8 +136,18 @@ export function PhysicianOutputView() {
           truncated: response.observations.length >= DAILY_PAGE_SIZE,
         });
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (isStale()) return;
+        // A 401 is not a retryable error, and offering "Try again" for one
+        // is a trap: `getAccessToken` still sees a locally-unexpired token
+        // and hands back the same rejected one, so the button can be
+        // pressed forever. Reachable whenever the server rejects a token
+        // the client still believes in — a revoked session, clock skew
+        // wider than the 30s margin, an audience or issuer mismatch.
+        if (error instanceof ApiError && error.status === 401) {
+          signOut('session_expired');
+          return;
+        }
         setState({ status: 'error' });
       });
 
@@ -153,7 +164,7 @@ export function PhysicianOutputView() {
     return () => {
       requestTicket.current += 1;
     };
-  }, [apiClient, isoDate, reloadNonce]);
+  }, [apiClient, isoDate, reloadNonce, signOut]);
 
   const load = useCallback(() => setReloadNonce((n) => n + 1), []);
 
@@ -196,11 +207,30 @@ export function PhysicianOutputView() {
 
         <DailyBalanceNotice />
 
-        {state.status === 'loading' ? (
-          <p role="status" aria-live="polite">
-            {t('physicianView.loading')}
-          </p>
-        ) : null}
+        {/*
+          ONE region, mounted for every state (WCAG 4.1.3).
+          
+          The loading paragraph used to be conditionally mounted, so the
+          announcement stopped at "Loading…": the region was removed from the
+          DOM and the chart, heading and table appeared with nothing
+          announced and focus unmoved, still on "Show the previous day". A
+          screen-reader user pressed previous-day, heard the loading message,
+          then silence — with no way to know the load had finished, and every
+          chance of reading the previous day's rows under the new day's date.
+          Changing the day is the primary interaction on this page.
+        */}
+        <p role="status" aria-live="polite">
+          {state.status === 'loading' ? t('physicianView.loading') : null}
+          {state.status === 'loaded'
+            ? t('physicianView.loadedStatus', {
+                count: state.observations.length,
+                date: formatDateTime(new Date(`${isoDate}T00:00:00.000Z`), undefined, {
+                  dateStyle: 'long',
+                  timeStyle: undefined,
+                }),
+              })
+            : null}
+        </p>
 
         {state.status === 'error' ? (
           <InlineNotice variant="error" icon={<NoticeIcon />} live="assertive">
@@ -226,7 +256,7 @@ export function PhysicianOutputView() {
                 title={t('physicianView.truncated.heading')}
                 live="polite"
               >
-                <p>{t('physicianView.truncated.body')}</p>
+                <p>{t('physicianView.truncated.body', { limit: DAILY_PAGE_SIZE })}</p>
               </InlineNotice>
             ) : null}
             <OutputChart entries={entries} />

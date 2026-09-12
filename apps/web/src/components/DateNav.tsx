@@ -40,7 +40,7 @@ export function DateNav({ isoDate, onChangeDate }: DateNavProps) {
   const isToday = isoDate >= todayIsoDate();
 
   return (
-    <nav aria-label={t('physicianView.selectedDate')}>
+    <nav aria-label={t('physicianView.dateNavLabel')}>
       <Button variant="secondary" onClick={() => onChangeDate(shiftIsoDate(isoDate, -1))}>
         {t('physicianView.previousDay')}
       </Button>
@@ -61,8 +61,15 @@ export function DateNav({ isoDate, onChangeDate }: DateNavProps) {
         value={isoDate}
         max={todayIsoDate()}
         onChange={(event) => {
-          if (event.target.value) {
-            onChangeDate(event.target.value);
+          const next = event.target.value;
+          // `max` is advisory, not enforcing: a typed out-of-range value
+          // still fires `change` with the value present, so the view loaded
+          // a future day — while the next-day button sat beside it
+          // `aria-disabled` with a hint saying a future day cannot be
+          // shown, which the app had just disproved. The guard belongs
+          // here, where the value is applied.
+          if (next && next <= todayIsoDate()) {
+            onChangeDate(next);
           }
         }}
       />

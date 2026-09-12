@@ -29,6 +29,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
 import { act, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -80,6 +81,38 @@ function Probe() {
       <button onClick={() => signOut()}>sign out</button>
     </div>
   );
+}
+
+/** Exposes `getAccessToken`, which the plain `Probe` never calls. */
+function TokenProbe() {
+  const { status, signOut, getAccessToken } = useAuth();
+  const [calls, setCalls] = useState(0);
+  const [result, setResult] = useState('');
+  return (
+    <div>
+      <span data-testid="status">{status}</span>
+      <span data-testid="token-calls">{calls}</span>
+      <span data-testid="token-result">{result}</span>
+      <button
+        onClick={() => {
+          setCalls((n) => n + 1);
+          void getAccessToken().then((token) => setResult(`done:${token ?? 'none'}`));
+        }}
+      >
+        get token
+      </button>
+      <button onClick={() => signOut()}>sign out</button>
+    </div>
+  );
+}
+
+/** A promise plus the handle to settle it, so a test controls arrival order. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 function renderProvider() {
@@ -369,5 +402,203 @@ describe('the reason a session ended survives the logout redirect', () => {
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('session_idle'));
     // Consumed, so it is shown once rather than on every later load.
     expect(sessionStorage.getItem('ostomy.auth.signOutReason')).toBeNull();
+  });
+});
+
+describe('a sign-out during an in-flight refresh', () => {
+  /**
+   * The defect, as an unauthorized disclosure:
+   *
+   * `signOut` clears tokens synchronously, but a refresh already awaiting the
+   * token endpoint resumes afterwards and runs `saveTokens(next)` — writing a
+   * BRAND NEW, VALID token set back into storage that sign-out had just
+   * removed. The next load of the origin finds it unexpired and restores the
+   * session: the previous clinician's record, back on screen for whoever is
+   * at the workstation.
+   *
+   * The window is one HTTP round trip, and it is widest in exactly the
+   * degraded paths the code already anticipates — an issuer advertising no
+   * `end_session_endpoint`, or discovery failing — because then there is no
+   * navigation to tear the document down, so the write reliably lands.
+   */
+  it('does not let the resumed refresh write tokens back', async () => {
+    const tokenEndpoint = deferred<Response>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('.well-known')) {
+          // No end_session_endpoint: the local-only sign-out path, where
+          // nothing navigates away and the race is fully observable.
+          return jsonResponse({
+            issuer: ISSUER,
+            authorization_endpoint: `${ISSUER}/authorize`,
+            token_endpoint: `${ISSUER}/token`,
+          });
+        }
+        return tokenEndpoint.promise;
+      }),
+    );
+
+    // Valid at mount so `initialize` authenticates from storage without
+    // touching the token endpoint, then aged past the 30s safety margin so
+    // the FIRST `getAccessToken` is the one that refreshes. Starting
+    // expired would make initialize itself await the deferred endpoint and
+    // the provider would never reach `authenticated`.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    sessionStorage.setItem(
+      'ostomy.auth.tokens',
+      JSON.stringify({
+        accessToken: 'stale',
+        expiresAt: Date.now() + 40_000,
+        refreshToken: 'rt',
+      }),
+    );
+
+    render(
+      <AuthProvider>
+        <TokenProbe />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+    });
+
+    // Start a refresh and leave it awaiting the token endpoint.
+    await userEvent.click(screen.getByRole('button', { name: 'get token' }));
+    await waitFor(() => expect(screen.getByTestId('token-calls')).toHaveTextContent('1'));
+
+    // Sign out while it is in flight.
+    await userEvent.click(screen.getByRole('button', { name: 'sign out' }));
+    expect(sessionStorage.getItem('ostomy.auth.tokens')).toBeNull();
+
+    // Now the refresh lands.
+    tokenEndpoint.resolve(
+      jsonResponse({ access_token: 'fresh', token_type: 'Bearer', expires_in: 3600 }),
+    );
+    await waitFor(() => expect(screen.getByTestId('token-result')).toHaveTextContent('done'));
+
+    // The security property: storage must still be empty. A resurrected
+    // token here is a session the user believes they ended.
+    expect(sessionStorage.getItem('ostomy.auth.tokens')).toBeNull();
+    expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated');
+    // And the caller must not receive a usable token either.
+    expect(screen.getByTestId('token-result')).toHaveTextContent('done:none');
+  });
+});
+
+describe('the idle warning (WCAG 2.2.1 Timing Adjustable, Level A)', () => {
+  /**
+   * Ending a session with no notice and no way to extend fails SC 2.2.1 at
+   * Level A. The "essential" exception does not rescue it: a single keypress
+   * already extends this session, so extension cannot invalidate the
+   * activity — the exception covers deadlines that ARE the activity, like an
+   * auction close.
+   */
+  function renderAuthenticatedWithIdle(minutes: string) {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    stubEnv({ VITE_SESSION_IDLE_TIMEOUT_MINUTES: minutes });
+    sessionStorage.setItem(
+      'ostomy.auth.tokens',
+      JSON.stringify({ accessToken: 'at', expiresAt: Date.now() + 86_400_000 }),
+    );
+    return renderProvider();
+  }
+
+  it('warns before signing the user out, not after', async () => {
+    renderAuthenticatedWithIdle('15');
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+
+    // Past the 60s warning lead, short of the deadline.
+    await act(async () => {
+      vi.advanceTimersByTime(14 * 60_000 + 30_000);
+    });
+
+    expect(screen.getByRole('alertdialog')).toBeVisible();
+    // Still signed in — the warning is a warning, not an announcement of a
+    // sign-out that already happened.
+    expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+  });
+
+  it('gives at least the 20 seconds the SC requires', async () => {
+    renderAuthenticatedWithIdle('15');
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+
+    await act(async () => {
+      vi.advanceTimersByTime(14 * 60_000 + 30_000);
+    });
+    expect(screen.getByRole('alertdialog')).toBeVisible();
+
+    // 20 seconds later the user must still have the chance to act.
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+  });
+
+  it('extends the session by a simple action, repeatably', async () => {
+    renderAuthenticatedWithIdle('15');
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+
+    // Three cycles: the SC wants at least ten, and the mechanism is the
+    // same each time, so three proves it is not single-use.
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await act(async () => {
+        vi.advanceTimersByTime(14 * 60_000 + 30_000);
+      });
+      const stay = screen.getByRole('button', { name: /stay signed in/i });
+      await act(async () => {
+        stay.click();
+      });
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+      expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+    }
+  });
+
+  it('moves focus into the dialog, so a keyboard user is not left behind it', async () => {
+    renderAuthenticatedWithIdle('15');
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+
+    await act(async () => {
+      vi.advanceTimersByTime(14 * 60_000 + 30_000);
+    });
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /stay signed in/i }));
+  });
+
+  it('names itself through the heading it renders', async () => {
+    renderAuthenticatedWithIdle('15');
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+
+    await act(async () => {
+      vi.advanceTimersByTime(14 * 60_000 + 30_000);
+    });
+
+    expect(screen.getByRole('alertdialog')).toHaveAccessibleName(/still there/i);
+  });
+
+  it('still signs out when the warning is ignored', async () => {
+    // The warning must not become a way to defeat the control by doing
+    // nothing.
+    renderAuthenticatedWithIdle('15');
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+
+    await act(async () => {
+      vi.advanceTimersByTime(15 * 60_000 + 10_000);
+    });
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
+  });
+
+  it('shows no warning when the timeout is disabled', async () => {
+    renderAuthenticatedWithIdle('0');
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+
+    await act(async () => {
+      vi.advanceTimersByTime(60 * 60_000);
+    });
+
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
   });
 });
