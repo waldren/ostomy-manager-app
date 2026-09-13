@@ -455,9 +455,9 @@ Collected here because each is a real failure mode with a silent consequence, an
 
 ## 10. Open
 
-**Tombstone purge policy.** Tombstones accumulate and are retained indefinitely. The purge policy is coupled to the PHI retention period, which is still with counsel (ADR-0001, Notes). §5.4 records what the protocol must provide *before* clients ship regardless of what number comes back, and §4.1 records why the audit event for a delete has to carry the full pre-deletion state: after a purge it is the only surviving copy.
+**Tombstone purge policy — RESOLVED, not yet built.** ADR-0017 sets retention at the account's lifetime, with a deletion request revoking access at once and hard-purging within 30 days. Tombstone purge runs on that trigger, server-side and on-device, and no longer waits on an open question. §5.4 records what the protocol must provide regardless, and §4.1 records why the audit event for a delete has to carry the full pre-deletion state: after a purge it is the only surviving copy — and note that ADR-0017 now purges those audit rows too, so for a deleted account there is eventually no surviving copy at all, which is the intended outcome.
 
-**A BAA question this contract creates.** §6.3 forbids forwarding a rejection off the device. If `apps/mobile` adopts third-party error tracking at P2.S2b, that vendor joins the list in `docs/security-hipaa.md` — flag it to whoever owns the BAA list before that sprint, not after.
+**A third-party-vendor question this contract creates.** §6.3 forbids forwarding a rejection off the device. If `apps/mobile` adopts third-party error tracking at P2.S2b, that vendor enters the PHI path and joins the service list in `docs/security-hipaa.md`. Under the FTC rule (`docs/compliance/breach-notification.md`) no BAA is required, but the vendor's own breach of our data is still our notification event — raise it before that sprint, not after.
 
 **The SNOMED CT estimation-technique code (D4).** Until it resolves, `method` accepts only `null`. `packages/core`'s `ESTIMATION_METHOD_CODE` is a discriminated union in the `{ resolved: false }` state, so a write path cannot typecheck against an unresolved code by accident.
 
