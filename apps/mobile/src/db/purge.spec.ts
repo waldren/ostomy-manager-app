@@ -144,39 +144,20 @@ describe('purgeLocalDatabase', () => {
     expect(mockDelete.mock.invocationCallOrder[0]).toBeLessThan(reopenOrder);
   });
 
-  it('clears the key while the database is still held closed, not after', async () => {
-    /**
-     * The window this closes: with the key and owner clears moved OUTSIDE
-     * `withDatabaseClosed`, they ran after `purging` was released and after
-     * the generation bump. A `getDatabase()` in that window — and fixing
-     * the provider's invalidation makes one land there BY DESIGN — opens,
-     * mints a fresh key, and creates the file. `clearDatabaseKey()` then
-     * deletes the key that file was encrypted with.
-     *
-     * The result is a SQLCipher database nobody can open, reported as the
-     * generic "file is not a database" that this module's ordering comment
-     * says it exists to avoid. The patient's only route out is the
-     * startup-error screen's "Sign in again", which purges and destroys
-     * their local diary.
-     */
-    const SecureStore = jest.requireMock('expo-secure-store');
-    await getDatabase();
-
-    await purgeLocalDatabase();
-
-    const keyClear = SecureStore.deleteItemAsync.mock.invocationCallOrder[0]!;
-    const reopen = mockOpen.mock.invocationCallOrder.at(-1)!;
-    // The key is gone before anything can re-open and mint a new one.
-    expect(keyClear).toBeGreaterThan(mockDelete.mock.invocationCallOrder[0]!);
-    expect(keyClear).toBeLessThan(
-      reopen === mockOpen.mock.invocationCallOrder[0] ? Infinity : reopen,
-    );
-  });
-
   it('leaves no key behind for a file a concurrent caller re-created', async () => {
-    // The end state that matters, asserted directly rather than by
-    // ordering: after a purge racing a getDatabase, the key that exists
-    // must belong to the database that exists.
+    /**
+     * The key-clear window, and the ONLY test of the pair that can detect
+     * it. Its sibling asserted an ordering bounded by
+     * `reopen === calls[0] ? Infinity : reopen` — and in a scenario with
+     * one open, `reopen` IS `calls[0]`, so the bound was literally
+     * Infinity. It passed against the exact mutation its own comment
+     * described, and has been deleted.
+     *
+     * A second actor is what makes the window observable: with the clears
+     * outside `withDatabaseClosed` the sequence becomes
+     * open, delete, open, clearKey — a key deleted after the file it
+     * encrypts was recreated, leaving a database nobody can open.
+     */
     const SecureStore = jest.requireMock('expo-secure-store');
     await getDatabase();
 

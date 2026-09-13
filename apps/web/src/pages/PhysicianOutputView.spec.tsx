@@ -142,6 +142,20 @@ describe('PhysicianOutputView — a day bigger than one page', () => {
     expect(listMock.mock.calls[0]?.[0]).toMatchObject({ limit: 500 });
   });
 
+  /*
+    A generous timeout, because this test genuinely does a lot of work.
+
+    `truncated` is `observations.length >= DAILY_PAGE_SIZE`, so proving the
+    notice appears means rendering a full page — 500 entries through the
+    chart AND the table. That takes several seconds, and it exceeded
+    vitest's 5s default on CI hardware while passing locally. It had been
+    passing on CI by a margin thin enough to be luck.
+
+    Raising the limit rather than shrinking the fixture: the threshold is
+    the thing under test, and a smaller fixture would only pass by making
+    DAILY_PAGE_SIZE injectable, which would test a seam instead of the
+    behaviour.
+  */
   it('warns that the total is incomplete when the response fills the page', async () => {
     const full = Array.from({ length: 500 }, (_, index) =>
       observation({ id: `11111111-1111-4111-8111-${String(index).padStart(12, '0')}` }),
@@ -163,7 +177,7 @@ describe('PhysicianOutputView — a day bigger than one page', () => {
     // notice: the load-complete status region also says "500 entries
     // loaded", so a document-wide match would pass on that instead.
     expect(screen.getByText(/most recent entries/i).textContent).toContain('500');
-  });
+  }, 30_000);
 
   it('does not warn on an ordinary day, so the warning keeps its meaning', async () => {
     listMock.mockResolvedValue({ observations: [observation(), observation({ id: 'b' })] });
