@@ -449,6 +449,52 @@ model Observation {
   /// `extension`.
   enteredMeasurementSystem MeasurementSystem @map("entered_measurement_system")
 
+  /// The IANA time zone the device reported at the moment of entry
+  /// (`America/Chicago`), and the calendar date that instant fell on in
+  /// that zone (ADR-0016).
+  ///
+  /// ## Why a day needs storing at all
+  ///
+  /// `effectiveDatetime` is an instant. "Daily Net Fluid Balance" (SRS
+  /// §3.5) is the headline hydration signal, "daily totals" drive anomaly
+  /// highlighting (§3.9), and the composite status is computed per day
+  /// (§3.12) — and the spec uses *daily* throughout without ever defining
+  /// where a day starts. Grouping by the UTC day puts everything a patient
+  /// at UTC-6 logs after 6pm into the next day, which splits a high-output
+  /// ileostomy patient's evening output — the clinically interesting part,
+  /// and the reason overnight dehydration is the risk — across two days
+  /// neither they nor their clinician would recognise.
+  ///
+  /// ## Why it is captured, not derived
+  ///
+  /// Exactly the `entered_measurement_system` argument above, for exactly
+  /// the same reason: patients travel and patients relocate, so a zone
+  /// read from a mutable profile at render time is wrong precisely for the
+  /// patients who moved. Client-asserted (`docs/sync-contract.md` §7.2) —
+  /// only the device knows what the patient's clock said when they typed
+  /// it in. The server validates that the zone resolves, nothing more.
+  ///
+  /// `NOT NULL` with no default, and permanent per row: the instant alone
+  /// does not say where the patient was, so a row written without this can
+  /// never have it recovered.
+  ///
+  /// ## Two columns, not one
+  ///
+  /// `local_date` is derived from the instant and the zone at write time
+  /// and stored so daily aggregates can `GROUP BY` an indexed column
+  /// rather than recomputing a zone conversion per row on the query that
+  /// runs most.
+  ///
+  /// It is deliberately NOT monotonic with `effective_datetime`: a patient
+  /// who crosses a zone can have a 23- or 25-hour day, and two rows can
+  /// share an instant across different dates. Order by the instant; group
+  /// by this. Code that assumes either implies the other is wrong.
+  ///
+  /// Neither is a FHIR field — same footing as
+  /// `entered_measurement_system` above.
+  enteredTimezone String   @map("entered_timezone") @db.VarChar(64)
+  localDate       DateTime @map("local_date") @db.Date
+
   /// See Profile.clientUpdatedAt for what this is and is not used for.
   clientUpdatedAt DateTime  @map("client_updated_at") @db.Timestamptz(3)
   /// See Profile.serverSequence for what this default is (and is not) and
@@ -470,6 +516,11 @@ model Observation {
   // this schema needs it for (S8).
   @@index([patientId, code, effectiveDatetime])
   @@index([patientId, serverSequence])
+  /// The daily-aggregate index. Every "totals for a day" query groups by
+  /// `local_date` (ADR-0016), and that is the query the patient dashboard
+  /// and the physician view both run constantly — a sequential scan here
+  /// is the one that shows up first.
+  @@index([patientId, code, localDate])
   @@map("observations")
 }
 

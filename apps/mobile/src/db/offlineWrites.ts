@@ -15,11 +15,11 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import type { MeasurementSystem } from '@ostomy/core/units';
+import { toLocalDate, type MeasurementSystem } from '@ostomy/core/units';
 import type { CanonicalWireUnit } from '@ostomy/core/sync';
 import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
 
-import { toWireInstant } from '../lib/utils/clock';
+import { deviceTimeZone, toWireInstant } from '../lib/utils/clock';
 import { generateUuid } from '../lib/utils/uuid';
 
 import type { SqliteExecutor } from './executor';
@@ -122,6 +122,8 @@ export function buildObservationPayload(fields: {
   effectiveDatetime: string;
   method: string | null;
   enteredMeasurementSystem: MeasurementSystem;
+  /** IANA zone captured at entry (ADR-0016). */
+  enteredTimezone: string;
 }): string {
   return JSON.stringify({
     resourceType: 'Observation',
@@ -141,6 +143,7 @@ export function buildObservationPayload(fields: {
     effectiveDateTime: fields.effectiveDatetime,
     method: fields.method,
     enteredMeasurementSystem: fields.enteredMeasurementSystem,
+    enteredTimezone: fields.enteredTimezone,
   });
 }
 
@@ -181,6 +184,11 @@ async function enqueueObservationCreate(
   // reused for both.
   const operationId = generateUuid();
   const nowIso = toWireInstant(now());
+  // Read HERE, not taken from the caller. A zone every call site has to
+  // remember to pass is one some call site will forget, and a row written
+  // without it can never have its day recovered (ADR-0016).
+  const enteredTimezone = deviceTimeZone();
+  const localDate = toLocalDate(new Date(fields.effectiveDatetime), enteredTimezone);
 
   await executor.withTransactionAsync(async () => {
     await insertObservation(
@@ -194,6 +202,8 @@ async function enqueueObservationCreate(
         method: fields.method,
         status: 'final',
         enteredMeasurementSystem: fields.enteredMeasurementSystem,
+        enteredTimezone,
+        localDate,
         clientUpdatedAt: nowIso,
       },
       nowIso,
@@ -236,6 +246,11 @@ export async function enqueueObservationUpdate(
 ): Promise<{ operationId: string }> {
   const operationId = generateUuid();
   const nowIso = toWireInstant(now());
+  // Read HERE, not taken from the caller. A zone every call site has to
+  // remember to pass is one some call site will forget, and a row written
+  // without it can never have its day recovered (ADR-0016).
+  const enteredTimezone = deviceTimeZone();
+  const localDate = toLocalDate(new Date(fields.effectiveDatetime), enteredTimezone);
 
   await executor.withTransactionAsync(async () => {
     await replaceObservation(
@@ -249,6 +264,8 @@ export async function enqueueObservationUpdate(
         method: fields.method,
         status: 'final',
         enteredMeasurementSystem: fields.enteredMeasurementSystem,
+        enteredTimezone,
+        localDate,
         clientUpdatedAt: nowIso,
       },
       nowIso,
@@ -278,6 +295,9 @@ export async function enqueueObservationDelete(
   const operationId = generateUuid();
   const nowIso = toWireInstant(now());
 
+  // No zone here: a delete tombstones an EXISTING row and carries no
+  // payload (`docs/sync-contract.md` §3.1), so there is nothing whose day
+  // needs deciding.
   await executor.withTransactionAsync(async () => {
     await tombstoneObservation(executor, id, nowIso, nowIso, nowIso);
     await enqueueOperation(

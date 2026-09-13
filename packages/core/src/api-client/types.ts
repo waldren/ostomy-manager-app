@@ -47,6 +47,8 @@ export type Observation = {
   readonly method: string | null;
   /** Which system the patient entered in (ADR-0012). Must agree with the profile at write time. */
   readonly enteredMeasurementSystem: 'metric' | 'imperial';
+  /** IANA zone name the device reported at entry (ADR-0016), never a UTC offset. Defines the patient's day, which every daily figure groups by. The server validates only that it resolves. */
+  readonly enteredTimezone: string;
 };
 
 export type ObservationCreateResponse = {
@@ -171,7 +173,8 @@ export type SyncOperationResult = {
     | 'valueQuantity.unit'
     | 'effectiveDateTime'
     | 'method'
-    | 'enteredMeasurementSystem';
+    | 'enteredMeasurementSystem'
+    | 'enteredTimezone';
   /** Diagnostic. A client MUST NOT branch clinical behaviour on it (§3.7). */
   readonly replayed: boolean;
 };

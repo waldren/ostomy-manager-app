@@ -57,6 +57,7 @@ const EXPECTED_KEYS = [
   'effectiveDateTime',
   'method',
   'enteredMeasurementSystem',
+  'enteredTimezone',
 ];
 
 describe('observation wire shape', () => {
@@ -95,6 +96,7 @@ describe('effectiveDateTime lexical form (§7.3)', () => {
     valueQuantity: { value: 350, unit: 'mL' },
     method: null,
     enteredMeasurementSystem: 'metric',
+    enteredTimezone: 'America/Chicago',
   };
 
   it.each([
@@ -118,6 +120,7 @@ describe('runtime parser: what it deliberately lets through to Tier 1', () => {
     effectiveDateTime: '2026-09-07T14:00:00.000Z',
     method: null,
     enteredMeasurementSystem: 'metric',
+    enteredTimezone: 'America/Chicago',
   };
 
   it('accepts a non-numeric value at the transport layer so VALUE_NOT_NUMERIC can block it', () => {

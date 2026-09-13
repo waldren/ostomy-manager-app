@@ -61,6 +61,8 @@ export const SYNC_FIELD_PATH = {
   EFFECTIVE_DATE_TIME: 'effectiveDateTime',
   METHOD: 'method',
   ENTERED_MEASUREMENT_SYSTEM: 'enteredMeasurementSystem',
+  /** ADR-0016. Client-asserted IANA zone; the derived `localDate` is server-side and never a wire field. */
+  ENTERED_TIMEZONE: 'enteredTimezone',
 } as const;
 
 export type SyncFieldPath = (typeof SYNC_FIELD_PATH)[keyof typeof SYNC_FIELD_PATH];

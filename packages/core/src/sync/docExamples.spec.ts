@@ -128,6 +128,7 @@ describe('docs/sync-contract.md — the document own examples satisfy packages/c
             effectiveDateTime: '2026-09-07T14:00:00.000Z',
             method: null,
             enteredMeasurementSystem: 'metric',
+            enteredTimezone: 'America/Chicago',
           },
         },
       ],
@@ -185,6 +186,7 @@ describe('docs/sync-contract.md — the document own examples satisfy packages/c
             effectiveDateTime: '2026-09-07T14:00:00.000Z',
             method: null,
             enteredMeasurementSystem: 'metric',
+            enteredTimezone: 'America/Chicago',
           },
         },
         {

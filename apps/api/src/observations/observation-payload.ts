@@ -31,6 +31,7 @@ import {
   type ValidationWarning,
 } from '@ostomy/core/validation';
 import { SYNC_REASON_CODE, type SyncReasonCode, type Tier1ReasonCode } from '@ostomy/core/sync';
+import { isResolvableTimeZone, toLocalDate } from '@ostomy/core/units';
 import type { MeasurementSystem as CoreMeasurementSystem } from '@ostomy/core/units';
 
 import type { Observation } from '../generated/prisma/client';
@@ -66,6 +67,10 @@ export interface ObservationWriteInput {
   readonly effectiveDateTime: Date;
   readonly method: MethodWireInterpretation;
   readonly enteredMeasurementSystem: CoreMeasurementSystem;
+  /** IANA zone the device asserted (ADR-0016). */
+  readonly enteredTimezone: string;
+  /** `YYYY-MM-DD`, derived server-side from the instant and the zone. Not monotonic with `effectiveDateTime`. */
+  readonly localDate: string;
 }
 
 /**
@@ -121,6 +126,19 @@ export function interpretObservationPayload(
     });
   }
 
+  // Only that the identifier resolves — never which zone it "should" be.
+  // Second-guessing it would reject correct entries from a travelling
+  // patient, which is the case the field exists for (ADR-0016), on exactly
+  // the footing ADR-0012 sets for `enteredMeasurementSystem`.
+  if (!isResolvableTimeZone(parsed.enteredTimezone)) {
+    throw payloadMalformed({
+      field: OBSERVATION_FIELD.ENTERED_TIMEZONE,
+      reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
+    });
+  }
+
+  const effectiveDateTime = new Date(parsed.effectiveDateTime);
+
   return {
     id: parsed.id,
     code: parsed.code,
@@ -129,9 +147,15 @@ export function interpretObservationPayload(
     // Safe to construct: the zod layer already pinned the lexical form to
     // RFC 3339 with exactly three fractional digits and a `Z` offset (§7.3),
     // so this cannot be an Invalid Date.
-    effectiveDateTime: new Date(parsed.effectiveDateTime),
+    effectiveDateTime,
     method,
     enteredMeasurementSystem,
+    enteredTimezone: parsed.enteredTimezone,
+    // DERIVED here, never taken from the client. It is a pure function of
+    // two fields already on the wire, so a client-supplied one would be a
+    // second source of truth whose disagreement nothing would detect
+    // (docs/sync-contract.md §7.2).
+    localDate: toLocalDate(effectiveDateTime, parsed.enteredTimezone),
   };
 }
 
@@ -271,6 +295,9 @@ export function toObservationResource(row: Observation): ObservationResource {
     effectiveDateTime: row.effectiveDatetime.toISOString(),
     method: row.method,
     enteredMeasurementSystem: toWireMeasurementSystem(row.enteredMeasurementSystem),
+    enteredTimezone: row.enteredTimezone,
+    // `localDate` is deliberately absent: it is server-derived and not a
+    // wire field (docs/sync-contract.md §7.2).
   };
 }
 

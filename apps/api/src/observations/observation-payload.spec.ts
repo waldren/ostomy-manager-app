@@ -42,6 +42,7 @@ function payload(overrides: Partial<ObservationRequestParsed> = {}): Observation
     effectiveDateTime: '2026-09-07T14:00:00.000Z',
     method: null,
     enteredMeasurementSystem: 'metric',
+    enteredTimezone: 'America/Chicago',
     ...overrides,
   } as ObservationRequestParsed;
 }
@@ -180,6 +181,11 @@ function storedRow(overrides: Partial<Observation> = {}): Observation {
     method: null,
     status: ObservationStatus.FINAL,
     enteredMeasurementSystem: MeasurementSystem.IMPERIAL,
+    enteredTimezone: 'America/Chicago',
+    // The stored day. 14:00Z on the 7th is 09:00 in Chicago, so the row's
+    // local date is the 7th — but an evening entry would differ from its
+    // UTC date, which is the whole reason this column exists (ADR-0016).
+    localDate: new Date('2026-09-07T00:00:00.000Z'),
     clientUpdatedAt: new Date('2026-09-07T22:04:11.412Z'),
     serverSequence: 48213n,
     deletedAt: null,
@@ -201,6 +207,7 @@ describe('toObservationResource — a stored row, as §7.2 spells it', () => {
       effectiveDateTime: '2026-09-07T14:00:00.000Z',
       method: null,
       enteredMeasurementSystem: 'imperial',
+      enteredTimezone: 'America/Chicago',
     });
   });
 

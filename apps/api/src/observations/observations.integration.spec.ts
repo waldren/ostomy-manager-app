@@ -394,6 +394,7 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
       effectiveDateTime: '2026-09-07T14:00:00.000Z',
       method: null,
       enteredMeasurementSystem: 'metric',
+      enteredTimezone: 'America/Chicago',
       ...overrides,
     };
   }
@@ -627,6 +628,7 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
           'code',
           'effectiveDateTime',
           'enteredMeasurementSystem',
+          'enteredTimezone',
           'id',
           'method',
           'resourceType',
@@ -655,6 +657,7 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
         recordedAt: '2026-09-07T14:00:00.000Z',
         method: null,
         enteredMeasurementSystem: 'metric',
+        enteredTimezone: 'America/Chicago',
       });
 
       expect(response.status).toBe(400);
@@ -1337,6 +1340,7 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
         effectiveDateTime: '2026-09-07T14:00:00.000Z',
         method: null,
         enteredMeasurementSystem: 'metric',
+        enteredTimezone: 'America/Chicago',
       });
 
       expect(created.observation.id).toBe(id);
@@ -1366,6 +1370,7 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
           effectiveDateTime: '2026-09-07T14:00:00.000Z',
           method: null,
           enteredMeasurementSystem: 'metric',
+          enteredTimezone: 'America/Chicago',
         }),
       );
 

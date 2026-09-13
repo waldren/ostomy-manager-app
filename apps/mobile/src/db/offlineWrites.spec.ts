@@ -111,6 +111,7 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
           effectiveDatetime: stored!.effectiveDatetime,
           method: stored!.method,
           enteredMeasurementSystem: stored!.enteredMeasurementSystem,
+          enteredTimezone: stored!.enteredTimezone,
         }),
       );
       expect(payload).toEqual({
@@ -122,6 +123,9 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
         effectiveDateTime: '2026-09-11T14:00:00.000Z',
         method: null,
         enteredMeasurementSystem: 'metric',
+        // Captured from the device at entry, not passed in by the caller
+        // (ADR-0016).
+        enteredTimezone: expect.any(String),
       });
     });
 
