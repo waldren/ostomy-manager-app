@@ -279,22 +279,28 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     // stays unset until the next successful attempt, which blocks a
     // sync network call and nothing else.
     if (discovery) {
-      const storedRefreshToken = await getRefreshToken();
-      if (storedRefreshToken) {
-        try {
-          const tokens = await refreshAccessToken(discovery, config, storedRefreshToken);
-          setAccessToken(tokens.accessToken);
-          if (tokens.refreshToken !== undefined) {
-            await setRefreshToken(tokens.refreshToken);
-          }
-        } catch {
-          // Deliberately swallowed — see header comment. Nothing PHI-bearing
-          // or security-sensitive may be logged from a catch here in any
-          // case (CLAUDE.md "never log PHI"; this app has no crash-reporting
-          // sink at all per docs/sync-contract.md §10's BAA note), and a
-          // failed refresh has a defined, safe fallback: the next screen
-          // that actually needs a network call surfaces its own failure.
+      try {
+        // Inside the try, not before it. This read prompts for biometrics
+        // (requireAuthentication), so a cancelled sheet rejected out of
+        // `unlock()` — and `handleUnlock` has no catch, so it became an
+        // unhandled rejection with nothing shown. The same defect signOut
+        // was just fixed for.
+        const storedRefreshToken = await getRefreshToken();
+        if (!storedRefreshToken) {
+          return outcome;
         }
+        const tokens = await refreshAccessToken(discovery, config, storedRefreshToken);
+        setAccessToken(tokens.accessToken);
+        if (tokens.refreshToken !== undefined) {
+          await setRefreshToken(tokens.refreshToken);
+        }
+      } catch {
+        // Deliberately swallowed — see header comment. Nothing PHI-bearing
+        // or security-sensitive may be logged from a catch here in any
+        // case (CLAUDE.md "never log PHI"; this app has no crash-reporting
+        // sink at all per docs/sync-contract.md §10's BAA note), and a
+        // failed refresh has a defined, safe fallback: the next screen
+        // that actually needs a network call surfaces its own failure.
       }
     }
 
@@ -357,29 +363,43 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       // everything this function exists to remove.
     }
 
-    try {
-      if (discovery && storedRefreshToken) {
+    // Each step in its OWN try, so none can skip another.
+    //
+    // They shared one, which meant a throw from revocation or from the
+    // token clear skipped everything after it — and the function's own
+    // comment claimed every step after the first was unconditional. A
+    // `SecureStore.deleteItemAsync` failure is entirely reachable, and it
+    // left BOTH the refresh token and the whole local diary on the device
+    // while the UI reported a signed-out session. That is precisely the
+    // HIPAA finding this function exists to close.
+    if (discovery && storedRefreshToken) {
+      try {
         await revokeRefreshToken(discovery, config, storedRefreshToken);
+      } catch {
+        // Best-effort: the token expires on its own schedule.
       }
+    }
+
+    try {
       await clearRefreshToken();
+    } catch {
+      // The purge below matters more, and must not be skipped for this.
+    }
+
+    try {
       await purgeLocalDatabase();
     } catch {
-      // Swallowed rather than rethrown, because every caller invokes this
-      // as `void signOut()` from an `onPress` and a rejection there is an
-      // unhandled promise rejection, not a recovery.
-      //
-      // KNOWN GAP, and a real one: if the purge failed, clinical data is
-      // still on this device while the app reports a signed-out session.
-      // Surfacing that needs the same screen as ADR-0014's unsynced-entry
-      // warning, which this sprint does not have. It must land with the
-      // sync worker, alongside that warning.
-    } finally {
-      // Always. A failure anywhere above must still leave this app showing
-      // a signed-out session rather than the previous patient's home
-      // screen.
-      setAccessToken(undefined);
-      setPhase('signedOut');
+      // KNOWN GAP, and a real one: clinical data is still on this device
+      // while the app reports a signed-out session. Surfacing it needs the
+      // same screen as ADR-0014's unsynced-entry warning, which this
+      // sprint does not have. Both must land with the sync worker.
     }
+
+    // Always reached, now that no step above can throw: a failure anywhere
+    // must still leave this app showing a signed-out session rather than
+    // the previous patient's home screen.
+    setAccessToken(undefined);
+    setPhase('signedOut');
   }, [discovery, config]);
 
   const value = useMemo<AuthContextValue>(

@@ -179,19 +179,32 @@ export interface SchemaMigration {
  *
  * SQLite cannot drop a column with a CHECK constraint referencing it, so
  * the table is recreated. `local_seq` is preserved explicitly:
- * `docs/sync-contract.md` §3.5 orders a push by it, and regenerating it
+ * `docs/sync-contract.md` §3.2 orders a push by it, and regenerating it
  * would reorder operations that must not be reordered.
  */
 const MIGRATION_2_PAYLOAD_AT_PUSH_TIME = `
 CREATE TABLE sync_queue_new (
-  local_seq INTEGER PRIMARY KEY,
+  -- AUTOINCREMENT, matching migration 1. Without it SQLite reuses rowids
+  -- after the highest rows are deleted, so local_seq stops being a
+  -- never-reused identifier and becomes merely monotonic among surviving
+  -- rows. Nothing depends on the stronger property yet; §3.7's idempotency
+  -- and any "last pushed local_seq" watermark would, and weakening it
+  -- silently inside a migration whose comment says ordering depends on it
+  -- is worse than changing it on purpose.
+  local_seq INTEGER PRIMARY KEY AUTOINCREMENT,
   operation_id TEXT NOT NULL UNIQUE,
   entity_type TEXT NOT NULL,
   entity_id TEXT NOT NULL,
   operation_type TEXT NOT NULL CHECK (operation_type IN ('create', 'update', 'delete')),
   client_timestamp TEXT NOT NULL,
   enqueued_at TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('queued', 'inFlight', 'rejected')),
+  -- 'in_flight' — the value the SQL stores, NOT the camelCase name the
+  -- TypeScript side uses. This table was transcribed from the type rather
+  -- than from migration 1, which wrote 'inFlight' here: a constraint no
+  -- code path can satisfy. markInFlight would have thrown on every push,
+  -- and a device holding an in_flight row would have failed this migration
+  -- on every launch and never opened its database again.
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'in_flight', 'rejected')),
   attempt_count INTEGER NOT NULL DEFAULT 0,
   last_attempted_at TEXT,
   rejected_reason_code TEXT,

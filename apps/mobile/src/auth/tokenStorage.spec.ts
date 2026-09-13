@@ -140,7 +140,10 @@ describe('presence is answered without reading the token', () => {
     // an app that believes it has a session.
     await clearRefreshToken();
 
+    // Exact sequence, not indexOf ordering: `indexOf` passes as `-1 < 0`
+    // if the marker delete is removed entirely, which is precisely the
+    // mutation this is supposed to catch.
     const order = mockDelete.mock.calls.map((call) => call[0]);
-    expect(order.indexOf(MARKER_KEY)).toBeLessThan(order.indexOf(TOKEN_KEY));
+    expect(order).toEqual([MARKER_KEY, TOKEN_KEY]);
   });
 });

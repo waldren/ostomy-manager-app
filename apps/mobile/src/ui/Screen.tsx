@@ -82,18 +82,33 @@ export function Screen({ children, centred = true }: ScreenProps) {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView
+          testID="scroll"
           style={styles.fill}
           contentContainerStyle={[styles.content, centred && styles.centred]}
           keyboardShouldPersistTaps="handled"
-          // `Capture` so a touch anywhere counts, including one a child
-          // handles. This must never intercept — it returns false.
-          onStartShouldSetResponderCapture={() => {
-            markActivity();
-            return false;
-          }}
           onScrollBeginDrag={markActivity}
         >
-          <View style={styles.inner}>{children}</View>
+          {/*
+            The touch handler lives HERE, on the inner View, not on the
+            ScrollView.
+            
+            ScrollView assembles its native props as `{ ...otherProps, ...its
+            own handlers }` and assigns `onStartShouldSetResponderCapture`
+            AFTER the spread, so a caller-supplied one is silently
+            overridden and never called (react-native 0.86.3,
+            ScrollView.js). It forwards `onScrollBeginDrag`, which is why
+            the drag signal worked and the tap signal did not — the doc
+            comment above described behaviour that did not happen.
+
+            `onTouchStart` rather than a responder-capture hook: it bubbles
+            from any descendant, it is purely observational, and it cannot
+            interfere with the responder negotiation that makes buttons and
+            scrolling work. A capture hook would have to return `false` to
+            avoid intercepting, which is a sharper edge for no gain.
+          */}
+          <View style={styles.inner} onTouchStart={markActivity}>
+            {children}
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

@@ -9,7 +9,7 @@
 
 `apps/mobile` is the only offline-capable client (SRS_v2 §4.2). That is a settled architectural decision and is not reopened here. Its consequence is that this app is the one place in the system where PHI rests on hardware nobody in the covered entity controls, and where the usual server-side protections — ADR-0011's grant-enforced append-only audit table, the runtime role that cannot `UPDATE` or `DELETE` — simply do not reach.
 
-The P2.S2a substrate created that surface for the first time: an `observations` table and a `sync_queue` whose `payload` column holds the same clinical values as JSON. Three properties of the initial implementation forced this decision.
+The P2.S2a substrate created that surface for the first time: an `observations` table and a `sync_queue` which, at the time of this decision, held the same clinical values as JSON in a `payload` column (removed by migration 2, which builds the wire object at push time — the queue's rows still reference clinical data and the reasoning here is unchanged). Three properties of the initial implementation forced this decision.
 
 **The store was plaintext.** `expo-sqlite` does not encrypt by default, and the app config explicitly set `useSQLCipher: false`. The file is readable with `sqlite3` on a rooted or jailbroken device, on a device handed to a repair shop, and in any forensic extraction. OS full-disk encryption is a partial mitigation keyed to the screen lock, so it provides nothing at all on an Android device with no lock set.
 

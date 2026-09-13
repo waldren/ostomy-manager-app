@@ -143,8 +143,11 @@ describe('cold start never wedges on a spinner', () => {
 
     await renderProvider();
 
+    // `not.toHaveTextContent('signedOut')` on a node already asserted to
+    // read 'locked' cannot fail independently. Assert the fallback is a
+    // phase the patient can act on offline instead.
     await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
-    expect(screen.getByTestId('phase')).not.toHaveTextContent('signedOut');
+    expect(['locked', 'authenticated']).toContain(screen.getByTestId('phase').props.children);
   });
 });
 
@@ -186,7 +189,10 @@ describe('sign-out cannot be aborted', () => {
     await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('signedOut'));
   });
 
-  it('does not let a failed revocation block the purge', async () => {
+  it('does not let a failed revocation block the token clear or the purge', async () => {
+    // This assertion used to be `phase === 'signedOut'` alone — which the
+    // `finally` guarantees unconditionally, so it passed with the purge
+    // removed entirely. It has to name the steps that must still happen.
     mockRevoke.mockRejectedValueOnce(new Error('offline'));
 
     await renderProvider();
@@ -196,6 +202,28 @@ describe('sign-out cannot be aborted', () => {
       screen.getByTestId('signout').props.onPress();
     });
 
+    expect(mockClearRefresh).toHaveBeenCalled();
+    expect(mockPurge).toHaveBeenCalled();
+  });
+
+  it('still purges when clearing the token fails', async () => {
+    /**
+     * The three steps shared one `try`, so a throw from any of them skipped
+     * the rest. A `SecureStore.deleteItemAsync` failure is entirely
+     * reachable, and it left BOTH the refresh token and the whole local
+     * diary on the device while the UI reported a signed-out session —
+     * which is exactly the HIPAA finding this code was written to close.
+     */
+    mockClearRefresh.mockRejectedValueOnce(new Error('keychain write failed'));
+
+    await renderProvider();
+    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
+
+    await act(async () => {
+      screen.getByTestId('signout').props.onPress();
+    });
+
+    expect(mockPurge).toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('signedOut'));
   });
 });

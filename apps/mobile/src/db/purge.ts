@@ -64,10 +64,23 @@ export async function purgeLocalDatabase(): Promise<void> {
       // Already gone. See the idempotency note above: this is the ordinary
       // sign-out-then-sign-in path, not an error.
     }
-  });
 
-  // Outside `withDatabaseClosed` because these touch the keychain, not the
-  // database file, and must still run if the delete above was a no-op.
-  await clearDatabaseKey();
-  await clearDatabaseOwner();
+    // INSIDE the closed window, not after it.
+    //
+    // These were briefly moved out, on the reasoning that they touch the
+    // keychain rather than the file and must run even when the delete was
+    // a no-op. The second half is true but the `try` above already
+    // guarantees it; the first half opened a real hole. Outside, they run
+    // after `purging` is released and after the generation bump — so a
+    // `getDatabase()` in that window opens, mints a fresh key and creates
+    // the file, and `clearDatabaseKey()` then deletes the key that file
+    // was encrypted with. The next open mints a third key and SQLCipher
+    // reports the generic "file is not a database" this comment block
+    // exists to prevent.
+    //
+    // Fixing the provider's invalidation makes a `getDatabase()` land in
+    // that window by design, so the hole was armed rather than theoretical.
+    await clearDatabaseKey();
+    await clearDatabaseOwner();
+  });
 }

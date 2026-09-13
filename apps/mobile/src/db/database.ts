@@ -39,8 +39,38 @@ let generation = 0;
 /** A purge in progress. `getDatabase()` waits on it rather than racing it. */
 let purging: Promise<void> | undefined;
 
+/** Subscribers notified when `generation` changes. See `subscribeToDatabaseGeneration`. */
+const listeners = new Set<() => void>();
+
 export function getDatabaseGeneration(): number {
   return generation;
+}
+
+/**
+ * Subscribes to invalidation, for `useSyncExternalStore`.
+ *
+ * The first attempt at this read `getDatabaseGeneration()` during render,
+ * on the assumption that a purge always causes the provider to re-render.
+ * It does not: `AuthProvider` returns `{children}` — an element object
+ * `RootLayout` creates once — so React's `oldProps === newProps` bailout
+ * skips this subtree when auth state changes, and `DatabaseProvider` is not
+ * an `AuthContext` consumer. It re-rendered only from its own state, which
+ * stops changing after the first open, so the counter was never re-read and
+ * the stale-executor defect was never actually fixed.
+ *
+ * A real subscription also removes the tearing hazard of reading a
+ * module-level mutable during a concurrent render.
+ */
+export function subscribeToDatabaseGeneration(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function invalidate(): void {
+  generation += 1;
+  for (const listener of listeners) {
+    listener();
+  }
 }
 
 /**
@@ -59,7 +89,11 @@ export function getDatabaseGeneration(): number {
  */
 export async function getDatabase(): Promise<SqliteExecutor> {
   // Never hand back a handle to a file that is being deleted.
-  if (purging) {
+  // `while`, not `if`: sign-out then sign-in issues two purges, so by the
+  // time this resumes a second `withDatabaseClosed` may already have set a
+  // new `purging` — and proceeding would open against a file about to be
+  // deleted.
+  while (purging) {
     await purging;
   }
   if (!openPromise) {
@@ -103,9 +137,16 @@ export async function withDatabaseClosed(work: () => Promise<void>): Promise<voi
         // no live handle on the file about to be touched — is met.
       }
     }
-    await work();
-    // Last, so a consumer re-reading on the bump cannot open mid-work.
-    generation += 1;
+    try {
+      await work();
+    } finally {
+      // In a `finally` so a throwing `work` still tells consumers their
+      // executor is dead. The connection is already closed and
+      // `openPromise` already cleared by this point, so skipping the
+      // notification would leave exactly the stale state the counter
+      // exists to prevent.
+      invalidate();
+    }
   })();
 
   purging = run.then(

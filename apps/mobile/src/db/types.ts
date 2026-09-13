@@ -149,7 +149,6 @@ export interface SyncQueueEntry {
   readonly entityId: string;
   readonly operationType: SyncQueueOperationType;
   readonly clientTimestamp: string;
-  /** JSON-encoded `ObservationSyncPayload` (`@ostomy/core/sync`); `null` iff `operationType === 'delete'` (§3.1, mirrored by this table's own CHECK constraint). */
   readonly enqueuedAt: string;
   readonly status: SyncQueueStatus;
   readonly attemptCount: number;

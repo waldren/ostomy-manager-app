@@ -38,7 +38,6 @@ export interface NewQueueEntry {
   readonly entityId: string;
   readonly operationType: SyncQueueOperationType;
   readonly clientTimestamp: string;
-  /** JSON-encoded `ObservationSyncPayload`; MUST be `null` for a delete operation and non-null otherwise (enforced again by the schema's own CHECK — see `../schema.ts`). */
 }
 
 /**

@@ -15,9 +15,16 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 
-import { getDatabase, getDatabaseGeneration } from './database';
+import { getDatabase, getDatabaseGeneration, subscribeToDatabaseGeneration } from './database';
 import type { SqliteExecutor } from './executor';
 
 /**
@@ -55,7 +62,7 @@ export function DatabaseProvider({ children }: { children: ReactNode }): React.J
    * handle for the rest of the process. Harmless while the only consumer
    * was a count; the entry screen's save path is next.
    */
-  const [generation, setGeneration] = useState(() => getDatabaseGeneration());
+  const generation = useSyncExternalStore(subscribeToDatabaseGeneration, getDatabaseGeneration);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,13 +84,6 @@ export function DatabaseProvider({ children }: { children: ReactNode }): React.J
       cancelled = true;
     };
   }, [generation]);
-
-  // Cheap, and correct without a subscription API: any render caused by a
-  // purge (they all change auth phase) re-reads the counter.
-  const current = getDatabaseGeneration();
-  if (current !== generation) {
-    setGeneration(current);
-  }
 
   const state: DatabaseState = error
     ? { status: 'error' }
