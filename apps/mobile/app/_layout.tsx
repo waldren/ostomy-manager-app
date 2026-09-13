@@ -20,6 +20,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import '../src/i18n/i18n';
 
 import { Stack } from 'expo-router';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider } from '../src/auth/AuthContext';
 import { DatabaseProvider } from '../src/db/DatabaseProvider';
@@ -36,10 +37,17 @@ import { DatabaseProvider } from '../src/db/DatabaseProvider';
  */
 export default function RootLayout(): React.JSX.Element {
   return (
-    <AuthProvider>
-      <DatabaseProvider>
-        <Stack screenOptions={{ headerShown: false }} />
-      </DatabaseProvider>
-    </AuthProvider>
+    // `SafeAreaProvider` outermost: `src/ui/Screen` renders a
+    // `SafeAreaView` and every screen goes through it, so without this the
+    // insets resolve to zero and content renders under the notch and the
+    // home indicator. It only looked fine before because every screen
+    // centred its content and never reached the edges.
+    <SafeAreaProvider>
+      <AuthProvider>
+        <DatabaseProvider>
+          <Stack screenOptions={{ headerShown: false }} />
+        </DatabaseProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }

@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import type { SqliteExecutor } from './executor';
 import { runMigrations } from './migrations';
 import {
+  buildObservationPayload,
   enqueueObservationDelete,
   enqueueObservationUpdate,
   enqueueVolumetricObservationCreate,
@@ -93,7 +94,25 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
       // never collide, or a later edit looks like a replay of the create.
       expect(operationId).not.toEqual(id);
 
-      const payload = JSON.parse(queued[0]!.payload!);
+      // Built from the STORED ROW, the way the sync worker will build it.
+      //
+      // This used to read `queued[0].payload` — a wire object frozen into
+      // the queue at enqueue time. That froze the contract too: an
+      // amendment to docs/sync-contract.md could never reach an operation
+      // already queued. Asserting against the builder is both the same
+      // coverage and the shape that survives ADR-0016 adding a field.
+      const stored = await getObservationById(executor, id);
+      const payload = JSON.parse(
+        buildObservationPayload({
+          id,
+          code: stored!.code,
+          valueQuantityValue: stored!.valueQuantityValue,
+          valueQuantityUnit: stored!.valueQuantityUnit,
+          effectiveDatetime: stored!.effectiveDatetime,
+          method: stored!.method,
+          enteredMeasurementSystem: stored!.enteredMeasurementSystem,
+        }),
+      );
       expect(payload).toEqual({
         resourceType: 'Observation',
         id,
@@ -181,7 +200,10 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
       const queued = await listQueuedOperations(executor);
       const updateOp = queued.find((op) => op.operationId === operationId);
       expect(updateOp?.operationType).toBe('update');
-      expect(updateOp?.payload).not.toBeNull();
+      // The queue no longer carries a payload at all; what matters is that
+      // the row it points at reflects the edit the push will serialise.
+      const edited = await getObservationById(executor, created.id);
+      expect(edited?.valueQuantityValue).toBe('400.0000');
     });
 
     it('a delete tombstones the row locally and queues a payload-less delete operation (§3.1, §1)', async () => {
@@ -206,7 +228,10 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
       const queued = await listQueuedOperations(executor);
       const deleteOp = queued.find((op) => op.operationId === operationId);
       expect(deleteOp?.operationType).toBe('delete');
-      expect(deleteOp?.payload).toBeNull();
+      // §3.1's "payload is absent for operationType: delete" is now
+      // structural rather than a nullable column: nothing in the queue can
+      // carry one.
+      expect(observation?.deletedAt).not.toBeNull();
     });
   });
 });

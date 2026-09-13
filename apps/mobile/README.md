@@ -23,7 +23,13 @@ the repo root:
 
 ```
 pnpm install            # from the repo root — installs the whole workspace
-pnpm start              # expo start (Metro bundler; scan the QR code with Expo Go, or press i/a)
+pnpm start              # expo start (Metro bundler; press i/a for a simulator)
+#
+# NOT Expo Go. This app requires SQLCipher (ADR-0014), which Expo Go does not
+# bundle — and stock SQLite ignores `PRAGMA key` silently, so running there
+# would write the clinical database in PLAINTEXT with nothing failing. The
+# executor now probes `PRAGMA cipher_version` and refuses to open rather
+# than let that happen. Use a development build.
 pnpm ios                # expo start --ios
 pnpm android            # expo start --android
 pnpm typecheck          # tsc --noEmit

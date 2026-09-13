@@ -39,7 +39,6 @@ export interface NewQueueEntry {
   readonly operationType: SyncQueueOperationType;
   readonly clientTimestamp: string;
   /** JSON-encoded `ObservationSyncPayload`; MUST be `null` for a delete operation and non-null otherwise (enforced again by the schema's own CHECK — see `../schema.ts`). */
-  readonly payload: string | null;
 }
 
 /**
@@ -57,16 +56,15 @@ export async function enqueueOperation(
   await executor.runAsync(
     `INSERT INTO sync_queue (
       operation_id, entity_type, entity_id, operation_type,
-      client_timestamp, payload, enqueued_at, status, attempt_count,
+      client_timestamp, enqueued_at, status, attempt_count,
       last_attempted_at, rejected_reason_code, rejected_field, rejected_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, NULL, NULL, NULL, NULL);`,
+    ) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, NULL, NULL, NULL, NULL);`,
     [
       entry.operationId,
       entry.entityType,
       entry.entityId,
       entry.operationType,
       entry.clientTimestamp,
-      entry.payload,
       enqueuedAt,
     ],
   );

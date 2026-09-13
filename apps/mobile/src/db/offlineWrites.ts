@@ -95,7 +95,26 @@ interface WeightOrHeartRateFields {
  * §6.3): a spread typechecks even when the source object carries a field
  * that does not belong on the wire.
  */
-function buildObservationPayload(fields: {
+/**
+ * Builds the wire object for one observation.
+ *
+ * Called at PUSH time, not at enqueue. It used to run when the entry was
+ * written and its output was frozen into `sync_queue.payload`, which made
+ * every queued operation immune to a change in `docs/sync-contract.md` —
+ * and that document is normative and does change. ADR-0016 is the live
+ * case: it adds a required timezone field, and a frozen payload would go up
+ * without it, be rejected Tier 1, and put a correction-inbox entry in front
+ * of the patient naming a field no entry form contains.
+ *
+ * The sync worker calls this with values read from the `observations` row,
+ * which is the single source of truth it always should have been.
+ *
+ * Every field is named explicitly rather than spread, mirroring the
+ * server-side rule in `packages/core/src/sync`: TypeScript's
+ * excess-property check does not apply to spread properties, so a spread
+ * typechecks cleanly and ships fields the wire contract does not define.
+ */
+export function buildObservationPayload(fields: {
   id: string;
   code: string;
   valueQuantityValue: string;
@@ -163,8 +182,6 @@ async function enqueueObservationCreate(
   const operationId = generateUuid();
   const nowIso = toWireInstant(now());
 
-  const payload = buildObservationPayload({ id, ...fields });
-
   await executor.withTransactionAsync(async () => {
     await insertObservation(
       executor,
@@ -189,7 +206,6 @@ async function enqueueObservationCreate(
         entityId: id,
         operationType: 'create',
         clientTimestamp: nowIso,
-        payload,
       },
       nowIso,
     );
@@ -220,7 +236,6 @@ export async function enqueueObservationUpdate(
 ): Promise<{ operationId: string }> {
   const operationId = generateUuid();
   const nowIso = toWireInstant(now());
-  const payload = buildObservationPayload(fields);
 
   await executor.withTransactionAsync(async () => {
     await replaceObservation(
@@ -246,7 +261,6 @@ export async function enqueueObservationUpdate(
         entityId: fields.id,
         operationType: 'update',
         clientTimestamp: nowIso,
-        payload,
       },
       nowIso,
     );
@@ -274,7 +288,6 @@ export async function enqueueObservationDelete(
         entityId: id,
         operationType: 'delete',
         clientTimestamp: nowIso,
-        payload: null,
       },
       nowIso,
     );

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@ostomy/core": "workspace:*",
+    "@ostomy/ui": "workspace:*",
     "@shopify/flash-list": "2.3.2",
     "expo": "~57.0.22",
     "expo-application": "~57.0.3",
@@ -43,12 +44,14 @@
   "devDependencies": {
     "@ostomy/config": "workspace:*",
     "@react-native/metro-config": "0.86.3",
+    "@testing-library/react-native": "^14.0.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
     "@types/react": "19.2.3",
     "babel-preset-expo": "~57.0.11",
     "jest": "^30.5.1",
     "jest-expo": "~57.0.5",
+    "react-test-renderer": "^19.3.0",
     "typescript": "^5.9.3"
   }
 }

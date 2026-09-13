@@ -57,7 +57,6 @@ describe('syncQueueRepository', () => {
         entityId: 'entity-1',
         operationType: 'create',
         clientTimestamp: '2026-09-11T22:00:00.000Z',
-        payload: '{}',
       },
       '2026-09-11T22:00:00.000Z',
     );
@@ -69,7 +68,6 @@ describe('syncQueueRepository', () => {
         entityId: 'entity-2',
         operationType: 'create',
         clientTimestamp: '2026-09-11T21:00:00.000Z', // earlier clientTimestamp, enqueued second
-        payload: '{}',
       },
       '2026-09-11T22:01:00.000Z',
     );
@@ -88,7 +86,6 @@ describe('syncQueueRepository', () => {
           entityId: `entity-${i}`,
           operationType: 'create',
           clientTimestamp: '2026-09-11T22:00:00.000Z',
-          payload: '{}',
         },
         '2026-09-11T22:00:00.000Z',
       );
@@ -108,7 +105,6 @@ describe('syncQueueRepository', () => {
           entityId: 'entity-1',
           operationType: 'create',
           clientTimestamp: '2026-09-11T22:00:00.000Z',
-          payload: '{}',
         },
         '2026-09-11T22:00:00.000Z',
       );
@@ -140,9 +136,12 @@ describe('syncQueueRepository', () => {
           entityId: 'entity-2',
           operationType: 'create',
           clientTimestamp: '2026-09-11T22:00:00.000Z',
-          payload: '{"resourceType":"Observation"}',
         },
         '2026-09-11T22:00:00.000Z',
+      );
+
+      const before = (await listQueuedOperations(executor)).find(
+        (op) => op.operationId === 'op-rejected-2',
       );
 
       await markRejected(executor, 'op-rejected-2', {
@@ -152,11 +151,20 @@ describe('syncQueueRepository', () => {
       });
 
       const [rejection] = await listRejectedOperations(executor);
-      // markRejected's own parameter type has no field a clinical value
-      // could occupy (`reasonCode`, `field`, `rejectedAt` only) — this
-      // asserts the stored row reflects exactly that shape and nothing
-      // else was smuggled in via the original payload column.
-      expect(Object.keys(rejection!)).not.toContain('value');
+      // Asserts what markRejected WROTE, not what the decoder's fixed key
+      // list happens to contain.
+      //
+      // The previous assertion — `Object.keys(rejection).not.toContain('value')`
+      // — was vacuous: `decodeSyncQueueRow` builds its object from a literal
+      // key set, so 'value' could never appear no matter what markRejected
+      // did. It would have passed with a clinical value written into any
+      // existing column.
+      const changed = Object.entries(rejection as unknown as Record<string, unknown>).filter(
+        ([key, value]) => (before as unknown as Record<string, unknown>)[key] !== value,
+      );
+      expect(changed.map(([key]) => key).sort()).toEqual(
+        ['rejectedAt', 'rejectedField', 'rejectedReasonCode', 'status'].sort(),
+      );
       expect(rejection!.rejectedReasonCode).toBe('VALUE_NOT_POSITIVE');
     });
   });
@@ -170,7 +178,6 @@ describe('syncQueueRepository', () => {
         entityId: 'entity-1',
         operationType: 'create',
         clientTimestamp: '2026-09-11T22:00:00.000Z',
-        payload: '{}',
       },
       '2026-09-11T22:00:00.000Z',
     );

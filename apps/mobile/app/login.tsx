@@ -18,25 +18,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { Redirect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
 import { isBiometricUnlockAvailable } from '../src/auth/biometricUnlock';
 import { useOidcLogin } from '../src/auth/useOidcLogin';
+import { BodyText } from '../src/ui/BodyText';
+import { Button } from '../src/ui/Button';
+import { Heading } from '../src/ui/Heading';
+import { Screen } from '../src/ui/Screen';
+
+/** What went wrong, so the retry can do the right thing and the copy can say the right thing. */
+type LoginFailure = 'signIn' | 'unlock' | 'cancelled' | 'unavailable';
 
 /**
  * One route rendering two states — "signed out" (full OIDC login) and
  * "locked" (biometric unlock of an already-stored session) — rather than
- * a third route, matching this sprint's exit criteria ("routes between at
- * least a login screen and a placeholder home screen"). See
- * `src/auth/authPhase.ts` for why these are exactly the two
- * pre-authenticated phases that exist.
+ * a third route. See `src/auth/authPhase.ts` for why these are exactly the
+ * two pre-authenticated phases that exist.
  */
 export default function Login(): React.JSX.Element {
   const { phase, unlock, completeLogin } = useAuth();
   const { t } = useTranslation('mobile');
   const { isReady, login } = useOidcLogin();
-  const [error, setError] = useState(false);
+  const [failure, setFailure] = useState<LoginFailure | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
@@ -50,146 +56,131 @@ export default function Login(): React.JSX.Element {
     };
   }, [phase]);
 
+  const message = failure ? FAILURE_COPY_KEY[failure] : undefined;
+
+  /*
+    Announced explicitly, because `accessibilityLiveRegion` is ANDROID-ONLY.
+    iOS VoiceOver ignores it entirely, so a blind patient tapped "Sign in",
+    the browser opened and returned, the attempt failed — and nothing was
+    said. Focus stayed on the button, and the error renders after it in
+    document order, so even swiping forward reached the failed button first.
+    They had no way to know it had failed.
+  */
+  useEffect(() => {
+    if (message) AccessibilityInfo.announceForAccessibility(t(message));
+  }, [message, t]);
+
   const handleSignIn = useCallback(async () => {
-    setError(false);
+    setFailure(undefined);
+    setBusy(true);
     try {
       const tokens = await login();
-      if (tokens) await completeLogin(tokens);
+      if (tokens) {
+        await completeLogin(tokens);
+      } else {
+        // `login()` resolves undefined when discovery is unavailable or the
+        // patient dismissed the browser. Previously this set nothing at
+        // all: the button appeared to do nothing, forever, with no error
+        // and no announcement, and the patient tapped it repeatedly.
+        setFailure(isReady ? 'cancelled' : 'unavailable');
+      }
     } catch {
       // Never log the error: it may embed a query string carrying an
       // authorization code or provider-side detail, and this app has no
-      // sanctioned diagnostic sink for auth failures (docs/sync-contract.md
-      // §10's BAA note applies to any future crash reporter equally).
-      setError(true);
+      // sanctioned diagnostic sink for auth failures.
+      setFailure('signIn');
+    } finally {
+      setBusy(false);
     }
-  }, [login, completeLogin]);
+  }, [login, completeLogin, isReady]);
 
   const handleUnlock = useCallback(async () => {
-    setError(false);
-    const outcome = await unlock();
-    if (outcome.outcome === 'failed') setError(true);
-    // 'unavailable' is rendered by the branch below, not as an error.
+    setFailure(undefined);
+    setBusy(true);
+    try {
+      const outcome = await unlock();
+      if (outcome.outcome === 'failed') setFailure('unlock');
+    } finally {
+      setBusy(false);
+    }
   }, [unlock]);
 
   if (phase === 'authenticated') {
     return <Redirect href="/home" />;
   }
 
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title} accessibilityRole="header">
-        {t('login.title')}
-      </Text>
+  const locked = phase === 'locked';
 
-      {phase === 'locked' ? (
+  return (
+    <Screen>
+      <Heading>{locked ? t('login.lockedHeading') : t('login.signedOutHeading')}</Heading>
+
+      {locked ? (
         <>
-          <Text style={styles.heading}>{t('login.lockedHeading')}</Text>
-          <Text style={styles.body}>{t('login.lockedBody')}</Text>
+          <BodyText>{t('login.lockedBody')}</BodyText>
           {biometricAvailable === false ? (
             <>
-              <Text style={styles.body}>{t('login.unlockUnavailableBody')}</Text>
-              <PrimaryButton label={t('login.signInInsteadButton')} onPress={handleSignIn} />
+              <BodyText>{t('login.unlockUnavailableBody')}</BodyText>
+              <Button
+                label={t('login.signInInsteadButton')}
+                onPress={handleSignIn}
+                busy={busy}
+                disabled={!isReady}
+              />
             </>
           ) : (
-            <PrimaryButton label={t('login.unlockButton')} onPress={handleUnlock} />
+            <>
+              <Button label={t('login.unlockButton')} onPress={handleUnlock} busy={busy} />
+              <BodyText tone="muted">{t('login.unlockHint')}</BodyText>
+            </>
           )}
         </>
       ) : (
         <>
-          <Text style={styles.heading}>{t('login.signedOutHeading')}</Text>
-          <Text style={styles.body}>{t('login.signedOutBody')}</Text>
-          <PrimaryButton
+          <BodyText>{t('login.signedOutBody')}</BodyText>
+          <Button
             label={t('login.signInButton')}
             onPress={handleSignIn}
+            busy={busy}
             disabled={!isReady}
           />
+          {/*
+            Says WHY the button is dimmed. It was disabled on `!isReady`,
+            which requires OIDC discovery — a network call — so an offline
+            patient saw a permanently dimmed "Sign in" with no explanation
+            anywhere, and VoiceOver announced "Sign in, dimmed" and stopped.
+          */}
+          {!isReady ? <BodyText tone="muted">{t('login.offlineBody')}</BodyText> : null}
         </>
       )}
 
-      {error ? (
+      {message ? (
         <>
-          <Text style={styles.errorText} accessibilityLiveRegion="polite">
-            {t('login.errorBody')}
-          </Text>
-          <PrimaryButton label={t('login.tryAgainButton')} onPress={handleSignIn} />
+          <BodyText tone="error">{t(message)}</BodyText>
+          {/*
+            The retry runs the action that FAILED.
+            
+            "Try again" was wired to `handleSignIn` unconditionally, so a
+            patient whose fingerprint misread — a bandaged or post-surgical
+            hand, which `biometricUnlock.ts` explicitly anticipates — was
+            thrown into a browser OIDC login needing internet. In a public
+            restroom with no signal that button locked them out of their own
+            diary.
+          */}
+          <Button
+            label={t(failure === 'unlock' ? 'login.unlockRetryButton' : 'login.tryAgainButton')}
+            onPress={failure === 'unlock' ? handleUnlock : handleSignIn}
+            busy={busy}
+          />
         </>
       ) : null}
-    </View>
+    </Screen>
   );
 }
 
-function PrimaryButton({
-  label,
-  onPress,
-  disabled,
-}: {
-  readonly label: string;
-  readonly onPress: () => void;
-  readonly disabled?: boolean;
-}): React.JSX.Element {
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      style={({ pressed }) => [
-        styles.button,
-        disabled && styles.buttonDisabled,
-        pressed && styles.buttonPressed,
-      ]}
-    >
-      <Text style={styles.buttonText}>{label}</Text>
-    </Pressable>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    padding: 24,
-    gap: 16,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  heading: {
-    fontSize: 20,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  body: {
-    fontSize: 17,
-    textAlign: 'center',
-  },
-  errorText: {
-    fontSize: 17,
-    textAlign: 'center',
-    color: '#8a1c1c',
-  },
-  button: {
-    // Comfortably exceeds the WCAG 2.1 AA / platform 44x44 minimum touch
-    // target — this patient population skews older and post-surgical.
-    minHeight: 52,
-    borderRadius: 12,
-    backgroundColor: '#0a5c36',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 20,
-  },
-  buttonPressed: {
-    opacity: 0.85,
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
-  buttonText: {
-    color: '#ffffff',
-    fontSize: 17,
-    fontWeight: '600',
-  },
-});
+const FAILURE_COPY_KEY: Record<LoginFailure, string> = {
+  signIn: 'login.errorBody',
+  unlock: 'login.unlockFailedBody',
+  cancelled: 'login.cancelledBody',
+  unavailable: 'login.offlineBody',
+};

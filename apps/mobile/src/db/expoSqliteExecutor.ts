@@ -52,6 +52,26 @@ export async function openExpoSqliteExecutor(
   // the store is encrypted and where the key lives (ADR-0014).
   await db.execAsync(`PRAGMA key = '${await getOrCreateDatabaseKey()}';`);
 
+  // PROVE the key took effect. This is the one assertion that separates
+  // "encrypted" from "the pragma was silently ignored".
+  //
+  // Stock SQLite accepts an unknown `PRAGMA key` and does NOTHING — no
+  // error, no warning. So a build without SQLCipher (Expo Go, a dev client
+  // predating `useSQLCipher: true`, or that option dropped in a future
+  // app.json edit) writes every observation and every `sync_queue.payload`
+  // in plaintext, and every test still passes. The opposite failure is
+  // already loud: a WRONG key makes the next statement raise "file is not a
+  // database". Only this direction is silent, and it is the direction that
+  // leaks PHI.
+  const cipherRows = await db.getAllAsync<{ cipher_version?: string }>('PRAGMA cipher_version;');
+  if (!cipherRows[0]?.cipher_version) {
+    throw new Error(
+      'SQLCipher is not active: PRAGMA cipher_version returned nothing, so the local ' +
+        'clinical database would be written in plaintext (ADR-0014). Check useSQLCipher ' +
+        'in app.json, and note this app cannot run under Expo Go.',
+    );
+  }
+
   // ON OS BACKUP, and what is and is not solved here.
   //
   // Android is handled declaratively: `allowBackup: false` in app.json
