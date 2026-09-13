@@ -1,13 +1,21 @@
 # Security & HIPAA Practices (Developer Guide)
 
-Developer-facing practices for handling PHI and meeting the HIPAA requirements in the SRS.
+Developer-facing practices for handling PHI.
+
+## Which rule actually governs
+
+**The FTC Health Breach Notification Rule (16 CFR Part 318), not HIPAA.** This product is direct-to-patient: patients sign up themselves, with no provider relationship, so it is neither a covered entity nor a business associate. `docs/compliance/breach-notification.md` is the procedure, and its clocks and recipients are the FTC's.
+
+**We build to HIPAA's technical safeguards anyway**, as a voluntary standard. Encryption, audit logging, access control and session timeouts are all implemented to that bar. Two reasons: they are the right controls for clinical data regardless of which statute names them, and SRS_v2 §3.5 Epic 5's share link would make a provider relationship — and therefore real HIPAA obligation — a documentation exercise rather than a rebuild.
+
+Everything below applies as written. Where a requirement traces to a HIPAA administrative safeguard rather than a technical one, it is marked **voluntary**; those are the ones that become mandatory if the relationship model changes.
 
 ## From the SRS (design-specs/requirements/)
 
 - Encryption of PHI at rest and in transit (TLS 1.3+) — on-device at rest is ADR-0014; see "On-device PHI" below
 - OAuth 2.0 / OpenID Connect authentication, with biometric login support on mobile (ADR-0015)
 - Automated session timeouts — implemented on both clients; see "On-device PHI" below
-- Business Associate Agreements (BAAs) required with any cloud providers used
+- Business Associate Agreements with cloud providers — **not currently required** (amended by ADR-0017; see SRS §4.6). The service list below is still maintained: it is the list of services in the PHI path, which is what matters whether or not anything is signed.
 
 ## Developer practices
 

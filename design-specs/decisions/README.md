@@ -34,6 +34,8 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0013](0013-delta-cursor-visibility-mechanism.md) | Close the delta cursor's visibility gap by withholding the in-flight transaction window | Accepted |
 | [0014](0014-local-phi-encryption-and-device-ownership.md) | Encrypt the on-device clinical store, and bind it to one patient | Accepted |
 | [0015](0015-biometric-local-access.md) | Biometric alone unlocks local data, but an enrolment change invalidates the token | Accepted |
+| [0016](0016-patient-local-day-boundary.md) | A "day" is the patient's local day, captured at write time | Accepted |
+| [0017](0017-phi-retention-deletion-and-the-audit-exception.md) | PHI lives for the account's lifetime, and deletion reaches the audit log | Accepted |
 
 **ADR-0012 completes ADR-0005** rather than superseding it. ADR-0005's decisions all stand; it simply had no source of truth for the entry measurement system, and ADR-0012 supplies one. ADR-0005 is not edited, per the immutability rule above.
 

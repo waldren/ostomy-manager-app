@@ -1,6 +1,6 @@
 # ADR-0011: Separate migration-owner and runtime database roles, and enforce audit immutability by grant
 
-- **Status:** Accepted
+- **Status:** Accepted — **narrowed by [ADR-0017](0017-phi-retention-deletion-and-the-audit-exception.md)**: the guarantee is now "no request handler can modify or delete an audit row", not "nothing can". A privileged purge job, running as the owner role and unreachable from request handling, deletes a patient's audit rows on account deletion. Do not describe the audit log as strictly immutable without that qualification.
 - **Date:** 2026-09-05
 - **Deciders:** Steven Waldren (accepted from P1.S2 compliance review)
 - **Related:** SRS_v2 §5.2, §4.8 · [ADR-0002](0002-testing-strategy.md) · [ADR-0008](0008-admin-config-api-before-console.md) · `docs/deployment-development.md`
