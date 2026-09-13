@@ -365,8 +365,8 @@ describe.skipIf(!dockerAvailable)(
 
       await expect(
         plainRuntimePgClient.query(
-          `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at)
-           VALUES (gen_random_uuid(), $1, '79560-9', 100, 'liters', now(), 'METRIC', now(), now())`,
+          `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, entered_timezone, local_date, client_updated_at, updated_at)
+           VALUES (gen_random_uuid(), $1, '79560-9', 100, 'liters', now(), 'METRIC', 'America/Chicago', current_date, now(), now())`,
           [patientId],
         ),
       ).rejects.toMatchObject({
@@ -374,8 +374,8 @@ describe.skipIf(!dockerAvailable)(
       });
 
       const goodInsert = await plainRuntimePgClient.query(
-        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at)
-         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', now(), now())`,
+        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, entered_timezone, local_date, client_updated_at, updated_at)
+         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', 'America/Chicago', current_date, now(), now())`,
         [patientId],
       );
       expect(goodInsert.rowCount).toBe(1);
@@ -389,12 +389,41 @@ describe.skipIf(!dockerAvailable)(
 
       await expect(
         plainRuntimePgClient.query(
-          `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, client_updated_at, updated_at)
-           VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), now(), now())`,
+          // Supplies the OTHER required provenance columns, so this
+          // isolates `entered_measurement_system`. Postgres reports
+          // whichever NOT NULL it reaches first, and a test that omitted
+          // all three would pass while naming the wrong guarantee.
+          `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_timezone, local_date, client_updated_at, updated_at)
+           VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'America/Chicago', current_date, now(), now())`,
           [patientId],
         ),
       ).rejects.toMatchObject({
         message: expect.stringContaining('entered_measurement_system'),
+      });
+    });
+
+    it('rejects an INSERT that omits entered_timezone — NOT NULL, no default (ADR-0016)', async () => {
+      /**
+       * The same permanence argument as `entered_measurement_system`, and
+       * the reason both are NOT NULL with no default: the stored instant
+       * alone does not say where the patient was, so a row written without
+       * a zone can never have its day recovered. Enforced by the column,
+       * not by the write path, because a future write path that forgets is
+       * exactly the failure this has to survive.
+       */
+      const patient = await plainRuntimePgClient.query(
+        `INSERT INTO patients (id, oidc_subject, updated_at) VALUES (gen_random_uuid(), 'entered-timezone-required-subject', now()) RETURNING id`,
+      );
+      const patientId = patient.rows[0].id;
+
+      await expect(
+        plainRuntimePgClient.query(
+          `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, local_date, client_updated_at, updated_at)
+           VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', current_date, now(), now())`,
+          [patientId],
+        ),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('entered_timezone'),
       });
     });
 
@@ -405,8 +434,8 @@ describe.skipIf(!dockerAvailable)(
       const patientId = patient.rows[0].id;
 
       const inserted = await plainRuntimePgClient.query(
-        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at)
-         VALUES (gen_random_uuid(), $1, '79560-9', 236.588, 'mL', now(), 'IMPERIAL', now(), now())
+        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, entered_timezone, local_date, client_updated_at, updated_at)
+         VALUES (gen_random_uuid(), $1, '79560-9', 236.588, 'mL', now(), 'IMPERIAL', 'America/Chicago', current_date, now(), now())
          RETURNING entered_measurement_system`,
         [patientId],
       );
@@ -426,14 +455,14 @@ describe.skipIf(!dockerAvailable)(
       const patientId = patient.rows[0].id;
 
       const first = await plainRuntimePgClient.query(
-        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at, server_sequence)
-         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', now(), now(), 999999)
+        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, entered_timezone, local_date, client_updated_at, updated_at, server_sequence)
+         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', 'America/Chicago', current_date, now(), now(), 999999)
          RETURNING server_sequence`,
         [patientId],
       );
       const second = await plainRuntimePgClient.query(
-        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, client_updated_at, updated_at, server_sequence)
-         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', now(), now(), 999999)
+        `INSERT INTO observations (id, patient_id, code, value_quantity_value, value_quantity_unit, effective_datetime, entered_measurement_system, entered_timezone, local_date, client_updated_at, updated_at, server_sequence)
+         VALUES (gen_random_uuid(), $1, '79560-9', 100, 'mL', now(), 'METRIC', 'America/Chicago', current_date, now(), now(), 999999)
          RETURNING server_sequence`,
         [patientId],
       );

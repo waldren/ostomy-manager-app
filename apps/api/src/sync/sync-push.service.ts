@@ -504,6 +504,11 @@ export class SyncPushService {
       // ADR-0012 as amended: the CLIENT's asserted entry system. For a queued
       // offline write only the device knows what the patient typed in.
       enteredMeasurementSystem: toStoredMeasurementSystem(input.enteredMeasurementSystem),
+      // ADR-0016: client-asserted zone, server-derived day. `localDate` is a
+      // DATE column; the UTC-midnight construction is how Prisma takes a
+      // calendar date without a zone shifting it by a day.
+      enteredTimezone: input.enteredTimezone,
+      localDate: new Date(`${input.localDate}T00:00:00.000Z`),
       clientUpdatedAt: operation.clientTimestamp,
       deletedAt: null,
     };

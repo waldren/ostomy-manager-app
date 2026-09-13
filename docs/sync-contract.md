@@ -66,7 +66,8 @@ Every payload arriving here is untrusted input from a device that may have been 
         "valueQuantity": { "value": 350, "unit": "mL" },
         "effectiveDateTime": "2026-09-07T14:00:00.000Z",
         "method": null,
-        "enteredMeasurementSystem": "metric"
+        "enteredMeasurementSystem": "metric",
+        "enteredTimezone": "America/Chicago"
       }
     }
   ]
@@ -254,7 +255,8 @@ A `since` **higher than any sequence the server holds** returns `changes: []`, `
         "valueQuantity": { "value": 350, "unit": "mL" },
         "effectiveDateTime": "2026-09-07T14:00:00.000Z",
         "method": null,
-        "enteredMeasurementSystem": "metric"
+        "enteredMeasurementSystem": "metric",
+        "enteredTimezone": "America/Chicago"
       }
     },
     {
@@ -411,8 +413,13 @@ The only entity type P2 exchanges. `Profile` and `EffectiveRange` are synced ent
 | `effectiveDateTime` | FHIR | yes | RFC 3339, UTC, millisecond precision. The clinical moment — see §1. |
 | `method` | FHIR | yes, nullable | The SNOMED CT "Estimation technique" code when estimated; `null` when measured. Explicitly `null`, never omitted: the mandatory Measured/Estimated selection is Tier 1, and an absent key cannot be told apart from a client that does not implement the toggle. **The code itself is still unresolved (D4)** — `packages/core` models it as `{ resolved: false }`, and until it resolves the server accepts `null` and rejects any non-null value with `PAYLOAD_FIELD_INVALID`. |
 | `enteredMeasurementSystem` | app-native | yes | `"metric"` or `"imperial"`. Which system the patient **entered** in, resolved from their profile at entry time on the device, never re-derived server-side from the current profile — the profile is mutable and deriving it later is wrong precisely for the patients who switched (ADR-0012). Permanent and unrecoverable per row if stored wrongly. |
+| `enteredTimezone` | app-native | yes | The IANA zone name the device reported at entry (`"America/Chicago"`), never a UTC offset. Defines the patient's day, which is what every "daily" figure in the SRS groups by (ADR-0016). Client-asserted for the same reason as `enteredMeasurementSystem` and validated the same way: the server checks only that the identifier resolves, and rejects anything else with `PAYLOAD_FIELD_INVALID`. An offset would be ambiguous across DST — `-05:00` does not say whether the next entry is `-05:00` or `-06:00` — so the grouping would break twice a year. Permanent and unrecoverable per row: the instant alone does not say where the patient was. |
 
 Everything a client would want and will not find here is deliberate. There is no `patientId` (§2), no `serverSequence` (server-assigned; a client-supplied one is `PAYLOAD_FIELD_UNRECOGNIZED`), no `deletedAt` (deletes are an `operationType`, not a payload field), and no `createdAt`/`updatedAt` (server bookkeeping).
+
+**There is also no `localDate`, and that is deliberate rather than an omission.** The server derives it from `effectiveDateTime` and `enteredTimezone` and stores it indexed, because daily aggregates group by it. A client-supplied one would be a second source of truth for a value that is a pure function of two fields already on the wire — and the failure mode is silent: a client with a subtly different date computation produces rows whose stored day disagrees with their own instant, and nothing detects it. A client that sends one gets `PAYLOAD_FIELD_UNRECOGNIZED`.
+
+Note that `localDate` is **not monotonic with `effectiveDateTime`**. A patient who crosses a time zone can have a 23- or 25-hour day, and two entries can share an instant while falling on different dates. Order by the instant; group by the date. Any code that assumes one implies the other is wrong (ADR-0016).
 
 ### 7.3 Numbers on the wire
 

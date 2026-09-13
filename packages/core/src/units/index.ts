@@ -38,3 +38,6 @@ export {
   sumCanonicalVolumesMl,
   formatDailyVolumeTotalForDisplay,
 } from './convert.js';
+
+/** The patient's calendar day for a clinical instant (ADR-0016). Shared so the server and the offline client cannot derive it differently. */
+export { isResolvableTimeZone, toLocalDate } from './localDate.js';

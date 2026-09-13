@@ -142,6 +142,10 @@ export const observationResourceSchema = z
       description:
         'Which system the patient entered in (ADR-0012). Must agree with the profile at write time.',
     }),
+    enteredTimezone: z.string().min(1).max(64).meta({
+      description:
+        "IANA zone name the device reported at entry (ADR-0016), never a UTC offset. Defines the patient's day, which every daily figure groups by. The server validates only that it resolves.",
+    }),
   })
   .meta({
     title: 'Observation',
@@ -174,6 +178,12 @@ export const observationRequestParseSchema = z.strictObject({
   // shape error.
   method: z.unknown().optional(),
   enteredMeasurementSystem: z.string(),
+  // `z.string()`, not the length-bounded form in the published schema: a
+  // zone that is merely unresolvable is a CONTENT problem this release
+  // reports as PAYLOAD_FIELD_INVALID naming `enteredTimezone`, not a
+  // transport shape error naming `payload`. The distinction matters to the
+  // correction inbox, which shows the patient a field.
+  enteredTimezone: z.string(),
 });
 
 export type ObservationRequestParsed = z.infer<typeof observationRequestParseSchema>;
@@ -189,6 +199,7 @@ export const OBSERVATION_FIELD = {
   EFFECTIVE_DATE_TIME: SYNC_FIELD_PATH.EFFECTIVE_DATE_TIME,
   METHOD: SYNC_FIELD_PATH.METHOD,
   ENTERED_MEASUREMENT_SYSTEM: SYNC_FIELD_PATH.ENTERED_MEASUREMENT_SYSTEM,
+  ENTERED_TIMEZONE: SYNC_FIELD_PATH.ENTERED_TIMEZONE,
   PAYLOAD: SYNC_FIELD_PATH.PAYLOAD,
 } as const;
 
@@ -225,6 +236,8 @@ export function fieldPathForIssuePath(path: readonly PropertyKey[]): SyncFieldPa
       return OBSERVATION_FIELD.METHOD;
     case 'enteredMeasurementSystem':
       return OBSERVATION_FIELD.ENTERED_MEASUREMENT_SYSTEM;
+    case 'enteredTimezone':
+      return OBSERVATION_FIELD.ENTERED_TIMEZONE;
     default:
       // An unrecognized key reports `payload` and never the key itself
       // (§6.2). Anything else unmapped lands here too, which is the safe

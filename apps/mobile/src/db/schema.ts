@@ -236,6 +236,31 @@ CREATE INDEX IF NOT EXISTS idx_sync_queue_entity
   ON sync_queue (entity_type, entity_id);
 `;
 
+/**
+ * Migration 3: the entry zone and the patient's local day (ADR-0016).
+ *
+ * The server requires `enteredTimezone` on every observation payload
+ * (`docs/sync-contract.md` §7.2), so an entry queued without one is
+ * rejected Tier 1 on push. Stored locally as well as sent because an
+ * offline daily total has to group by the patient's day before the entry
+ * has ever synced — and a device that derived the day differently from the
+ * server would show one total on the phone and another on the web, with
+ * nothing detecting the disagreement.
+ *
+ * `local_date` is derived here AND server-side from the same shared helper
+ * (`@ostomy/core/units`), which is what keeps the two from drifting.
+ *
+ * SQLite has no DATE type; `YYYY-MM-DD` as TEXT sorts and compares
+ * correctly, which is all this column is used for.
+ */
+const MIGRATION_3_ENTRY_ZONE_AND_LOCAL_DATE = `
+ALTER TABLE observations ADD COLUMN entered_timezone TEXT NOT NULL DEFAULT 'UTC';
+ALTER TABLE observations ADD COLUMN local_date TEXT NOT NULL DEFAULT '1970-01-01';
+
+CREATE INDEX IF NOT EXISTS idx_observations_code_local_date
+  ON observations (code, local_date);
+`;
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
@@ -246,5 +271,10 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     version: 2,
     description: 'sync_queue drops payload; the wire object is built at push time',
     sql: () => MIGRATION_2_PAYLOAD_AT_PUSH_TIME,
+  },
+  {
+    version: 3,
+    description: 'observations gain entered_timezone and local_date (ADR-0016)',
+    sql: () => MIGRATION_3_ENTRY_ZONE_AND_LOCAL_DATE,
   },
 ];
