@@ -17,6 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import * as SQLite from 'expo-sqlite';
 
+import { getOrCreateDatabaseKey } from './databaseKey';
+
 import type { SqliteExecutor } from './executor';
 
 /**
@@ -42,6 +44,37 @@ export async function openExpoSqliteExecutor(
   databaseName: string = DATABASE_NAME,
 ): Promise<SqliteExecutor> {
   const db = await SQLite.openDatabaseAsync(databaseName);
+
+  // SQLCipher. This PRAGMA must be the FIRST statement executed on the
+  // connection — before the WAL pragma below and before any query — or
+  // SQLCipher treats the file as plaintext and every later statement fails
+  // with a generic "file is not a database". See `databaseKey.ts` for why
+  // the store is encrypted and where the key lives (ADR-0014).
+  await db.execAsync(`PRAGMA key = '${await getOrCreateDatabaseKey()}';`);
+
+  // ON OS BACKUP, and what is and is not solved here.
+  //
+  // Android is handled declaratively: `allowBackup: false` in app.json
+  // keeps the file out of Google Auto Backup entirely.
+  //
+  // iOS has no manifest equivalent, and `expo-file-system@57` REMOVED
+  // `setIsExcludedFromBackupAsync` (verified: the symbol exists nowhere in
+  // the installed package), so the file cannot be marked excluded from JS
+  // at this version. The database therefore still enters iCloud/iTunes
+  // backup on iOS.
+  //
+  // What makes that acceptable rather than a hole is the pair of controls
+  // above and in `databaseKey.ts`: the backed-up file is SQLCipher
+  // ciphertext, and its key is held with
+  // `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`, which the keychain does NOT
+  // migrate to a new device on restore. So a backup restored onto someone
+  // else's phone yields an undecryptable file, while a restore onto the
+  // same device still works — which is the behaviour a patient wants.
+  //
+  // The exclusion attribute remains worth adding as defence in depth (it
+  // would stop the ciphertext leaving the device at all, rather than
+  // relying on key separation) and needs an Expo config plugin with a
+  // native mod. Tracked as a follow-up, not silently skipped.
 
   // WAL journal mode: readers (a screen listing history) do not block a
   // concurrent writer (a queued sync-worker write), and it is the mode

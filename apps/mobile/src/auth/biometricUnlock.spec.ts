@@ -57,7 +57,16 @@ describe('biometricUnlock', () => {
 
     const result = await authenticate('Unlock your diary');
     expect(result).toEqual({ outcome: 'success' });
-    expect(mockAuthenticateAsync).toHaveBeenCalledWith({ promptMessage: 'Unlock your diary' });
+    // Class 3 asserted explicitly, not incidentally. The default is
+    // 'weak', which admits Android Class 2 — including 2D camera face
+    // unlock, defeatable with a photograph on many implementations. That
+    // would be what stands between a stranger and the patient's full
+    // clinical history, so it is worth a test that fails if the option is
+    // ever dropped.
+    expect(mockAuthenticateAsync).toHaveBeenCalledWith({
+      promptMessage: 'Unlock your diary',
+      biometricsSecurityLevel: 'strong',
+    });
   });
 
   it('reports failure without throwing when the OS prompt is cancelled', async () => {

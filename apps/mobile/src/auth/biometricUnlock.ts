@@ -52,6 +52,14 @@ export async function authenticate(promptMessage: string): Promise<BiometricUnlo
     return { outcome: 'unavailable' };
   }
 
-  const result = await LocalAuthentication.authenticateAsync({ promptMessage });
+  const result = await LocalAuthentication.authenticateAsync({
+    // Class 3 only. The default is 'weak', which also admits Android
+    // Class 2 biometrics — including 2D camera face unlock, defeatable
+    // with a photograph on many implementations. On a mid-range Android
+    // phone that would be what stands between a stranger and the
+    // patient's full clinical history.
+    biometricsSecurityLevel: 'strong',
+    promptMessage,
+  });
   return result.success ? { outcome: 'success' } : { outcome: 'failed' };
 }

@@ -32,6 +32,8 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0011](0011-database-roles-and-audit-immutability.md) | Separate migration-owner and runtime database roles, and enforce audit immutability by grant | Accepted |
 | [0012](0012-entered-measurement-system-provenance.md) | Store the entered measurement system on every observation | Accepted |
 | [0013](0013-delta-cursor-visibility-mechanism.md) | Close the delta cursor's visibility gap by withholding the in-flight transaction window | Accepted |
+| [0014](0014-local-phi-encryption-and-device-ownership.md) | Encrypt the on-device clinical store, and bind it to one patient | Accepted |
+| [0015](0015-biometric-local-access.md) | Biometric alone unlocks local data, but an enrolment change invalidates the token | Accepted |
 
 **ADR-0012 completes ADR-0005** rather than superseding it. ADR-0005's decisions all stand; it simply had no source of truth for the entry measurement system, and ADR-0012 supplies one. ADR-0005 is not edited, per the immutability rule above.
 

@@ -23,40 +23,77 @@ import * as SecureStore from 'expo-secure-store';
  * memory only (`AuthContext.tsx`), for as long as the app process is
  * alive, and is re-derived from the refresh token (after a biometric
  * unlock — see `biometricUnlock.ts`) on every cold start. Never
- * `AsyncStorage`, for either token: CLAUDE.md/the HIPAA reviewer's
- * standing rule is "never store PHI or tokens in AsyncStorage", and a
- * refresh token is a bearer credential regardless of whether it carries
- * PHI directly.
+ * `AsyncStorage`, for either token: CLAUDE.md's standing rule is "never
+ * store PHI or tokens in AsyncStorage", and a refresh token is a bearer
+ * credential regardless of whether it carries PHI directly.
  *
- * This module does **not** gate reading the token on a biometric prompt
- * itself (`expo-secure-store`'s own `requireAuthentication` option would
- * do that, but with device- and OS-version-dependent UX that this app
- * does not control). Instead, `AuthContext.tsx` calls
- * `biometricUnlock.ts`'s `authenticate()` first and only calls
- * `getRefreshToken()` after it resolves successfully — gating access at
- * the application layer, deliberately, so the prompt and its copy are
- * this app's own rather than whatever the OS default happens to be.
+ * ## Why `requireAuthentication` is set, when the app also gates at its
+ * ## own layer
+ *
+ * `AuthContext.tsx` still calls `biometricUnlock.ts`'s `authenticate()`
+ * before reading this token, so the prompt the patient normally sees is
+ * this app's own with this app's copy. That has not changed. This flag is
+ * not here for the prompt — it is here for what the OS does to the key
+ * when biometric enrolment changes.
+ *
+ * `requireAuthentication` maps to iOS `biometryCurrentSet` and Android
+ * `setUserAuthenticationRequired(true)`, and the module documents the
+ * consequence: *"Keys are invalidated by the system when biometrics
+ * change, such as adding a new fingerprint or changing the face profile
+ * used for face recognition. After a key has been invalidated, it becomes
+ * impossible to read its value."*
+ *
+ * That invalidation is the whole point, and it is not something this app
+ * can implement itself: `expo-local-authentication` exposes only current
+ * state (`hasHardwareAsync`, `isEnrolledAsync`, `getEnrolledLevelAsync`),
+ * never a change signal, so there is no way to detect at the app layer
+ * that a second fingerprint or face was enrolled.
+ *
+ * The threat it closes is not an abstract one. Someone who covertly or
+ * coercively adds their own biometric to the patient's device — an abusive
+ * partner, a family member, a border or custody enrolment — otherwise gets
+ * permanent, silent access to the entire local diary and to a live bearer
+ * credential. Because unlock deliberately involves no issuer round trip
+ * (see `AuthContext.tsx`), there is no server-side event either: no audit
+ * trail of the access, and no way for the patient or the covered entity
+ * ever to discover it. With this flag, an enrolment change makes the
+ * stored token unreadable and forces a full OIDC re-login, which does
+ * reach the issuer and does leave a record.
+ *
+ * This is a separate decision from "biometric alone grants local access",
+ * which remains true and is what keeps the app usable offline. See
+ * ADR-0015.
  */
 const REFRESH_TOKEN_KEY = 'ostomy.auth.refreshToken';
 
+/**
+ * Shared by every call, because `expo-secure-store` looks up an entry by
+ * key AND options: reading with different options than it was written with
+ * silently returns `null` rather than erroring, which would present as
+ * "the patient is signed out" on every cold start.
+ */
+const REFRESH_TOKEN_OPTIONS: SecureStore.SecureStoreOptions = {
+  // Bound to THIS device. Not plain `AFTER_FIRST_UNLOCK`: that variant is
+  // migrated to a new device when restoring from a backup, so an encrypted
+  // iCloud/iTunes backup restored onto a second phone would hand that
+  // phone a live bearer credential for the patient's account. The
+  // `_THIS_DEVICE_ONLY` suffix keeps the locked-device readability this
+  // app needs for background refresh while removing the migration path.
+  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
+  // See the module comment. Present on every call for the reason above.
+  requireAuthentication: true,
+};
+
 export async function getRefreshToken(): Promise<string | null> {
-  return SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
+  return SecureStore.getItemAsync(REFRESH_TOKEN_KEY, REFRESH_TOKEN_OPTIONS);
 }
 
 export async function setRefreshToken(token: string): Promise<void> {
-  await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, token, {
-    // Accessible once the device has been unlocked at least once since
-    // boot, and stays accessible thereafter even while the device is
-    // locked again — not `WHEN_UNLOCKED` (which would make the token
-    // unreadable, and therefore refresh-sync impossible, while the device
-    // is merely locked in the patient's pocket) and not `ALWAYS`
-    // (deprecated, and offers no restart-only protection at all).
-    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-  });
+  await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, token, REFRESH_TOKEN_OPTIONS);
 }
 
 export async function clearRefreshToken(): Promise<void> {
-  await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
+  await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY, REFRESH_TOKEN_OPTIONS);
 }
 
 export async function hasStoredRefreshToken(): Promise<boolean> {

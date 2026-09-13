@@ -17,7 +17,8 @@
     },
     "android": {
       "package": "org.ostomy.diary",
-      "permissions": ["USE_BIOMETRIC", "USE_FINGERPRINT"]
+      "permissions": ["USE_BIOMETRIC", "USE_FINGERPRINT"],
+      "allowBackup": false
     },
     "plugins": [
       "expo-router",
@@ -32,7 +33,7 @@
         "expo-sqlite",
         {
           "enableFTS": false,
-          "useSQLCipher": false
+          "useSQLCipher": true
         }
       ]
     ],

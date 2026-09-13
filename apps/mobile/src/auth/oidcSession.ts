@@ -138,3 +138,38 @@ export async function refreshAccessToken(
 }
 
 export { useAuthRequest, useAutoDiscovery } from 'expo-auth-session';
+
+/**
+ * Revokes the refresh token at the issuer (RFC 7009).
+ *
+ * Without this, "sign out" only deleted the local copy: the token stayed
+ * valid at the issuer until natural expiry, and the in-app browser's
+ * session cookie survived — so the next person to press "Sign in" on a
+ * shared or handed-down phone could be silently re-authenticated as the
+ * previous patient, with no credential prompt.
+ *
+ * Best-effort by design. This runs during sign-out, and sign-out must
+ * complete even offline — which is the normal case for this app. A failure
+ * here leaves a token that expires on its own schedule; a failure that
+ * blocked sign-out would leave the patient signed in on a device they are
+ * trying to hand over, which is strictly worse.
+ *
+ * Not every issuer advertises a revocation endpoint; when none is present
+ * there is nothing to call and nothing to report.
+ */
+export async function revokeRefreshToken(
+  discovery: AuthSession.DiscoveryDocument,
+  config: OidcClientConfig,
+  refreshToken: string,
+): Promise<void> {
+  if (!discovery.revocationEndpoint) {
+    return;
+  }
+  try {
+    await AuthSession.revokeAsync({ token: refreshToken, clientId: config.clientId }, discovery);
+  } catch {
+    // Swallowed deliberately; see above. Nothing may be logged here in any
+    // case — the only values in scope are a bearer credential and a client
+    // id (CLAUDE.md, "never log PHI"; this app has no crash-reporting sink).
+  }
+}

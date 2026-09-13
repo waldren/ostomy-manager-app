@@ -4,14 +4,34 @@ Developer-facing practices for handling PHI and meeting the HIPAA requirements i
 
 ## From the SRS (design-specs/requirements/)
 
-- Encryption of PHI at rest and in transit (TLS 1.3+)
-- OAuth 2.0 / OpenID Connect authentication, with biometric login support on mobile
-- Automated session timeouts
+- Encryption of PHI at rest and in transit (TLS 1.3+) — on-device at rest is ADR-0014; see "On-device PHI" below
+- OAuth 2.0 / OpenID Connect authentication, with biometric login support on mobile (ADR-0015)
+- Automated session timeouts — implemented on both clients; see "On-device PHI" below
 - Business Associate Agreements (BAAs) required with any cloud providers used
 
 ## Developer practices
 
 These are settled rules, not guidance. Where a rule can be enforced by tooling it is, because a rule that depends on memory fails eventually — and here it fails silently.
+
+### On-device PHI (apps/mobile)
+
+`apps/mobile` is the only offline-capable client, which makes it the one place PHI rests on hardware outside the covered entity's control. Server-side protections do not reach it: ADR-0011's grant-enforced append-only audit table and the non-owner runtime role protect the database, not the phone.
+
+What is implemented (ADR-0014, ADR-0015):
+
+- **The local clinical store is SQLCipher-encrypted**, keyed from a device CSPRNG and held in `expo-secure-store`. This is the breach-notification safe harbour — a lost phone with an encrypted store is not a reportable breach; the same phone with a plaintext one is.
+- **The database is bound to one OIDC subject.** A different subject signing in, or any sign-out, destroys the database file. Without this, the next person to sign in on a shared phone reads the previous patient's diary — and their queued entries are pushed under the new person's identity, producing an audit row that names the wrong author for a clinical entry.
+- **Android cloud backup is disabled** (`allowBackup: false`). Consumer iCloud and Google Drive backup can never be BAA-covered, so they must not receive PHI.
+- **Sessions re-lock** on return from background past a grace period, and on foreground idle.
+- **The refresh token is invalidated by the OS on biometric enrolment change** (`requireAuthentication`), and is device-bound so it cannot ride a backup onto another phone.
+
+Known gaps, recorded rather than implied to be closed:
+
+- **iOS backup exclusion is not implemented.** `expo-file-system@57` removed `setIsExcludedFromBackupAsync`, so the database still enters iCloud backup. The ciphertext is useless there because the key is `_THIS_DEVICE_ONLY` and does not migrate on restore, but the file itself still leaves the device. Needs an Expo config plugin.
+- **Sign-out destroys unsynced queued entries.** Warning the patient first needs UI that does not exist yet; it must land with the sync worker (P2.S2b).
+- **None of the device-side controls are verified on hardware.** jest runs no keychain and cannot simulate biometric enrolment invalidation.
+
+Apple iCloud Backup and Google Auto Backup belong on the BAA-review list as **must be disabled**, not as pending coverage — neither vendor will execute a BAA for consumer backup.
 
 ### Never log PHI
 

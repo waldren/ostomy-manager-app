@@ -46,6 +46,27 @@ async function openAndMigrate(): Promise<SqliteExecutor> {
   return executor;
 }
 
+/**
+ * Closes the open connection, if any, and forgets it.
+ *
+ * Used by `purgeLocalDatabase`: deleting the file out from under a live
+ * connection leaves the module handing every later caller an executor
+ * pointing at a database that no longer exists.
+ */
+export async function closeDatabase(): Promise<void> {
+  const pending = openPromise;
+  openPromise = undefined;
+  if (!pending) {
+    return;
+  }
+  try {
+    await (await pending).closeAsync();
+  } catch {
+    // Already closed, or never finished opening. Either way the goal —
+    // no live handle on the file about to be deleted — is met.
+  }
+}
+
 /** Test-only: forces the next `getDatabase()` call to open a fresh connection. Production code never calls this. */
 export function resetDatabaseForTests(): void {
   openPromise = undefined;
