@@ -18,100 +18,84 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { Redirect } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
-import { useDatabase } from '../src/db/DatabaseProvider';
+import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { countByStatus } from '../src/db/repositories/syncQueueRepository';
+import { BodyText } from '../src/ui/BodyText';
+import { Button } from '../src/ui/Button';
+import { Heading } from '../src/ui/Heading';
+import { Screen } from '../src/ui/Screen';
 
 /**
  * The placeholder home screen this sprint's exit criteria calls for.
- * Deliberately not the Add Output screen (P2.S2b, out of scope here) —
- * what it renders beyond a welcome message is one honest signal that the
- * local database and sync queue this sprint built are real and live: the
- * number of locally-queued entries still waiting to sync, read from the
- * same `sync_queue` table `docs/sync-contract.md` describes.
+ * Deliberately not the Add Output screen — what it renders beyond a welcome
+ * message is one honest signal that the local database and sync queue are
+ * real and live.
  */
 export default function Home(): React.JSX.Element {
   const { phase, signOut } = useAuth();
   const { t } = useTranslation('mobile');
-  const executor = useDatabase();
-  const [queuedCount, setQueuedCount] = useState<number | undefined>(undefined);
+  const database = useDatabaseState();
+  const [pendingCount, setPendingCount] = useState<number | undefined>(undefined);
 
   useEffect(() => {
-    if (!executor) return;
+    if (database.status !== 'ready') return;
     let cancelled = false;
-    countByStatus(executor).then((counts) => {
-      if (!cancelled) setQueuedCount(counts.queued + counts.inFlight);
-    });
+    countByStatus(database.executor)
+      .then((counts) => {
+        // `rejected` counts too. A rejected operation is still an unsynced
+        // entry the patient made — `docs/sync-contract.md` §9 keeps it
+        // locally for correction rather than dropping it — so omitting it
+        // would report "everything sent" while the patient's entries sat in
+        // a correction inbox.
+        if (!cancelled) setPendingCount(counts.queued + counts.inFlight + counts.rejected);
+      })
+      .catch(() => {
+        // Leaves the count unknown rather than crashing the screen. The
+        // previous code had no catch at all, so a purge-invalidated
+        // executor produced an unhandled rejection and the line silently
+        // vanished with no indication anything had gone wrong.
+        if (!cancelled) setPendingCount(undefined);
+      });
     return () => {
       cancelled = true;
     };
-  }, [executor]);
+  }, [database]);
 
   if (phase !== 'authenticated') {
     return <Redirect href="/login" />;
   }
 
+  if (database.status === 'error') {
+    return (
+      <Screen>
+        <Heading>{t('common.startupErrorHeading')}</Heading>
+        <BodyText>{t('common.startupErrorBody')}</BodyText>
+        <Button label={t('common.startupErrorButton')} onPress={() => void signOut()} />
+      </Screen>
+    );
+  }
+
   return (
-    <View style={styles.container}>
-      <Text style={styles.title} accessibilityRole="header">
-        {t('home.title')}
-      </Text>
-      <Text style={styles.heading}>{t('home.welcomeHeading')}</Text>
-      <Text style={styles.body}>{t('home.placeholderBody')}</Text>
-      {queuedCount !== undefined ? (
-        <Text style={styles.body}>{t('home.queuedCountLabel', { count: queuedCount })}</Text>
+    <Screen>
+      <Heading>{t('home.welcomeHeading')}</Heading>
+      <BodyText>{t('home.placeholderBody')}</BodyText>
+
+      {pendingCount !== undefined ? (
+        <BodyText tone="muted">
+          {pendingCount === 0
+            ? t('home.pendingCountNone')
+            : t('home.pendingCount', { count: pendingCount })}
+        </BodyText>
       ) : null}
-      <Pressable
-        onPress={signOut}
-        accessibilityRole="button"
-        accessibilityLabel={t('home.signOutButton')}
-        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
-      >
-        <Text style={styles.buttonText}>{t('home.signOutButton')}</Text>
-      </Pressable>
-    </View>
+
+      <Button
+        label={t('home.signOutButton')}
+        onPress={() => void signOut()}
+        variant="destructive"
+        hint={t('home.signOutHint')}
+      />
+    </Screen>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    padding: 24,
-    gap: 16,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  heading: {
-    fontSize: 20,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  body: {
-    fontSize: 17,
-    textAlign: 'center',
-  },
-  button: {
-    minHeight: 52,
-    borderRadius: 12,
-    backgroundColor: '#5c1c1c',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 20,
-    marginTop: 16,
-  },
-  buttonPressed: {
-    opacity: 0.85,
-  },
-  buttonText: {
-    color: '#ffffff',
-    fontSize: 17,
-    fontWeight: '600',
-  },
-});

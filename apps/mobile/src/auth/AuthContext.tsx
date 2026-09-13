@@ -111,10 +111,27 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
   useEffect(() => {
     let cancelled = false;
-    hasStoredRefreshToken().then((hasToken) => {
-      if (cancelled) return;
-      setPhase(deriveAuthPhase({ hasStoredRefreshToken: hasToken, unlockedThisSession: false }));
-    });
+    hasStoredRefreshToken()
+      .then((hasToken) => {
+        if (cancelled) return;
+        setPhase(deriveAuthPhase({ hasStoredRefreshToken: hasToken, unlockedThisSession: false }));
+      })
+      .catch(() => {
+        // Fails toward `locked`, deliberately, and never toward
+        // `signedOut`.
+        //
+        // Without a catch, `phase` stayed `'checking'` and the app rendered
+        // its loading spinner permanently — no login, no offline diary, no
+        // way out but reinstalling, which destroys the database.
+        //
+        // `locked` rather than `signedOut` because the keychain being
+        // briefly unreadable says nothing about whether a token exists.
+        // Routing to `signedOut` would push an offline patient into a
+        // network OIDC login they cannot complete, for a session they
+        // already have.
+        if (cancelled) return;
+        setPhase('locked');
+      });
     return () => {
       cancelled = true;
     };
@@ -130,6 +147,10 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
    * barrier a cold start presents.
    */
   const lock = useCallback(() => {
+    // Reset, so the next foregrounding is measured from this lock rather
+    // than from a background that happened before it.
+    backgroundedAt.current = Date.now();
+    lastActivityAt.current = Date.now();
     setAccessToken(undefined);
     setPhase((current) => (current === 'authenticated' ? 'locked' : current));
   }, []);
@@ -159,6 +180,15 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     markActivity();
+    // Armed, not left at its initial 0.
+    //
+    // The guard below is `Date.now() - backgroundedAt.current >= grace`,
+    // and against 0 that is trivially true. After an OIDC login the app is
+    // returning from the in-app browser, so an 'active' transition arrives
+    // immediately after this effect subscribes — and the patient was
+    // bounced to the unlock screen the instant they signed in. A stale
+    // value from a previous background did the same thing after an unlock.
+    backgroundedAt.current = Date.now();
 
     const subscription = AppState.addEventListener('change', (next) => {
       if (next === 'active') {
@@ -199,7 +229,15 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       // pushes their queued entries into their own record under their own
       // identity, producing an audit row that names the wrong author for a
       // clinical entry.
-      const subject = readSubjectClaim(tokens.accessToken);
+      // The ID TOKEN, falling back to the access token.
+      //
+      // OIDC guarantees the id_token is a JWT with a `sub`; an access
+      // token's format is provider-defined and may be opaque. Parsing the
+      // access token meant that against such an issuer `subject` was
+      // `undefined` on EVERY login, so the owner was never stored and every
+      // routine sign-in purged the diary — including the same patient's,
+      // destroying their unsynced entries.
+      const subject = readSubjectClaim(tokens.idToken ?? tokens.accessToken);
       const owner = await getDatabaseOwner();
       if (owner !== subject) {
         // Covers both the different-patient case and the never-owned case (a
@@ -241,22 +279,28 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     // stays unset until the next successful attempt, which blocks a
     // sync network call and nothing else.
     if (discovery) {
-      const storedRefreshToken = await getRefreshToken();
-      if (storedRefreshToken) {
-        try {
-          const tokens = await refreshAccessToken(discovery, config, storedRefreshToken);
-          setAccessToken(tokens.accessToken);
-          if (tokens.refreshToken !== undefined) {
-            await setRefreshToken(tokens.refreshToken);
-          }
-        } catch {
-          // Deliberately swallowed — see header comment. Nothing PHI-bearing
-          // or security-sensitive may be logged from a catch here in any
-          // case (CLAUDE.md "never log PHI"; this app has no crash-reporting
-          // sink at all per docs/sync-contract.md §10's BAA note), and a
-          // failed refresh has a defined, safe fallback: the next screen
-          // that actually needs a network call surfaces its own failure.
+      try {
+        // Inside the try, not before it. This read prompts for biometrics
+        // (requireAuthentication), so a cancelled sheet rejected out of
+        // `unlock()` — and `handleUnlock` has no catch, so it became an
+        // unhandled rejection with nothing shown. The same defect signOut
+        // was just fixed for.
+        const storedRefreshToken = await getRefreshToken();
+        if (!storedRefreshToken) {
+          return outcome;
         }
+        const tokens = await refreshAccessToken(discovery, config, storedRefreshToken);
+        setAccessToken(tokens.accessToken);
+        if (tokens.refreshToken !== undefined) {
+          await setRefreshToken(tokens.refreshToken);
+        }
+      } catch {
+        // Deliberately swallowed — see header comment. Nothing PHI-bearing
+        // or security-sensitive may be logged from a catch here in any
+        // case (CLAUDE.md "never log PHI"; this app has no crash-reporting
+        // sink at all per docs/sync-contract.md §10's BAA note), and a
+        // failed refresh has a defined, safe fallback: the next screen
+        // that actually needs a network call surfaces its own failure.
       }
     }
 
@@ -298,12 +342,62 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
    * the queue to lose.
    */
   const signOut = useCallback(async (): Promise<void> => {
-    const storedRefreshToken = await getRefreshToken();
-    if (discovery && storedRefreshToken) {
-      await revokeRefreshToken(discovery, config, storedRefreshToken);
+    // The read is GUARDED, and that is the whole correctness of this
+    // function.
+    //
+    // It was the first statement and unguarded. `requireAuthentication`
+    // (ADR-0015) makes it prompt for biometrics, so a patient who
+    // dismissed that sheet — or whose biometry was locked out after failed
+    // attempts, or whose key the OS had invalidated — got a rejection
+    // BEFORE the token was cleared and before the database was purged.
+    // Sign-out silently did nothing: they handed the phone over with the
+    // refresh token and the entire diary still on it. The comment that
+    // used to sit here claimed every step after the first was
+    // unconditional; the unguarded read made that false.
+    let storedRefreshToken: string | null = null;
+    try {
+      storedRefreshToken = await getRefreshToken();
+    } catch {
+      // Revocation is best-effort. Losing it costs a token that expires on
+      // its own schedule; letting it block sign-out costs the patient
+      // everything this function exists to remove.
     }
-    await clearRefreshToken();
-    await purgeLocalDatabase();
+
+    // Each step in its OWN try, so none can skip another.
+    //
+    // They shared one, which meant a throw from revocation or from the
+    // token clear skipped everything after it — and the function's own
+    // comment claimed every step after the first was unconditional. A
+    // `SecureStore.deleteItemAsync` failure is entirely reachable, and it
+    // left BOTH the refresh token and the whole local diary on the device
+    // while the UI reported a signed-out session. That is precisely the
+    // HIPAA finding this function exists to close.
+    if (discovery && storedRefreshToken) {
+      try {
+        await revokeRefreshToken(discovery, config, storedRefreshToken);
+      } catch {
+        // Best-effort: the token expires on its own schedule.
+      }
+    }
+
+    try {
+      await clearRefreshToken();
+    } catch {
+      // The purge below matters more, and must not be skipped for this.
+    }
+
+    try {
+      await purgeLocalDatabase();
+    } catch {
+      // KNOWN GAP, and a real one: clinical data is still on this device
+      // while the app reports a signed-out session. Surfacing it needs the
+      // same screen as ADR-0014's unsynced-entry warning, which this
+      // sprint does not have. Both must land with the sync worker.
+    }
+
+    // Always reached, now that no step above can throw: a failure anywhere
+    // must still leave this app showing a signed-out session rather than
+    // the previous patient's home screen.
     setAccessToken(undefined);
     setPhase('signedOut');
   }, [discovery, config]);

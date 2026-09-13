@@ -17,41 +17,30 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { Redirect } from 'expo-router';
 import { useTranslation } from 'react-i18next';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
+import { BodyText } from '../src/ui/BodyText';
+import { Screen } from '../src/ui/Screen';
 
-/**
- * The router's entry point. Reads `expo-secure-store` once
- * (`AuthProvider`'s mount effect) and redirects — this is a **local**
- * read, resolved in milliseconds, never a network wait: SRS §4.5's "a
- * spinner waiting on connectivity is a defect" does not apply to this
- * screen, because nothing here waits on connectivity.
- */
+/** Routes to the right screen once the auth phase is known. */
 export default function Index(): React.JSX.Element {
   const { phase } = useAuth();
   const { t } = useTranslation('mobile');
 
   if (phase === 'checking') {
     return (
-      <View style={styles.container}>
-        <ActivityIndicator accessibilityLabel={t('common.loadingLabel')} />
-        <Text style={styles.loadingText}>{t('common.loadingLabel')}</Text>
-      </View>
+      <Screen>
+        {/*
+          The indicator is hidden from assistive technology and the text
+          carries the name. Both used to expose the same string, so
+          VoiceOver read "Loading your diary" twice.
+        */}
+        <ActivityIndicator accessible={false} importantForAccessibility="no" />
+        <BodyText>{t('common.loadingLabel')}</BodyText>
+      </Screen>
     );
   }
 
   return <Redirect href={phase === 'authenticated' ? '/home' : '/login'} />;
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-  },
-  loadingText: {
-    fontSize: 17,
-  },
-});

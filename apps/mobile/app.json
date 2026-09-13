@@ -4,7 +4,7 @@
     "slug": "ostomy-diary",
     "scheme": "ostomydiary",
     "version": "0.0.1",
-    "orientation": "portrait",
+    "orientation": "default",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "platforms": ["ios", "android"],

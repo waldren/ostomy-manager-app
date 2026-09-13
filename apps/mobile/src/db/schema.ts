@@ -151,10 +151,100 @@ export interface SchemaMigration {
  * entry for a schema change; never edit an entry a shipped build may have
  * already applied — the same rule `apps/api/prisma/migrations` follows.
  */
+/**
+ * Migration 2: the wire payload leaves the queue.
+ *
+ * `sync_queue.payload` froze a fully-serialised wire object at ENQUEUE
+ * time. That duplicated state the `observations` row already held, and it
+ * made the queue unamendable: a change to `docs/sync-contract.md` — which
+ * is normative and does change — could never reach an operation already
+ * sitting in the queue.
+ *
+ * ADR-0016 is the concrete case, and it is already accepted. Every
+ * observation must carry the device's IANA timezone and a derived
+ * `local_date`. With payloads frozen, every queued-but-unpushed operation
+ * would go up missing that field, the server would reject it Tier 1, and
+ * the patient would find correction-inbox entries naming a field no entry
+ * form contains — a rejection they cannot act on, which is precisely what
+ * `docs/sync-contract.md` §4 warns against. Back-filling with the device's
+ * CURRENT zone is the re-derivation ADR-0012 and ADR-0016 both forbid,
+ * because it is wrong exactly for the patient who travelled.
+ *
+ * So the queue now holds identity, ordering and state only. The payload is
+ * built at push time from the `observations` row, which is the single
+ * source of truth it always should have been.
+ *
+ * Done before the queue can contain anything real. Once it can, this
+ * migration has to preserve payloads it can no longer interpret.
+ *
+ * SQLite cannot drop a column with a CHECK constraint referencing it, so
+ * the table is recreated. `local_seq` is preserved explicitly:
+ * `docs/sync-contract.md` §3.2 orders a push by it, and regenerating it
+ * would reorder operations that must not be reordered.
+ */
+const MIGRATION_2_PAYLOAD_AT_PUSH_TIME = `
+CREATE TABLE sync_queue_new (
+  -- AUTOINCREMENT, matching migration 1. Without it SQLite reuses rowids
+  -- after the highest rows are deleted, so local_seq stops being a
+  -- never-reused identifier and becomes merely monotonic among surviving
+  -- rows. Nothing depends on the stronger property yet; §3.7's idempotency
+  -- and any "last pushed local_seq" watermark would, and weakening it
+  -- silently inside a migration whose comment says ordering depends on it
+  -- is worse than changing it on purpose.
+  local_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  operation_id TEXT NOT NULL UNIQUE,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  operation_type TEXT NOT NULL CHECK (operation_type IN ('create', 'update', 'delete')),
+  client_timestamp TEXT NOT NULL,
+  enqueued_at TEXT NOT NULL,
+  -- 'in_flight' — the value the SQL stores, NOT the camelCase name the
+  -- TypeScript side uses. This table was transcribed from the type rather
+  -- than from migration 1, which wrote 'inFlight' here: a constraint no
+  -- code path can satisfy. markInFlight would have thrown on every push,
+  -- and a device holding an in_flight row would have failed this migration
+  -- on every launch and never opened its database again.
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'in_flight', 'rejected')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_attempted_at TEXT,
+  rejected_reason_code TEXT,
+  rejected_field TEXT,
+  rejected_at TEXT
+);
+
+INSERT INTO sync_queue_new (
+  local_seq, operation_id, entity_type, entity_id, operation_type,
+  client_timestamp, enqueued_at, status, attempt_count,
+  last_attempted_at, rejected_reason_code, rejected_field, rejected_at
+)
+SELECT
+  local_seq, operation_id, entity_type, entity_id, operation_type,
+  client_timestamp, enqueued_at, status, attempt_count,
+  last_attempted_at, rejected_reason_code, rejected_field, rejected_at
+FROM sync_queue;
+
+DROP TABLE sync_queue;
+ALTER TABLE sync_queue_new RENAME TO sync_queue;
+
+-- Both indexes went with the DROP. Recreated under their ORIGINAL names so
+-- a database migrated through here is indistinguishable from a fresh one —
+-- otherwise migration 3 would face two different shapes.
+CREATE INDEX IF NOT EXISTS idx_sync_queue_status
+  ON sync_queue (status, local_seq);
+
+CREATE INDEX IF NOT EXISTS idx_sync_queue_entity
+  ON sync_queue (entity_type, entity_id);
+`;
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
     description: 'observations, sync_queue, sync_cursor',
     sql: ({ seededAt }) => `${MIGRATION_1_INITIAL_SCHEMA}\n${seedInitialSyncCursor(seededAt)}`,
+  },
+  {
+    version: 2,
+    description: 'sync_queue drops payload; the wire object is built at push time',
+    sql: () => MIGRATION_2_PAYLOAD_AT_PUSH_TIME,
   },
 ];

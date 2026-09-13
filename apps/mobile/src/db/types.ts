@@ -119,7 +119,6 @@ export interface SyncQueueRawRow {
   entity_id: string;
   operation_type: string;
   client_timestamp: string;
-  payload: string | null;
   enqueued_at: string;
   status: string;
   attempt_count: number;
@@ -150,8 +149,6 @@ export interface SyncQueueEntry {
   readonly entityId: string;
   readonly operationType: SyncQueueOperationType;
   readonly clientTimestamp: string;
-  /** JSON-encoded `ObservationSyncPayload` (`@ostomy/core/sync`); `null` iff `operationType === 'delete'` (§3.1, mirrored by this table's own CHECK constraint). */
-  readonly payload: string | null;
   readonly enqueuedAt: string;
   readonly status: SyncQueueStatus;
   readonly attemptCount: number;
@@ -169,7 +166,6 @@ export function decodeSyncQueueRow(row: SyncQueueRawRow): SyncQueueEntry {
     entityId: row.entity_id,
     operationType: decodeOperationType(row.operation_type),
     clientTimestamp: row.client_timestamp,
-    payload: row.payload,
     enqueuedAt: row.enqueued_at,
     status: decodeQueueStatus(row.status),
     attemptCount: row.attempt_count,

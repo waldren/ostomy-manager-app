@@ -84,18 +84,55 @@ const REFRESH_TOKEN_OPTIONS: SecureStore.SecureStoreOptions = {
   requireAuthentication: true,
 };
 
+/**
+ * A non-authenticated marker recording that a refresh token exists.
+ *
+ * `hasStoredRefreshToken` used to answer by READING the token, which after
+ * `requireAuthentication` became a biometric-gated read. Two consequences,
+ * both shipped:
+ *
+ * 1. The OS auth sheet appeared at cold start, before the app had rendered
+ *    its own unlock affordance, with OS default copy — and then the patient
+ *    authenticated a SECOND time when they pressed Unlock. The comment
+ *    below about the prompt being "this app's own" did not describe the
+ *    built behaviour.
+ * 2. That read rejects when the patient cancels it, when biometry is locked
+ *    out after failed attempts, or when the OS has invalidated the key. The
+ *    caller had no error path, so `phase` stayed `'checking'` and the app
+ *    sat on a spinner with no way out but reinstalling — which destroys the
+ *    database.
+ *
+ * The marker carries no secret: its presence says a token exists, nothing
+ * more. It is written and cleared in lockstep with the token itself.
+ */
+const REFRESH_TOKEN_MARKER_KEY = 'ostomy.auth.refreshTokenPresent';
+
+const MARKER_OPTIONS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
+};
+
 export async function getRefreshToken(): Promise<string | null> {
   return SecureStore.getItemAsync(REFRESH_TOKEN_KEY, REFRESH_TOKEN_OPTIONS);
 }
 
 export async function setRefreshToken(token: string): Promise<void> {
   await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, token, REFRESH_TOKEN_OPTIONS);
+  await SecureStore.setItemAsync(REFRESH_TOKEN_MARKER_KEY, '1', MARKER_OPTIONS);
 }
 
 export async function clearRefreshToken(): Promise<void> {
+  // Marker first. If the second call fails, the app believes there is no
+  // token and routes to a full sign-in — recoverable. The reverse order
+  // would leave a marker with no token, routing to an unlock that can
+  // never succeed.
+  await SecureStore.deleteItemAsync(REFRESH_TOKEN_MARKER_KEY, MARKER_OPTIONS);
   await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY, REFRESH_TOKEN_OPTIONS);
 }
 
+/**
+ * Whether a refresh token exists, WITHOUT reading it and therefore without
+ * prompting. See `REFRESH_TOKEN_MARKER_KEY`.
+ */
 export async function hasStoredRefreshToken(): Promise<boolean> {
-  return (await getRefreshToken()) !== null;
+  return (await SecureStore.getItemAsync(REFRESH_TOKEN_MARKER_KEY, MARKER_OPTIONS)) !== null;
 }
