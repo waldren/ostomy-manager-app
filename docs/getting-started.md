@@ -57,7 +57,7 @@ These fail the build rather than warn, each because a project constraint depends
 
 ## Running the apps
 
-`apps/web` and `apps/mobile` currently hold README stubs, and there is no `apps/admin`.
+All three clients that exist are listed below. There is still no `apps/admin`.
 
 - **API, standalone (no Docker):** `cp apps/api/.env.example apps/api/.env`, fill in real values, then
   `pnpm --filter @ostomy/api start:dev`. It needs a reachable PostgreSQL (P1.S3 onward) — point
@@ -68,8 +68,22 @@ These fail the build rather than warn, each because a project constraint depends
   `pnpm --filter @ostomy/api openapi:generate` writes `openapi.json` without a server or a database;
   `api-client:generate` then regenerates `packages/core/src/api-client`, which is never hand-edited.
   See `apps/api/README.md`.
-- Web: `TBD` — lands with P2.S3
-- Mobile (Expo): `TBD` — lands with P2.S2a. Set `EXPO_PUBLIC_API_URL` to the development server's LAN address; the test device must be on the same network
+- **Web (`apps/web`), P2.S3:** `cp apps/web/.env.example apps/web/.env.local`, then
+  `pnpm --filter @ostomy/web dev` (http://localhost:5173). Online-only by explicit decision — it
+  never speaks the sync protocol and has no local persistence. `VITE_OIDC_AUDIENCE` must equal the
+  API's `OIDC_AUDIENCE`, or sign-in succeeds and every API call then returns 401.
+  `build | typecheck | test | lint` on the same filter.
+- **Shared UI (`packages/ui`), P2.S3:** `pnpm --filter @ostomy/ui build | typecheck | test | lint`.
+  `build:deps` builds it, so a clean clone gets a real `dist` before anything imports it.
+- **Mobile (`apps/mobile`), P2.S2a:** `cp apps/mobile/.env.example apps/mobile/.env`, then
+  `pnpm --filter @ostomy/mobile start` (`ios` / `android` to open a simulator directly). Set
+  `EXPO_PUBLIC_API_URL` to the development server's LAN address; the test device must be on the same
+  network. `typecheck | test | test:watch` on the same filter — the suite runs against Node's
+  built-in SQLite rather than a simulator, so `test` needs no device.
+
+  Its device-side security controls (SQLCipher, keychain accessibility, biometric enrolment
+  invalidation) **cannot be exercised by `pnpm test`** — jest runs no keychain. They need real iOS
+  and Android hardware; see ADR-0014 and ADR-0015.
 - **Local Docker stack:** scaffolded at P1.S2. From the repo root:
 
   ```bash
