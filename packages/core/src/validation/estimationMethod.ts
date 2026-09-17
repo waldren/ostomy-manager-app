@@ -24,10 +24,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * rather than in `../i18n`, since this is a terminology code, not
  * translatable copy.
  *
- * This is decision D4 in
- * design-specs/planning/v1-implementation-plan.md, and it is still open:
- * an external terminology lookup, not an engineering decision. Do NOT
- * invent a code here.
+ * This was decision D4 in
+ * design-specs/planning/v1-implementation-plan.md, and it is **RESOLVED**:
+ * SNOMED CT `414135002` |Estimated (qualifier value)|, recorded in
+ * design-specs/data-model/fhir-rxnorm-integration.md and ADR-0018.
+ *
+ * `null` still means measured on the wire and in storage
+ * (docs/sync-contract.md §7.2). SNOMED CT `258104002` |Measured (qualifier
+ * value)| exists and is the paired concept, but adopting it would change
+ * what `method: null` means and is a separate decision — see ADR-0018's
+ * "What this does not change".
  *
  * Modelled as a discriminated union, not `string | null` (B4, this
  * sprint's review): Prisma's `observations.method` column is `String?`,
@@ -47,16 +53,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * error, or block — a P1.S5/mobile-sync decision, not this module's) until
  * this resolves to `{ resolved: true, code: '<snomed-code>' }`.
  *
- * TODO(code-unverified): deliberately unresolved, not a guessed string. "A
- * wrong SNOMED code is a silent, durable data-quality defect that only
- * surfaces at FHIR export or EHR integration" (v1-implementation-plan.md
- * D4) — i.e., after many rows already carry it. When D4 resolves, this is
- * the one place to change, plus a data migration over any
- * `observations.method` rows written while this was unresolved. Record the
- * resolution in design-specs/data-model/fhir-rxnorm-integration.md and
- * write an ADR.
+ * The union stays a union now that it is resolved. It is what makes the
+ * unresolved state unrepresentable at a call site rather than merely
+ * unlikely, and the shape is what the next unresolved terminology code
+ * (voided-urine colour, resting-conditions flag) should copy.
+ *
+ * **Changing the code here is a data migration, not an edit.** Any
+ * `observations.method` row already carrying the old value would keep it,
+ * silently, and the disagreement surfaces only at FHIR export or EHR
+ * integration — after many rows carry it (v1-implementation-plan.md D4).
  */
 export type EstimationMethodCode =
   { readonly resolved: true; readonly code: string } | { readonly resolved: false };
 
-export const ESTIMATION_METHOD_CODE: EstimationMethodCode = { resolved: false };
+/**
+ * SNOMED CT `414135002` |Estimated (qualifier value)|.
+ *
+ * A qualifier value rather than a procedure/technique concept, which is
+ * worth noting because the SRS and this file both say "Estimation
+ * technique": FHIR `Observation.method` is a `CodeableConcept` with no
+ * value-set binding that would forbid a qualifier, and what this field
+ * records is *how the number was arrived at*, which is what the qualifier
+ * says. The wording elsewhere is the informal name of the decision, not a
+ * constraint on the concept chosen.
+ */
+export const ESTIMATION_METHOD_CODE: EstimationMethodCode = {
+  resolved: true,
+  code: '414135002',
+};

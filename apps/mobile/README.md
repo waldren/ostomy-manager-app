@@ -139,12 +139,6 @@ except when it produces something to correct.
   stops with `cursor-too-old` and halts scheduling. Wiping local entity state
   and re-syncing from `since=0` destroys local rows — including queued,
   unpushed ones — so it needs a screen and a decision, not a background task.
-- **The Estimated option cannot be saved** while D4 (the SNOMED CT estimation
-  code) is unresolved. The toggle offers both options because the choice is
-  mandatory, and choosing Estimated explains why it cannot be stored rather
-  than writing `method: null`, which would be indistinguishable from Measured
-  forever after. `packages/core`'s `ESTIMATION_METHOD_CODE` is the one place to
-  change when D4 resolves.
 - **The entry timestamp can be reset to now but not freely edited.** A date and
   time picker is the remaining piece of AC 2.1 AC3; the Tier 1 bounds that
   govern it are implemented and tested.

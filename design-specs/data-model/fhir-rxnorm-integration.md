@@ -82,13 +82,33 @@ output): no separate "Estimated" LOINC code for that component/time-aspect
 combination was found, so there is no unused alternative being left on the
 table there either way.
 
+## Resolved terminology
+
+- **SNOMED CT code for an estimated volumetric entry (`Observation.method`)
+  — RESOLVED.** `414135002` |Estimated (qualifier value)|, per
+  [ADR-0018](../decisions/0018-estimation-method-snomed-code.md). Published
+  from `packages/core`'s `ESTIMATION_METHOD_CODE`; `apps/api` reads that
+  constant rather than a copy, so there is exactly one place this value
+  lives. `null` remains the measured representation — see the first open
+  question below.
+
+  **Changing this value is a data migration, not an edit.** Rows already
+  written keep the old code and nothing detects the disagreement until FHIR
+  export or EHR integration, which is the failure mode this decision stayed
+  open for so long to avoid.
+
 ## Open questions
 
-- **SNOMED CT code for "Estimation technique" (`Observation.method`) —
-  still unresolved.** Do not invent a number here. `packages/core` (P1.S4)
-  carries this as `ESTIMATION_METHOD_CODE` with an explicit
-  `TODO(code-unverified)` marker; `apps/api/prisma/schema.prisma`'s
-  `Observation.method` column doc comment points back to this file.
+- **Whether `method: null` should become an explicit |Measured| code.**
+  SNOMED CT `258104002` |Measured (qualifier value)| is the paired concept
+  and is real. Today `null` means both "volumetric entry, measured" and
+  "weight entry, toggle does not apply", separated only by the row's `code`
+  — an inference that is sound inside this system and invisible outside it,
+  since an exported `Observation` with no `method` says *not stated*, not
+  *measured*. Free to change now, a versioned coordinated-release change
+  once clients ship. See [ADR-0018](../decisions/0018-estimation-method-snomed-code.md)
+  "What this does not change" for the full argument. **The export module
+  (P5) is the first place this actually bites.**
 - Which RxNorm subset/API to query for medication lookups — not yet
   scoped; medications are out of P1.S3's scope entirely.
 - Versioning strategy for FHIR resources as the schema evolves — not yet

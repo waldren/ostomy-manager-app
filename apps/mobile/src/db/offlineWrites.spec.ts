@@ -19,6 +19,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+
 import type { SqliteExecutor } from './executor';
 import { runMigrations } from './migrations';
 import {
@@ -129,26 +131,54 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
       });
     });
 
-    it('refuses to save an Estimated entry while D4 (the SNOMED estimation code) is unresolved, rather than silently writing method: null', async () => {
-      await expect(
-        enqueueVolumetricObservationCreate(
-          executor,
-          {
-            code: '79560-9',
-            valueQuantityValue: '350.0000',
-            valueQuantityUnit: 'mL',
-            effectiveDatetime: '2026-09-11T14:00:00.000Z',
-            measuredOrEstimated: 'estimated',
-            enteredMeasurementSystem: 'metric',
-          },
-          FIXED_NOW,
-        ),
-      ).rejects.toThrow(/D4/);
+    /**
+     * D4 resolved (ADR-0018), so this replaces the tripwire that refused an
+     * Estimated entry outright. What it must assert now is the thing that
+     * tripwire existed to protect: an Estimated entry stores the CODE, never
+     * `null`.
+     *
+     * `method` is the only stored representation of the Measured/Estimated
+     * choice, so a `null` here would be indistinguishable from a Measured
+     * entry forever after — which is AC 2.2 AC2's history badges silently
+     * wrong, with no separate source of truth to migrate back from.
+     */
+    it('stores the resolved SNOMED code for an Estimated entry, never null', async () => {
+      const { id } = await enqueueVolumetricObservationCreate(
+        executor,
+        {
+          code: '79560-9',
+          valueQuantityValue: '350.0000',
+          valueQuantityUnit: 'mL',
+          effectiveDatetime: '2026-09-11T14:00:00.000Z',
+          measuredOrEstimated: 'estimated',
+          enteredMeasurementSystem: 'metric',
+        },
+        FIXED_NOW,
+      );
 
-      // And nothing was written — the whole point of erroring before the
-      // transaction, rather than after a partial write.
-      const queued = await listQueuedOperations(executor);
-      expect(queued).toHaveLength(0);
+      const observation = await getObservationById(executor, id);
+      expect(observation?.method).not.toBeNull();
+      expect(ESTIMATION_METHOD_CODE.resolved).toBe(true);
+      if (!ESTIMATION_METHOD_CODE.resolved) return;
+      expect(observation?.method).toBe(ESTIMATION_METHOD_CODE.code);
+    });
+
+    /** The other half: a Measured entry stays `null`, so the two are distinguishable in storage. */
+    it('stores null for a Measured entry, keeping the two distinguishable', async () => {
+      const { id } = await enqueueVolumetricObservationCreate(
+        executor,
+        {
+          code: '79560-9',
+          valueQuantityValue: '350.0000',
+          valueQuantityUnit: 'mL',
+          effectiveDatetime: '2026-09-11T14:00:00.000Z',
+          measuredOrEstimated: 'measured',
+          enteredMeasurementSystem: 'metric',
+        },
+        FIXED_NOW,
+      );
+
+      expect((await getObservationById(executor, id))?.method).toBeNull();
     });
 
     it('creates a weight observation with no Measured/Estimated toggle at all (CLAUDE.md: the toggle is volumetric-entry-only)', async () => {
