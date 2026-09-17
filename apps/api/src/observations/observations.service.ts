@@ -220,6 +220,10 @@ export class ObservationsService {
       // calendar date without a zone shifting it by a day.
       enteredTimezone: input.enteredTimezone,
       localDate: new Date(`${input.localDate}T00:00:00.000Z`),
+      // Already narrowed by `interpretObservationPayload`: `null` unless this
+      // code accepts a categorisation and the patient gave one (SRS AC 2.3
+      // AC1).
+      fluidTypeCode: input.fluidTypeCode,
       clientUpdatedAt: writtenAt,
     };
 

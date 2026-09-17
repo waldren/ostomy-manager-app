@@ -621,6 +621,44 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
   });
 
   describe('AC 2.5 AC 1 — FHIR field names on the wire', () => {
+    /**
+     * P3.S1 (SRS AC 2.3). Intake is the second accepted LOINC code and the
+     * first to carry `fluidTypeCode`, so this is the end-to-end proof that a
+     * widened accepted-code set actually writes and reads back — not just
+     * that the payload interpreter allows it.
+     */
+    it('accepts a fluid-intake entry with its optional categorisation and stores both', async () => {
+      const response = await post(patientA, {
+        ...validPayload(),
+        code: '9000-1',
+        fluidTypeCode: 'oral_rehydration_solution',
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.body.observation.code).toBe('9000-1');
+      expect(response.body.observation.fluidTypeCode).toBe('oral_rehydration_solution');
+    });
+
+    it('accepts an intake entry with no categorisation, which AC 2.3 AC1 makes optional', async () => {
+      const response = await post(patientA, { ...validPayload(), code: '9000-1' });
+
+      expect(response.status).toBe(201);
+      expect(response.body.observation.fluidTypeCode).toBeNull();
+    });
+
+    it('refuses a categorisation on stoma output, naming the field the patient can see', async () => {
+      const response = await post(patientA, { ...validPayload(), fluidTypeCode: 'water' });
+
+      // 400, matching every other PAYLOAD_FIELD_INVALID on this surface
+      // (`method`, `enteredMeasurementSystem`): a recognized field carrying a
+      // value outside its domain is a content problem, and this endpoint
+      // reports that class as 400.
+      expect(response.status).toBe(400);
+      expect(response.body.error.errors).toEqual([
+        { field: 'fluidTypeCode', reasonCode: 'PAYLOAD_FIELD_INVALID' },
+      ]);
+    });
+
     it('accepts the payload docs/sync-contract.md §7.2 spells out, and echoes it back', async () => {
       const body = validPayload();
       const response = await post(patientA, body);
@@ -637,6 +675,11 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
           'resourceType',
           'status',
           'valueQuantity',
+          // P3.S1. Always present and `null` when there is none, never
+          // omitted — an absent key and a null one read the same to a human
+          // and differently to a client, which is §7.2's own argument for
+          // `method`.
+          'fluidTypeCode',
         ].sort(),
       );
       expect(response.body.observation.resourceType).toBe('Observation');

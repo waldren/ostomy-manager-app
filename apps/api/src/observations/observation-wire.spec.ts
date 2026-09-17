@@ -58,6 +58,9 @@ const EXPECTED_KEYS = [
   'method',
   'enteredMeasurementSystem',
   'enteredTimezone',
+  // P3.S1 (SRS AC 2.3 AC1). Optional, which is what makes it additive under
+  // §8 — an older client that never sends it keeps working unchanged.
+  'fluidTypeCode',
 ];
 
 describe('observation wire shape', () => {

@@ -168,6 +168,25 @@ export interface ObservationAppNativeFields {
    * where the patient was.
    */
   readonly enteredTimezone: string;
+  /**
+   * Which kind of fluid this was, as a `fluid_type` value-set member code
+   * (SRS AC 2.3 AC1), added at P3.S1.
+   *
+   * **Optional, and therefore additive under §8** — a new optional payload
+   * field on an existing entity is one of the four changes that needs no
+   * version bump, and an older client that never sends it keeps working.
+   *
+   * Meaningful only on an intake entry (LOINC `9000-1`). The categorisation
+   * is optional even there, so `null` means "the patient did not say"; on any
+   * other code it is meaningless, and sending it is `PAYLOAD_FIELD_INVALID`
+   * rather than a harmless extra — a value no read path would ever interpret
+   * is worse than an absent one, because it looks like data.
+   *
+   * A code, never a display label: patient-facing text comes from the i18n
+   * catalog (ADR-0006), and a label here would be a second localization
+   * pipeline and would freeze a label into stored history.
+   */
+  readonly fluidTypeCode?: string | null;
 }
 
 export type ObservationSyncPayload = ObservationFhirFields & ObservationAppNativeFields;

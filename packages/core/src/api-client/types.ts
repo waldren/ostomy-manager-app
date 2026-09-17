@@ -38,7 +38,7 @@ export type Observation = {
     | 'cancelled'
     | 'entered-in-error'
     | 'unknown';
-  /** Bare LOINC code. This release accepts 79560-9 (stoma output) only; anything else is UNSUPPORTED_CODE. */
+  /** Bare LOINC code. This release accepts 79560-9 (stoma output) and 9000-1 (oral fluid intake); anything else is UNSUPPORTED_CODE. */
   readonly code: string;
   readonly valueQuantity: ObservationValueQuantity;
   /** The clinical moment the observation describes. RFC 3339, UTC, exactly three fractional digits. */
@@ -49,6 +49,8 @@ export type Observation = {
   readonly enteredMeasurementSystem: 'metric' | 'imperial';
   /** IANA zone name the device reported at entry (ADR-0016), never a UTC offset. Defines the patient's day, which every daily figure groups by. The server validates only that it resolves. */
   readonly enteredTimezone: string;
+  /** Which kind of fluid this was, as a `fluid_type` value-set member code (SRS AC 2.3 AC1). Optional on an intake entry and meaningless on any other code — sending it with a non-intake code is PAYLOAD_FIELD_INVALID. A code, never a display label: the patient-facing text comes from the i18n catalog (ADR-0006). */
+  readonly fluidTypeCode?: string | null;
 };
 
 export type ObservationCreateResponse = {
@@ -95,8 +97,8 @@ export type ObservationsListQuery = {
 export type ObservationValueQuantity = {
   /** Canonical mL (ADR-0004). A positive decimal, not an integer-only field. */
   readonly value: number;
-  /** Canonical unit for this code. Always mL for stoma output (ADR-0004). */
-  readonly unit: 'mL';
+  /** Canonical unit, determined by `code` (ADR-0004): mL for volumetric entries, kg for weight. A unit that disagrees with the code is PAYLOAD_FIELD_INVALID. */
+  readonly unit: 'mL' | 'kg';
 };
 
 /**
@@ -174,7 +176,11 @@ export type SyncOperationResult = {
     | 'effectiveDateTime'
     | 'method'
     | 'enteredMeasurementSystem'
-    | 'enteredTimezone';
+    | 'enteredTimezone'
+    | 'fluidTypeCode'
+    | 'description'
+    | 'size'
+    | 'tagCodes';
   /** Diagnostic. A client MUST NOT branch clinical behaviour on it (§3.7). */
   readonly replayed: boolean;
 };
