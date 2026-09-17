@@ -51,25 +51,51 @@ describe('Measured/Estimated toggle (AC 2.2, AC 2.5 AC 2)', () => {
   );
 });
 
-describe('D4 — the estimation-technique code is still unresolved', () => {
+describe('D4 — the estimation-technique code, now resolved', () => {
   /**
-   * **This test is a tripwire, and it is supposed to fail when D4 lands.**
+   * This replaces the tripwire that failed the moment `packages/core`
+   * published a resolved code. Its job now is the one the tripwire's comment
+   * specified: assert that the resolved code is accepted and stored, and that
+   * every OTHER string is still refused.
    *
-   * When `packages/core` publishes `{ resolved: true, code: '<SNOMED code>' }`,
-   * this assertion fails and whoever resolved D4 is required to come here,
-   * delete it, and assert the new behaviour instead: that
-   * `interpretMethodWireValue('<that code>')` returns `{ kind: 'estimated' }`,
-   * that `toStoredMethod` returns the code, and that any *other* string is
-   * still `unrecognized`. That is the whole change on the server side —
-   * `estimation-method.ts` itself needs no edit, because it reads the
-   * constant rather than a copy of it.
-   *
-   * A silent switch-on is the failure mode this prevents: estimated entries
-   * would start being accepted and stored with nothing having asserted that
-   * the code written to `observations.method` is the right one.
+   * `estimation-method.ts` itself needed no edit — it reads the constant
+   * rather than a copy of it, which is why resolving D4 was a one-line change
+   * in one package rather than a hunt through the server.
    */
-  it('is unresolved, so no non-null method value can be accepted yet', () => {
-    expect(ESTIMATION_METHOD_CODE.resolved).toBe(false);
+  it('accepts the resolved code as an estimated entry', () => {
+    expect(ESTIMATION_METHOD_CODE.resolved).toBe(true);
+    if (!ESTIMATION_METHOD_CODE.resolved) return;
+
+    expect(interpretMethodWireValue(ESTIMATION_METHOD_CODE.code)).toEqual({
+      kind: 'estimated',
+      methodCode: ESTIMATION_METHOD_CODE.code,
+    });
+  });
+
+  it('stores the code itself, so an estimated entry is distinguishable forever after', () => {
+    if (!ESTIMATION_METHOD_CODE.resolved) return;
+
+    expect(toStoredMethod(interpretMethodWireValue(ESTIMATION_METHOD_CODE.code))).toBe(
+      ESTIMATION_METHOD_CODE.code,
+    );
+  });
+
+  /**
+   * §6.2's "a `method` the server cannot recognize" stays unrepresentable
+   * rather than merely unlikely: the only non-null value this surface accepts
+   * is the one code `packages/core` published.
+   */
+  it('still refuses any other SNOMED code, including plausible neighbours', () => {
     expect(interpretMethodWireValue('373067005')).toEqual({ kind: 'unrecognized' });
+    // The paired |Measured (qualifier value)| concept. Real, and deliberately
+    // NOT accepted: `method: null` is what means measured on this wire
+    // (docs/sync-contract.md §7.2), and adopting the code is a separate
+    // decision — see ADR-0018's "What this does not change".
+    expect(interpretMethodWireValue('258104002')).toEqual({ kind: 'unrecognized' });
+  });
+
+  it('still treats null as measured and an absent key as no selection', () => {
+    expect(interpretMethodWireValue(null)).toEqual({ kind: 'measured' });
+    expect(interpretMethodWireValue(undefined)).toEqual({ kind: 'not-selected' });
   });
 });
