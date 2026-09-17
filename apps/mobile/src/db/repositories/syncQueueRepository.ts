@@ -122,13 +122,57 @@ export async function removeOperation(
 export async function markRejected(
   executor: SqliteExecutor,
   operationId: string,
-  rejection: { reasonCode: string; field: string; rejectedAt: string },
+  rejection: { reasonCode: string; field: string | null; rejectedAt: string },
 ): Promise<void> {
   await executor.runAsync(
     `UPDATE sync_queue SET
       status = 'rejected', rejected_reason_code = ?, rejected_field = ?, rejected_at = ?
     WHERE operation_id = ?;`,
     [rejection.reasonCode, rejection.field, rejection.rejectedAt, operationId],
+  );
+}
+
+/**
+ * Parks an operation that a §6.1 protocol error isolated down to on its own.
+ *
+ * ## Why this reuses the `rejected` status rather than adding a fourth
+ *
+ * A protocol error is a client bug, not something a patient got wrong, and
+ * `docs/sync-contract.md` keeps the two vocabularies deliberately disjoint
+ * (`SyncProtocolErrorCode` vs. `SyncReasonCode`) so neither can be returned
+ * where the other belongs. Storing one in `rejected_reason_code` crosses
+ * that line, and it is worth being explicit about why it is still right.
+ *
+ * §6.4 already defines what a client does with a code it cannot render to a
+ * patient: show the generic "this entry could not be saved — please check
+ * it" and keep the code for diagnostics. It requires the same of an
+ * *unrecognized* code, because new codes are additive (§8). A protocol code
+ * has no patient-facing copy by construction, so it lands in that bucket
+ * without the inbox needing to know it is from the other vocabulary — the
+ * renderer's existing "no copy for this code" branch is already correct for
+ * it.
+ *
+ * What the status must convey to the queue is the part that matters: this
+ * operation is retained, is not eligible for an unchanged retry (§9.2), and
+ * needs the patient's attention. That is exactly `rejected`, and a fourth
+ * status would duplicate all three properties to record a provenance
+ * nothing downstream branches on.
+ *
+ * `rejected_field` is left NULL, which is the honest encoding: §6.1 bodies
+ * carry no field path at all, and inventing one would be the echoed
+ * diagnostic that section forbids.
+ */
+export async function markQuarantined(
+  executor: SqliteExecutor,
+  operationId: string,
+  protocolErrorCode: string,
+  quarantinedAt: string,
+): Promise<void> {
+  await executor.runAsync(
+    `UPDATE sync_queue SET
+      status = 'rejected', rejected_reason_code = ?, rejected_field = NULL, rejected_at = ?
+    WHERE operation_id = ?;`,
+    [protocolErrorCode, quarantinedAt, operationId],
   );
 }
 
