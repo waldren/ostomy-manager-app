@@ -434,10 +434,31 @@ services:
     # /api/v1/health/ready once P1.S3 gives the API a database connection
     # that can be up-but-unready.
 
+  # The real SPA as of P2.S3 — this was a placeholder image for three sprints
+  # after apps/web landed (see infra/docker/web.Dockerfile's own header).
+  #
+  # Every VITE_* value is a BUILD arg, not runtime environment: Vite inlines
+  # them into the bundle, because a browser has no process environment to read.
+  # Changing DEV_HOST_ADDRESS therefore requires `docker compose build web`,
+  # not a restart — the one operational difference from every other service
+  # here, and the thing most likely to produce a SPA quietly talking to the
+  # previous address.
+  #
+  # The issuer and redirect URI must both be reachable AT DEV_HOST_ADDRESS from
+  # the browser, and the issuer must match what mock-oauth2-server derives from
+  # the Host header of the request that minted the token — see .env.example's
+  # DEV_HOST_ADDRESS comment. This is the same constraint the api service's
+  # OIDC_ISSUER is under, expressed on the client side.
   web:
     build:
       context: ..
       dockerfile: infra/docker/web.Dockerfile
+      args:
+        VITE_API_BASE_URL: http://${DEV_HOST_ADDRESS:?set in .env - see .env.example, and never leave this as localhost}:3000
+        VITE_OIDC_ISSUER: http://${DEV_HOST_ADDRESS:?set in .env - see .env.example}:8090/patient-issuer
+        VITE_OIDC_CLIENT_ID: ostomy-web
+        VITE_OIDC_AUDIENCE: ostomy-patient-app
+        VITE_OIDC_REDIRECT_URI: http://${DEV_HOST_ADDRESS:?set in .env - see .env.example}:${DEV_WEB_PORT:-8080}/
     image: ostomy/web:dev-latest
     container_name: ostomy-dev-web
     restart: unless-stopped
@@ -445,7 +466,9 @@ services:
     networks:
       - ostomy-dev
     ports:
-      - "${DEV_BIND_ADDRESS:-127.0.0.1}:8080:80"
+      # Container port 8080, not 80: the runtime stage runs as the non-root
+      # `nginx` user and cannot bind a privileged port.
+      - "${DEV_BIND_ADDRESS:-127.0.0.1}:${DEV_WEB_PORT:-8080}:8080"
 
   admin:
     build:
