@@ -45,7 +45,7 @@ Copy `.env.example` to `.env` before running `start`/`ios`/`android` — see
 that file for what each variable means and the OIDC audience assumption this
 sprint records.
 
-## Architecture notes for the next sprint (P2.S2b)
+## The local store and the sync worker
 
 - `src/db/schema.ts` is the single source of the local DDL, applied by
   `src/db/migrations.ts`'s `runMigrations()` against a `schema_migrations`
@@ -61,30 +61,68 @@ sprint records.
   exercised on a physical device or simulator from this environment. See that
   file's own header comment before relying on it as proof of on-device
   behaviour beyond what it actually demonstrates.
-- `src/db/repositories/syncQueueRepository.ts` holds the queue shape
-  `docs/sync-contract.md` §3.1 requires of a push operation, including the
-  enqueue-time `operation_id` (minted once, never reused — §3.7, §9.7) and a
-  `rejected` status that **retains** the row for correction rather than
-  removing it (§3.5, §9.1) — the seam the correction inbox builds on.
 - `src/db/offlineWrites.ts`'s `enqueueObservationCreate` /
   `enqueueObservationUpdate` / `enqueueObservationDelete` are the local
-  write-then-enqueue transaction the Add Output screen should call directly
-  rather than re-deriving: both inserts commit together via
+  write-then-enqueue transaction an entry screen calls directly rather than
+  re-deriving: both inserts commit together via
   `SqliteExecutor.withTransactionAsync`, matching the "local write is the
   save confirmation" rule.
 - `src/auth/AuthContext.tsx` exposes `phase: 'checking' | 'signedOut' |
   'locked' | 'authenticated'` and treats a successful biometric unlock as
   sufficient for **local** app access regardless of whether the subsequent
   refresh-token network call succeeds — see that file's header comment. A
-  missing/expired access token should only ever block a sync network call
-  (P2.S2b), never local entry.
-- No sync push/pull worker exists yet. `src/db/repositories/syncQueueRepository.ts`'s
-  `listQueuedOperations` already returns rows in enqueue order, which
-  coincides with non-descending `clientTimestamp` order under normal clock
-  behaviour — but `docs/sync-contract.md` §3.2 still requires detecting a
-  clock-correction discontinuity and splitting the batch there before a push;
-  that detection has not been written and is P2.S2b's obligation, not this
-  repository's.
+  missing or expired access token only ever blocks a sync network call, never
+  local entry.
+
+### `src/sync/` (P2.S2b)
+
+Read `docs/sync-contract.md` before changing anything here; it governs, and
+these modules cite it by section throughout.
+
+- **`batching.ts`** — pure. Splits the queue into requests that satisfy §3.2
+  (non-descending `clientTimestamp`, so a clock correction does not strand the
+  backlog behind a `400`) and §3.3 (the size bound). Concatenating its output
+  reproduces its input exactly, which is how §9.6's "never reorder, never
+  coalesce" is asserted as a property rather than read for.
+- **`pushOperations.ts`** — builds the §3.1 request from the *current*
+  `observations` row (never a payload frozen at enqueue; see migration 2), and
+  owns the single function that decides a queued operation's fate. Results are
+  correlated by `operationId`, never by array position.
+- **`responseDecoding.ts`** — the decode boundary. OpenAPI cannot express the
+  contract's discriminated unions, so the generated client's result type has
+  every union member optional; this turns a response into shapes whose fields
+  are guaranteed, and degrades rather than throws on anything §8 makes
+  additive. An undecodable result settles **nothing** — it is not a rejection.
+- **`deltaPull.ts`** — applies a page and advances the cursor *after* it, one
+  page at a time. The cursor comes from a delta response and nowhere else
+  (§3.6, §9.4).
+- **`syncWorker.ts`** — `runSyncCycle`: push, then pull. Every failure path is
+  here, shaped around §9.3 (a `5xx` or a network failure is not a rejection)
+  and §6.1 (a protocol error applies nothing and must not be retried
+  unchanged — so the worker isolates the offending operation rather than
+  stalling the queue behind it).
+- **`syncScheduler.ts`** — pure. Backoff policy and the gate that stops two
+  cycles running concurrently.
+- **`SyncProvider.tsx`** — the four triggers that make sync resume with no
+  user action: authenticated-and-ready, connectivity restored, app
+  foregrounded, and a backoff timer.
+
+**`useSyncStatus()` must never be wired to a save confirmation** (§9.5). The
+local write already is the confirmation; sync is invisible to the patient
+except when it produces something to correct.
+
+### Still owed
+
+- **The correction inbox has no UI.** Rejected operations are retained and
+  surfaced through `listRejectedOperations`, which satisfies the storage half
+  of AC 13.1 AC4; a patient cannot yet see or act on them.
+- **§5.4's `CURSOR_TOO_OLD` recovery is reported, not performed.** The worker
+  stops with `cursor-too-old` and halts scheduling. Wiping local entity state
+  and re-syncing from `since=0` destroys local rows — including queued,
+  unpushed ones — so it needs a screen and a decision, not a background task.
+- **Sign-out still destroys unsynced queued entries** (`src/db/purge.ts`, and
+  `AuthContext`'s own KNOWN GAP comment). Now that the worker exists the fix is
+  unblocked: warn, offer to sync first, and only then purge.
 
 ## What this app must never do
 

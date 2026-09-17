@@ -24,16 +24,23 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider } from '../src/auth/AuthContext';
 import { DatabaseProvider } from '../src/db/DatabaseProvider';
+import { SyncProvider } from '../src/sync/SyncProvider';
 
 /**
  * Root layout (Expo Router). Everything under `app/` renders inside these
- * two providers — `AuthProvider` (checking/signedOut/locked/authenticated)
- * and `DatabaseProvider` (the local `expo-sqlite` connection, opened and
- * fully migrated once here, never per-screen). `headerShown: false`: this
- * sprint's two screens (`login`, `home`) render their own headings, and a
- * default React Navigation header would either duplicate that or show a
- * route's file name as a title — not patient-facing copy from the catalog
- * either way.
+ * three providers — `AuthProvider` (checking/signedOut/locked/authenticated),
+ * `DatabaseProvider` (the local `expo-sqlite` connection, opened and fully
+ * migrated once here, never per-screen), and `SyncProvider` (the background
+ * push/pull worker). `headerShown: false`: this sprint's two screens
+ * (`login`, `home`) render their own headings, and a default React Navigation
+ * header would either duplicate that or show a route's file name as a title —
+ * not patient-facing copy from the catalog either way.
+ *
+ * `SyncProvider` is innermost of the three because it reads both of the
+ * others, and it wraps the navigator rather than sitting beside it so a cycle
+ * survives navigation: the worker must keep running while the patient moves
+ * between screens, and an unmount mid-push would leave operations `in_flight`
+ * until the next launch.
  */
 export default function RootLayout(): React.JSX.Element {
   return (
@@ -45,7 +52,9 @@ export default function RootLayout(): React.JSX.Element {
     <SafeAreaProvider>
       <AuthProvider>
         <DatabaseProvider>
-          <Stack screenOptions={{ headerShown: false }} />
+          <SyncProvider>
+            <Stack screenOptions={{ headerShown: false }} />
+          </SyncProvider>
         </DatabaseProvider>
       </AuthProvider>
     </SafeAreaProvider>

@@ -1,0 +1,219 @@
+/*
+Copyright (C) 2026 Steven E. Waldren
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/
+
+import type {
+  Observation,
+  SyncDeltaChange,
+  SyncDeltaResponse,
+  SyncOperationResult,
+  SyncPushResponse,
+} from '@ostomy/core/api-client';
+
+/**
+ * The decode boundary between the generated API client and this app.
+ *
+ * ## Why it exists at all
+ *
+ * `docs/sync-contract.md` models a push result as a discriminated union:
+ * `appliedServerSequence` is present on `accepted`/`superseded` and absent
+ * on `rejected`, `reasonCode`/`field` the other way round, and
+ * `packages/core/src/sync` encodes exactly that. The **generated** client
+ * cannot: OpenAPI flattens a union into one object with optional members,
+ * so `@ostomy/core/api-client`'s `SyncOperationResult` has every field
+ * optional and a three-valued `status`.
+ *
+ * That flattening is not a defect in the generator — it is what the schema
+ * language can express — but it means the type the app receives no longer
+ * makes the contract's invariants true. An `accepted` result with no
+ * `appliedServerSequence` typechecks, and `String(undefined)` would write
+ * the literal text `"undefined"` into `observations.server_sequence`.
+ *
+ * So the response is treated as what it is: **untrusted input**, decoded
+ * once, here, into shapes whose fields are guaranteed. Same "decode, don't
+ * cast" discipline `db/types.ts` applies to a SQLite row, for the same
+ * reason.
+ *
+ * ## What an undecodable result must NOT become
+ *
+ * Not a rejection. §9.3: a rejection is only ever a `rejected` result the
+ * server actually sent; anything else leaves the operation's fate unknown,
+ * and the recovery is to re-push and let idempotency settle it (§3.7).
+ * `undecodable` therefore means "this result settles nothing" — the caller
+ * leaves the operation on the queue.
+ *
+ * ## Unknown values degrade, never throw
+ *
+ * §8 makes a new `reasonCode` additive and requires an old client to
+ * tolerate it, with §6.4 spelling out how: degrade to the generic "this
+ * entry could not be saved" and keep the code for diagnostics. So an
+ * unrecognized `reasonCode` decodes as a rejection carrying that code
+ * verbatim — it is the *renderer's* job to notice it has no patient-facing
+ * copy, not this decoder's job to reject it.
+ */
+
+export type DecodedPushResult =
+  | {
+      readonly kind: 'applied';
+      readonly status: 'accepted' | 'superseded';
+      readonly operationId: string;
+      readonly entityId: string;
+      readonly appliedServerSequence: string;
+    }
+  | {
+      readonly kind: 'rejected';
+      readonly operationId: string;
+      readonly entityId: string;
+      readonly reasonCode: string;
+      /** `null` when the server named none. Never invented — §6.1/§6.3 forbid echoing a path the server did not send. */
+      readonly field: string | null;
+    }
+  | {
+      readonly kind: 'undecodable';
+      /** Present whenever the result named an operation at all; the caller needs it to leave that row alone. */
+      readonly operationId: string | undefined;
+    };
+
+export function decodePushResults(response: SyncPushResponse): DecodedPushResult[] {
+  return response.results.map(decodePushResult);
+}
+
+function decodePushResult(result: SyncOperationResult): DecodedPushResult {
+  const operationId = nonEmptyString(result.operationId);
+  const entityId = nonEmptyString(result.entityId);
+
+  if (operationId === undefined || entityId === undefined) {
+    return { kind: 'undecodable', operationId };
+  }
+
+  if (result.status === 'rejected') {
+    const reasonCode = nonEmptyString(result.reasonCode);
+    if (reasonCode === undefined) {
+      // A rejection the server refused to explain. Still a rejection — §9.1
+      // forbids dropping it and §9.2 forbids retrying it unchanged — so it
+      // must not decode as `undecodable`, which would put it straight back
+      // on the queue for an unchanged retry. It carries a code this app
+      // recognises as "no copy", which §6.4 already renders generically.
+      return {
+        kind: 'rejected',
+        operationId,
+        entityId,
+        reasonCode: UNSPECIFIED_REJECTION_CODE,
+        field: null,
+      };
+    }
+    return {
+      kind: 'rejected',
+      operationId,
+      entityId,
+      reasonCode,
+      field: nonEmptyString(result.field) ?? null,
+    };
+  }
+
+  if (result.status === 'accepted' || result.status === 'superseded') {
+    const appliedServerSequence = nonEmptyString(result.appliedServerSequence);
+    if (appliedServerSequence === undefined) {
+      // §3.6 requires it on both. Without it there is nothing to stamp, and
+      // removing the operation from the queue on the strength of a result
+      // this malformed would lose the write. Fate unknown; re-push.
+      return { kind: 'undecodable', operationId };
+    }
+    return {
+      kind: 'applied',
+      status: result.status,
+      operationId,
+      entityId,
+      appliedServerSequence,
+    };
+  }
+
+  // A status outside the three §3.5 defines. §8 makes response additions
+  // tolerable, but a fourth STATUS is not additive — it changes what the
+  // client must do — so this degrades to "settles nothing" rather than
+  // guessing.
+  return { kind: 'undecodable', operationId };
+}
+
+/**
+ * The code recorded when a server rejects an operation without saying why.
+ *
+ * Deliberately not a member of `SyncReasonCode`: it is this client's own
+ * marker for a malformed response, not something the wire ever carries, and
+ * putting it in the shared vocabulary would let a server appear to send it.
+ * It has no patient-facing copy, which routes it to §6.4's generic message —
+ * the correct rendering for a code that explains nothing.
+ */
+export const UNSPECIFIED_REJECTION_CODE = 'REJECTED_WITHOUT_REASON_CODE';
+
+export type DecodedDeltaChange =
+  | {
+      readonly kind: 'tombstone';
+      readonly entityId: string;
+      readonly serverSequence: string;
+      readonly clientUpdatedAt: string;
+    }
+  | {
+      readonly kind: 'upsert';
+      readonly entityId: string;
+      readonly serverSequence: string;
+      readonly clientUpdatedAt: string;
+      readonly payload: Observation;
+    }
+  | { readonly kind: 'undecodable' };
+
+export interface DecodedDeltaPage {
+  readonly changes: readonly DecodedDeltaChange[];
+  readonly cursor: string;
+  readonly hasMore: boolean;
+}
+
+export function decodeDeltaPage(response: SyncDeltaResponse): DecodedDeltaPage {
+  return {
+    changes: response.changes.map(decodeDeltaChange),
+    cursor: String(response.cursor),
+    hasMore: response.hasMore === true,
+  };
+}
+
+function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
+  const entityId = nonEmptyString(change.entityId);
+  const serverSequence = nonEmptyString(change.serverSequence);
+  const clientUpdatedAt = nonEmptyString(change.clientUpdatedAt);
+
+  if (entityId === undefined || serverSequence === undefined || clientUpdatedAt === undefined) {
+    return { kind: 'undecodable' };
+  }
+
+  if (change.deleted) {
+    return { kind: 'tombstone', entityId, serverSequence, clientUpdatedAt };
+  }
+
+  if (change.payload === undefined) {
+    // §5.2 gives an upsert a payload and a tombstone none. A change that is
+    // neither is uninterpretable, and writing a row from it would invent
+    // clinical values. Skipped — and note the cursor still advances past it
+    // (`applyDeltaPage`), because re-requesting the same malformed page
+    // forever is the worse failure.
+    return { kind: 'undecodable' };
+  }
+
+  return { kind: 'upsert', entityId, serverSequence, clientUpdatedAt, payload: change.payload };
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
