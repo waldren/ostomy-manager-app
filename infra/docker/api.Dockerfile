@@ -44,21 +44,45 @@ WORKDIR /workspace
 # below never bust it.
 #
 # Every workspace with a package.json must be listed here explicitly (a
-# workspace with only a README stub, e.g. apps/web today, has none yet and
-# is intentionally omitted). Add a line here when a new workspace is
-# scaffolded, or `pnpm install --frozen-lockfile` fails against the lockfile.
+# workspace with only a README stub has none yet and is intentionally
+# omitted). Add a line here when a new workspace is scaffolded, or
+# `pnpm install --frozen-lockfile` fails against the lockfile.
+#
+# `packages/ui` is deliberately absent: `apps/api` does not depend on it.
+# Only what this image's workspace graph actually needs belongs here.
 FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/config/package.json packages/config/package.json
+COPY packages/core/package.json packages/core/package.json
 RUN pnpm install --frozen-lockfile
 
 # --- build -----------------------------------------------------------------
 # Full install (including dev deps) from the cached layer above, then only
 # the source this build actually needs.
+#
+# `@ostomy/core` is built BEFORE `@ostomy/api`, and that ordering is the
+# whole point of this stage rather than an optimisation. `apps/api` resolves
+# `@ostomy/core/sync`, `/validation`, `/units` and `/i18n` through the
+# package's `exports` map, which points at `dist/` — and `.dockerignore`
+# excludes `**/dist` (correctly: a host-built `dist` must never leak into an
+# image). So the only `dist` that can exist here is one this stage produces.
+#
+# This is the root `build:deps` script's job outside Docker, which is why
+# `pnpm verify` never caught its absence here: CI runs `verify`, and nothing
+# in CI builds this image. `apps/api` gained its `@ostomy/core` dependency at
+# P2.S1a and this file was last touched at P1.S3, so the image — and
+# therefore `deploy-dev.yml`, which runs `docker compose build` — was broken
+# for five merged PRs with no signal. Found by bringing the stack up for the
+# Gate B walkthrough.
+#
+# If `apps/api` ever gains a second workspace dependency, it needs the same
+# two lines: the source copied, and the package built before the API.
 FROM deps AS build
 COPY packages/config packages/config
+COPY packages/core packages/core
 COPY apps/api apps/api
+RUN pnpm --filter @ostomy/core build
 RUN pnpm --filter @ostomy/api build
 
 # --- prod-deps ---------------------------------------------------------------
