@@ -182,8 +182,67 @@ export type ObservationSyncPayload = ObservationFhirFields & ObservationAppNativ
  * Adding `Profile` and `EffectiveRange` at P4 is one line here and is
  * additive under §8.
  */
+/** AC 2.4 AC2's relative size modifier, lowercase on the wire like every other coded value here. */
+export const MEAL_SIZE = ['small', 'medium', 'large'] as const;
+export type MealSize = (typeof MEAL_SIZE)[number];
+
+/**
+ * A logged meal (SRS §3.1, AC 2.4) — the first **app-native** entity on this
+ * wire, and deliberately not FHIR-shaped.
+ *
+ * §7.1 draws the line this sits on: payloads use FHIR R4 names "for everything
+ * FHIR defines", and app-native fields "travel as plain siblings ... not
+ * wrapped in a namespace object and not encoded as FHIR `extension` entries".
+ * A meal is app-native *entirely* — FHIR's `NutritionIntake` models a
+ * prescribed or administered nutritional product with quantities and
+ * nutrients, not "what someone ate, described in their own words, with a
+ * relative size". Mapping onto it would assert a conformance this entity does
+ * not have, and §7.1's closing rule already forbids the export module from
+ * copying an app-native sibling into a Bundle.
+ *
+ * So there is no `resourceType` here. That key is FHIR's, and putting it on a
+ * non-FHIR entity would be the assertion this type exists to avoid.
+ *
+ * Every other field matches `ObservationSyncPayload`'s conventions exactly,
+ * because they are contract-wide rather than FHIR-derived: `id` equals the
+ * operation's `entityId` (§7.2), `effectiveDateTime` is RFC 3339 with exactly
+ * three fractional digits (§7.3), and `enteredTimezone` is an IANA name that
+ * defines the patient's day (ADR-0016). `localDate` is absent for the same
+ * reason it is absent from an observation — it is a pure function of two
+ * fields already here, and a client-supplied one is a second source of truth
+ * whose disagreement nothing detects.
+ */
+export interface MealSyncPayload {
+  readonly id: EntityId;
+  /**
+   * AC 2.4 AC1's free text. Optional — a patient who only tapped quick-tags
+   * has still logged a meal — and `null` rather than absent when not given,
+   * for `method`'s reason (§7.2): an absent key cannot be told apart from a
+   * client that does not implement the field.
+   */
+  readonly description: string | null;
+  /** AC 2.4 AC2. Mandatory: never defaulted, because a default is indistinguishable afterwards from a deliberate answer. */
+  readonly size: MealSize;
+  /**
+   * AC 2.4 AC1's optional quick-tags, as `meal_tag` value-set member codes.
+   * Always present, empty when none were chosen — an absent array and an empty
+   * one would otherwise mean the same thing to a reader and different things to
+   * a writer.
+   *
+   * Codes, never display text: what a patient reads comes from the i18n
+   * catalog (ADR-0006), and a label on this wire would be a second
+   * localization pipeline.
+   */
+  readonly tagCodes: readonly string[];
+  /** The clinical moment — when the meal was eaten, not when it was logged (§1). */
+  readonly effectiveDateTime: WireInstant;
+  /** IANA zone name at entry, never a UTC offset (ADR-0016). */
+  readonly enteredTimezone: string;
+}
+
 export interface SyncPayloadByEntityType {
   readonly Observation: ObservationSyncPayload;
+  readonly Meal: MealSyncPayload;
 }
 
 export type SyncEntityType = keyof SyncPayloadByEntityType;
@@ -196,4 +255,12 @@ export type SyncEntityType = keyof SyncPayloadByEntityType;
  */
 export const SYNC_ENTITY_TYPE = {
   OBSERVATION: 'Observation',
+  /**
+   * P3.S1. A new entity type is **additive** under §8 and needs no version
+   * bump — but §8's tolerance runs one way: a client must ignore an unknown
+   * field in a RESPONSE, and nothing says it must cope with an unknown
+   * `entityType`. An old app receiving a `Meal` in a delta page has no
+   * handler for it, so the server owes it the filtering, not the reverse.
+   */
+  MEAL: 'Meal',
 } as const;

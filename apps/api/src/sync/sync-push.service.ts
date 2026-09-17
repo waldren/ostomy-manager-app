@@ -253,14 +253,21 @@ export class SyncPushService {
     correlationId: string | undefined,
   ): Promise<{ result: SyncOperationResult; applied: boolean }> {
     if (operation.entityType !== SYNC_ENTITY_TYPE.OBSERVATION) {
-      // Currently UNREACHABLE, and kept deliberately: `SYNC_ENTITY_TYPE` has
-      // one member today, so the pipe's enum refuses anything else as a
-      // protocol error before this runs. It becomes live at P4, when Profile
-      // and EffectiveRange gain wire payloads and the enum grows — at which
-      // point this is the known-but-not-yet-exchanged case, and a rejection
-      // rather than a 400 is what keeps one unsupported entity type from
-      // failing a whole batch. `entityType` is the offending field, not the
-      // payload.
+      // LIVE as of P3.S1, and it was written for exactly this. The comment
+      // here used to say "currently unreachable ... becomes live at P4, when
+      // Profile and EffectiveRange gain wire payloads and the enum grows" —
+      // P3.S1 grew it first, adding `Meal` (docs/sync-contract.md §7.4).
+      //
+      // So a `Meal` operation arriving before its handler exists is a
+      // per-operation `rejected` result, not a 500 and not a whole-batch
+      // failure: one entity type this release does not yet apply must not
+      // block every other entry a patient made while offline (§3.4). The
+      // offending field is `entityType`, never the payload — naming a payload
+      // path would tell the patient to fix content that is not the problem.
+      //
+      // `sync.integration.spec.ts` pins this, because the safe failure is the
+      // entire reason the wire type could widen in one PR while the handler
+      // lands in the next.
       return {
         result: rejection(
           operation,

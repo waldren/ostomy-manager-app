@@ -311,6 +311,81 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
 
   // -------------------------------------------------------------------------
 
+  /**
+   * P3.S1 widened the wire's entity-type vocabulary to include `Meal`
+   * (docs/sync-contract.md §7.4) before the server grew a handler for it. That
+   * split across two PRs is only safe if an unhandled entity type fails the
+   * way the contract requires, so it is pinned here rather than assumed.
+   */
+  describe('§3.4 / §6.2 — an entity type this release does not yet apply', () => {
+    it('rejects a Meal operation per-operation rather than failing the request', async () => {
+      // `payload.id` MUST equal `entityId` (§7.2) — a mismatch is
+      // ENTITY_ID_MISMATCH, a §6.1 protocol error that fails the whole
+      // request, which would mask the per-operation behaviour under test.
+      const mealId = randomUUID();
+      const response = await push(patientA, [
+        {
+          operationId: randomUUID(),
+          entityType: 'Meal',
+          entityId: mealId,
+          operationType: 'create',
+          clientTimestamp: new Date().toISOString(),
+          payload: {
+            id: mealId,
+            description: 'Porridge',
+            size: 'medium',
+            tagCodes: ['high_fibre'],
+            effectiveDateTime: new Date().toISOString(),
+            enteredTimezone: 'America/Chicago',
+          },
+        },
+      ]);
+
+      // A 200 with a rejected result, NOT a 4xx: a protocol error would fail
+      // the whole batch, and one entity type this release cannot apply must
+      // not block every other entry a patient made while offline.
+      expect(response.status).toBe(200);
+      expect(response.body.results).toHaveLength(1);
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        field: 'entityType',
+      });
+    });
+
+    it('applies the observations in the same batch, leaving only the Meal rejected', async () => {
+      const observation = createOp();
+      const mealId = randomUUID();
+      // The Meal carries the SAME clientTimestamp as the observation, not
+      // `now`. §3.2 requires the array to be non-descending, and a later
+      // timestamp on the first element is BATCH_OUT_OF_ORDER — a §6.1
+      // protocol error that fails the whole request and would mask the
+      // per-operation behaviour this test is about. Equal timestamps are
+      // explicitly legal and resolved by array order.
+      const response = await push(patientA, [
+        {
+          operationId: randomUUID(),
+          entityType: 'Meal',
+          entityId: mealId,
+          operationType: 'create',
+          clientTimestamp: observation.clientTimestamp as string,
+          payload: {
+            id: mealId,
+            description: null,
+            size: 'small',
+            tagCodes: [],
+            effectiveDateTime: '2026-09-07T14:00:00.000Z',
+            enteredTimezone: 'America/Chicago',
+          },
+        },
+        observation,
+      ]);
+
+      expect(response.status).toBe(200);
+      const statuses = response.body.results.map((result: { status: string }) => result.status);
+      expect(statuses).toEqual(['rejected', 'accepted']);
+    });
+  });
+
   describe('§3.4 — one result per operation, in request order', () => {
     it('applies a create and reports accepted with a server-sequence receipt', async () => {
       const op = createOp();
