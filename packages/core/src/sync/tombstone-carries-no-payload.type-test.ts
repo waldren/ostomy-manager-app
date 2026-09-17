@@ -17,7 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import type { SyncDeltaChange, SyncDeltaTombstone } from './delta.js';
 import type { EntityId, ServerSequence } from './identifiers.js';
-import type { ObservationSyncPayload, WireInstant } from './payload.js';
+import type {
+  ObservationSyncPayload,
+  SyncEntityType,
+  SyncPayloadByEntityType,
+  WireInstant,
+} from './payload.js';
 
 /**
  * Type-level proof that a tombstone change entry carries no `payload`
@@ -71,9 +76,21 @@ if (change.deleted) {
   // @ts-expect-error — a tombstone carries no payload (§5.2): entity id in, clinical values never out.
   void change.payload;
 } else {
-  // The live arm has one, non-optionally.
-  const payload: ObservationSyncPayload = change.payload;
+  // The live arm has one, non-optionally — and as of P3.S1 it is a UNION
+  // across entity types, so the assertion is that a payload exists rather
+  // than that it is an observation. Narrowing to one entity type here would
+  // have to be done on `entityType`, which is a different property from the
+  // one this file exists to test.
+  const payload: SyncPayloadByEntityType[SyncEntityType] = change.payload;
   void payload;
+}
+
+// Narrowing on `entityType` recovers the concrete payload, which is what a
+// handler actually does. Asserted here so that adding an entity type without
+// a discriminated payload fails a test rather than a request handler.
+if (!change.deleted && change.entityType === 'Observation') {
+  const observation: ObservationSyncPayload = change.payload;
+  void observation;
 }
 
 declare const entityId: EntityId;

@@ -400,7 +400,9 @@ App-native fields that FHIR has no element for travel as **plain siblings**, spe
 
 ### 7.2 `Observation`
 
-The only entity type P2 exchanges. `Profile` and `EffectiveRange` are synced entities in the schema but have no wire payload until P4; adding them is additive (§8).
+`Profile` and `EffectiveRange` are synced entities in the schema but have no wire payload until P4; adding them is additive (§8).
+
+**P3.S1 added a second entity type, `Meal` (§7.4).** A client that does not know it must never be *sent* one: §8's tolerance runs one way — it requires a client to ignore an unknown FIELD in a response and says nothing about an unknown `entityType` — so the delta endpoint owes the filtering, not the client.
 
 | Wire field | Source | Required | Notes |
 | --- | --- | --- | --- |
@@ -420,6 +422,25 @@ Everything a client would want and will not find here is deliberate. There is no
 **There is also no `localDate`, and that is deliberate rather than an omission.** The server derives it from `effectiveDateTime` and `enteredTimezone` and stores it indexed, because daily aggregates group by it. A client-supplied one would be a second source of truth for a value that is a pure function of two fields already on the wire — and the failure mode is silent: a client with a subtly different date computation produces rows whose stored day disagrees with their own instant, and nothing detects it. A client that sends one gets `PAYLOAD_FIELD_UNRECOGNIZED`.
 
 Note that `localDate` is **not monotonic with `effectiveDateTime`**. A patient who crosses a time zone can have a 23- or 25-hour day, and two entries can share an instant while falling on different dates. Order by the instant; group by the date. Any code that assumes one implies the other is wrong (ADR-0016).
+
+### 7.4 `Meal`
+
+App-native in its entirety, and the first entity on this wire that is (P3.S1, SRS AC 2.4).
+
+| Wire field | Source | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | app-native | yes | Equals the operation's `entityId`, exactly as §7.2 requires of an observation. |
+| `description` | app-native | yes, nullable | AC 2.4 AC1's free text. Explicitly `null` when the patient gave none, never omitted — an absent key cannot be told apart from a client that does not implement the field, which is §7.2's argument for `method` and applies unchanged. |
+| `size` | app-native | yes | AC 2.4 AC2's relative modifier: `"small"`, `"medium"` or `"large"`, lowercase like every other coded value here. Mandatory and never defaulted — a default is indistinguishable afterwards from a deliberate answer. |
+| `tagCodes` | app-native | yes | AC 2.4 AC1's optional quick-tags, as `meal_tag` value-set member **codes**. Always present, `[]` when none were chosen: an absent array and an empty one would mean the same thing to a reader and different things to a writer. Codes, never display text — the label a patient reads comes from the i18n catalog (ADR-0006), and a label here would be a second localization pipeline. A **retired** code still resolves, which is what keeps history readable (CLAUDE.md). |
+| `effectiveDateTime` | app-native | yes | RFC 3339, UTC, millisecond precision (§7.3). When the meal was **eaten**, not when it was logged (§1). |
+| `enteredTimezone` | app-native | yes | IANA zone name, never a UTC offset. Same rule and same reasons as §7.2's (ADR-0016). |
+
+**There is deliberately no `resourceType`.** That key is FHIR's. FHIR does define `NutritionIntake`, and it is the wrong shape: it models a prescribed or administered nutritional product with quantities and nutrients, not "what someone ate, described in their own words, with a relative size". Carrying `resourceType: "NutritionIntake"` would assert a conformance this entity does not have — and §7.1 already forbids the export module from copying an app-native sibling into a `Bundle`, which is the same rule seen from the other end.
+
+As in §7.2 there is no `patientId` (§2), no `serverSequence`, no `deletedAt`, no `createdAt`/`updatedAt`, and **no `localDate`** — the server derives that from `effectiveDateTime` and `enteredTimezone`, and a client-supplied one is a second source of truth whose disagreement nothing detects (ADR-0016). A client that sends one gets `PAYLOAD_FIELD_UNRECOGNIZED`.
+
+---
 
 ### 7.3 Numbers on the wire
 

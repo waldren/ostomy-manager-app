@@ -154,9 +154,21 @@ describe('§6.3 — the field path a rejection may name is a closed set', () => 
 });
 
 describe('wire vocabularies', () => {
-  it('§7.2 — the only entity type P2 exchanges is Observation, spelled as FHIR spells it', () => {
+  /**
+   * Pinned as an exact list, not a `toContain`. A new entity type is additive
+   * under §8 and adding one is legitimate — but it is a change to a governing
+   * contract, and this assertion is what makes someone update
+   * `docs/sync-contract.md` §7 in the same commit rather than discovering the
+   * doc is stale months later. `Meal` was added at P3.S1 (SRS AC 2.4).
+   *
+   * The spelling matters as much as the membership: FHIR capitalisation on the
+   * wire (`Observation`), never Prisma's `OBSERVATION`. `Meal` follows it
+   * despite being app-native, because the convention belongs to this wire
+   * rather than to FHIR.
+   */
+  it('§7 — the entity types P3 exchanges, spelled as the wire spells them', () => {
     const entityTypes: readonly SyncEntityType[] = Object.values(SYNC_ENTITY_TYPE);
-    expect(entityTypes).toEqual(['Observation']);
+    expect([...entityTypes].sort()).toEqual(['Meal', 'Observation']);
   });
 
   it('§3.1 — operation types are create, update, delete', () => {

@@ -184,6 +184,7 @@ model Patient {
 
   profile         Profile?
   observations    Observation[]
+  meals           Meal[]
   effectiveRanges EffectiveRange[]
   syncOperations  SyncOperation[]
 
@@ -449,6 +450,26 @@ model Observation {
   /// `extension`.
   enteredMeasurementSystem MeasurementSystem @map("entered_measurement_system")
 
+  /// Which kind of fluid this was, for an INTAKE entry (LOINC 9000-1) — an
+  /// app-native attribute, coded by the `fluid_type` value set and stored by
+  /// its stable member code (CLAUDE.md: "Clinical records reference them by
+  /// stable code, so a retired value must still resolve when rendering
+  /// history").
+  ///
+  /// Nullable, and nullable for two different reasons that storage
+  /// deliberately does not distinguish — the same shape `method` already has
+  /// above. AC 2.3 AC1 makes the categorisation **optional** on an intake
+  /// entry, so NULL there means "the patient did not say"; and it is
+  /// meaningless on stoma output, urine, weight or heart rate, so NULL there
+  /// means "not applicable". Which one a given NULL is follows from `code`.
+  ///
+  /// No foreign key to `value_set_members`, on purpose. Members are retired,
+  /// never deleted, so the referential-integrity argument is already
+  /// satisfied by that rule; and a FK would make this column's domain depend
+  /// on a set an admin edits, so retiring a member would start failing writes
+  /// of history that legitimately reference it.
+  fluidTypeCode String? @map("fluid_type_code")
+
   /// The IANA time zone the device reported at the moment of entry
   /// (`America/Chicago`), and the calendar date that instant fell on in
   /// that zone (ADR-0016).
@@ -532,12 +553,132 @@ model Observation {
 /// ...) get a new enum value in an additive migration when their table
 /// lands, same as everything else in this sprint's "deliberately partial"
 /// scope.
+/// A logged meal (SRS §3.1, AC 2.4) — an **app-native** entity, not FHIR.
+///
+/// CLAUDE.md is explicit that this is the accepted trade-off of the
+/// Postgres-over-FHIR-native decision: "App-native entities (appliance
+/// changes, leak events, peristomal skin condition, reminders, Quick-Add
+/// templates) have no FHIR equivalent and are ordinary relational tables."
+/// A meal is one of those. FHIR has `NutritionIntake`, but it models a
+/// prescribed or administered nutritional product with quantities and
+/// nutrients — not "a free-text description of what someone ate, with a
+/// relative size" — so mapping onto it would assert a conformance this row
+/// does not have. The FHIR export module (P5) must NOT emit these as
+/// `NutritionIntake`.
+///
+/// It is nonetheless a **synced** entity, so it carries the full ADR-0001
+/// column set — `clientUpdatedAt` for last-write-wins, `serverSequence` for
+/// the delta cursor, `deletedAt` for tombstones — identical in meaning to
+/// `Observation`'s. Anything that differs here from that model is a bug.
+model Meal {
+  id String @id @map("id") @db.Uuid
+
+  patientId String  @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  /// AC 2.4 AC1's free-text description. Optional: a patient who only taps
+  /// quick-tags has still logged a meal, and forcing prose would make the
+  /// tags pointless.
+  ///
+  /// Bounded at 2000 characters. Not a clinical limit — it is an unbounded
+  /// patient-supplied string reaching a database, and `Patient.oidcSubject`
+  /// records the same reasoning for the same reason.
+  description String? @map("description") @db.VarChar(2000)
+
+  /// AC 2.4 AC2. Mandatory, and therefore NOT NULL with no default: a
+  /// default would record a size the patient never chose, and there is no
+  /// way to tell that apart afterwards from a deliberate answer — the same
+  /// argument `entered_measurement_system` (ADR-0012) and the
+  /// Measured/Estimated toggle both make.
+  size MealSize @map("size")
+
+  /// AC 2.4 AC1's optional quick-tags, held as the `meal_tag` value set's
+  /// stable member codes.
+  ///
+  /// An array column rather than a join table, deliberately. The join table
+  /// is the better relational shape in isolation, but tags would then be rows
+  /// with their own identity that must sync alongside the meal — and
+  /// docs/sync-contract.md has no concept of a nested or dependent entity, so
+  /// it would mean either a second synced entity type whose ordering relative
+  /// to its parent is undefined, or a bespoke exception to the wire contract.
+  /// Carrying them in the meal's own payload keeps one entity, one operation,
+  /// one conflict resolution.
+  ///
+  /// The trade is no referential integrity to `value_set_members`. That is
+  /// the same trade `Observation.fluidTypeCode` makes, for the same reason:
+  /// members are retired and never deleted, so a stored code always resolves.
+  /// GIN-indexed below, because "which meals carry this tag" is the dietary
+  /// trigger analysis the tags exist for (SRS §3.1).
+  tagCodes String[] @map("tag_codes")
+
+  /// The clinical moment — when the meal was eaten, not when it was logged.
+  effectiveDatetime DateTime @map("effective_datetime") @db.Timestamptz(3)
+
+  /// ADR-0016, identical in meaning to `Observation`'s pair: the zone the
+  /// device reported at entry, and the calendar date that instant fell on in
+  /// that zone. Derived once at write time from the shared helper, never
+  /// re-derived from a mutable profile or the reader's timezone.
+  enteredTimezone String   @map("entered_timezone") @db.VarChar(64)
+  localDate       DateTime @map("local_date") @db.Date
+
+  /// See Profile.clientUpdatedAt. Last-write-wins input; never createdAt.
+  clientUpdatedAt DateTime @map("client_updated_at") @db.Timestamptz(3)
+
+  /// The shared cross-table `sync_sequence`, so a delta cursor is comparable
+  /// across entity types rather than only within this one.
+  serverSequence BigInt    @unique @default(0) @map("server_sequence")
+  /// Tombstone (ADR-0001): NULL = alive. Never a hard DELETE.
+  deletedAt      DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([patientId, effectiveDatetime])
+  @@index([patientId, serverSequence])
+  /// The daily-aggregate index, matching `observations` — meals are grouped
+  /// by the patient's local day everywhere they are shown.
+  @@index([patientId, localDate])
+  /// The dietary-trigger-analysis index (SRS §3.1). GIN, not btree: the query
+  /// is array containment ("which meals carry this tag"), which btree cannot
+  /// serve. Named explicitly so the schema and the migration agree — Prisma's
+  /// default name would be `meals_tag_codes_idx`, and a name mismatch shows up
+  /// as permanent drift rather than as an error.
+  @@index([tagCodes], type: Gin, map: "meals_tag_codes_gin_idx")
+  @@map("meals")
+}
+
 enum SyncEntityType {
   PROFILE
   OBSERVATION
   EFFECTIVE_RANGE
+  /// P3.S1. A new `entityType` is additive under docs/sync-contract.md §8 and
+  /// needs no version bump — but a client that does not know it must never be
+  /// SENT one, which is why the delta endpoint filters by what the requesting
+  /// client can accept rather than returning everything it holds.
+  MEAL
 
   @@map("sync_entity_type")
+}
+
+/// AC 2.4 AC2's mandatory relative size modifier.
+///
+/// A relative scale, not a quantity: the AC asks for Small/Snack,
+/// Medium/Standard, Large/Heavy, which is what a patient can actually judge
+/// about a meal they have just eaten. Deliberately NOT grams or calories —
+/// this application does not ask patients to weigh food, and a numeric column
+/// here would invite someone to start.
+///
+/// An enum rather than a value set because it is a fixed ordinal scale the
+/// application reasons about, not an admin-editable list. Adding a step would
+/// change what every stored value means relative to the others, which is a
+/// migration and a clinical decision, not configuration (contrast
+/// `meal_tag`, which IS a value set precisely because it grows).
+enum MealSize {
+  SMALL
+  MEDIUM
+  LARGE
+
+  @@map("meal_size")
 }
 
 enum SyncOperationType {
@@ -839,6 +980,29 @@ model ValueSetMember {
   status ValueSetMemberStatus @default(ACTIVE) @map("status")
 
   sortOrder Int       @default(0) @map("sort_order")
+
+  /// An optional quantity carried BY the member itself, in `numericUnit`.
+  ///
+  /// Added at P3.S1 for AC 2.3 AC2's "configurable quick-select buttons for
+  /// standard container sizes": a 250 mL glass is a member whose *code* is a
+  /// stable identifier (`glass_250`) and whose *volume* is data an admin can
+  /// change. Neither `code` nor `sortOrder` can hold it — encoding the number
+  /// into the code would make changing the volume a code change, and a code
+  /// change is what CLAUDE.md forbids ("No admin action may change what a past
+  /// entry means").
+  ///
+  /// Nullable because most value sets have no quantity at all: a fluid type or
+  /// a meal tag is a category, not a measurement. `DECIMAL(12,4)` matches
+  /// `observations.value_quantity_value`, so a container size can be written
+  /// into that column without a representability question (ADR-0005).
+  ///
+  /// `numericUnit` is stored beside it rather than assumed from the set,
+  /// because the same reasoning that made `ThresholdsService` verify a
+  /// threshold's `unit` applies here: an admin editing 250 mL to 250 with the
+  /// unit left as something else is an administratively plausible mistake, and
+  /// a value with no unit beside it is one a reader has to guess about.
+  numericValue Decimal? @map("numeric_value") @db.Decimal(12, 4)
+  numericUnit  String?  @map("numeric_unit")
   retiredAt DateTime? @map("retired_at") @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)

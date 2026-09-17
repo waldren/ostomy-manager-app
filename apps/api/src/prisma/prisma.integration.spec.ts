@@ -114,6 +114,11 @@ const EXPECTED_TABLE_GRANTS: Readonly<Record<string, readonly string[]>> = {
   // Tombstoned synced entities: no DELETE (S6).
   profiles: ['INSERT', 'SELECT', 'UPDATE'],
   observations: ['INSERT', 'SELECT', 'UPDATE'],
+  // P3.S1. App-native but synced, so it follows the same tombstone
+  // discipline as the three above: a meal is never hard-deleted, because a
+  // DELETE produces no audit row and no tombstone for the delta cursor to
+  // propagate, and a second device would keep it forever.
+  meals: ['INSERT', 'SELECT', 'UPDATE'],
   effective_ranges: ['INSERT', 'SELECT', 'UPDATE'],
   // Retired-never-deleted (S5): no DELETE.
   value_set_members: ['INSERT', 'SELECT', 'UPDATE'],
