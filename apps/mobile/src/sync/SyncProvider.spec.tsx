@@ -82,6 +82,7 @@ function completedCycle(overrides: Partial<SyncCycleResult> = {}): SyncCycleResu
     stoppedBecause: { kind: 'completed' },
     unbuildable: [],
     quarantined: 0,
+    thresholdsRefreshed: true,
     ...overrides,
   };
 }
@@ -96,7 +97,7 @@ function Probe() {
 // and after cleanup has unmounted the tree, so no effect ever fires.
 async function renderProvider(): Promise<void> {
   await render(
-    <SyncProvider client={{ push: jest.fn(), delta: jest.fn() }}>
+    <SyncProvider client={{ push: jest.fn(), delta: jest.fn(), thresholds: jest.fn() }}>
       <Probe />
     </SyncProvider>,
   );

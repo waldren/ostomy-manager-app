@@ -80,7 +80,17 @@ const GENERATOR_CONFIG: AppConfig = {
 };
 
 export async function emitOpenApiDocument(outputPath: string): Promise<void> {
-  const app = await NestFactory.create(AppModule.register(GENERATOR_CONFIG), { logger: false });
+  // `abortOnError: false` matters as much as `logger: false` here, and for
+  // the opposite reason. Nest's default is to log a bootstrap failure and
+  // then terminate the process itself — so with the logger off, a broken
+  // module graph (a controller whose guard's providers are not in scope, say)
+  // exits 1 having printed NOTHING, and the `catch` below never runs. Turning
+  // the abort off makes `app.init()` reject, so the error reaches that
+  // handler and is printed.
+  const app = await NestFactory.create(AppModule.register(GENERATOR_CONFIG), {
+    logger: false,
+    abortOnError: false,
+  });
   try {
     app.setGlobalPrefix('api/v1');
     await app.init();

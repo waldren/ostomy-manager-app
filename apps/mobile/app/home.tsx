@@ -15,32 +15,52 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { Redirect } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { Redirect, router, useLocalSearchParams } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useAuth } from '../src/auth/AuthContext';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { countByStatus } from '../src/db/repositories/syncQueueRepository';
+import { tryCountUnsyncedEntries } from '../src/db/unsyncedCount';
+import { useSyncStatus } from '../src/sync/SyncProvider';
 import { BodyText } from '../src/ui/BodyText';
 import { Button } from '../src/ui/Button';
 import { Heading } from '../src/ui/Heading';
 import { Screen } from '../src/ui/Screen';
 
 /**
- * The placeholder home screen this sprint's exit criteria calls for.
- * Deliberately not the Add Output screen — what it renders beyond a welcome
- * message is one honest signal that the local database and sync queue are
- * real and live.
+ * Home. Entry point to the Add Output screen and the correction inbox, plus
+ * one honest signal about what has and has not been sent.
+ *
+ * ## Sign-out asks first when entries would be lost
+ *
+ * Sign-out purges the local database (ADR-0014) — file deleted, SQLCipher
+ * key destroyed — so anything unsent goes with it. `AuthContext` has carried
+ * a "KNOWN GAP" comment about this since P2.S2a, deferred until a sync
+ * worker existed to make "wait and it will send" true advice. It does now.
+ *
+ * The prompt is a confirmation, not a block: a patient handing their phone
+ * to someone else must always be able to sign out, immediately, and the
+ * destructive option is right there. What changes is that they are told the
+ * cost first, with a number rather than "you may lose data" — they cannot
+ * see the queue, so a vague warning is not something they can act on.
  */
 export default function Home(): React.JSX.Element {
   const { phase, signOut } = useAuth();
-  const { t } = useTranslation('mobile');
+  const { t } = useTranslation(['mobile', 'common']);
   const database = useDatabaseState();
-  const [pendingCount, setPendingCount] = useState<number | undefined>(undefined);
+  const { lastRejected } = useSyncStatus();
+  const params = useLocalSearchParams<{ saved?: string }>();
 
-  useEffect(() => {
-    if (database.status !== 'ready') return;
+  const [pendingCount, setPendingCount] = useState<number | undefined>(undefined);
+  const [rejectedCount, setRejectedCount] = useState(0);
+  const [confirmingSignOut, setConfirmingSignOut] = useState<number | undefined | 'unknown'>(
+    undefined,
+  );
+
+  const refreshCounts = useCallback(() => {
+    if (database.status !== 'ready') return () => undefined;
     let cancelled = false;
     countByStatus(database.executor)
       .then((counts) => {
@@ -49,19 +69,39 @@ export default function Home(): React.JSX.Element {
         // locally for correction rather than dropping it — so omitting it
         // would report "everything sent" while the patient's entries sat in
         // a correction inbox.
-        if (!cancelled) setPendingCount(counts.queued + counts.inFlight + counts.rejected);
+        if (cancelled) return;
+        setPendingCount(counts.queued + counts.inFlight + counts.rejected);
+        setRejectedCount(counts.rejected);
       })
       .catch(() => {
-        // Leaves the count unknown rather than crashing the screen. The
-        // previous code had no catch at all, so a purge-invalidated
-        // executor produced an unhandled rejection and the line silently
-        // vanished with no indication anything had gone wrong.
+        // Leaves the count unknown rather than crashing the screen.
         if (!cancelled) setPendingCount(undefined);
       });
     return () => {
       cancelled = true;
     };
   }, [database]);
+
+  // `lastRejected` in the dependency list is what refreshes these counts
+  // after a sync cycle settles, without this screen polling.
+  useEffect(() => refreshCounts(), [refreshCounts, lastRejected]);
+
+  const beginSignOut = useCallback(async () => {
+    if (database.status !== 'ready') {
+      // No readable database means no way to know what would be lost.
+      // "Unknown" is its own answer and must not render as zero.
+      setConfirmingSignOut('unknown');
+      return;
+    }
+    const unsynced = await tryCountUnsyncedEntries(database.executor);
+    if (unsynced === 0) {
+      // Nothing to lose; no prompt. A confirmation with nothing behind it
+      // trains people to dismiss the one that matters.
+      void signOut();
+      return;
+    }
+    setConfirmingSignOut(unsynced ?? 'unknown');
+  }, [database, signOut]);
 
   if (phase !== 'authenticated') {
     return <Redirect href="/login" />;
@@ -70,31 +110,89 @@ export default function Home(): React.JSX.Element {
   if (database.status === 'error') {
     return (
       <Screen>
-        <Heading>{t('common.startupErrorHeading')}</Heading>
-        <BodyText>{t('common.startupErrorBody')}</BodyText>
-        <Button label={t('common.startupErrorButton')} onPress={() => void signOut()} />
+        <Heading>{t('mobile:common.startupErrorHeading')}</Heading>
+        <BodyText>{t('mobile:common.startupErrorBody')}</BodyText>
+        <Button label={t('mobile:common.startupErrorButton')} onPress={() => void signOut()} />
+      </Screen>
+    );
+  }
+
+  if (confirmingSignOut !== undefined) {
+    return (
+      <Screen>
+        <Heading>{t('mobile:signOut.unsyncedHeading')}</Heading>
+        <BodyText tone="error">
+          {confirmingSignOut === 'unknown'
+            ? t('mobile:signOut.checkFailedBody')
+            : t('mobile:signOut.unsyncedBody', { count: confirmingSignOut })}
+        </BodyText>
+        {/*
+          The non-destructive option is first, so it is the one reached first
+          by a screen reader and by a thumb. Sign-out remains available and
+          unconditional — this is a confirmation, never a block.
+        */}
+        <Button
+          label={t('mobile:signOut.waitButton')}
+          onPress={() => {
+            setConfirmingSignOut(undefined);
+          }}
+        />
+        <Button
+          label={t('mobile:signOut.confirmButton')}
+          variant="destructive"
+          hint={t('mobile:home.signOutHint')}
+          onPress={() => void signOut()}
+        />
       </Screen>
     );
   }
 
   return (
     <Screen>
-      <Heading>{t('home.welcomeHeading')}</Heading>
-      <BodyText>{t('home.placeholderBody')}</BodyText>
+      <Heading>{t('mobile:home.welcomeHeading')}</Heading>
+
+      {params.saved === '1' ? (
+        // §9.5: this confirms the LOCAL write, which has already committed.
+        // `accessibilityLiveRegion` on the surrounding text is what makes it
+        // announced rather than silently appearing above the fold.
+        <BodyText tone="muted">{t('common:entry.savedConfirmation')}</BodyText>
+      ) : null}
+
+      <Button
+        label={t('mobile:home.addOutputButton')}
+        onPress={() => {
+          router.push('/add-output');
+        }}
+      />
+
+      {rejectedCount > 0 ? (
+        <>
+          <BodyText tone="error">
+            {t('mobile:home.correctionsCount', { count: rejectedCount })}
+          </BodyText>
+          <Button
+            label={t('mobile:home.correctionsButton')}
+            variant="secondary"
+            onPress={() => {
+              router.push('/corrections');
+            }}
+          />
+        </>
+      ) : null}
 
       {pendingCount !== undefined ? (
         <BodyText tone="muted">
           {pendingCount === 0
-            ? t('home.pendingCountNone')
-            : t('home.pendingCount', { count: pendingCount })}
+            ? t('mobile:home.pendingCountNone')
+            : t('mobile:home.pendingCount', { count: pendingCount })}
         </BodyText>
       ) : null}
 
       <Button
-        label={t('home.signOutButton')}
-        onPress={() => void signOut()}
+        label={t('mobile:home.signOutButton')}
+        onPress={() => void beginSignOut()}
         variant="destructive"
-        hint={t('home.signOutHint')}
+        hint={t('mobile:home.signOutHint')}
       />
     </Screen>
   );

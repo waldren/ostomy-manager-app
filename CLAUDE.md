@@ -12,13 +12,17 @@ Audit logging exists and is real (P1.S5): a **global** `AuditInterceptor`, an `@
 
 See `apps/api/README.md`.
 
-**The two clients exist, and neither has a clinical entry screen yet.**
+**The two clients exist. `apps/mobile` has the first clinical entry screen; `apps/web` still has none.**
 
 `apps/web` (P2.S3) is the online-only React + Vite SPA: OIDC Authorization Code + PKCE, and one view of a day's stoma output — chart, accessible table, and Daily Net Fluid Balance rendered as an explained empty state rather than a number, because intake logging does not land until P3. It renders the **signed-in account's own** records: `GET /api/v1/observations` takes no patient identifier anywhere, so there is no physician identity and no patient-selection path, and the copy deliberately claims neither. SRS §3.5 Epic 5's share link is the intended route for a physician reader and does not exist yet.
 
-`apps/mobile` (P2.S2a) is the offline substrate only — local SQLite, a `sync_queue` nothing drains yet, and OIDC + biometric auth. Being the one place PHI rests on hardware outside the covered entity's control, it carries device-side controls the server's protections do not reach: the local store is SQLCipher-encrypted (ADR-0014) and bound to one OIDC subject, so a different patient signing in destroys it — without that, the next person on a shared phone reads the previous patient's diary, and their queued rows push under the new identity, putting a **false author on an immutable audit row**. Biometric unlock stays fully offline, but an enrolment change invalidates the stored refresh token (ADR-0015). Two gaps are recorded rather than closed: iOS backup exclusion is unimplemented (`expo-file-system@57` removed the API), and sign-out destroys unsynced queued entries — which must be fixed when the sync worker lands.
+`apps/mobile` (P2.S2a, P2.S2b) is the offline-first patient app: local SQLite, OIDC + biometric auth, the Add Output screen, the background sync worker, and the correction inbox. Being the one place PHI rests on hardware outside the covered entity's control, it carries device-side controls the server's protections do not reach: the local store is SQLCipher-encrypted (ADR-0014) and bound to one OIDC subject, so a different patient signing in destroys it — without that, the next person on a shared phone reads the previous patient's diary, and their queued rows push under the new identity, putting a **false author on an immutable audit row**. Biometric unlock stays fully offline, but an enrolment change invalidates the stored refresh token (ADR-0015). iOS backup exclusion remains unimplemented (`expo-file-system@57` removed the API). Sign-out still purges everything, but it now **warns with a count first** when entries are unsent, which is the gap P2.S2a recorded.
 
-**None of the mobile device-side controls are verified on hardware.** jest runs no keychain and cannot simulate biometric enrolment invalidation, so a green `pnpm verify` proves nothing about them.
+`apps/mobile/src/sync/` is the worker (P2.S2b). `docs/sync-contract.md` governs it and every module cites it by section; read that document before changing any of them. Three things there are easy to undo by accident: the push batch is **split at each clock-correction discontinuity** (§3.2) without which one NTP correction strands a patient's whole backlog behind a `400` nothing may retry; a `5xx`, a network failure and an **undecodable result** all mean *unknown fate* and go back on the queue, never to the correction inbox (§9.3); and the delta cursor advances **only** from a delta response (§3.6/§9.4). A §6.1 protocol error that survives isolation down to one operation is quarantined so the rest of the queue drains — see `markQuarantined` for why that reuses the `rejected` status rather than adding a fourth.
+
+**The generated API client cannot express the sync contract's discriminated unions** — OpenAPI flattens them, so `@ostomy/core/api-client`'s `SyncOperationResult` has every union member optional. `apps/mobile/src/sync/responseDecoding.ts` is the decode boundary that restores the invariants; never consume those generated sync types directly.
+
+**None of the mobile device-side controls are verified on hardware.** jest runs no keychain and cannot simulate biometric enrolment invalidation, so a green `pnpm verify` proves nothing about them. The same caveat covers the entry screen's rendering: the logic is unit-tested, but nothing in CI runs it on a device or a simulator.
 
 `packages/ui` (P2.S3) holds the shared accessible primitives and design tokens both SPAs build on. Its tokens are asserted against `styles.css` by a completeness test, and its contrast ratios are computed rather than claimed — every hand-written ratio in the first version was wrong, all understated.
 
@@ -94,7 +98,9 @@ Two tiers, defined once in `packages/core`: hard block for structurally impossib
 
 Client-side validation, including offline on mobile, is a UX affordance only. Every rule is re-enforced server-side on write **and on every synced operation** — a payload from an offline device is untrusted input. A queued operation rejected server-side is retained locally and surfaced for correction, never dropped.
 
-Numeric thresholds are admin-managed configuration, not constants in code.
+Numeric thresholds are admin-managed configuration, not constants in code. **`GET /api/v1/thresholds` (P2.S2b) is how a client gets them** — patient-guarded, no PHI, no audit row. `apps/mobile` caches the response in `validation_thresholds_cache` so it can keep validating offline, and that table is deliberately **unseeded**: a default there is a hardcoded threshold wearing a database costume, so an unfetched cache blocks the save rather than validating against invented numbers.
+
+`packages/core`'s `MAX_REPRESENTABLE_VALUE_ML` / `MAX_VALUE_DECIMAL_PLACES` are *not* thresholds — they are the canonical column's shape (`DECIMAL(12,4)`). A client converting an imperial entry **must round to that scale**: `ozToMl(80)` is `2365.882365`, and un-rounded it trips Tier 1's precision rule, so every imperial entry is blocked with a message about decimal places the patient never typed.
 
 ## Non-negotiable constraints
 

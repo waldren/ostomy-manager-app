@@ -32,6 +32,7 @@ function cycle(stoppedBecause: SyncStopReason): SyncCycleResult {
     stoppedBecause,
     unbuildable: [],
     quarantined: 0,
+    thresholdsRefreshed: true,
   };
 }
 
