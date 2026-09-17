@@ -55,6 +55,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/config/package.json packages/config/package.json
 COPY packages/core/package.json packages/core/package.json
+COPY packages/seed/package.json packages/seed/package.json
 RUN pnpm install --frozen-lockfile
 
 # --- build -----------------------------------------------------------------
@@ -81,8 +82,15 @@ RUN pnpm install --frozen-lockfile
 FROM deps AS build
 COPY packages/config packages/config
 COPY packages/core packages/core
+# `@ostomy/seed` is a devDependency of apps/api (ADR-0009: never in a
+# production build). It still has to be present and built HERE, because the
+# `migrate` stage below installs dev dependencies and runs the seeder from
+# this same `dist`. `prod-deps` uses `--prod` and drops it, which is the
+# mechanism that keeps it out of the runtime image.
+COPY packages/seed packages/seed
 COPY apps/api apps/api
 RUN pnpm --filter @ostomy/core build
+RUN pnpm --filter @ostomy/seed build
 RUN pnpm --filter @ostomy/api build
 
 # --- prod-deps ---------------------------------------------------------------

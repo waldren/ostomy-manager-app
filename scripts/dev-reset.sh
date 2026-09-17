@@ -45,17 +45,21 @@ until [[ "$(docker inspect --format='{{.State.Health.Status}}' ostomy-dev-api 2>
 done
 echo "==> api is healthy."
 
-# --- Seed hook ---------------------------------------------------------------
-# packages/seed (design-specs/planning/v1-implementation-plan.md, P2.S4) does
-# not exist yet, so there is nothing to invoke here — the database is empty
-# after migration. When it lands, call its deterministic, scenario-based
-# generator here (ADR-0009), e.g.:
+# --- Seed ---------------------------------------------------------------------
+# packages/seed (ADR-0009, P2.S4). Deterministic and timestamped relative to
+# "now", so a bug reproduced against seeded data reproduces exactly and the
+# dataset never ages into irrelevance (docs/deployment-development.md).
 #
-#   compose exec -T api node dist/seed/run.js --all-scenarios
+# Run from the `migrate` image, not `api`: that image installs devDependencies,
+# and `@ostomy/seed` is deliberately one of them so `pnpm deploy --prod` keeps
+# it out of the runtime image entirely. `compose run --rm` rather than `exec`
+# because `migrate` is a one-shot that has already exited by this point.
 #
-# Deterministic (fixed RNG seed) and timestamped relative to "now", so a bug
-# reproduced against seeded data reproduces exactly and the dataset never
-# ages into irrelevance (docs/deployment-development.md "Seed data").
-echo "==> No seed generator yet (packages/seed lands at P2.S4, ADR-0009) — database is empty after migration."
+# DEV_SEED_OIDC_SUBJECT is the `sub` claim the seeded patient answers to. It
+# must match the subject your client's tokens carry, or every authenticated
+# request is PATIENT_NOT_PROVISIONED against a database that looks full.
+SEED_SUBJECT="${DEV_SEED_OIDC_SUBJECT:-dev-patient-1}"
+echo "==> Seeding stable-ileostomy for OIDC subject '${SEED_SUBJECT}'..."
+compose run --rm --no-deps -e ALLOW_SYNTHETIC_SEED=true migrate node dist/seed/run.js   --scenario stable-ileostomy --subject "${SEED_SUBJECT}"
 
 echo "==> Reset complete."

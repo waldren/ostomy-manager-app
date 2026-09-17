@@ -15,6 +15,7 @@
     "openapi:generate": "prisma generate && tsx src/openapi/emit-openapi.ts",
     "api-client:generate": "pnpm run openapi:generate && node scripts/generate-api-client.cjs",
     "api-client:check": "pnpm run openapi:generate && node scripts/generate-api-client.cjs --check",
+    "seed": "tsx src/seed/run.ts",
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=.env dist/main.js",
     "start:dev": "prisma generate && tsx watch --env-file=.env src/main.ts",
@@ -43,6 +44,7 @@
   },
   "//dependencies": "`@prisma/client` and `@prisma/adapter-pg` stay ordinary dependencies: the generated client imports `@prisma/client/runtime/client` directly at runtime (verified — see prisma/schema.prisma's generator-block comment; an earlier comment here claiming otherwise was wrong and has been removed), so pruning either would break `api` itself, not just the CLI. `prisma` (the CLI) and `dotenv` moved back to devDependencies below (CI-audit follow-up to P1.S3): both were briefly promoted to dependencies so `prisma migrate deploy` could run inside the same pruned, prod-only image `api` runs from, but that made `pnpm audit --audit-level=high --prod` — the blocking CI gate — fail on `mysql2`/`deepmerge-ts` advisories reachable only through `prisma`'s own dependency tree, which the running API never executes. `migrate` now has its own Dockerfile stage/image (infra/docker/api.Dockerfile's `migrate-deps` -> `migrate`) built WITHOUT `--prod`, so it still gets `prisma` and `dotenv` from devDependencies. Reclassifying `prisma`/`dotenv` here was NOT by itself enough to keep either the runtime image or the CI audit gate clean, though: `@prisma/client` declares `prisma` as an `optional: true` peerDependency, and pnpm auto-links it (bringing its whole tree — `mysql2`, `postgres`, `@prisma/engines`, `@prisma/dev`, `@prisma/studio-core` — along) whenever `prisma` resolves anywhere in this workspace's shared lockfile, which it must, for this very devDependency and for `migrate` to work. Both `infra/docker/api.Dockerfile`'s `prod-deps` stage and `.github/workflows/pr.yml`'s blocking audit step add `--no-optional` for exactly this reason — see each one's own comment. `--prod` reclassification here is necessary but was not, on its own, sufficient.",
   "devDependencies": {
+    "@ostomy/seed": "workspace:*",
     "@nestjs/testing": "^12.0.1",
     "@ostomy/config": "workspace:*",
     "@testcontainers/postgresql": "^12.1.0",

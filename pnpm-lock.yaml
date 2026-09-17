@@ -81,6 +81,9 @@ importers:
       '@ostomy/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@ostomy/seed':
+        specifier: workspace:*
+        version: link:../../packages/seed
       '@testcontainers/postgresql':
         specifier: ^12.1.0
         version: 12.1.0
@@ -336,6 +339,22 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.2.4
         version: 3.2.7(vitest@3.2.7(@types/node@24.13.3)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@1.8.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.0))
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@1.8.0))(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.0)
+
+  packages/seed:
+    dependencies:
+      '@ostomy/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@ostomy/config':
+        specifier: workspace:*
+        version: link:../config
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
