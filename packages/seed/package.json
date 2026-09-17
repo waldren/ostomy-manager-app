@@ -1,0 +1,33 @@
+{
+  "name": "@ostomy/seed",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "Deterministic synthetic development seed data (ADR-0009). Generates and validates scenarios; never writes to a database itself and has no production code path.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@ostomy/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@ostomy/config": "workspace:*",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

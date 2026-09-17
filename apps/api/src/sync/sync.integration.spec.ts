@@ -168,7 +168,10 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
         `INSERT INTO validation_thresholds (id, threshold_key, tier, value, unit, updated_at)
          VALUES
            (gen_random_uuid(), $1, 'TIER_2_SOFT_WARNING', $3, 'mL', now()),
-           (gen_random_uuid(), $2, 'OPERATIONAL', $4, 'seconds', now())`,
+           (gen_random_uuid(), $2, 'OPERATIONAL', $4, 'seconds', now())
+         ON CONFLICT (threshold_key) DO UPDATE SET
+           tier = EXCLUDED.tier, value = EXCLUDED.value,
+           unit = EXCLUDED.unit, updated_at = EXCLUDED.updated_at`,
         [
           THRESHOLD_KEY.STOMA_OUTPUT_SOFT_WARNING_ML,
           THRESHOLD_KEY.SYNC_CLOCK_SKEW_ALLOWANCE_SECONDS,
