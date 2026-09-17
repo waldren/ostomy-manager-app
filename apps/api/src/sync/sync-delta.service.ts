@@ -293,6 +293,7 @@ function toChange(row: Observation): SyncDeltaChange {
       effectiveDateTime: resource.effectiveDateTime,
       method: resource.method,
       enteredMeasurementSystem: resource.enteredMeasurementSystem,
+      enteredTimezone: resource.enteredTimezone,
     },
   });
 }

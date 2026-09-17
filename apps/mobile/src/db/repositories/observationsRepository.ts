@@ -28,6 +28,10 @@ export interface NewLocalObservation {
   readonly method: string | null;
   readonly status: string;
   readonly enteredMeasurementSystem: LocalObservation['enteredMeasurementSystem'];
+  /** IANA zone read from the device at entry (ADR-0016). */
+  readonly enteredTimezone: string;
+  /** `YYYY-MM-DD` in that zone. Derived from the same shared helper the server uses, so the two cannot group a day differently. */
+  readonly localDate: string;
   readonly clientUpdatedAt: string;
 }
 
@@ -47,8 +51,9 @@ export async function insertObservation(
     `INSERT INTO observations (
       id, resource_type, code, value_quantity_value, value_quantity_unit,
       effective_datetime, method, status, entered_measurement_system,
+      entered_timezone, local_date,
       client_updated_at, server_sequence, deleted_at, created_at, updated_at
-    ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?);`,
+    ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?);`,
     [
       fields.id,
       fields.code,
@@ -58,6 +63,8 @@ export async function insertObservation(
       fields.method,
       fields.status,
       fields.enteredMeasurementSystem,
+      fields.enteredTimezone,
+      fields.localDate,
       fields.clientUpdatedAt,
       now,
       now,

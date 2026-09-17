@@ -27,6 +27,24 @@ export function now(): Date {
   return new Date();
 }
 
+/**
+ * The device's current IANA time zone (ADR-0016).
+ *
+ * Read at entry time and stored on the row, never re-derived later: a
+ * patient who travels or relocates would otherwise have their whole
+ * history regrouped onto days they did not live, which is the same
+ * mutable-source trap ADR-0012 describes for the measurement system.
+ *
+ * Falls back to UTC if the runtime cannot report one. That is a real
+ * possibility on a misconfigured device, and the alternative — refusing the
+ * entry — would lose a patient's data over a device setting they cannot
+ * see. UTC is wrong-but-recorded rather than absent, and the row still says
+ * which zone it was grouped by.
+ */
+export function deviceTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
 /** RFC 3339, UTC, exactly three fractional digits — `docs/sync-contract.md` §7.3's wire form for every timestamp. `Date#toISOString()` already produces this exact shape. */
 export function toWireInstant(date: Date): string {
   return date.toISOString();

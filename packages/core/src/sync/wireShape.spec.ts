@@ -61,6 +61,7 @@ const SYNTHETIC_PAYLOAD = {
   effectiveDateTime: '2026-09-07T14:00:00.000Z',
   method: null,
   enteredMeasurementSystem: 'metric',
+  enteredTimezone: 'America/Chicago',
 } as const;
 
 describe('§5.2 — a tombstone carries no payload, at runtime', () => {

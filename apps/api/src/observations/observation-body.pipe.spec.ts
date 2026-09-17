@@ -32,6 +32,7 @@ const VALID = {
   effectiveDateTime: '2026-09-07T14:00:00.000Z',
   method: null,
   enteredMeasurementSystem: 'metric',
+  enteredTimezone: 'America/Chicago',
 };
 
 function rejectionFor(body: unknown): ObservationRejectedException {

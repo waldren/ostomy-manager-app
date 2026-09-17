@@ -31,6 +31,7 @@ function observation(overrides: Partial<Observation>): Observation {
     effectiveDateTime: '2026-09-11T08:00:00.000Z',
     method: null,
     enteredMeasurementSystem: 'metric',
+    enteredTimezone: 'America/Chicago',
     ...overrides,
   };
 }

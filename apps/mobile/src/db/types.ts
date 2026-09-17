@@ -36,6 +36,8 @@ export interface ObservationRawRow {
   method: string | null;
   status: string;
   entered_measurement_system: string;
+  entered_timezone: string;
+  local_date: string;
   client_updated_at: string;
   server_sequence: string | null;
   deleted_at: string | null;
@@ -62,6 +64,10 @@ export interface LocalObservation {
   readonly method: string | null;
   readonly status: string;
   readonly enteredMeasurementSystem: MeasurementSystem;
+  /** IANA zone captured at entry (ADR-0016). */
+  readonly enteredTimezone: string;
+  /** `YYYY-MM-DD` in that zone. Not monotonic with `effectiveDatetime`. */
+  readonly localDate: string;
   readonly clientUpdatedAt: string;
   /** `null` until this device has seen a push receipt or delta row naming this entity's server sequence (P2.S2b). */
   readonly serverSequence: string | null;
@@ -82,6 +88,8 @@ export function decodeObservationRow(row: ObservationRawRow): LocalObservation {
     method: row.method,
     status: row.status,
     enteredMeasurementSystem: decodeMeasurementSystem(row.entered_measurement_system),
+    enteredTimezone: requireText(row.entered_timezone, 'entered_timezone'),
+    localDate: requireText(row.local_date, 'local_date'),
     clientUpdatedAt: row.client_updated_at,
     serverSequence: row.server_sequence,
     deletedAt: row.deleted_at,
@@ -98,6 +106,20 @@ export function decodeObservationRow(row: ObservationRawRow): LocalObservation {
  * the same "decode, don't cast" discipline `@ostomy/core/sync`'s
  * `toEntityId`/`toOperationId` use.
  */
+/**
+ * A NOT NULL text column, checked on the way out.
+ *
+ * Names the column and never the value: a decode failure here reaches a
+ * catch that must not log clinical data, and the column name is the only
+ * thing that helps anyway (CLAUDE.md, "never log PHI").
+ */
+function requireText(value: string, column: string): string {
+  if (typeof value === 'string' && value.length > 0) return value;
+  throw new TypeError(
+    `observations.${column} held no value (this app's own NOT NULL constraint should have made this impossible; the database file is likely corrupt or was written by an incompatible schema version).`,
+  );
+}
+
 function decodeMeasurementSystem(value: string): MeasurementSystem {
   if (value === 'metric' || value === 'imperial') return value;
   throw new TypeError(

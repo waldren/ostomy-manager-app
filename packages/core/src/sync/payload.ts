@@ -149,6 +149,25 @@ export interface ObservationAppNativeFields {
    * unrecoverable per row if stored wrongly.
    */
   readonly enteredMeasurementSystem: MeasurementSystem;
+
+  /**
+   * The IANA zone the device reported at entry (ADR-0016), never a UTC
+   * offset — an offset cannot express DST, so the patient's day would be
+   * computed wrongly for half the year.
+   *
+   * This is what every "daily" figure in the SRS groups by. The derived
+   * `localDate` is deliberately NOT on the wire: it is a pure function of
+   * this and `effectiveDateTime`, so a client-supplied one would be a
+   * second source of truth whose disagreement nothing would detect
+   * (`docs/sync-contract.md` §7.2).
+   *
+   * Client-asserted on the same footing as `enteredMeasurementSystem`
+   * (ADR-0012): only the device knows what the patient's clock said, and
+   * re-deriving it server-side is wrong precisely for a travelling patient.
+   * Permanent and unrecoverable per row — the instant alone does not say
+   * where the patient was.
+   */
+  readonly enteredTimezone: string;
 }
 
 export type ObservationSyncPayload = ObservationFhirFields & ObservationAppNativeFields;

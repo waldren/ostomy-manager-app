@@ -247,6 +247,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       effectiveDateTime: '2026-09-07T14:00:00.000Z',
       method: null,
       enteredMeasurementSystem: 'metric',
+      enteredTimezone: 'America/Chicago',
       ...overrides,
     };
   }
@@ -1170,6 +1171,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
         valueQuantity: { value: 350.5, unit: 'mL' },
         method: null,
         enteredMeasurementSystem: 'metric',
+        enteredTimezone: 'America/Chicago',
       });
       expect(response.body.changes[0].deleted).toBe(false);
     });
@@ -1279,9 +1281,11 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       await client.query(
         `INSERT INTO observations
            (id, patient_id, resource_type, code, value_quantity_value, value_quantity_unit,
-            effective_datetime, status, entered_measurement_system, client_updated_at, updated_at)
+            effective_datetime, status, entered_measurement_system, entered_timezone, local_date,
+            client_updated_at, updated_at)
          VALUES ($1, $2, 'Observation', $3, 350.5, 'mL',
-            TIMESTAMPTZ '2026-09-07T14:00:00.000Z', 'final', 'METRIC', now(), now())`,
+            TIMESTAMPTZ '2026-09-07T14:00:00.000Z', 'final', 'METRIC', 'America/Chicago',
+            DATE '2026-09-07', now(), now())`,
         [entityId, patientId, STOMA_OUTPUT_CODE],
       );
     }
@@ -1400,9 +1404,11 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
         await db.query(
           `INSERT INTO observations
              (id, patient_id, resource_type, code, value_quantity_value, value_quantity_unit,
-              effective_datetime, status, entered_measurement_system, client_updated_at, updated_at)
+              effective_datetime, status, entered_measurement_system, entered_timezone, local_date,
+              client_updated_at, updated_at)
            VALUES ($1, $2, 'Observation', $3, 350.5, 'mL',
-              TIMESTAMPTZ '2026-09-07T14:00:00.000Z', 'final', 'METRIC', now(), now())`,
+              TIMESTAMPTZ '2026-09-07T14:00:00.000Z', 'final', 'METRIC', 'America/Chicago',
+              DATE '2026-09-07', now(), now())`,
           [entityId, fresh.patientId, STOMA_OUTPUT_CODE],
         );
 
@@ -1560,6 +1566,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
               effectiveDateTime: '2026-09-07T14:00:00.000Z',
               method: null,
               enteredMeasurementSystem: 'metric',
+              enteredTimezone: 'America/Chicago',
             },
           },
         ],
