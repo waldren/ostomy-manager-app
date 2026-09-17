@@ -261,6 +261,45 @@ CREATE INDEX IF NOT EXISTS idx_observations_code_local_date
   ON observations (code, local_date);
 `;
 
+/**
+ * Migration 4: the cached validation thresholds.
+ *
+ * CLAUDE.md: "Numeric thresholds are admin-managed configuration, not
+ * constants in code", and `@ostomy/core/validation` enforces it structurally
+ * by taking them as an injected argument. This app must also validate
+ * **offline**, where no fetch is possible — so the values have to rest
+ * somewhere on the device, and this is that somewhere.
+ *
+ * A single row, like `sync_cursor`, for the same reason: "no thresholds yet"
+ * and "thresholds are X" being one state rather than two removes a
+ * special case from every reader.
+ *
+ * Deliberately NOT seeded with defaults. A seeded row is a hardcoded
+ * threshold wearing a database costume — it would satisfy the injection
+ * interface while making the rule it exists to enforce false, and an entry
+ * screen validating against invented numbers is worse than one that says it
+ * cannot validate yet. `fetched_at` being NULL is how a reader tells "never
+ * fetched" from "fetched and this is the answer", and the entry screen
+ * refuses to save against a never-fetched cache.
+ *
+ * Reaching the device is not a problem in practice: signing in requires a
+ * network round-trip, so by the time a patient can log anything this app has
+ * been online at least once.
+ *
+ * Stored as TEXT, not REAL, for migration 1's reason — these are decimal
+ * configuration values compared against clinical quantities, and a binary
+ * rounding step between "what the admin set" and "what the client compares
+ * against" is a difference nobody would ever look for.
+ */
+const MIGRATION_4_THRESHOLD_CACHE = `
+CREATE TABLE IF NOT EXISTS validation_thresholds_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  stoma_output_soft_warning_ml TEXT NOT NULL,
+  max_clock_skew_ms TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+`;
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
@@ -276,5 +315,10 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     version: 3,
     description: 'observations gain entered_timezone and local_date (ADR-0016)',
     sql: () => MIGRATION_3_ENTRY_ZONE_AND_LOCAL_DATE,
+  },
+  {
+    version: 4,
+    description: 'validation_thresholds_cache — admin-managed thresholds, available offline',
+    sql: () => MIGRATION_4_THRESHOLD_CACHE,
   },
 ];

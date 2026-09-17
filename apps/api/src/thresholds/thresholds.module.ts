@@ -17,11 +17,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { Module } from '@nestjs/common';
 
+import { PatientAuthModule } from '../auth/patient-auth.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { ThresholdsController } from './thresholds.controller';
 import { ThresholdsService } from './thresholds.service';
 
+/**
+ * `PatientAuthModule` is imported because `ThresholdsController` is guarded
+ * by `JwtAuthGuard`, which resolves its dependencies from that module —
+ * a controller with a guard whose providers are not in scope fails at
+ * `app.init()`, not at compile time.
+ */
 @Module({
-  imports: [PrismaModule],
+  imports: [PatientAuthModule, PrismaModule],
+  controllers: [ThresholdsController],
   providers: [ThresholdsService],
   exports: [ThresholdsService],
 })

@@ -50,11 +50,15 @@ function createClientDouble(): {
   deltaQueries: { since: string; limit?: string }[];
   pushResponses: (SyncPushResponse | Error)[];
   deltaResponses: (SyncDeltaResponse | Error)[];
+  thresholdResponses: ({ stomaOutputSoftWarningMl: number; maxClockSkewMs: number } | Error)[];
 } {
   const pushes: SyncPushRequest[] = [];
   const deltaQueries: { since: string; limit?: string }[] = [];
   const pushResponses: (SyncPushResponse | Error)[] = [];
   const deltaResponses: (SyncDeltaResponse | Error)[] = [];
+  const thresholdResponses: (
+    { stomaOutputSoftWarningMl: number; maxClockSkewMs: number } | Error
+  )[] = [];
 
   const port: SyncClientPort = {
     push: (request) => {
@@ -69,9 +73,16 @@ function createClientDouble(): {
         ({ changes: [], cursor: '0', hasMore: false } as unknown as SyncDeltaResponse);
       return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
     },
+    thresholds: () => {
+      const next = thresholdResponses.shift() ?? {
+        stomaOutputSoftWarningMl: 2000,
+        maxClockSkewMs: 300_000,
+      };
+      return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+    },
   };
 
-  return { port, pushes, deltaQueries, pushResponses, deltaResponses };
+  return { port, pushes, deltaQueries, pushResponses, deltaResponses, thresholdResponses };
 }
 
 function protocolError(status: number, code: string): ApiError {
@@ -570,6 +581,7 @@ describe('runSyncCycle', () => {
           order.push('delta');
           return client.port.delta(query);
         },
+        thresholds: () => client.port.thresholds(),
       };
 
       await runSyncCycle(deps({ client: port }));

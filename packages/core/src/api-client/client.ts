@@ -277,6 +277,30 @@ export function createApiClient(options: ApiClientOptions) {
           requiresAuth: true,
         }),
     },
+
+    thresholds: {
+      /**
+       * Read the active validation thresholds
+       *
+       * Deployment-wide validation configuration, so a client can run the same Tier 1 and Tier 2 rules at entry time that the server re-enforces on write. Carries no patient identifier and no PHI, and is therefore not an audit event (SRS §5.2). A client caches these and keeps validating offline from the cached copy; an admin change governs from the next successful fetch, with no application release (AC 13.2 AC2).
+       */
+      get: (): Promise<{
+        /** Canonical mL (ADR-0004). Tier 2 soft-warning bound for a single stoma-output entry. A warning that saves on confirmation, never a block (SRS §3.8). */
+        readonly stomaOutputSoftWarningMl: number;
+        /** Milliseconds, matching packages/core's VolumetricValidationThresholds.maxClockSkewMs. How far into the future an effectiveDateTime may fall before Tier 1 blocks it. The stored row is in seconds; the server converts, so the unit contract lives in one place. */
+        readonly maxClockSkewMs: number;
+      }> =>
+        request<{
+          /** Canonical mL (ADR-0004). Tier 2 soft-warning bound for a single stoma-output entry. A warning that saves on confirmation, never a block (SRS §3.8). */
+          readonly stomaOutputSoftWarningMl: number;
+          /** Milliseconds, matching packages/core's VolumetricValidationThresholds.maxClockSkewMs. How far into the future an effectiveDateTime may fall before Tier 1 blocks it. The stored row is in seconds; the server converts, so the unit contract lives in one place. */
+          readonly maxClockSkewMs: number;
+        }>({
+          method: 'GET',
+          path: `/api/v1/thresholds`,
+          requiresAuth: true,
+        }),
+    },
   };
 }
 

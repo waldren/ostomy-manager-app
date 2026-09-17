@@ -88,10 +88,29 @@ export const mobile = {
   'home.pendingCount_one': '1 entry has not been sent yet.',
   'home.pendingCount_other': '{{count}} entries have not been sent yet.',
   'home.pendingCountNone': 'Everything is saved and sent.',
+  'home.addOutputButton': 'Add a stoma entry',
+  'home.correctionsButton': 'Entries that need attention',
+  'home.correctionsCount_one': '1 entry needs your attention.',
+  'home.correctionsCount_other': '{{count}} entries need your attention.',
   'home.signOutButton': 'Sign out',
   // Sign-out is destructive and that was carried by colour alone (WCAG
   // 1.4.1) — a dark red button whose accessible name said only "Sign out".
   'home.signOutHint': 'This signs you out and removes your diary from this phone.',
+  // Sign-out destroys this phone's copy of the diary, and anything not yet
+  // sent goes with it (ADR-0014). Naming the number is what makes the
+  // choice a real one — "you may lose data" is not something a patient can
+  // act on, and they cannot see the queue.
+  'signOut.unsyncedHeading': 'Some entries have not been sent yet',
+  'signOut.unsyncedBody_one':
+    '1 entry is still only on this phone. Signing out removes it for good. Connect to the internet and wait a moment to send it first.',
+  'signOut.unsyncedBody_other':
+    '{{count}} entries are still only on this phone. Signing out removes them for good. Connect to the internet and wait a moment to send them first.',
+  'signOut.waitButton': 'Go back and wait',
+  'signOut.confirmButton': 'Sign out and delete them',
+  'signOut.checkFailedBody':
+    'We could not check whether everything has been sent. Signing out now may remove entries that have not gone to your care team.',
+
+  'navigation.backButton': 'Go back',
   'common.loadingLabel': 'Loading your diary',
   // The app can fail to open its local database — the keychain is
   // unavailable before the device's first unlock, and a migration can

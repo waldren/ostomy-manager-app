@@ -28,7 +28,7 @@ import {
   replaceObservation,
   tombstoneObservation,
 } from './repositories/observationsRepository';
-import { enqueueOperation } from './repositories/syncQueueRepository';
+import { enqueueOperation, removeOperation } from './repositories/syncQueueRepository';
 
 /**
  * The offline-first write path (SRS §4.5, CLAUDE.md "Offline-first write
@@ -314,4 +314,128 @@ export async function enqueueObservationDelete(
   });
 
   return { operationId };
+}
+
+/**
+ * Replaces a rejected operation with a corrected one — the correction
+ * inbox's write path (AC 13.1 AC4).
+ *
+ * ## Why this is not "retry"
+ *
+ * `docs/sync-contract.md` §9.2 forbids resubmitting a rejected operation
+ * unchanged, and §9.7 forbids reusing an operation id. So a correction is a
+ * **new operation**: a fresh `operationId`, a fresh `clientTimestamp`, and
+ * the rejected row removed. That is the same recipe §3.8 spells out for
+ * recovering from `CLIENT_TIMESTAMP_OUT_OF_RANGE`, generalised — and note
+ * what the fresh timestamp does to §4: the corrected write now carries a
+ * LATER timestamp than the original, so it may win a conflict the original
+ * would have lost. That is the intended trade; the alternative is honouring
+ * a timestamp attached to a version the server already refused.
+ *
+ * ## Why the operation TYPE is preserved
+ *
+ * A rejected `create` is re-enqueued as a `create`, not as an update. The
+ * server refused the original, so no row of this entity exists there — and
+ * an update naming an id the server has never seen is `ENTITY_NOT_FOUND`
+ * (§6.2), which would put the entry straight back in the correction inbox
+ * carrying a code the patient can do nothing with. Conversely a rejected
+ * update must stay an update: re-sending it as a create would be an ordinary
+ * last-write-wins comparison rather than the edit it is (§4), which is
+ * harmless but says something untrue about what the patient did.
+ *
+ * All three writes commit together, for `enqueueObservationCreate`'s reason:
+ * a corrected row with no queued operation never syncs, and a queued
+ * operation against an uncorrected row re-sends the value that was refused.
+ */
+export async function reenqueueCorrectedObservation(
+  executor: SqliteExecutor,
+  fields: {
+    id: string;
+    rejectedOperationId: string;
+    rejectedOperationType: 'create' | 'update';
+    code: string;
+    valueQuantityValue: string;
+    valueQuantityUnit: CanonicalWireUnit;
+    effectiveDatetime: string;
+    measuredOrEstimated: MeasuredOrEstimated;
+    enteredMeasurementSystem: MeasurementSystem;
+  },
+  now: () => Date,
+): Promise<{ operationId: string }> {
+  const method = resolveMethod(fields.measuredOrEstimated);
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+  // Read HERE, not taken from the caller, and read AGAIN rather than carried
+  // over from the rejected row: the patient is correcting the entry now, and
+  // ADR-0016 captures the zone at write time. A patient who has since flown
+  // home is correcting it from where they are.
+  const enteredTimezone = deviceTimeZone();
+  const localDate = toLocalDate(new Date(fields.effectiveDatetime), enteredTimezone);
+
+  await executor.withTransactionAsync(async () => {
+    await replaceObservation(
+      executor,
+      {
+        id: fields.id,
+        code: fields.code,
+        valueQuantityValue: fields.valueQuantityValue,
+        valueQuantityUnit: fields.valueQuantityUnit,
+        effectiveDatetime: fields.effectiveDatetime,
+        method,
+        status: 'final',
+        enteredMeasurementSystem: fields.enteredMeasurementSystem,
+        enteredTimezone,
+        localDate,
+        clientUpdatedAt: nowIso,
+      },
+      nowIso,
+    );
+    await removeOperation(executor, fields.rejectedOperationId);
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'Observation',
+        entityId: fields.id,
+        operationType: fields.rejectedOperationType,
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
+  });
+
+  return { operationId };
+}
+
+/**
+ * Discards an entry the patient has decided not to keep, from the correction
+ * inbox.
+ *
+ * §9.1's "never drop a rejected operation" is a ban on the CLIENT dropping
+ * one silently — data loss invisible to everyone including the patient. A
+ * patient explicitly discarding their own entry is the opposite: it is the
+ * one actor entitled to make that call, acting deliberately.
+ *
+ * No delete operation is queued. The rejected operation is the only thing
+ * that ever named this entity to the server, and it was refused — so there
+ * is no server-side row to tombstone, and a `delete` would return
+ * `ENTITY_NOT_FOUND` and land back in the inbox. The local row is
+ * tombstoned rather than deleted, per §1's "deletes never remove rows", so
+ * local history stays consistent with itself.
+ *
+ * A rejected UPDATE is a different case and is deliberately not handled
+ * here: there, a server-side row does exist, and discarding the correction
+ * must not imply deleting the entry. The inbox only offers this for a
+ * rejected create.
+ */
+export async function discardRejectedCreate(
+  executor: SqliteExecutor,
+  fields: { id: string; rejectedOperationId: string },
+  now: () => Date,
+): Promise<void> {
+  const nowIso = toWireInstant(now());
+  await executor.withTransactionAsync(async () => {
+    await tombstoneObservation(executor, fields.id, nowIso, nowIso, nowIso);
+    await removeOperation(executor, fields.rejectedOperationId);
+  });
 }

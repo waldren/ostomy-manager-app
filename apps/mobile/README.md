@@ -111,18 +111,46 @@ these modules cite it by section throughout.
 local write already is the confirmation; sync is invisible to the patient
 except when it produces something to correct.
 
+### Screens and entry (P2.S2b)
+
+- **`app/add-output.tsx`** — the Add Output screen. The save confirms from the
+  LOCAL write and never waits on a network response (§9.5); it asks the worker
+  to run afterwards and does not care whether it succeeds.
+- **`src/entry/useStomaOutputEntry.ts`** — the screen's decision logic with no
+  React in it. Two rules worth knowing before editing: every Tier 1 error
+  carries the SAME `field`, so messages are routed to the right control by
+  **rule code**, not by field; and a converted imperial value is rounded to the
+  canonical column's scale, without which `ozToMl(80)` = `2365.882365` trips
+  the precision rule and blocks every imperial entry.
+- **`app/corrections.tsx`** — the correction inbox (AC 13.1 AC4). Correcting an
+  entry is a **new operation** with a fresh id and timestamp
+  (`reenqueueCorrectedObservation`), never a retry (§9.2, §9.7), and the
+  operation *type* is preserved so a rejected create does not go back as an
+  update the server would answer `ENTITY_NOT_FOUND`.
+- **`src/entry/rejectionCopy.ts`** — §6.4's rendering rule. Tier 1 codes
+  resolve to catalog copy; everything else, including a code added after this
+  build shipped, becomes one generic message. The raw code is never shown.
+- **`src/db/repositories/thresholdsRepository.ts`** — the offline cache behind
+  `GET /api/v1/thresholds`. Deliberately unseeded; see its header.
+
 ### Still owed
 
-- **The correction inbox has no UI.** Rejected operations are retained and
-  surfaced through `listRejectedOperations`, which satisfies the storage half
-  of AC 13.1 AC4; a patient cannot yet see or act on them.
 - **§5.4's `CURSOR_TOO_OLD` recovery is reported, not performed.** The worker
   stops with `cursor-too-old` and halts scheduling. Wiping local entity state
   and re-syncing from `since=0` destroys local rows — including queued,
   unpushed ones — so it needs a screen and a decision, not a background task.
-- **Sign-out still destroys unsynced queued entries** (`src/db/purge.ts`, and
-  `AuthContext`'s own KNOWN GAP comment). Now that the worker exists the fix is
-  unblocked: warn, offer to sync first, and only then purge.
+- **The Estimated option cannot be saved** while D4 (the SNOMED CT estimation
+  code) is unresolved. The toggle offers both options because the choice is
+  mandatory, and choosing Estimated explains why it cannot be stored rather
+  than writing `method: null`, which would be indistinguishable from Measured
+  forever after. `packages/core`'s `ESTIMATION_METHOD_CODE` is the one place to
+  change when D4 resolves.
+- **The entry timestamp can be reset to now but not freely edited.** A date and
+  time picker is the remaining piece of AC 2.1 AC3; the Tier 1 bounds that
+  govern it are implemented and tested.
+- **No surgery-date bound.** There is no local profile table yet, so
+  `EFFECTIVE_DATE_TIME_BEFORE_SURGERY` is enforced server-side only. It lands
+  here at P4.S1 when onboarding captures the date.
 
 ## What this app must never do
 

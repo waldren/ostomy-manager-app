@@ -22,6 +22,7 @@ import { isSyncProtocolErrorCode } from '@ostomy/core/sync';
 
 import type { SqliteExecutor } from '../db/executor';
 import { getCursor } from '../db/repositories/syncCursorRepository';
+import { writeThresholds } from '../db/repositories/thresholdsRepository';
 import { listQueuedOperations, markQuarantined } from '../db/repositories/syncQueueRepository';
 import type { SyncQueueEntry } from '../db/types';
 
@@ -93,6 +94,8 @@ export interface SyncCycleResult {
   readonly unbuildable: readonly UnbuildableOperation[];
   /** Operations quarantined after a protocol error isolated to them alone. */
   readonly quarantined: number;
+  /** Whether this cycle refreshed the cached validation thresholds. A `false` leaves the previous cached copy in force; it is not an error. */
+  readonly thresholdsRefreshed: boolean;
 }
 
 /**
@@ -112,6 +115,18 @@ export interface SyncCycleResult {
 export interface SyncClientPort {
   push(request: { readonly operations: readonly unknown[] }): Promise<SyncPushResponse>;
   delta(query: { readonly since: string; readonly limit?: string }): Promise<SyncDeltaResponse>;
+  /**
+   * `GET /api/v1/thresholds`. Not part of the sync contract — it carries no
+   * PHI and has no cursor, ordering or idempotency semantics — but it rides
+   * the same cycle because it needs the same trigger: the device must have a
+   * usable copy before the patient opens an entry screen offline, and the
+   * connectivity events that drain the queue are exactly the moments a fresh
+   * copy is obtainable.
+   */
+  thresholds(): Promise<{
+    readonly stomaOutputSoftWarningMl: number;
+    readonly maxClockSkewMs: number;
+  }>;
 }
 
 export interface SyncCycleDeps {
@@ -151,10 +166,15 @@ export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult
       stoppedBecause: push.stoppedBecause,
       unbuildable: push.unbuildable,
       quarantined: push.quarantined,
+      // A cycle that could not reach the server for the push will not reach
+      // it for this either; skipped rather than attempted so an offline
+      // device does not make a doomed request per cycle.
+      thresholdsRefreshed: false,
     };
   }
 
   const delta = await runDeltaPhase(deps);
+  const thresholdsRefreshed = await refreshThresholds(deps);
 
   return {
     push: push.outcome,
@@ -162,7 +182,38 @@ export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult
     stoppedBecause: delta.stoppedBecause,
     unbuildable: push.unbuildable,
     quarantined: push.quarantined,
+    thresholdsRefreshed,
   };
+}
+
+/**
+ * Refreshes the cached validation thresholds, and never fails the cycle.
+ *
+ * Last in the cycle and swallowing its own errors, both deliberately. A
+ * patient's queued entries reaching the server matters more than this app's
+ * copy of a configuration number being current, so a threshold fetch must
+ * never be the reason a push did not happen — and a failure here leaves the
+ * PREVIOUS cached copy in place, which is exactly what an offline device
+ * validates against anyway.
+ *
+ * AC 13.2 AC2 is what this serves: an admin changes a threshold and it
+ * governs from the next successful fetch, with no application release.
+ */
+async function refreshThresholds(deps: SyncCycleDeps): Promise<boolean> {
+  try {
+    const fetched = await deps.client.thresholds();
+    await writeThresholds(
+      deps.executor,
+      {
+        softWarningMaxMl: fetched.stomaOutputSoftWarningMl,
+        maxClockSkewMs: fetched.maxClockSkewMs,
+      },
+      deps.now().toISOString(),
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 interface PushPhaseResult {
