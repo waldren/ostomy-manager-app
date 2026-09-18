@@ -157,4 +157,18 @@ export const common = {
   'corrections.fixButton': 'Fix this entry',
   'corrections.deleteButton': 'Delete this entry',
   'corrections.savedAt': 'You added this on {{when}}.',
+
+  // sync-contract §5.4. Deliberately says what will happen BEFORE it happens
+  // and names the one thing a patient would fear — losing what they wrote.
+  // "Refresh" rather than "reset" or "wipe": the patient did nothing wrong,
+  // and the outcome they experience is an up-to-date diary, not a deletion.
+  // No mention of cursors, servers or sync: the cause is ours, and a patient
+  // can act on none of it.
+  'staleSync.heading': 'Your diary needs a refresh',
+  'staleSync.body':
+    'This phone has been away for a while, so it may be showing entries your care team no longer has. Refreshing gets a fresh copy.',
+  'staleSync.keepsUnsent': 'Anything you wrote that has not been sent yet is kept.',
+  'staleSync.button': 'Refresh my diary',
+  'staleSync.working': 'Refreshing…',
+  'staleSync.failed': 'The refresh did not finish. You can try again.',
 } as const;

@@ -18,6 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
@@ -50,7 +51,9 @@ export default function Home(): React.JSX.Element {
   const { phase, signOut } = useAuth();
   const { t } = useTranslation(['mobile', 'common']);
   const database = useDatabaseState();
-  const { lastRejected } = useSyncStatus();
+  const { lastRejected, lastStop, recoverStaleCursor } = useSyncStatus();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const params = useLocalSearchParams<{ saved?: string }>();
 
   const [pendingCount, setPendingCount] = useState<number | undefined>(undefined);
@@ -150,6 +153,38 @@ export default function Home(): React.JSX.Element {
   return (
     <Screen>
       <Heading>{t('mobile:home.welcomeHeading')}</Heading>
+
+      {/*
+        sync-contract §5.4. The scheduler halts entirely on a stale cursor, so
+        without somewhere to act on it this device would simply stop syncing
+        and never say why. It sits above the entry buttons because it affects
+        what the rest of this screen is showing.
+      */}
+      {lastStop?.kind === 'cursor-too-old' ? (
+        <View accessibilityLiveRegion="polite">
+          <Heading level={2}>{t('common:staleSync.heading')}</Heading>
+          <BodyText>{t('common:staleSync.body')}</BodyText>
+          <BodyText tone="muted">{t('common:staleSync.keepsUnsent')}</BodyText>
+          <Button
+            label={refreshing ? t('common:staleSync.working') : t('common:staleSync.button')}
+            busy={refreshing}
+            onPress={() => {
+              void (async () => {
+                setRefreshing(true);
+                setRefreshFailed(false);
+                try {
+                  await recoverStaleCursor();
+                } catch {
+                  setRefreshFailed(true);
+                } finally {
+                  setRefreshing(false);
+                }
+              })();
+            }}
+          />
+          {refreshFailed ? <BodyText tone="error">{t('common:staleSync.failed')}</BodyText> : null}
+        </View>
+      ) : null}
 
       {params.saved === '1' ? (
         // §9.5: this confirms the LOCAL write, which has already committed.

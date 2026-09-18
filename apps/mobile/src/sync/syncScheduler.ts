@@ -57,7 +57,9 @@ export interface SchedulerState {
    * Set once a cycle reports `cursor-too-old`. No further cycle is scheduled
    * until the app performs §5.4's wipe-and-resync recovery, because every
    * subsequent delta request returns the same `409` and a timer would spin
-   * on it indefinitely.
+   * on it indefinitely. `SyncProvider.recoverStaleCursor` clears this after
+   * running the recovery — forgetting to would leave the device with a fresh
+   * cursor and nothing scheduled to pull against it.
    */
   readonly haltedForCursorRecovery: boolean;
 }

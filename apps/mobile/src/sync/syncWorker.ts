@@ -551,12 +551,14 @@ interface DeltaPhaseResult {
  * Pulls pages until `hasMore` is false, persisting the cursor after each
  * (`applyDeltaPage`).
  *
- * A `CURSOR_TOO_OLD` is reported, not acted on. §5.4's recovery — wipe local
- * entity state and re-sync from `since=0` — destroys local rows, and a
- * background worker is the wrong place to do that silently: the wipe is
- * indistinguishable to a patient from their diary emptying itself, and any
- * queued-but-unpushed entry would go with it. Surfacing the reason lets the
- * app decide, which is the same call `AuthContext`'s purge gap makes.
+ * A `CURSOR_TOO_OLD` is reported here, never acted on here. §5.4's recovery
+ * discards local rows, and a background worker is the wrong place to do that
+ * silently: the wipe is indistinguishable to a patient from their diary
+ * emptying itself. So this stops the cycle and names the reason; the recovery
+ * itself lives in `db/staleCursorRecovery.ts` and is invoked by a screen
+ * (`useSyncStatus().recoverStaleCursor`) once the patient has been told what
+ * will happen. That recovery keeps queued-but-unpushed entries, which a
+ * literal reading of §5.4 would destroy and §9.1 forbids.
  */
 async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
   let upserts = 0;
