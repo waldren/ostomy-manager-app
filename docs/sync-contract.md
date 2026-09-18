@@ -306,7 +306,13 @@ The tombstone is the **only** signal that tells a second device to delete its lo
 
 A device left in a drawer for eight months comes back online, pulls from its stale cursor, and keeps clinical entries the patient deleted and the server no longer holds — indefinitely, and invisibly to any later "your data has been deleted" response.
 
-**So: a `since` older than the purge horizon is refused with `CURSOR_TOO_OLD`, and the client responds by wiping local entity state and re-syncing from `since=0`.** The horizon's *value* waits on counsel and is deliberately not named here. The protocol affordance cannot wait, because adding a new protocol error after clients ship is precisely the versioned, coordinated-release change §8 describes — which is to say, it is free today and expensive for the rest of v1.
+**So: a `since` older than the purge horizon is refused with `CURSOR_TOO_OLD`, and the client responds by discarding its server-derived entity state and re-syncing from `since=0`.** The horizon's *value* waits on counsel and is deliberately not named here.
+
+**"Server-derived" is load-bearing, and was added after this section's first draft said "wiping local entity state".** Read literally, that instruction also destroys entries the patient has written and the client has not yet pushed — which §9.1 forbids in the same document ("retained locally and surfaced for correction, never dropped"), and which §9.5 makes worse, since the patient was already told those entries were saved. A re-sync from `since=0` cannot bring them back: the server has never seen them. Two sections of this contract cannot give opposite answers, so §5.4 yields to §9.1 and is narrowed here rather than §9.1 being weakened.
+
+Concretely, a client discards every local entity row it has **no pending operation for** — queued, in flight, or rejected. Those rows came from a delta page and will come again, or are precisely the rows this section exists to remove. A row its queue still references is the client's own unsent work: it survives, its operation pushes normally afterwards, and §4's last-write-wins reconciles whatever the server already held. A `rejected` operation counts as pending, because it is waiting in the correction inbox and deleting the row beneath it would leave an inbox entry describing an entry that no longer exists.
+
+The cursor reset and the discard are one atomic step. A cursor reset that outlived a failed discard would re-pull on top of rows that should have gone, quietly restoring the state this section exists to clear. The protocol affordance cannot wait, because adding a new protocol error after clients ship is precisely the versioned, coordinated-release change §8 describes — which is to say, it is free today and expensive for the rest of v1.
 
 ---
 

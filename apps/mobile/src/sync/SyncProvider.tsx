@@ -32,6 +32,7 @@ import { AppState } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
 import { loadEnv } from '../config/env';
 import { useDatabaseState } from '../db/DatabaseProvider';
+import { recoverFromStaleCursor, type StaleCursorRecoveryResult } from '../db/staleCursorRecovery';
 import { now } from '../lib/utils/clock';
 
 import {
@@ -77,6 +78,18 @@ export interface SyncStatus {
   readonly lastRejected: number;
   /** Requests a cycle now. Safe to call from anywhere: the gate coalesces. */
   readonly requestSync: () => void;
+  /**
+   * Performs §5.4's recovery after `lastStop.kind === 'cursor-too-old'`, then
+   * resumes syncing.
+   *
+   * Exposed rather than run automatically, and that is the same judgement the
+   * worker already makes: this discards local rows, and a background task
+   * doing that silently is indistinguishable to a patient from their diary
+   * emptying itself. A screen calls this once it has said what will happen.
+   *
+   * Unsent entries are never discarded — see `recoverFromStaleCursor`.
+   */
+  readonly recoverStaleCursor: () => Promise<StaleCursorRecoveryResult | undefined>;
 }
 
 const SyncContext = createContext<SyncStatus | undefined>(undefined);
@@ -197,6 +210,19 @@ export function SyncProvider({
     gateRef.current.request();
   }, [canSync]);
 
+  const recoverStaleCursor = useCallback(async () => {
+    if (executor === undefined) return undefined;
+    const outcome = await recoverFromStaleCursor(executor, now);
+    // Clearing the halt is what makes the recovery complete rather than
+    // merely performed: `nextDelayMs` schedules nothing while the scheduler
+    // is halted, so without this the device would sit with a fresh cursor
+    // and never pull against it.
+    schedulerRef.current = { ...schedulerRef.current, haltedForCursorRecovery: false };
+    setLastStop(undefined);
+    gateRef.current.request();
+    return outcome;
+  }, [executor]);
+
   // Trigger 1 and 3: a usable database plus an authenticated session. Also
   // covers app launch with a queue left over from a previous run, which is
   // the "survives restart, resumes with no user action" half of the exit
@@ -237,8 +263,8 @@ export function SyncProvider({
   useEffect(() => clearTimer, [clearTimer]);
 
   const value = useMemo<SyncStatus>(
-    () => ({ isRunning, lastStop, lastRejected, requestSync }),
-    [isRunning, lastStop, lastRejected, requestSync],
+    () => ({ isRunning, lastStop, lastRejected, requestSync, recoverStaleCursor }),
+    [isRunning, lastStop, lastRejected, requestSync, recoverStaleCursor],
   );
 
   return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>;
