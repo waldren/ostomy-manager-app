@@ -41,14 +41,48 @@ section failed.
 build**:
 
 ```bash
-pnpm --filter @ostomy/mobile android:build   # expo run:android — prebuilds + compiles + installs
-pnpm --filter @ostomy/mobile start --port 8082   # afterwards, to attach Metro
+pnpm --filter @ostomy/mobile android          # expo run:android — prebuild + compile + install
 ```
 
-`android` (`expo start --android`) is **not** that — it only opens the dev
-server against whatever is already installed, so it is the second step, never
-the first. Expo Go will either refuse or, worse, run with an unencrypted store
-and prove nothing. If someone reports "it works in Expo Go", that is the bug.
+Expo Go will either refuse or, worse, run with an unencrypted store and prove
+nothing. If someone reports "it works in Expo Go", that is the bug.
+
+`expo prebuild` generates `apps/mobile/android/`. It is **build output** —
+gitignored, and ignored by Prettier and ESLint too, since both walk the
+filesystem rather than git. Never commit it and never hand-edit it: `app.json`
+and the config plugins are the source of truth for the native project, and a
+checked-in `android/` forks silently from them. The plugin enabling SQLCipher
+is exactly the thing you do not want to learn about from a stale Gradle file.
+
+### Three things that will bite on a first build
+
+**Use a JDK between 17 and 21.** Android Studio bundles JDK 25 and AGP 8.12
+(what React Native 0.86 pins) cannot drive CMake on it — JEP 472's
+restricted-method enforcement fails every native module at configure time with
+`WARNING: A restricted method in java.lang.System has been called`, which names
+neither the JDK nor the real cause. Gradle usually has a usable JDK already at
+`~/.gradle/jdks/`. `doctor` finds it and prints the `export JAVA_HOME=...` line.
+
+**`--device` takes the AVD name, not the adb serial.** `--device Pixel_8`
+works; `--device emulator-5554` fails with `Could not find device with name`.
+
+**A transient `Read timed out` from dl.google.com is not a real failure.**
+Gradle keeps what it cached — just run it again.
+
+## Why the repo installs hoisted
+
+`.npmrc` sets `node-linker=hoisted`, and that exists for this build. pnpm's
+default layout makes the native build impossible on Windows two ways at once:
+object-file paths blow past CMake's 250-character limit inside
+`.pnpm/<name>@<version>_<hash>/`, and the symlinks into that store leave ninja's
+manifest permanently dirty (`still dirty after 100 tries`).
+
+The cost is real and worth remembering: hoisting lets a workspace import a
+package it never declared, and nothing catches that. It also forces the repo
+onto **one** React version — `pnpm.overrides` pins react and react-dom to
+19.2.3, Expo SDK 57's pin. Do not raise that except in step with an Expo
+upgrade: a second React copy does not error, it renders nothing, which cost
+`packages/ui` 21 silently-failing tests to diagnose.
 
 ## The networking is the part that goes wrong
 

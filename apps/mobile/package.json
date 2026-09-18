@@ -7,8 +7,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "android:build": "expo run:android",
+    "android": "expo run:android",
     "emulator": "bash ../../scripts/android-emulator.sh up",
     "emulator:doctor": "bash ../../scripts/android-emulator.sh doctor",
     "emulator:status": "bash ../../scripts/android-emulator.sh status",
@@ -16,7 +15,7 @@
     "emulator:fingerprint": "bash ../../scripts/android-emulator.sh fingerprint",
     "emulator:wipe": "bash ../../scripts/android-emulator.sh wipe",
     "emulator:stop": "bash ../../scripts/android-emulator.sh stop",
-    "ios": "expo start --ios",
+    "ios": "expo run:ios",
     "web": "expo start --web",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "jest",

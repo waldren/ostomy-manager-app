@@ -18,22 +18,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import type { Tier1Result, ValidationError } from './types.js';
 import type { VolumetricValidationThresholds } from './thresholds.js';
 import { evaluateEntryTimestamp } from './entryTimestamp.js';
+import { TIER1_RULE_CODE } from './ruleCodes.js';
 import { exceedsMaxMagnitude, exceedsMaxPrecision } from './representableRange.js';
 
 /**
- * Tier 1 (hard block) rule codes for a volumetric entry (SRS §3.8, AC 2.1
- * AC1, AC 2.2 AC1). A code, never the offending value, is what a
- * `ValidationError` ever carries (docs/security-hipaa.md).
+ * Re-exported from `./ruleCodes.js` so this module's public surface is
+ * unchanged. The codes live in a leaf module because this one composes
+ * `entryTimestamp.ts`, which needs them — defining them here made the two
+ * import each other. See `ruleCodes.ts` for why that cycle was dangerous
+ * rather than merely untidy.
  */
-export const TIER1_RULE_CODE = {
-  VALUE_NOT_NUMERIC: 'VALUE_NOT_NUMERIC',
-  VALUE_NOT_POSITIVE: 'VALUE_NOT_POSITIVE',
-  VALUE_EXCEEDS_MAX_MAGNITUDE: 'VALUE_EXCEEDS_MAX_MAGNITUDE',
-  VALUE_EXCEEDS_MAX_PRECISION: 'VALUE_EXCEEDS_MAX_PRECISION',
-  METHOD_REQUIRED: 'METHOD_REQUIRED',
-  EFFECTIVE_DATE_TIME_IN_FUTURE: 'EFFECTIVE_DATE_TIME_IN_FUTURE',
-  EFFECTIVE_DATE_TIME_BEFORE_SURGERY: 'EFFECTIVE_DATE_TIME_BEFORE_SURGERY',
-} as const;
+export { TIER1_RULE_CODE } from './ruleCodes.js';
 
 export type MeasuredOrEstimated = 'measured' | 'estimated';
 
