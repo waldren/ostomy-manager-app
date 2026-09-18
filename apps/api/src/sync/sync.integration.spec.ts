@@ -312,77 +312,254 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
   // -------------------------------------------------------------------------
 
   /**
-   * P3.S1 widened the wire's entity-type vocabulary to include `Meal`
-   * (docs/sync-contract.md §7.4) before the server grew a handler for it. That
-   * split across two PRs is only safe if an unhandled entity type fails the
-   * way the contract requires, so it is pinned here rather than assumed.
+   * `Meal` (§7.4, SRS AC 2.4) — the first app-native synced entity. These
+   * assert that it behaves IDENTICALLY to an observation everywhere the
+   * contract is about sync rather than about content: conflict resolution,
+   * tombstones, audit obligations and the delta cursor. A meal that resolved
+   * conflicts differently would make §4 mean two things.
    */
-  describe('§3.4 / §6.2 — an entity type this release does not yet apply', () => {
-    it('rejects a Meal operation per-operation rather than failing the request', async () => {
-      // `payload.id` MUST equal `entityId` (§7.2) — a mismatch is
-      // ENTITY_ID_MISMATCH, a §6.1 protocol error that fails the whole
-      // request, which would mask the per-operation behaviour under test.
-      const mealId = randomUUID();
-      const response = await push(patientA, [
-        {
-          operationId: randomUUID(),
-          entityType: 'Meal',
-          entityId: mealId,
-          operationType: 'create',
-          clientTimestamp: new Date().toISOString(),
-          payload: {
-            id: mealId,
-            description: 'Porridge',
-            size: 'medium',
-            tagCodes: ['high_fibre'],
-            effectiveDateTime: new Date().toISOString(),
-            enteredTimezone: 'America/Chicago',
-          },
-        },
-      ]);
+  describe('§7.4 — Meal, the first app-native synced entity', () => {
+    /**
+     * Its OWN patient, for two reasons that both bit before it had one.
+     *
+     * §2's per-patient rate limit is real and this block pushes a lot: sharing
+     * `patientA` exhausted it and turned every LATER test in this file into a
+     * 429, which looks like a broken rate limiter rather than a noisy
+     * neighbour. And the delta assertions below pull `since=0`, so a shared
+     * patient would have them reading every row other tests had written —
+     * making "orders observations and meals together" pass or fail on
+     * execution order.
+     */
+    let mealPatient: SeededPatient;
 
-      // A 200 with a rejected result, NOT a 4xx: a protocol error would fail
-      // the whole batch, and one entity type this release cannot apply must
-      // not block every other entry a patient made while offline.
+    beforeAll(async () => {
+      mealPatient = await seedPatient();
+    });
+
+    function mealOp(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      const entityId = (overrides.entityId as string | undefined) ?? randomUUID();
+      return {
+        operationId: randomUUID(),
+        entityType: 'Meal',
+        entityId,
+        operationType: 'create',
+        clientTimestamp: '2026-09-07T22:04:11.412Z',
+        payload: {
+          id: entityId,
+          description: 'Porridge and a banana',
+          size: 'medium',
+          tagCodes: ['high_fibre'],
+          effectiveDateTime: '2026-09-07T14:00:00.000Z',
+          enteredTimezone: 'America/Chicago',
+        },
+        ...overrides,
+      };
+    }
+
+    function deleteMealOp(entityId: unknown, clientTimestamp: string): Record<string, unknown> {
+      return {
+        operationId: randomUUID(),
+        entityType: 'Meal',
+        entityId,
+        operationType: 'delete',
+        clientTimestamp,
+      };
+    }
+
+    async function mealRows(entityId: string): Promise<Array<Record<string, unknown>>> {
+      const result = await db.query(`SELECT * FROM meals WHERE id = $1`, [entityId]);
+      return result.rows;
+    }
+
+    it('applies a create and reports accepted with a server-sequence receipt', async () => {
+      const op = mealOp();
+      const response = await push(mealPatient, [op]);
+
       expect(response.status).toBe(200);
-      expect(response.body.results).toHaveLength(1);
+      expect(response.body.results[0]).toMatchObject({
+        operationId: op.operationId,
+        status: 'accepted',
+        entityId: op.entityId,
+      });
+      expect(response.body.results[0].appliedServerSequence).toEqual(expect.any(String));
+    });
+
+    it('stores the tags as codes and the size as the stored enum', async () => {
+      const op = mealOp();
+      await push(mealPatient, [op]);
+
+      const [row] = await mealRows(op.entityId as string);
+      expect(row?.size).toBe('MEDIUM');
+      expect(row?.tag_codes).toEqual(['high_fibre']);
+    });
+
+    it('refuses an absent size rather than defaulting one (AC 2.4 AC2)', async () => {
+      const op = mealOp();
+      const payload = { ...(op.payload as Record<string, unknown>) };
+      delete payload.size;
+
+      const response = await push(mealPatient, [{ ...op, payload }]);
+
       expect(response.body.results[0]).toMatchObject({
         status: 'rejected',
-        field: 'entityType',
+        field: 'size',
+        reasonCode: 'PAYLOAD_FIELD_INVALID',
       });
     });
 
-    it('applies the observations in the same batch, leaving only the Meal rejected', async () => {
-      const observation = createOp();
-      const mealId = randomUUID();
-      // The Meal carries the SAME clientTimestamp as the observation, not
-      // `now`. §3.2 requires the array to be non-descending, and a later
-      // timestamp on the first element is BATCH_OUT_OF_ORDER — a §6.1
-      // protocol error that fails the whole request and would mask the
-      // per-operation behaviour this test is about. Equal timestamps are
-      // explicitly legal and resolved by array order.
-      const response = await push(patientA, [
+    /**
+     * The timestamp rules a meal IS subject to, shared with volumetric
+     * entries through `packages/core` so the two cannot disagree about what
+     * "in the future" means.
+     */
+    it('rejects a meal eaten beyond the clock-skew allowance, naming effectiveDateTime', async () => {
+      const farFuture = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const op = mealOp();
+      const response = await push(mealPatient, [
         {
-          operationId: randomUUID(),
-          entityType: 'Meal',
-          entityId: mealId,
-          operationType: 'create',
-          clientTimestamp: observation.clientTimestamp as string,
-          payload: {
-            id: mealId,
-            description: null,
-            size: 'small',
-            tagCodes: [],
-            effectiveDateTime: '2026-09-07T14:00:00.000Z',
-            enteredTimezone: 'America/Chicago',
-          },
+          ...op,
+          payload: { ...(op.payload as Record<string, unknown>), effectiveDateTime: farFuture },
         },
-        observation,
       ]);
 
-      expect(response.status).toBe(200);
-      const statuses = response.body.results.map((result: { status: string }) => result.status);
-      expect(statuses).toEqual(['rejected', 'accepted']);
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        field: 'effectiveDateTime',
+        reasonCode: 'EFFECTIVE_DATE_TIME_IN_FUTURE',
+      });
+    });
+
+    it('refuses an update naming an entity this patient does not have (§6.2)', async () => {
+      const response = await push(mealPatient, [
+        { ...mealOp(), operationType: 'update', clientTimestamp: '2026-09-08T10:00:00.000Z' },
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        field: 'entityId',
+        reasonCode: 'ENTITY_NOT_FOUND',
+      });
+    });
+
+    describe('§4 — last-write-wins, identical to an observation', () => {
+      it('refuses to apply an older update and reports superseded', async () => {
+        const created = mealOp();
+        await push(mealPatient, [created]);
+
+        const older = await push(mealPatient, [
+          {
+            ...mealOp({ entityId: created.entityId }),
+            operationType: 'update',
+            clientTimestamp: '2026-09-06T10:00:00.000Z',
+          },
+        ]);
+
+        expect(older.body.results[0]).toMatchObject({ status: 'superseded' });
+      });
+
+      it('applies a newer update and audits the displaced version', async () => {
+        const created = mealOp();
+        await push(mealPatient, [created]);
+
+        const newer = mealOp({ entityId: created.entityId });
+        const response = await push(mealPatient, [
+          {
+            ...newer,
+            operationType: 'update',
+            clientTimestamp: '2026-09-08T10:00:00.000Z',
+            payload: { ...(newer.payload as Record<string, unknown>), size: 'large' },
+          },
+        ]);
+
+        expect(response.body.results[0]).toMatchObject({ status: 'accepted' });
+
+        const audits = await auditRows(created.entityId as string);
+        expect(audits.map((row) => row.reason_code)).toContain('sync_conflict_loser');
+      });
+
+      it('lets an update at T2 resurrect a meal deleted at T1', async () => {
+        const created = mealOp();
+        await push(mealPatient, [created]);
+        await push(mealPatient, [deleteMealOp(created.entityId, '2026-09-08T10:00:00.000Z')]);
+
+        const revived = mealOp({ entityId: created.entityId });
+        const response = await push(mealPatient, [
+          { ...revived, operationType: 'update', clientTimestamp: '2026-09-09T10:00:00.000Z' },
+        ]);
+
+        expect(response.body.results[0]).toMatchObject({ status: 'accepted' });
+        const [row] = await mealRows(created.entityId as string);
+        expect(row?.deleted_at).toBeNull();
+      });
+
+      /** §4.1: a delete audits the FULL pre-deletion state, because after a purge that row is the only surviving copy. */
+      it('audits a delete with the meal as it was before deletion', async () => {
+        const created = mealOp();
+        await push(mealPatient, [created]);
+        await push(mealPatient, [deleteMealOp(created.entityId, '2026-09-08T10:00:00.000Z')]);
+
+        const audits = await auditRows(created.entityId as string);
+        const deleteAudit = audits.find((row) => row.action === 'DELETE');
+
+        expect(deleteAudit?.before_value).toMatchObject({ size: 'MEDIUM' });
+        expect(deleteAudit?.after_value).toBeNull();
+      });
+    });
+
+    describe('§5 — meals appear in the delta, interleaved by the shared sequence', () => {
+      it('returns a created meal as an upsert carrying no resourceType', async () => {
+        const op = mealOp();
+        await push(mealPatient, [op]);
+
+        const response = await delta(mealPatient, { since: '0', limit: '500' });
+        const change = response.body.changes.find(
+          (candidate: { entityId: string }) => candidate.entityId === op.entityId,
+        );
+
+        expect(change).toMatchObject({ entityType: 'Meal', deleted: false });
+        expect(change.payload).not.toHaveProperty('resourceType');
+        expect(change.payload).toMatchObject({ size: 'medium', tagCodes: ['high_fibre'] });
+      });
+
+      it('returns a deleted meal as a tombstone carrying no payload at all (§5.2)', async () => {
+        const op = mealOp();
+        await push(mealPatient, [op]);
+        await push(mealPatient, [deleteMealOp(op.entityId, '2026-09-08T10:00:00.000Z')]);
+
+        const response = await delta(mealPatient, { since: '0', limit: '500' });
+        const change = response.body.changes.find(
+          (candidate: { entityId: string }) => candidate.entityId === op.entityId,
+        );
+
+        expect(change).toMatchObject({ entityType: 'Meal', deleted: true });
+        expect(change).not.toHaveProperty('payload');
+      });
+
+      /**
+       * The reason the shared `sync_sequence` exists. A page that ordered each
+       * table separately would make one cursor mean something different per
+       * entity type, and §5.3's invariant is stated over the cursor.
+       */
+      it('orders observations and meals together by server sequence, ascending', async () => {
+        await push(mealPatient, [createOp()]);
+        await push(mealPatient, [mealOp()]);
+        await push(mealPatient, [createOp()]);
+
+        const response = await delta(mealPatient, { since: '0', limit: '500' });
+        const sequences = response.body.changes.map((candidate: { serverSequence: string }) =>
+          BigInt(candidate.serverSequence),
+        );
+
+        for (let index = 1; index < sequences.length; index += 1) {
+          expect(sequences[index] > sequences[index - 1]).toBe(true);
+        }
+
+        const types = response.body.changes.map(
+          (candidate: { entityType: string }) => candidate.entityType,
+        );
+        expect(types).toContain('Meal');
+        expect(types).toContain('Observation');
+      });
     });
   });
 

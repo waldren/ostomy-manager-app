@@ -26,10 +26,11 @@ import {
   type SyncDeltaResponse,
 } from '@ostomy/core/sync';
 
-import { Prisma, type Observation } from '../generated/prisma/client';
+import { Prisma, type Meal, type Observation } from '../generated/prisma/client';
 import { SecurityLogService } from '../logging/security-log.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { toObservationResource } from '../observations/observation-payload';
+import { toMealResource } from '../meals/meal-payload';
 import { patientNotProvisioned } from '../observations/observation-rejection';
 import type { SyncDeltaQueryParsed } from './sync-delta.pipe';
 
@@ -171,9 +172,26 @@ export class SyncDeltaService {
         // `toObservationResource` keeps its real argument type.
         //
         // One extra id, to decide `hasMore` without a second count query.
-        const visible = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id
+        //
+        // A UNION across every synced entity table, which is what the shared
+        // `sync_sequence` was created for: one cursor is comparable across
+        // tables, so a page can interleave entity types in true write order.
+        // Paging each table separately would make the cursor mean something
+        // different per type, and §5.3's invariant is stated over the cursor.
+        //
+        // The visibility predicate is repeated per branch rather than applied
+        // to the union, deliberately — `xmin` is a per-row system column and
+        // has no meaning on a union's output, so hoisting it would silently
+        // stop withholding the in-flight window (ADR-0013) for every type.
+        const visible = await tx.$queryRaw<{ id: string; entity_type: string }[]>`
+          SELECT id, 'Observation' AS entity_type, server_sequence
           FROM observations
+          WHERE patient_id = ${patientId}::uuid
+            AND server_sequence > ${query.since}
+            AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)
+          UNION ALL
+          SELECT id, 'Meal' AS entity_type, server_sequence
+          FROM meals
           WHERE patient_id = ${patientId}::uuid
             AND server_sequence > ${query.since}
             AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)
@@ -182,21 +200,43 @@ export class SyncDeltaService {
         `;
 
         const more = visible.length > query.limit;
-        const pageIds = (more ? visible.slice(0, query.limit) : visible).map((row) => row.id);
+        const pageRefs = more ? visible.slice(0, query.limit) : visible;
+
+        const observationIds = pageRefs
+          .filter((ref) => ref.entity_type === 'Observation')
+          .map((ref) => ref.id);
+        const mealIds = pageRefs.filter((ref) => ref.entity_type === 'Meal').map((ref) => ref.id);
 
         // Re-scoped to the patient here as well as above. Belt and braces at
         // a seam where a future edit could plausibly drop one of the two, and
         // §2 admits no exception: every entity lookup is by (patient, id)
         // together.
-        const rows =
-          pageIds.length === 0
-            ? []
-            : await tx.observation.findMany({
-                where: { id: { in: pageIds }, patientId },
+        const [observations, meals] = await Promise.all([
+          observationIds.length === 0
+            ? Promise.resolve([])
+            : tx.observation.findMany({
+                where: { id: { in: observationIds }, patientId },
                 orderBy: { serverSequence: 'asc' },
-              });
+              }),
+          mealIds.length === 0
+            ? Promise.resolve([])
+            : tx.meal.findMany({
+                where: { id: { in: mealIds }, patientId },
+                orderBy: { serverSequence: 'asc' },
+              }),
+        ]);
 
-        return { page: rows, hasMore: more };
+        // Re-merged into ONE sequence-ordered page. The two typed reads above
+        // each return their own table in order; interleaving them by
+        // `serverSequence` is what makes the page match the order the union
+        // chose, and therefore what makes `nextCursor` — which reads the LAST
+        // element — correct.
+        const page: DeltaRow[] = [
+          ...observations.map((row): DeltaRow => ({ kind: 'observation', row })),
+          ...meals.map((row): DeltaRow => ({ kind: 'meal', row })),
+        ].sort((a, b) => (a.row.serverSequence < b.row.serverSequence ? -1 : 1));
+
+        return { page, hasMore: more };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
@@ -228,9 +268,22 @@ export class SyncDeltaService {
  * history over cellular. Reachable through a device restore, a `dev-reset`,
  * or a database restore from backup.
  */
-function nextCursor(page: readonly Observation[], since: bigint): bigint {
+/**
+ * One row of a delta page, tagged with which table it came from.
+ *
+ * A discriminated union rather than a bare `Observation | Meal`: the two
+ * share `id`, `serverSequence`, `clientUpdatedAt` and `deletedAt`, so a
+ * structural check would compile for the wrong one and `toChange` would
+ * project a meal as an observation. The tag is what makes the dispatch
+ * exhaustive.
+ */
+export type DeltaRow =
+  | { readonly kind: 'observation'; readonly row: Observation }
+  | { readonly kind: 'meal'; readonly row: Meal };
+
+function nextCursor(page: readonly DeltaRow[], since: bigint): bigint {
   const last = page[page.length - 1];
-  return last === undefined ? since : last.serverSequence;
+  return last === undefined ? since : last.row.serverSequence;
 }
 
 /**
@@ -243,7 +296,49 @@ function nextCursor(page: readonly Observation[], since: bigint): bigint {
  * constructors exist precisely so the wrong thing cannot be written from a
  * call site.
  */
-function toChange(row: Observation): SyncDeltaChange {
+function toChange(entry: DeltaRow): SyncDeltaChange {
+  return entry.kind === 'meal' ? toMealChange(entry.row) : toObservationChange(entry.row);
+}
+
+/**
+ * A `Meal` change (§7.4). Same tombstone rule, same constructors, same
+ * never-spread discipline as an observation's — the differences are the
+ * payload fields and the absence of `resourceType`.
+ */
+function toMealChange(row: Meal): SyncDeltaChange {
+  const entityId = toEntityId(row.id);
+  const serverSequence = toServerSequence(row.serverSequence.toString());
+  const clientUpdatedAt = row.clientUpdatedAt.toISOString();
+
+  if (row.deletedAt !== null) {
+    return syncDeltaTombstone({
+      entityType: SYNC_ENTITY_TYPE.MEAL,
+      entityId,
+      serverSequence,
+      clientUpdatedAt,
+    });
+  }
+
+  const resource = toMealResource(row);
+  return syncDeltaUpsert({
+    entityType: SYNC_ENTITY_TYPE.MEAL,
+    entityId,
+    serverSequence,
+    clientUpdatedAt,
+    // Named field by field, never spread from `resource` — same reason as
+    // the observation branch below.
+    payload: {
+      id: entityId,
+      description: resource.description,
+      size: resource.size,
+      tagCodes: resource.tagCodes,
+      effectiveDateTime: resource.effectiveDateTime,
+      enteredTimezone: resource.enteredTimezone,
+    },
+  });
+}
+
+function toObservationChange(row: Observation): SyncDeltaChange {
   const entityId = toEntityId(row.id);
   const serverSequence = toServerSequence(row.serverSequence.toString());
   // §5.2: a tombstone's `clientUpdatedAt` is the client timestamp of the

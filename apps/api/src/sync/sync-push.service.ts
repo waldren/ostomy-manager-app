@@ -32,7 +32,7 @@ import {
   type SyncOperationResult,
   type SyncReasonCode,
 } from '@ostomy/core/sync';
-import { evaluateTier1 } from '@ostomy/core/validation';
+import { evaluateEntryTimestamp, evaluateTier1 } from '@ostomy/core/validation';
 
 import { AuditService } from '../audit/audit.service';
 import type { PatientActor } from '../auth/patient-actor';
@@ -44,6 +44,7 @@ import {
   SyncEntityType,
   SyncOperationStatus,
   SyncOperationType,
+  type Meal,
   type Observation,
   type SyncOperation,
 } from '../generated/prisma/client';
@@ -61,6 +62,8 @@ import {
   toStoredMeasurementSystem,
 } from '../observations/observation-payload';
 import { observationRequestParseSchema } from '../observations/observation-wire';
+import { interpretMealPayload, toMealAuditSnapshot, toStoredSize } from '../meals/meal-payload';
+import { MEAL_FIELD, mealRequestParseSchema } from '../meals/meal-wire';
 import { toMeasuredOrEstimated, toStoredMethod } from '../observations/estimation-method';
 import type { SyncPushOperationParsed, SyncPushRequestParsed } from './sync-push.pipe';
 
@@ -70,6 +73,8 @@ const SYNC_APPLIED_REASON = 'sync_applied';
 const SYNC_CONFLICT_LOSER_REASON = 'sync_conflict_loser';
 
 const OBSERVATION_ENTITY_TYPE = 'observation';
+/** The audit `entityType` for a meal. Lowercase like `observation`'s — this is the audit store's vocabulary, not the wire's. */
+const MEAL_ENTITY_TYPE = 'meal';
 
 /**
  * Everything about the acting patient that the per-operation path needs,
@@ -252,6 +257,10 @@ export class SyncPushService {
     operation: SyncPushOperationParsed,
     correlationId: string | undefined,
   ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    if (operation.entityType === SYNC_ENTITY_TYPE.MEAL) {
+      return this.applyMeal(context, operation, correlationId);
+    }
+
     if (operation.entityType !== SYNC_ENTITY_TYPE.OBSERVATION) {
       // LIVE as of P3.S1, and it was written for exactly this. The comment
       // here used to say "currently unreachable ... becomes live at P4, when
@@ -315,6 +324,264 @@ export class SyncPushService {
       );
     }
     return null;
+  }
+
+  /**
+   * The `Meal` push path (§7.4, SRS AC 2.4) — the mirror of
+   * `applyObservation` for the first app-native synced entity.
+   *
+   * Everything structural is identical and deliberately so: lookup by
+   * (patient, entityId) TOGETHER (§2), last-write-wins by client timestamp
+   * (§4) with the same three outcomes, `ENTITY_NOT_FOUND` for an update or
+   * delete against a row this patient does not have, and the same audit
+   * obligations (§4.1). A meal that behaved differently from an observation
+   * under conflict would make the contract mean two things.
+   *
+   * What differs is validation, and only validation: a meal has no value, no
+   * unit and no Measured/Estimated toggle, so `evaluateTier1` does not apply —
+   * but the two TIMESTAMP rules do, through the shared
+   * `evaluateEntryTimestamp` that `evaluateTier1` also composes.
+   */
+  private async applyMeal(
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    const isDelete = operation.operationType === SYNC_OPERATION_TYPE.DELETE;
+
+    // §2/§4: by (patient, entityId) together, never `findUnique({ id })`. An
+    // id resolving only to another patient's row is treated as not existing,
+    // so it takes the same branch and returns a byte-identical result as an
+    // id that exists for nobody — a distinct code would itself be the
+    // disclosure.
+    const stored = await this.prisma.meal.findFirst({
+      where: { id: operation.entityId, patientId: context.patientId },
+    });
+
+    if (stored === null && (isDelete || operation.operationType === SYNC_OPERATION_TYPE.UPDATE)) {
+      return {
+        result: rejection(operation, SYNC_REASON_CODE.ENTITY_NOT_FOUND, SYNC_FIELD_PATH.ENTITY_ID),
+        applied: false,
+      };
+    }
+
+    // §4: last-write-wins, including for a CREATE against an existing row —
+    // that is an ordinary comparison, never a rejection. The reachable case is
+    // not a client bug: the server applies a create, the response is lost, the
+    // client re-pushes.
+    if (stored !== null && operation.clientTimestamp.getTime() < stored.clientUpdatedAt.getTime()) {
+      return this.recordMealSuperseded(context, operation, stored, correlationId);
+    }
+
+    return isDelete
+      ? this.applyMealDelete(context, operation, stored, correlationId)
+      : this.applyMealUpsert(context, operation, stored, correlationId);
+  }
+
+  /** The incoming meal lost. Result `superseded`, and the INCOMING version goes to the audit log (§4.1). */
+  private async recordMealSuperseded(
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    stored: Meal,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    const result = syncSupersededResult({
+      operationId: toOperationId(operation.operationId),
+      entityId: toEntityId(operation.entityId),
+      // §3.6: for a superseded result this is the WINNING row's sequence, not
+      // this operation's — the receipt names where the entity row stands.
+      appliedServerSequence: toServerSequence(stored.serverSequence.toString()),
+      replayed: false,
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: context.actorId,
+          action: 'UPDATE',
+          entityType: MEAL_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_CONFLICT_LOSER_REASON,
+          // The INCOMING version that lost — not the stored one. Nothing the
+          // patient recorded is destroyed; it is moved somewhere append-only,
+          // which is the only reason last-write-wins is acceptable for
+          // clinical data at all (§4.1).
+          beforeValue: incomingMealSnapshot(operation),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+      await this.writeOperationRecord(tx, context, operation, result);
+    });
+
+    return { result, applied: false };
+  }
+
+  private async applyMealUpsert(
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    stored: Meal | null,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    // Payload CONTENT validation, per operation — never in the pipe (§6.1).
+    let input;
+    try {
+      const parsed = mealRequestParseSchema.parse(operation.payload);
+      input = interpretMealPayload(parsed);
+    } catch (error) {
+      const detail = firstRejectionDetail(error);
+      return { result: rejection(operation, detail.reasonCode, detail.field), applied: false };
+    }
+
+    // The two Tier 1 rules a meal is subject to. Shared with volumetric
+    // entries through `packages/core`, so the clock-skew allowance a meal is
+    // judged against is the same admin-managed row an observation is.
+    const thresholds = await this.thresholds.getVolumetricThresholds();
+    const timestampErrors = evaluateEntryTimestamp(
+      {
+        field: MEAL_FIELD.EFFECTIVE_DATE_TIME,
+        effectiveDateTime: input.effectiveDateTime,
+        surgeryDate: context.surgeryDate,
+        now: new Date(),
+      },
+      thresholds,
+    );
+
+    const firstTimestampError = timestampErrors[0];
+    if (firstTimestampError !== undefined) {
+      // First in §6.2's order, like every other rejection on this surface.
+      return {
+        result: rejection(
+          operation,
+          firstTimestampError.ruleCode as Parameters<typeof rejection>[1],
+          MEAL_FIELD.EFFECTIVE_DATE_TIME,
+        ),
+        applied: false,
+      };
+    }
+
+    const data: Prisma.MealUncheckedCreateInput = {
+      id: operation.entityId,
+      patientId: context.patientId,
+      description: input.description,
+      size: toStoredSize(input.size),
+      tagCodes: [...input.tagCodes],
+      effectiveDatetime: input.effectiveDateTime,
+      // ADR-0016: client-asserted zone, server-derived day. The UTC-midnight
+      // construction is how Prisma takes a calendar DATE without a zone
+      // shifting it by one.
+      enteredTimezone: input.enteredTimezone,
+      localDate: new Date(`${input.localDate}T00:00:00.000Z`),
+      clientUpdatedAt: operation.clientTimestamp,
+      deletedAt: null,
+    };
+
+    const row = await this.prisma.$transaction(async (tx) => {
+      const written =
+        stored === null
+          ? await tx.meal.create({ data })
+          : await tx.meal.update({
+              where: { id: operation.entityId, patientId: context.patientId },
+              // A full replacement, not a patch (§4). `deletedAt: null` is
+              // what resurrects a tombstoned meal when an update beats a
+              // delete.
+              data,
+            });
+
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: context.actorId,
+          action: stored === null ? 'CREATE' : 'UPDATE',
+          entityType: MEAL_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_APPLIED_REASON,
+          ...(stored !== null ? { beforeValue: toMealAuditSnapshot(stored) } : {}),
+          afterValue: toMealAuditSnapshot(written),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+
+      // §4.1: an accepted operation that DISPLACED a stored version writes a
+      // second row carrying that version as it was. Two rows, two things.
+      if (stored !== null) {
+        await this.audit.record(
+          {
+            actorType: 'PATIENT',
+            actorId: context.actorId,
+            action: 'UPDATE',
+            entityType: MEAL_ENTITY_TYPE,
+            entityId: operation.entityId,
+            reasonCode: SYNC_CONFLICT_LOSER_REASON,
+            beforeValue: toMealAuditSnapshot(stored),
+            ...(correlationId !== undefined ? { correlationId } : {}),
+          },
+          tx,
+        );
+      }
+
+      await this.writeOperationRecord(
+        tx,
+        context,
+        operation,
+        acceptedResultFor(operation, written.serverSequence),
+      );
+      return written;
+    });
+
+    return { result: acceptedResultFor(operation, row.serverSequence), applied: true };
+  }
+
+  private async applyMealDelete(
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    stored: Meal | null,
+    correlationId: string | undefined,
+  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+    if (stored === null) {
+      throw new Error(
+        'applyMealDelete reached with no stored row; applyMeal should have rejected it.',
+      );
+    }
+
+    const row = await this.prisma.$transaction(async (tx) => {
+      // A tombstone, never a hard DELETE (§1) — and the runtime role holds no
+      // DELETE grant on this table, so a hard delete would fail at the
+      // database too.
+      const written = await tx.meal.update({
+        where: { id: operation.entityId, patientId: context.patientId },
+        data: { deletedAt: new Date(), clientUpdatedAt: operation.clientTimestamp },
+      });
+
+      // §4.1: the FULL pre-deletion state as `beforeValue`, `afterValue`
+      // null. The tombstone carries nothing on the wire precisely because the
+      // audit store carries everything.
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: context.actorId,
+          action: 'DELETE',
+          entityType: MEAL_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_APPLIED_REASON,
+          beforeValue: toMealAuditSnapshot(stored),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+
+      await this.writeOperationRecord(
+        tx,
+        context,
+        operation,
+        acceptedResultFor(operation, written.serverSequence),
+      );
+      return written;
+    });
+
+    return { result: acceptedResultFor(operation, row.serverSequence), applied: true };
   }
 
   private async applyObservation(
@@ -795,3 +1062,30 @@ function toStoredStatus(status: string): SyncOperationStatus {
 
 /** Referenced so the enum import is not flagged; `MeasurementSystem` is used via `toStoredMeasurementSystem`. */
 export type { MeasurementSystem };
+
+/**
+ * The INCOMING meal that lost a conflict, as §4.1 requires it be audited.
+ *
+ * Built from the operation rather than from a stored row, because the whole
+ * point is that this version was never written. Field by field and never a
+ * spread of `operation.payload`: that object is client-supplied and
+ * unvalidated at this point, so a spread would put arbitrary client content
+ * into the audit store.
+ *
+ * The payload is recorded as the client sent it, including fields that failed
+ * nothing — this is the losing VERSION, and an audit row that trimmed it to
+ * what the server would have stored would not be a record of what the patient
+ * wrote.
+ */
+function incomingMealSnapshot(operation: SyncPushOperationParsed): Record<string, unknown> {
+  const payload = (operation.payload ?? {}) as Record<string, unknown>;
+  return {
+    id: operation.entityId,
+    description: payload.description ?? null,
+    size: payload.size ?? null,
+    tagCodes: payload.tagCodes ?? [],
+    effectiveDatetime: payload.effectiveDateTime ?? null,
+    enteredTimezone: payload.enteredTimezone ?? null,
+    clientUpdatedAt: operation.clientTimestamp.toISOString(),
+  };
+}
