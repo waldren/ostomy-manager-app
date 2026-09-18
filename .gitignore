@@ -12,8 +12,9 @@ coverage/
 *.log
 .DS_Store
 .vscode/
-# Claude Code: share project agents and settings; keep personal overrides local
+# Claude Code: share project agents, skills and settings; keep personal overrides local
 .claude/*
 !.claude/agents/
+!.claude/skills/
 !.claude/settings.json
 
