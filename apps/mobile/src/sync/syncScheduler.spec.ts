@@ -28,11 +28,19 @@ import {
 function cycle(stoppedBecause: SyncStopReason): SyncCycleResult {
   return {
     push: { accepted: 0, superseded: 0, rejected: 0, unrecognized: 0 },
-    delta: { upserts: 0, tombstones: 0, pages: 0, skippedAsStale: 0, undecodable: 0 },
+    delta: {
+      upserts: 0,
+      tombstones: 0,
+      pages: 0,
+      skippedAsStale: 0,
+      undecodable: 0,
+      unsupportedEntity: 0,
+    },
     stoppedBecause,
     unbuildable: [],
     quarantined: 0,
     thresholdsRefreshed: true,
+    valueSetsRefreshed: true,
   };
 }
 

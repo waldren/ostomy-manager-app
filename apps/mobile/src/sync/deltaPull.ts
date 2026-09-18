@@ -53,6 +53,8 @@ export interface DeltaOutcome {
   readonly skippedAsStale: number;
   /** Changes the response shaped in a way §5.2 does not define. Skipped rather than guessed at; see `responseDecoding.ts`. */
   readonly undecodable: number;
+  /** Changes for an entity type this build does not handle yet (§8). Skipped, cursor still advanced — see `DecodedDeltaChange`. */
+  readonly unsupportedEntity: number;
 }
 
 /**
@@ -73,10 +75,17 @@ export async function applyDeltaPage(
   let tombstones = 0;
   let skippedAsStale = 0;
   let undecodable = 0;
+  let unsupportedEntity = 0;
 
   for (const change of page.changes) {
     if (change.kind === 'undecodable') {
       undecodable += 1;
+      continue;
+    }
+    if (change.kind === 'unsupported-entity') {
+      // §8: tolerate and skip. The cursor still advances below — withholding
+      // it would stall every later change behind one this build cannot use.
+      unsupportedEntity += 1;
       continue;
     }
     const applied = await applyChange(executor, change, appliedAt);
@@ -91,7 +100,7 @@ export async function applyDeltaPage(
   // AFTER every change in the page is committed. See this module's header.
   await setCursor(executor, page.cursor, appliedAt);
 
-  return { upserts, tombstones, skippedAsStale, undecodable };
+  return { upserts, tombstones, skippedAsStale, undecodable, unsupportedEntity };
 }
 
 /**
@@ -122,7 +131,7 @@ export async function applyDeltaPage(
  */
 async function applyChange(
   executor: SqliteExecutor,
-  change: Exclude<DecodedDeltaChange, { kind: 'undecodable' }>,
+  change: Extract<DecodedDeltaChange, { kind: 'upsert' } | { kind: 'tombstone' }>,
   appliedAt: string,
 ): Promise<boolean> {
   const existing = await getObservationById(executor, change.entityId);

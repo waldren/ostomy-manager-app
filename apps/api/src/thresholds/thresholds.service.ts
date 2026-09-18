@@ -78,6 +78,18 @@ const REQUIRED_VOLUMETRIC_THRESHOLD_KEYS = REQUIRED_VOLUMETRIC_THRESHOLDS.map(
 export interface ActiveValueSetMember {
   readonly code: string;
   readonly sortOrder: number;
+  /**
+   * The quantity a member carries, when it has one (P3.S1). A container size
+   * is `250` with `numericUnit: 'mL'`; a fluid type or a meal tag is a
+   * category and carries neither.
+   *
+   * Projected as a `number` rather than Prisma's `Decimal`: these are
+   * `DECIMAL(12,4)` values far inside a double's exact range, and the wire
+   * carries them as JSON numbers for §7.3's reason — a clinical value stays a
+   * number, and making it a string pushes parsing onto every consumer.
+   */
+  readonly numericValue: number | null;
+  readonly numericUnit: string | null;
 }
 
 interface CacheEntry<T> {
@@ -243,6 +255,11 @@ export class ThresholdsService {
       orderBy: { sortOrder: 'asc' },
     });
 
-    return members.map((member) => ({ code: member.code, sortOrder: member.sortOrder }));
+    return members.map((member) => ({
+      code: member.code,
+      sortOrder: member.sortOrder,
+      numericValue: member.numericValue === null ? null : member.numericValue.toNumber(),
+      numericUnit: member.numericUnit,
+    }));
   }
 }

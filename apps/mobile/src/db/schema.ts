@@ -300,6 +300,45 @@ CREATE TABLE IF NOT EXISTS validation_thresholds_cache (
 );
 `;
 
+/**
+ * Migration 5: the cached value-set members.
+ *
+ * Same argument as migration 4's threshold cache, one step further. Value sets
+ * are admin-managed configuration and members are **retired, never deleted**
+ * (CLAUDE.md), so this app cannot hold a hardcoded list of fluid types, meal
+ * tags or container sizes — a retired member must stop being offered while
+ * still resolving in history. And the entry screens must render **offline**,
+ * where nothing can be fetched, so the last-known members rest here.
+ *
+ * Deliberately NOT seeded, for the threshold cache's reason: a seeded default
+ * is a hardcoded value set wearing a database costume. An empty table means
+ * "never fetched", and a screen with no members to offer says so rather than
+ * offering an invented list.
+ *
+ * `numeric_value` is TEXT for migration 1's reason — a container size is a
+ * decimal that gets written into `observations.value_quantity_value`, and a
+ * binary rounding step between what an admin configured and what the patient's
+ * entry records is one nobody would ever look for.
+ *
+ * No `status` column: this table holds ACTIVE members only, because that is
+ * all the endpoint returns. Storing retired ones would mean every reader had
+ * to filter, and forgetting once would offer a patient a retired option.
+ */
+const MIGRATION_5_VALUE_SET_CACHE = `
+CREATE TABLE IF NOT EXISTS value_set_members_cache (
+  value_set_key TEXT NOT NULL,
+  code TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  numeric_value TEXT,
+  numeric_unit TEXT,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (value_set_key, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_value_set_members_cache_set
+  ON value_set_members_cache (value_set_key, sort_order);
+`;
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
@@ -320,5 +359,10 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     version: 4,
     description: 'validation_thresholds_cache — admin-managed thresholds, available offline',
     sql: () => MIGRATION_4_THRESHOLD_CACHE,
+  },
+  {
+    version: 5,
+    description: 'value_set_members_cache — admin-managed value sets, available offline',
+    sql: () => MIGRATION_5_VALUE_SET_CACHE,
   },
 ];

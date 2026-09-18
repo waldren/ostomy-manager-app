@@ -23,6 +23,7 @@ import { isSyncProtocolErrorCode } from '@ostomy/core/sync';
 import type { SqliteExecutor } from '../db/executor';
 import { getCursor } from '../db/repositories/syncCursorRepository';
 import { writeThresholds } from '../db/repositories/thresholdsRepository';
+import { writeValueSets } from '../db/repositories/valueSetsRepository';
 import { listQueuedOperations, markQuarantined } from '../db/repositories/syncQueueRepository';
 import type { SyncQueueEntry } from '../db/types';
 
@@ -96,6 +97,8 @@ export interface SyncCycleResult {
   readonly quarantined: number;
   /** Whether this cycle refreshed the cached validation thresholds. A `false` leaves the previous cached copy in force; it is not an error. */
   readonly thresholdsRefreshed: boolean;
+  /** Whether this cycle refreshed the cached value sets. Same shape, same non-error semantics. */
+  readonly valueSetsRefreshed: boolean;
 }
 
 /**
@@ -127,6 +130,23 @@ export interface SyncClientPort {
     readonly stomaOutputSoftWarningMl: number;
     readonly maxClockSkewMs: number;
   }>;
+  /**
+   * `GET /api/v1/value-sets`. Rides the same cycle as the thresholds refresh
+   * and for the same reason: the entry screens must be able to render their
+   * pickers offline, so the members have to be on the device before the
+   * patient opens one.
+   */
+  valueSets(): Promise<{
+    readonly valueSets: ReadonlyArray<{
+      readonly key: string;
+      readonly members: ReadonlyArray<{
+        readonly code: string;
+        readonly sortOrder: number;
+        readonly numericValue: number | null;
+        readonly numericUnit: string | null;
+      }>;
+    }>;
+  }>;
 }
 
 export interface SyncCycleDeps {
@@ -151,6 +171,7 @@ const EMPTY_DELTA: DeltaOutcome = {
   pages: 0,
   skippedAsStale: 0,
   undecodable: 0,
+  unsupportedEntity: 0,
 };
 
 export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult> {
@@ -170,11 +191,13 @@ export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult
       // it for this either; skipped rather than attempted so an offline
       // device does not make a doomed request per cycle.
       thresholdsRefreshed: false,
+      valueSetsRefreshed: false,
     };
   }
 
   const delta = await runDeltaPhase(deps);
   const thresholdsRefreshed = await refreshThresholds(deps);
+  const valueSetsRefreshed = await refreshValueSets(deps);
 
   return {
     push: push.outcome,
@@ -183,7 +206,40 @@ export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult
     unbuildable: push.unbuildable,
     quarantined: push.quarantined,
     thresholdsRefreshed,
+    valueSetsRefreshed,
   };
+}
+
+/**
+ * Refreshes the cached value sets, and never fails the cycle — the threshold
+ * refresh's reasoning applies unchanged.
+ *
+ * A failure leaves the PREVIOUS cached copy in place, which is exactly what an
+ * offline device renders from anyway. What it must never do is stop a
+ * patient's queued entries reaching the server.
+ */
+async function refreshValueSets(deps: SyncCycleDeps): Promise<boolean> {
+  try {
+    const fetched = await deps.client.valueSets();
+    await writeValueSets(
+      deps.executor,
+      fetched.valueSets.map((set) => ({
+        key: set.key,
+        // Named field by field rather than spread: the response type is
+        // generated and free to grow, and this cache's columns are not.
+        members: set.members.map((member) => ({
+          code: member.code,
+          sortOrder: member.sortOrder,
+          numericValue: member.numericValue,
+          numericUnit: member.numericUnit,
+        })),
+      })),
+      deps.now().toISOString(),
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -508,6 +564,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
   let pages = 0;
   let skippedAsStale = 0;
   let undecodable = 0;
+  let unsupportedEntity = 0;
 
   for (;;) {
     const since = await getCursor(deps.executor);
@@ -519,7 +576,14 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
         ...(deps.deltaPageSize === undefined ? {} : { limit: deps.deltaPageSize }),
       });
     } catch (error) {
-      const outcome: DeltaOutcome = { upserts, tombstones, pages, skippedAsStale, undecodable };
+      const outcome: DeltaOutcome = {
+        upserts,
+        tombstones,
+        pages,
+        skippedAsStale,
+        undecodable,
+        unsupportedEntity,
+      };
       if (error instanceof MissingAccessTokenError) {
         return { outcome, stoppedBecause: { kind: 'unauthenticated' } };
       }
@@ -545,11 +609,12 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
     tombstones += applied.tombstones;
     skippedAsStale += applied.skippedAsStale;
     undecodable += applied.undecodable;
+    unsupportedEntity += applied.unsupportedEntity;
     pages += 1;
 
     if (!decodedPage.hasMore) {
       return {
-        outcome: { upserts, tombstones, pages, skippedAsStale, undecodable },
+        outcome: { upserts, tombstones, pages, skippedAsStale, undecodable, unsupportedEntity },
         stoppedBecause: { kind: 'completed' },
       };
     }
@@ -560,7 +625,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
     // this client still must not hang on one.
     if (decodedPage.cursor === since) {
       return {
-        outcome: { upserts, tombstones, pages, skippedAsStale, undecodable },
+        outcome: { upserts, tombstones, pages, skippedAsStale, undecodable, unsupportedEntity },
         stoppedBecause: { kind: 'unavailable' },
       };
     }

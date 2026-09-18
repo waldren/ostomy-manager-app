@@ -80,6 +80,7 @@ function createClientDouble(): {
       };
       return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
     },
+    valueSets: () => Promise.resolve({ valueSets: [] }),
   };
 
   return { port, pushes, deltaQueries, pushResponses, deltaResponses, thresholdResponses };
@@ -582,6 +583,7 @@ describe('runSyncCycle', () => {
           return client.port.delta(query);
         },
         thresholds: () => client.port.thresholds(),
+        valueSets: () => client.port.valueSets(),
       };
 
       await runSyncCycle(deps({ client: port }));

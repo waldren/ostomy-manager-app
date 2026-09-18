@@ -133,6 +133,7 @@ export function SyncProvider({
       push: (request) => api.sync.push(request as Parameters<typeof api.sync.push>[0]),
       delta: (query) => api.sync.delta(query as Parameters<typeof api.sync.delta>[0]),
       thresholds: () => api.thresholds.get(),
+      valueSets: () => api.valueSets.get(),
     };
   }, [client]);
 

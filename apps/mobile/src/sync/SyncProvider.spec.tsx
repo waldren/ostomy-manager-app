@@ -78,11 +78,19 @@ jest.mock('../db/DatabaseProvider', () => ({
 function completedCycle(overrides: Partial<SyncCycleResult> = {}): SyncCycleResult {
   return {
     push: { accepted: 0, superseded: 0, rejected: 0, unrecognized: 0 },
-    delta: { upserts: 0, tombstones: 0, pages: 0, skippedAsStale: 0, undecodable: 0 },
+    delta: {
+      upserts: 0,
+      tombstones: 0,
+      pages: 0,
+      skippedAsStale: 0,
+      undecodable: 0,
+      unsupportedEntity: 0,
+    },
     stoppedBecause: { kind: 'completed' },
     unbuildable: [],
     quarantined: 0,
     thresholdsRefreshed: true,
+    valueSetsRefreshed: true,
     ...overrides,
   };
 }
@@ -97,7 +105,9 @@ function Probe() {
 // and after cleanup has unmounted the tree, so no effect ever fires.
 async function renderProvider(): Promise<void> {
   await render(
-    <SyncProvider client={{ push: jest.fn(), delta: jest.fn(), thresholds: jest.fn() }}>
+    <SyncProvider
+      client={{ push: jest.fn(), delta: jest.fn(), thresholds: jest.fn(), valueSets: jest.fn() }}
+    >
       <Probe />
     </SyncProvider>,
   );
