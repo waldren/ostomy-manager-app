@@ -116,14 +116,58 @@ exe() {
 
 ADB="$(exe "${SDK}/platform-tools/adb")"
 EMULATOR="$(exe "${SDK}/emulator/emulator")"
+# `.bat` on Windows, extensionless elsewhere — checking only the latter is how
+# the first version of this reported cmdline-tools absent on a machine that had
+# just installed them.
 AVDMANAGER=""
-for candidate in "${SDK}"/cmdline-tools/*/bin/avdmanager; do
+SDKMANAGER=""
+for candidate in "${SDK}"/cmdline-tools/*/bin/avdmanager{,.bat}; do
   if [[ -f "${candidate}" ]]; then AVDMANAGER="${candidate}"; break; fi
 done
+for candidate in "${SDK}"/cmdline-tools/*/bin/sdkmanager{,.bat}; do
+  if [[ -f "${candidate}" ]]; then SDKMANAGER="${candidate}"; break; fi
+done
+ANDROID_CLI=""
+for candidate in "${SDK}"/cmdline-tools/*/bin/android{,.exe}; do
+  if [[ -f "${candidate}" ]]; then ANDROID_CLI="${candidate}"; break; fi
+done
+
+# The versions the build actually demands, read from React Native's own pin
+# file rather than copied here. Copying them means this check keeps passing
+# against last year's numbers after an Expo upgrade moves them — and the
+# failure that produces is a Gradle error about a hash string, pointing at
+# nothing.
+RN_VERSIONS="apps/mobile/node_modules/react-native/gradle/libs.versions.toml"
+required_pin() {
+  local key="$1"
+  [[ -f "${RN_VERSIONS}" ]] || return 1
+  sed -n "s/^${key}[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "${RN_VERSIONS}" | head -1
+}
 
 AVD_HOME="${ANDROID_AVD_HOME:-${HOME}/.android/avd}"
 
 # --- Output helpers -----------------------------------------------------------
+
+# A copy-pasteable install line when sdkmanager is available, and the GUI path
+# when it is not. Never runs the install itself: these are multi-hundred-
+# megabyte downloads with a licence to accept, and that is the developer's
+# call, not this script's.
+install_hint() {
+  # `package` arrives in the classic `platforms;android-36` spelling.
+  local package="$1"
+  if [[ -n "${ANDROID_CLI}" ]]; then
+    # Recent cmdline-tools deprecate sdkmanager in favour of an `android sdk`
+    # CLI whose package separator is `/`, not `;` — and whose sdkmanager shim
+    # REJECTS the `;` form outright ("Package platforms not found"). So the
+    # separator is translated rather than passed through: a hint that does not
+    # run is worse than no hint, because it reads as a tooling bug.
+    printf '"%s" sdk install "%s"' "${ANDROID_CLI}" "${package//;//}"
+  elif [[ -n "${SDKMANAGER}" ]]; then
+    printf '"%s" "%s"' "${SDKMANAGER}" "${package}"
+  else
+    printf 'Android Studio > SDK Manager (check "Show Package Details") > %s' "${package}"
+  fi
+}
 
 ok()   { printf '  ok      %s\n' "$*"; }
 warn() { printf '  WARN    %s\n' "$*"; }
@@ -189,20 +233,38 @@ cmd_doctor() {
   # Gradle build asks the SDK to fetch a missing platform itself, and that
   # fetch needs cmdline-tools — so an absent platform plus absent
   # cmdline-tools fails the build with a message about neither.
-  if [[ -d "${SDK}/platforms/android-36" ]]; then
-    ok "platform android-36"
-  else
-    bad "platform android-36 (Expo SDK 57 compiles against it)"
-    printf '          Android Studio > SDK Manager > SDK Platforms > Android 16 ("Android SDK Platform 36")\n'
-    failures=$((failures + 1))
-  fi
+  local want_sdk want_ndk
+  want_sdk="$(required_pin compileSdk || true)"
+  want_ndk="$(required_pin ndkVersion || true)"
 
-  if [[ -d "${SDK}/ndk" ]] && [[ -n "$(ls -A "${SDK}/ndk" 2>/dev/null)" ]]; then
-    ok "NDK ($(ls "${SDK}/ndk" | tr '\n' ' '))"
+  if [[ -z "${want_sdk}" || -z "${want_ndk}" ]]; then
+    warn "cannot read ${RN_VERSIONS} — run pnpm install; skipping the version checks"
   else
-    bad "NDK — expo-sqlite compiles SQLCipher from source and needs one"
-    printf '          Android Studio > SDK Manager > SDK Tools > check "NDK (Side by side)"\n'
-    failures=$((failures + 1))
+    # Exact directory, not a prefix match. `platforms/android-36.1` is the
+    # Android 16 QPR1 platform and does NOT satisfy `compileSdk 36`: AGP
+    # resolves that to the hash string `android-36` and fails when only the
+    # minor-versioned one is present. Android Studio's SDK Manager offers
+    # 36.1 by default, so having "Android 16" checked is not the same as
+    # having what the build wants.
+    if [[ -d "${SDK}/platforms/android-${want_sdk}" ]]; then
+      ok "platform android-${want_sdk}"
+    else
+      bad "platform android-${want_sdk} (React Native pins compileSdk=${want_sdk})"
+      printf '          present: %s\n' "$(ls "${SDK}/platforms" 2>/dev/null | tr '\n' ' ')"
+      printf '          install: %s\n' "$(install_hint "platforms;android-${want_sdk}")"
+      failures=$((failures + 1))
+    fi
+
+    # An exact version too, for the same reason: `ndkVersion` in Gradle is an
+    # equality test, not a floor. A newer NDK does not satisfy it.
+    if [[ -d "${SDK}/ndk/${want_ndk}" ]]; then
+      ok "NDK ${want_ndk}"
+    else
+      bad "NDK ${want_ndk} (React Native pins it exactly; a newer one does not satisfy Gradle)"
+      printf '          present: %s\n' "$(ls "${SDK}/ndk" 2>/dev/null | tr '\n' ' ')"
+      printf '          install: %s\n' "$(install_hint "ndk;${want_ndk}")"
+      failures=$((failures + 1))
+    fi
   fi
 
   step "AVD"
