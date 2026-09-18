@@ -22,6 +22,21 @@ scripts/android-emulator.sh stop
 Equivalent pnpm entry points exist (`pnpm --filter @ostomy/mobile emulator:*`)
 for people who do not use this skill.
 
+## Run it from Git Bash, not PowerShell
+
+On Windows the bare word `bash` resolves to `C:\Windows\System32\bash.exe` —
+**WSL** — when invoked from PowerShell or cmd, including through
+`pnpm --filter @ostomy/mobile emulator:*`. WSL has no access to the Windows
+Android SDK, starts a second adb server that cannot see the Windows one's
+devices, and (by default) has neither `git` nor `LOCALAPPDATA`.
+
+The script detects this and says so rather than half-working. If you see it,
+either run from Git Bash, or point npm at Git Bash once:
+
+```
+npm config set script-shell "C:\Program Files\Git\bin\bash.exe"
+```
+
 ## Always start with `doctor`
 
 It is cheap and it is the only thing that distinguishes "the emulator is
