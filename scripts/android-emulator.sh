@@ -127,6 +127,10 @@ done
 for candidate in "${SDK}"/cmdline-tools/*/bin/sdkmanager{,.bat}; do
   if [[ -f "${candidate}" ]]; then SDKMANAGER="${candidate}"; break; fi
 done
+ANDROID_CLI=""
+for candidate in "${SDK}"/cmdline-tools/*/bin/android{,.exe}; do
+  if [[ -f "${candidate}" ]]; then ANDROID_CLI="${candidate}"; break; fi
+done
 
 # The versions the build actually demands, read from React Native's own pin
 # file rather than copied here. Copying them means this check keeps passing
@@ -149,8 +153,16 @@ AVD_HOME="${ANDROID_AVD_HOME:-${HOME}/.android/avd}"
 # megabyte downloads with a licence to accept, and that is the developer's
 # call, not this script's.
 install_hint() {
+  # `package` arrives in the classic `platforms;android-36` spelling.
   local package="$1"
-  if [[ -n "${SDKMANAGER}" ]]; then
+  if [[ -n "${ANDROID_CLI}" ]]; then
+    # Recent cmdline-tools deprecate sdkmanager in favour of an `android sdk`
+    # CLI whose package separator is `/`, not `;` — and whose sdkmanager shim
+    # REJECTS the `;` form outright ("Package platforms not found"). So the
+    # separator is translated rather than passed through: a hint that does not
+    # run is worse than no hint, because it reads as a tooling bug.
+    printf '"%s" sdk install "%s"' "${ANDROID_CLI}" "${package//;//}"
+  elif [[ -n "${SDKMANAGER}" ]]; then
     printf '"%s" "%s"' "${SDKMANAGER}" "${package}"
   else
     printf 'Android Studio > SDK Manager (check "Show Package Details") > %s' "${package}"
