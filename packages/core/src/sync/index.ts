@@ -56,6 +56,8 @@ export type {
   ObservationAppNativeFields,
   ObservationFhirFields,
   ObservationMethodWireValue,
+  MealSize,
+  MealSyncPayload,
   ObservationSyncPayload,
   ObservationValueQuantity,
   ObservationWireStatus,
@@ -63,7 +65,7 @@ export type {
   SyncPayloadByEntityType,
   WireInstant,
 } from './payload.js';
-export { SYNC_ENTITY_TYPE } from './payload.js';
+export { MEAL_SIZE, SYNC_ENTITY_TYPE } from './payload.js';
 
 export type { SyncReasonCode, SyncSpecificReasonCode, Tier1ReasonCode } from './reasonCodes.js';
 export {

@@ -18,6 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import type { SqliteExecutor } from '../executor';
 import {
   decodeSyncQueueRow,
+  type SyncQueueEntityType,
   type SyncQueueEntry,
   type SyncQueueOperationType,
   type SyncQueueRawRow,
@@ -34,7 +35,7 @@ import {
 export interface NewQueueEntry {
   /** Minted once, at enqueue, by the caller — never by this function (§1, §9.7: "an operation id is minted once at enqueue"; minting it here instead of at the call site would make every retry path re-derive whether it already has one, which is exactly the mistake §9.7 exists to prevent). */
   readonly operationId: string;
-  readonly entityType: 'Observation';
+  readonly entityType: SyncQueueEntityType;
   readonly entityId: string;
   readonly operationType: SyncQueueOperationType;
   readonly clientTimestamp: string;

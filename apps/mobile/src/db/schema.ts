@@ -339,6 +339,61 @@ CREATE INDEX IF NOT EXISTS idx_value_set_members_cache_set
   ON value_set_members_cache (value_set_key, sort_order);
 `;
 
+/**
+ * Migration 6: fluid intake and meals reach the device (P3.S1, SRS AC 2.3/2.4).
+ *
+ * Two additions that look unrelated and are not: both are entry types the
+ * patient logs offline, so both need a local home before a screen can confirm
+ * a save from the local write (§9.5).
+ *
+ * **`observations.fluid_type_code`** mirrors the server column added in the
+ * same sprint. Nullable for the two different reasons storage deliberately
+ * does not distinguish — "the patient did not categorise" on an intake row,
+ * "not applicable" on stoma output — which follows from `code`, exactly as it
+ * does server-side.
+ *
+ * **`meals`** is the first app-native synced entity on this device. It carries
+ * the same sync bookkeeping as `observations` because it is subject to the
+ * same contract: `client_updated_at` for last-write-wins, `server_sequence`
+ * stamped from a push receipt or a delta row, `deleted_at` for tombstones.
+ * Anything that differs from the observations table here is a bug.
+ *
+ * `tag_codes` is stored as a JSON array in TEXT. SQLite has no array type, and
+ * the alternative — a join table — would need its own sync identity, which
+ * docs/sync-contract.md has no concept of; the wire carries tags inside the
+ * meal's own payload (§7.4) for that reason, and the local shape follows the
+ * wire rather than inventing a second model.
+ *
+ * `size` is CHECK-constrained to the three wire values, mirroring the server's
+ * enum. Belt and braces, like `entered_measurement_system`'s: every write path
+ * goes through `../db/offlineWrites.ts`, but a schema-level constraint fails
+ * loudly in a test rather than producing a row this app cannot render.
+ */
+const MIGRATION_6_INTAKE_AND_MEALS = `
+ALTER TABLE observations ADD COLUMN fluid_type_code TEXT;
+
+CREATE TABLE IF NOT EXISTS meals (
+  id TEXT PRIMARY KEY NOT NULL,
+  description TEXT,
+  size TEXT NOT NULL CHECK (size IN ('small', 'medium', 'large')),
+  tag_codes TEXT NOT NULL DEFAULT '[]',
+  effective_datetime TEXT NOT NULL,
+  entered_timezone TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  client_updated_at TEXT NOT NULL,
+  server_sequence TEXT,
+  deleted_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_meals_local_date
+  ON meals (local_date);
+
+CREATE INDEX IF NOT EXISTS idx_meals_deleted_at
+  ON meals (deleted_at);
+`;
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
@@ -364,5 +419,10 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     version: 5,
     description: 'value_set_members_cache — admin-managed value sets, available offline',
     sql: () => MIGRATION_5_VALUE_SET_CACHE,
+  },
+  {
+    version: 6,
+    description: 'fluid intake (observations.fluid_type_code) and the local meals table',
+    sql: () => MIGRATION_6_INTAKE_AND_MEALS,
   },
 ];

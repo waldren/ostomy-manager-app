@@ -15,10 +15,20 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import type { ObservationSyncPayload, SyncPushOperation, SyncPushRequest } from '@ostomy/core/sync';
+import type {
+  MealSyncPayload,
+  ObservationSyncPayload,
+  SyncPushOperation,
+  SyncPushRequest,
+} from '@ostomy/core/sync';
 import { toEntityId, toOperationId } from '@ostomy/core/sync';
 
 import type { SqliteExecutor } from '../db/executor';
+import {
+  getMealById,
+  markMealServerSequence,
+  type LocalMeal,
+} from '../db/repositories/mealsRepository';
 import { getObservationById, markServerSequence } from '../db/repositories/observationsRepository';
 import {
   markRejected,
@@ -84,6 +94,8 @@ export async function buildPushRequest(
   const unbuildable: UnbuildableOperation[] = [];
 
   for (const entry of batch) {
+    // A delete carries no payload for EITHER entity type (§3.1), so the
+    // dispatch below only matters for a create or an update.
     if (entry.operationType === 'delete') {
       // §3.1: `payload` is ABSENT for a delete — not null, not an empty
       // object. The key must not appear at all, or §6.1's
@@ -94,6 +106,29 @@ export async function buildPushRequest(
         entityType: 'Observation',
         operationType: 'delete',
         clientTimestamp: entry.clientTimestamp,
+      });
+      sent.push(entry);
+      continue;
+    }
+
+    if (entry.entityType === 'Meal') {
+      const meal = await getMealById(executor, entry.entityId);
+      if (meal === undefined) {
+        unbuildable.push({
+          operationId: entry.operationId,
+          entityId: entry.entityId,
+          reason: 'entity-row-missing',
+        });
+        continue;
+      }
+
+      operations.push({
+        operationId: toOperationId(entry.operationId),
+        entityId: toEntityId(entry.entityId),
+        entityType: 'Meal',
+        operationType: entry.operationType,
+        clientTimestamp: entry.clientTimestamp,
+        payload: toMealPayload(meal),
       });
       sent.push(entry);
       continue;
@@ -152,6 +187,27 @@ function toObservationPayload(observation: LocalObservation): ObservationSyncPay
     method: observation.method,
     enteredMeasurementSystem: observation.enteredMeasurementSystem,
     enteredTimezone: observation.enteredTimezone,
+    fluidTypeCode: observation.fluidTypeCode,
+  };
+}
+
+/**
+ * Projects a local meal onto the §7.4 wire payload, field by field.
+ *
+ * **No `resourceType`** — that key is FHIR's and a meal is app-native;
+ * carrying it would assert a conformance to `NutritionIntake` this entity does
+ * not have. And **never a spread**: `{ ...meal }` typechecks and ships
+ * `localDate`, `serverSequence`, `deletedAt` and this app's own
+ * `createdAt`/`updatedAt`, which §7.4 names as unrecognized.
+ */
+function toMealPayload(meal: LocalMeal): MealSyncPayload {
+  return {
+    id: toEntityId(meal.id),
+    description: meal.description,
+    size: meal.size,
+    tagCodes: [...meal.tagCodes],
+    effectiveDateTime: meal.effectiveDatetime,
+    enteredTimezone: meal.enteredTimezone,
   };
 }
 
@@ -226,7 +282,7 @@ export async function applyPushResults(
   results: readonly DecodedPushResult[],
   appliedAt: string,
 ): Promise<PushOutcome> {
-  const sentIds = new Set(sent.map((entry) => entry.operationId));
+  const sentByOperationId = new Map(sent.map((entry) => [entry.operationId, entry]));
   let accepted = 0;
   let superseded = 0;
   let rejected = 0;
@@ -241,7 +297,7 @@ export async function applyPushResults(
       continue;
     }
 
-    if (!sentIds.has(result.operationId)) {
+    if (!sentByOperationId.has(result.operationId)) {
       // A result for something this device did not just send. Counted and
       // otherwise ignored: acting on it would mean mutating a queue row
       // named by an id this batch did not choose, and the only rows this
@@ -264,6 +320,10 @@ export async function applyPushResults(
       continue;
     }
 
+    // The entry this result settles — needed because the server-sequence stamp
+    // below is per-TABLE, and the two tables are different.
+    const entry = sentByOperationId.get(result.operationId);
+
     // `accepted` and `superseded` are both "remove from the queue" (§3.5).
     // `superseded` is not an error and there is nothing to correct: a newer
     // version of the entity already exists server-side, and routing it to
@@ -279,7 +339,17 @@ export async function applyPushResults(
       // `sync_cursor`; see `db/repositories/syncCursorRepository.ts`'s
       // header comment and §3.6 for what advancing from a receipt would
       // silently skip.
-      await markServerSequence(executor, result.entityId, result.appliedServerSequence);
+      // Dispatched on the entity type, NOT applied to observations
+      // unconditionally. That bug is silent in both directions: stamping the
+      // observations table for a meal updates zero rows and returns cleanly,
+      // so the meal keeps `server_sequence` NULL forever and nothing reports
+      // it — and a future id collision across tables would stamp the wrong
+      // row entirely.
+      if (entry?.entityType === 'Meal') {
+        await markMealServerSequence(executor, result.entityId, result.appliedServerSequence);
+      } else {
+        await markServerSequence(executor, result.entityId, result.appliedServerSequence);
+      }
       await removeOperation(executor, result.operationId);
     });
 

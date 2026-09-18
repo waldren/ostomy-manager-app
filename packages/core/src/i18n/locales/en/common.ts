@@ -80,6 +80,71 @@ export const common = {
   // Correction inbox (AC 13.1 AC4). "Could not be saved" is accurate from
   // the patient's point of view: the entry is on their phone, but it has
   // not been accepted.
+  // --- Fluid intake (P3.S1, SRS AC 2.3) ---------------------------------
+  'entry.intakeHeading': 'Add a drink',
+  'entry.intakeAmountLabel': 'How much did you drink?',
+  'entry.intakeAmountHint': 'Tap a size below, or type the amount.',
+  // AC 2.3 AC2. The buttons themselves are labelled with the amount, which is
+  // a VALUE interpolated by Intl rather than a catalog string — a catalog key
+  // cannot carry a number (ADR-0006), and "250 mL" localises properly while
+  // "glass_250" would need one key per size forever.
+  'entry.intakeQuickAddLabel': 'Common sizes',
+  // AC 2.3 AC1. "Optional" is said out loud: a categorised list next to a
+  // required amount reads as required unless it says otherwise, and a patient
+  // who does not know what to pick should not be stopped.
+  'entry.fluidTypeLabel': 'What did you drink? (optional)',
+  'entry.fluidTypeNone': 'Rather not say',
+
+  // Fluid-type labels, keyed by the value set's stable member codes. A code
+  // with no entry here renders via `entry.unknownOptionLabel` rather than the
+  // raw code — a member an admin added after this release shipped is a real
+  // case, and showing `oral_rehydration_solution` at a patient is not.
+  'fluidType.water': 'Water',
+  'fluidType.oral_rehydration_solution': 'Rehydration drink',
+  'fluidType.coffee_or_tea': 'Coffee or tea',
+  'fluidType.juice': 'Juice',
+  'fluidType.milk': 'Milk',
+  'fluidType.soup_or_broth': 'Soup or broth',
+  'fluidType.other': 'Something else',
+
+  // --- Meals (P3.S1, SRS AC 2.4) ----------------------------------------
+  'entry.mealHeading': 'Add a meal',
+  'entry.mealDescriptionLabel': 'What did you eat? (optional)',
+  'entry.mealDescriptionHint': 'A few words is plenty. You can also just pick tags below.',
+  // AC 2.4 AC2. A relative judgement, not a quantity — this app never asks a
+  // patient to weigh food, and the labels say so by being comparative.
+  'entry.mealSizeLabel': 'How big was it?',
+  // Its OWN message, not METHOD_REQUIRED's. That one reads "Tell us if you
+  // measured this amount or estimated it" — correct for a volumetric entry and
+  // nonsense beside a meal, which has no amount. Reusing it would have put a
+  // sentence about measuring in front of someone logging a sandwich.
+  'entry.mealSizeRequired': 'Choose how big the meal was.',
+  'mealSize.small': 'Small or a snack',
+  'mealSize.medium': 'A normal meal',
+  'mealSize.large': 'Large or heavy',
+  'entry.mealTagsLabel': 'Anything in it worth noting? (optional)',
+  'entry.mealTagsHint': 'Tap any that apply. These help you and your care team spot patterns.',
+  'entry.mealSaveButton': 'Save meal',
+
+  // Meal-tag labels, keyed by stable member code. Same fallback rule as the
+  // fluid types above.
+  'mealTag.high_fibre': 'High fibre',
+  'mealTag.dairy': 'Dairy',
+  'mealTag.high_sugar': 'High sugar',
+  'mealTag.spicy': 'Spicy',
+  'mealTag.high_fat': 'High fat',
+  'mealTag.alcohol': 'Alcohol',
+
+  // Shown in place of a value-set member this release has no label for.
+  // Members are admin-managed and can be added after an app ships, so this is
+  // a reachable state rather than a defensive one — and rendering the raw
+  // code at a patient would be worse than saying plainly that it is new.
+  'entry.unknownOptionLabel': 'Another option',
+  // The pickers have nothing to offer until the device has fetched the value
+  // sets at least once. Says what is true rather than showing an empty box.
+  'entry.optionsUnavailable':
+    'We could not load the choices for this yet. You can still save your entry without them.',
+
   'corrections.heading': 'Entries that need your attention',
   'corrections.empty': 'Nothing needs fixing.',
   'corrections.intro':

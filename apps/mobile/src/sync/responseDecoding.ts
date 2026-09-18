@@ -162,7 +162,7 @@ export const UNSPECIFIED_REJECTION_CODE = 'REJECTED_WITHOUT_REASON_CODE';
 export type DecodedDeltaChange =
   | {
       readonly kind: 'tombstone';
-      readonly entityType: 'Observation';
+      readonly entityType: 'Observation' | 'Meal';
       readonly entityId: string;
       readonly serverSequence: string;
       readonly clientUpdatedAt: string;
@@ -174,6 +174,20 @@ export type DecodedDeltaChange =
       readonly serverSequence: string;
       readonly clientUpdatedAt: string;
       readonly payload: Observation;
+    }
+  | {
+      readonly kind: 'meal-upsert';
+      readonly entityId: string;
+      readonly serverSequence: string;
+      readonly clientUpdatedAt: string;
+      readonly payload: {
+        readonly id: string;
+        readonly description: string | null;
+        readonly size: string;
+        readonly tagCodes: readonly string[];
+        readonly effectiveDateTime: string;
+        readonly enteredTimezone: string;
+      };
     }
   /**
    * An entity type this build does not handle.
@@ -220,14 +234,17 @@ function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
   // server began sending `Meal` changes (P3.S1) a meal decoded as an
   // observation upsert and `deltaPull` wrote its fields into the observations
   // table — a well-formed row of nonsense, with no error anywhere.
-  if (change.entityType !== 'Observation') {
+  if (change.entityType !== 'Observation' && change.entityType !== 'Meal') {
     return { kind: 'unsupported-entity', entityType: String(change.entityType) };
   }
 
   if (change.deleted) {
+    // One tombstone shape for both, carrying which table it belongs to. §5.2
+    // gives a tombstone no payload at all, so there is nothing entity-specific
+    // left to decode — only somewhere to apply it.
     return {
       kind: 'tombstone',
-      entityType: 'Observation',
+      entityType: change.entityType,
       entityId,
       serverSequence,
       clientUpdatedAt,
@@ -243,6 +260,17 @@ function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
     return { kind: 'undecodable' };
   }
 
+  if (change.entityType === 'Meal') {
+    const meal = decodeMealPayload(change.payload);
+    // A meal whose payload is not the §7.4 shape is skipped rather than
+    // written with invented fields — `size` in particular is a mandatory
+    // clinical judgement (AC 2.4 AC2), and defaulting it would record an
+    // answer the patient never gave.
+    return meal === undefined
+      ? { kind: 'undecodable' }
+      : { kind: 'meal-upsert', entityId, serverSequence, clientUpdatedAt, payload: meal };
+  }
+
   return {
     kind: 'upsert',
     entityType: 'Observation',
@@ -250,6 +278,49 @@ function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
     serverSequence,
     clientUpdatedAt,
     payload: change.payload,
+  };
+}
+
+/**
+ * Narrows a delta payload to the §7.4 Meal shape.
+ *
+ * The generated client types `SyncDeltaChange.payload` as an `Observation`,
+ * because OpenAPI cannot express a payload that varies with `entityType`. So
+ * a meal arrives typed as something it is not, and this is the decode that
+ * makes it what it is — the same "decode, don't cast" boundary this file
+ * exists for.
+ */
+function decodeMealPayload(
+  payload: unknown,
+): Extract<DecodedDeltaChange, { kind: 'meal-upsert' }>['payload'] | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const raw = payload as Record<string, unknown>;
+
+  const id = nonEmptyString(raw.id);
+  const size = nonEmptyString(raw.size);
+  const effectiveDateTime = nonEmptyString(raw.effectiveDateTime);
+  const enteredTimezone = nonEmptyString(raw.enteredTimezone);
+  if (
+    id === undefined ||
+    size === undefined ||
+    effectiveDateTime === undefined ||
+    enteredTimezone === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    id,
+    description: typeof raw.description === 'string' ? raw.description : null,
+    size,
+    // Absent or malformed becomes no tags rather than undecodable: tags are an
+    // optional annotation, and losing them degrades the row where refusing it
+    // would lose the meal.
+    tagCodes: Array.isArray(raw.tagCodes)
+      ? raw.tagCodes.filter((code): code is string => typeof code === 'string')
+      : [],
+    effectiveDateTime,
+    enteredTimezone,
   };
 }
 
