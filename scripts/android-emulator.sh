@@ -42,7 +42,45 @@
 
 set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel)"
+# The repo root from this script's OWN location, not from `git rev-parse`.
+#
+# `git` is not always on PATH when this runs. `pnpm --filter @ostomy/mobile
+# emulator:*` from PowerShell resolves the bare word `bash` to
+# C:\Windows\System32\bash.exe — WSL — which has neither git nor the Windows
+# environment. The old line then failed in the worst possible way: command
+# substitution produced an empty string, `cd ""` is a silent no-op that
+# SUCCEEDS even under `set -e`, and the script carried on from whatever
+# directory it happened to be in to fail later with an unrelated message
+# about the Android SDK.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd -- "${REPO_ROOT}"
+
+# Running under WSL against a Windows checkout cannot work, and saying so here
+# is far kinder than the symptom. The emulator, adb and the AVD definitions
+# are Windows-side: WSL would need its own Linux SDK, would run a second adb
+# server that does not see the Windows one's devices, and reads the AVD home
+# through /mnt with different path semantics. Better to name the cause.
+if [[ -r /proc/version ]] && grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+  if [[ "${REPO_ROOT}" == /mnt/* ]] || [[ -n "${WSL_DISTRO_NAME:-}" && ! -d "${HOME}/Android/Sdk" ]]; then
+    cat >&2 <<'EOF'
+ERROR: this is running under WSL, against a Windows checkout.
+
+The emulator, adb and the AVD definitions live on the Windows side. WSL would
+start a second adb server that cannot see the Windows one's devices.
+
+This usually means `bash` resolved to C:\Windows\System32\bash.exe. Run the
+command from Git Bash instead of PowerShell or cmd:
+
+  "C:\Program Files\Git\bin\bash.exe" scripts/android-emulator.sh <command>
+
+Or, from PowerShell, point npm at Git Bash for the session:
+
+  npm config set script-shell "C:\Program Files\Git\bin\bash.exe"
+EOF
+    exit 1
+  fi
+fi
 
 # --- Configuration ------------------------------------------------------------
 
@@ -78,10 +116,22 @@ REVERSE_PORTS=(
 # terminal for Android work will not have it. An explicit ANDROID_HOME still
 # wins when one is set.
 detect_sdk() {
+  # `LOCALAPPDATA` is not always exported into the shell that runs this — a
+  # bare `${LOCALAPPDATA:-}/Android/Sdk` then probes the literal `/Android/Sdk`
+  # and reports "no SDK found" on a machine that plainly has one. Derived from
+  # the Windows profile directory when absent.
+  local local_appdata="${LOCALAPPDATA:-}"
+  if [[ -z "${local_appdata}" && -n "${USERPROFILE:-}" ]]; then
+    local_appdata="${USERPROFILE}/AppData/Local"
+  fi
+  if [[ -z "${local_appdata}" && -d "${HOME}/AppData/Local" ]]; then
+    local_appdata="${HOME}/AppData/Local"
+  fi
+
   local candidates=(
     "${ANDROID_HOME:-}"
     "${ANDROID_SDK_ROOT:-}"
-    "${LOCALAPPDATA:-}/Android/Sdk"
+    "${local_appdata:-/nonexistent}/Android/Sdk"
     "${HOME}/Android/Sdk"
     "${HOME}/Library/Android/sdk"
   )
