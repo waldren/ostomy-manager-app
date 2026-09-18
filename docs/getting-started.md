@@ -84,6 +84,25 @@ All three clients that exist are listed below. There is still no `apps/admin`.
   Its device-side security controls (SQLCipher, keychain accessibility, biometric enrolment
   invalidation) **cannot be exercised by `pnpm test`** — jest runs no keychain. They need real iOS
   and Android hardware; see ADR-0014 and ADR-0015.
+- **Android emulator (`apps/mobile`):** `scripts/android-emulator.sh` manages a Pixel 8 AVD for
+  on-device testing, wired to the Compose stack. `doctor` first — the emulator and the development
+  build have separate prerequisites, and it names which one you are missing.
+
+  ```bash
+  scripts/android-emulator.sh doctor           # or: pnpm --filter @ostomy/mobile emulator:doctor
+  scripts/android-emulator.sh up               # create + boot + adb reverse (idempotent)
+  pnpm --filter @ostomy/mobile android:build   # expo run:android — the development build
+  ```
+
+  SQLCipher is a config-plugin native change, so **Expo Go cannot run this app** — it needs a
+  development build. Networking is `adb reverse`, never `10.0.2.2`: `mock-oidc` derives its
+  advertised `issuer` from the request's Host header, so a device reaching it as `10.0.2.2` gets
+  tokens whose `iss` the API rejects, after a sign-in that appeared to succeed. Note also that
+  Metro's default port 8081 is already published by the `admin` container — start Metro on 8082.
+
+  An emulator exercises the *logic* of ADR-0014/ADR-0015 (it reports fingerprint and a
+  hardware keystore, but no StrongBox — KeyMint in software). It does not discharge the
+  "verified on hardware" caveat above.
 - **Local Docker stack:** scaffolded at P1.S2. From the repo root:
 
   ```bash
