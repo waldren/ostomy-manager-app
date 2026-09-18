@@ -402,7 +402,11 @@ App-native fields that FHIR has no element for travel as **plain siblings**, spe
 
 `Profile` and `EffectiveRange` are synced entities in the schema but have no wire payload until P4; adding them is additive (§8).
 
-**P3.S1 added a second entity type, `Meal` (§7.4).** A client that does not know it must never be *sent* one: §8's tolerance runs one way — it requires a client to ignore an unknown FIELD in a response and says nothing about an unknown `entityType` — so the delta endpoint owes the filtering, not the client.
+**P3.S1 added a second entity type, `Meal` (§7.4).** §8 already places the obligation on the client and has since P2.S0: a new `entityType` is additive without a version bump, and "Clients MUST tolerate all four". So a delta page may contain an entity type a given client does not handle, and that client **skips the change and still advances its cursor** — the alternative, withholding it, would need a client-capability signal this wire deliberately does not have (§8, "nothing on this wire tells the server which client version sent a request").
+
+Skipping is safe precisely because it is per-entity-type: the §5.3 invariant is about never being *denied* a change, and a client that was shown one and chose not to apply it has not been denied anything. A client that later learns the type re-syncs from `since=0`, which is the same recovery §5.4 already defines.
+
+> An earlier draft of this paragraph said the server owed the filtering. That was wrong on its own terms — it contradicted §8 above, and there is no signal the server could filter on.
 
 | Wire field | Source | Required | Notes |
 | --- | --- | --- | --- |

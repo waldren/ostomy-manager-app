@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import type { Tier1Result, ValidationError } from './types.js';
 import type { VolumetricValidationThresholds } from './thresholds.js';
+import { evaluateEntryTimestamp } from './entryTimestamp.js';
 import { exceedsMaxMagnitude, exceedsMaxPrecision } from './representableRange.js';
 
 /**
@@ -124,26 +125,13 @@ function checkMethodProvided(input: VolumetricEntryInput): ValidationError | nul
   return null;
 }
 
-/** Future timestamps beyond the admin-managed clock-skew allowance are structurally impossible: they claim an event that has not happened yet. */
-function checkNotInFuture(
-  input: VolumetricEntryInput,
-  thresholds: VolumetricValidationThresholds,
-): ValidationError | null {
-  const latestAllowedMs = input.now.getTime() + thresholds.maxClockSkewMs;
-  if (input.effectiveDateTime.getTime() > latestAllowedMs) {
-    return { field: input.field, ruleCode: TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_IN_FUTURE };
-  }
-  return null;
-}
-
-/** An entry cannot predate the patient's surgery — there was no stoma yet. */
-function checkNotBeforeSurgery(input: VolumetricEntryInput): ValidationError | null {
-  if (input.surgeryDate === null) return null;
-  if (input.effectiveDateTime.getTime() < input.surgeryDate.getTime()) {
-    return { field: input.field, ruleCode: TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_BEFORE_SURGERY };
-  }
-  return null;
-}
+// The two timestamp rules live in `./entryTimestamp.js` and are COMPOSED
+// here rather than defined here (P3.S1). They are the only Tier 1 rules that
+// are not about a value, and a meal — which has no value, no unit and no
+// Measured/Estimated toggle — is still subject to both. Re-implementing them
+// in the meals path is exactly the drift this package exists to prevent: the
+// clock-skew allowance is admin-managed, and a second copy is one that keeps
+// comparing against the old threshold with nothing failing.
 
 /**
  * Evaluate every Tier 1 rule and collect every violation, not just the
@@ -160,8 +148,7 @@ export function evaluateTier1(
     checkValueIsRepresentable(input),
     checkValuePrecision(input),
     checkMethodProvided(input),
-    checkNotInFuture(input, thresholds),
-    checkNotBeforeSurgery(input),
+    ...evaluateEntryTimestamp(input, thresholds),
   ].filter((error): error is ValidationError => error !== null);
 
   if (errors.length === 0) {
