@@ -160,6 +160,8 @@ describe('runSyncCycle', () => {
         'effectiveDateTime',
         'enteredMeasurementSystem',
         'enteredTimezone',
+        // P3.S1 (SRS AC 2.3 AC1). Always present, null when there is none.
+        'fluidTypeCode',
         'id',
         'method',
         'resourceType',

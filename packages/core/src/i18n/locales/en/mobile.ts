@@ -89,6 +89,8 @@ export const mobile = {
   'home.pendingCount_other': '{{count}} entries have not been sent yet.',
   'home.pendingCountNone': 'Everything is saved and sent.',
   'home.addOutputButton': 'Add a stoma entry',
+  'home.addIntakeButton': 'Add a drink',
+  'home.addMealButton': 'Add a meal',
   'home.correctionsButton': 'Entries that need attention',
   'home.correctionsCount_one': '1 entry needs your attention.',
   'home.correctionsCount_other': '{{count}} entries need your attention.',

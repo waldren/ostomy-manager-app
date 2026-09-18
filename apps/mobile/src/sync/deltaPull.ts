@@ -18,6 +18,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { toLocalDate } from '@ostomy/core/units';
 
 import type { SqliteExecutor } from '../db/executor';
+import {
+  getMealById,
+  insertMeal,
+  markMealServerSequence,
+  replaceMeal,
+  tombstoneMeal,
+  MEAL_SIZES,
+  type MealSize,
+} from '../db/repositories/mealsRepository';
 import { getObservationById } from '../db/repositories/observationsRepository';
 import { setCursor } from '../db/repositories/syncCursorRepository';
 
@@ -131,9 +140,20 @@ export async function applyDeltaPage(
  */
 async function applyChange(
   executor: SqliteExecutor,
-  change: Extract<DecodedDeltaChange, { kind: 'upsert' } | { kind: 'tombstone' }>,
+  change: Extract<
+    DecodedDeltaChange,
+    { kind: 'upsert' } | { kind: 'tombstone' } | { kind: 'meal-upsert' }
+  >,
   appliedAt: string,
 ): Promise<boolean> {
+  if (change.kind === 'meal-upsert') {
+    return applyMealUpsert(executor, change, appliedAt);
+  }
+
+  if (change.kind === 'tombstone' && change.entityType === 'Meal') {
+    return applyMealTombstone(executor, change, appliedAt);
+  }
+
   const existing = await getObservationById(executor, change.entityId);
 
   if (existing !== undefined && change.clientUpdatedAt < existing.clientUpdatedAt) {
@@ -226,4 +246,84 @@ async function applyChange(
   // deletedAt". Without it a row this device tombstoned locally would stay
   // hidden forever even after the server told it the entry is alive again.
   return true;
+}
+
+/**
+ * Writes one meal change, unless this device holds a strictly newer version.
+ *
+ * The same last-write-wins comparison the observation path makes, on the same
+ * field, for the same reason: a delta page is a snapshot of what the server
+ * held when the query ran, and this device may have logged a meal since that
+ * is still waiting to push. Applying the server's older version over it would
+ * make an entry the patient was already told was saved (§9.5) change under
+ * them and change back one cycle later.
+ */
+async function applyMealUpsert(
+  executor: SqliteExecutor,
+  change: Extract<DecodedDeltaChange, { kind: 'meal-upsert' }>,
+  appliedAt: string,
+): Promise<boolean> {
+  const existing = await getMealById(executor, change.entityId);
+  if (existing !== undefined && change.clientUpdatedAt < existing.clientUpdatedAt) {
+    return false;
+  }
+
+  const size = toLocalMealSize(change.payload.size);
+  // A size outside the three-step scale is not writable: the column's CHECK
+  // constraint would refuse it, and guessing one would record a clinical
+  // judgement the patient never made (AC 2.4 AC2).
+  if (size === undefined) return false;
+
+  const localDate = toLocalDate(
+    new Date(change.payload.effectiveDateTime),
+    change.payload.enteredTimezone,
+  );
+
+  const fields = {
+    id: change.entityId,
+    description: change.payload.description,
+    size,
+    tagCodes: change.payload.tagCodes,
+    effectiveDatetime: change.payload.effectiveDateTime,
+    enteredTimezone: change.payload.enteredTimezone,
+    // Derived locally from the SAME shared helper the server derives it from
+    // (ADR-0016) — `localDate` is absent from the wire on purpose.
+    localDate,
+    clientUpdatedAt: change.clientUpdatedAt,
+  };
+
+  if (existing === undefined) {
+    await insertMeal(executor, fields, appliedAt);
+  } else {
+    // `replaceMeal` also clears `deleted_at`, which is the resurrection §4
+    // requires when an update beats a delete.
+    await replaceMeal(executor, fields, appliedAt);
+  }
+
+  await markMealServerSequence(executor, change.entityId, change.serverSequence);
+  return true;
+}
+
+/** §5.2: a tombstone carries no payload, so the row's clinical values are left exactly as they were — nothing on the wire could repopulate them. */
+async function applyMealTombstone(
+  executor: SqliteExecutor,
+  change: Extract<DecodedDeltaChange, { kind: 'tombstone' }>,
+  appliedAt: string,
+): Promise<boolean> {
+  const existing = await getMealById(executor, change.entityId);
+  if (existing !== undefined && change.clientUpdatedAt < existing.clientUpdatedAt) {
+    return false;
+  }
+  // A tombstone for a meal this device never saw is a no-op rather than an
+  // error: the row is already absent, which is the state the tombstone asks
+  // for. `UPDATE` matching zero rows is exactly that.
+  if (existing === undefined) return true;
+
+  await tombstoneMeal(executor, change.entityId, appliedAt, change.clientUpdatedAt, appliedAt);
+  await markMealServerSequence(executor, change.entityId, change.serverSequence);
+  return true;
+}
+
+function toLocalMealSize(raw: string): MealSize | undefined {
+  return (MEAL_SIZES as readonly string[]).includes(raw) ? (raw as MealSize) : undefined;
 }

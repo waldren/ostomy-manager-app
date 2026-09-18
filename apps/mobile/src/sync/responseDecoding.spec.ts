@@ -213,7 +213,13 @@ describe('decodeDeltaPage', () => {
    * fields into the observations table — a well-formed row of nonsense, with
    * no error anywhere.
    */
-  it('skips an entity type this build does not handle rather than decoding it as an observation', () => {
+  /**
+   * P3.S1 PR E made `Meal` a type this build DOES handle, so the guard is now
+   * exercised with a type no release has ever defined. The property under test
+   * is unchanged and still the one that matters: an unhandled type must never
+   * be decoded as an observation and written into that table.
+   */
+  it('decodes a meal rather than mistaking it for an observation', () => {
     const page = decodeDeltaPage(
       deltaResponse([
         {
@@ -222,12 +228,46 @@ describe('decodeDeltaPage', () => {
           serverSequence: '100',
           deleted: false,
           clientUpdatedAt: '2026-09-17T11:00:00.000Z',
-          payload: { id: 'entity-1', description: 'Soup', size: 'medium', tagCodes: [] },
+          payload: {
+            id: 'entity-1',
+            description: 'Soup',
+            size: 'medium',
+            tagCodes: ['dairy'],
+            effectiveDateTime: '2026-09-17T11:00:00.000Z',
+            enteredTimezone: 'America/Chicago',
+          },
         },
       ]),
     );
 
-    expect(page.changes[0]).toEqual({ kind: 'unsupported-entity', entityType: 'Meal' });
+    expect(page.changes[0]).toMatchObject({ kind: 'meal-upsert', entityId: 'entity-1' });
+  });
+
+  /**
+   * A meal whose payload is not the §7.4 shape is skipped rather than written
+   * with invented fields — `size` is a mandatory clinical judgement (AC 2.4
+   * AC2) and defaulting it would record an answer the patient never gave.
+   */
+  it('refuses a meal payload missing its mandatory size', () => {
+    const page = decodeDeltaPage(
+      deltaResponse([
+        {
+          entityType: 'Meal',
+          entityId: 'entity-1',
+          serverSequence: '100',
+          deleted: false,
+          clientUpdatedAt: '2026-09-17T11:00:00.000Z',
+          payload: {
+            id: 'entity-1',
+            description: 'Soup',
+            effectiveDateTime: '2026-09-17T11:00:00.000Z',
+            enteredTimezone: 'America/Chicago',
+          },
+        },
+      ]),
+    );
+
+    expect(page.changes[0]).toEqual({ kind: 'undecodable' });
   });
 
   /** §8: an entity type added after this build shipped degrades the same way. */

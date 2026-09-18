@@ -32,6 +32,8 @@ export interface NewLocalObservation {
   readonly enteredTimezone: string;
   /** `YYYY-MM-DD` in that zone. Derived from the same shared helper the server uses, so the two cannot group a day differently. */
   readonly localDate: string;
+  /** The optional fluid categorisation (SRS AC 2.3 AC1). `null` on any code that has no use for one — the server rejects a categorisation sent with such a code. */
+  readonly fluidTypeCode: string | null;
   readonly clientUpdatedAt: string;
 }
 
@@ -51,9 +53,9 @@ export async function insertObservation(
     `INSERT INTO observations (
       id, resource_type, code, value_quantity_value, value_quantity_unit,
       effective_datetime, method, status, entered_measurement_system,
-      entered_timezone, local_date,
+      entered_timezone, local_date, fluid_type_code,
       client_updated_at, server_sequence, deleted_at, created_at, updated_at
-    ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?);`,
+    ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?);`,
     [
       fields.id,
       fields.code,
@@ -65,6 +67,7 @@ export async function insertObservation(
       fields.enteredMeasurementSystem,
       fields.enteredTimezone,
       fields.localDate,
+      fields.fluidTypeCode,
       fields.clientUpdatedAt,
       now,
       now,
@@ -88,7 +91,8 @@ export async function replaceObservation(
     `UPDATE observations SET
       code = ?, value_quantity_value = ?, value_quantity_unit = ?,
       effective_datetime = ?, method = ?, status = ?,
-      entered_measurement_system = ?, client_updated_at = ?, updated_at = ?
+      entered_measurement_system = ?, fluid_type_code = ?,
+      client_updated_at = ?, updated_at = ?
     WHERE id = ?;`,
     [
       fields.code,
@@ -98,6 +102,7 @@ export async function replaceObservation(
       fields.method,
       fields.status,
       fields.enteredMeasurementSystem,
+      fields.fluidTypeCode,
       fields.clientUpdatedAt,
       now,
       fields.id,

@@ -114,6 +114,7 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
           method: stored!.method,
           enteredMeasurementSystem: stored!.enteredMeasurementSystem,
           enteredTimezone: stored!.enteredTimezone,
+          fluidTypeCode: stored!.fluidTypeCode,
         }),
       );
       expect(payload).toEqual({
@@ -128,6 +129,9 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
         // Captured from the device at entry, not passed in by the caller
         // (ADR-0016).
         enteredTimezone: expect.any(String),
+        // P3.S1: always present, null when there is none — an absent key and a
+        // null one read the same to a human and differently to a client.
+        fluidTypeCode: null,
       });
     });
 

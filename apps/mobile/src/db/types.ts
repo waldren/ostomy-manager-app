@@ -38,6 +38,7 @@ export interface ObservationRawRow {
   entered_measurement_system: string;
   entered_timezone: string;
   local_date: string;
+  fluid_type_code: string | null;
   client_updated_at: string;
   server_sequence: string | null;
   deleted_at: string | null;
@@ -68,6 +69,8 @@ export interface LocalObservation {
   readonly enteredTimezone: string;
   /** `YYYY-MM-DD` in that zone. Not monotonic with `effectiveDatetime`. */
   readonly localDate: string;
+  /** The optional fluid categorisation (SRS AC 2.3 AC1), on an intake entry only. */
+  readonly fluidTypeCode: string | null;
   readonly clientUpdatedAt: string;
   /** `null` until this device has seen a push receipt or delta row naming this entity's server sequence (P2.S2b). */
   readonly serverSequence: string | null;
@@ -90,6 +93,7 @@ export function decodeObservationRow(row: ObservationRawRow): LocalObservation {
     enteredMeasurementSystem: decodeMeasurementSystem(row.entered_measurement_system),
     enteredTimezone: requireText(row.entered_timezone, 'entered_timezone'),
     localDate: requireText(row.local_date, 'local_date'),
+    fluidTypeCode: row.fluid_type_code,
     clientUpdatedAt: row.client_updated_at,
     serverSequence: row.server_sequence,
     deletedAt: row.deleted_at,
@@ -164,10 +168,18 @@ export interface SyncQueueRawRow {
  * idempotency key (§1, §3.7); `localSeq` is the queue's own FIFO ordinal
  * and never crosses the wire.
  */
+/**
+ * The entity types this device queues. Mirrors `@ostomy/core/sync`'s
+ * `SYNC_ENTITY_TYPE` — the wire's FHIR-style capitalisation, not Prisma's
+ * `OBSERVATION` — and grew at P3.S1 when meals became syncable (§7.4).
+ */
+export const SYNC_QUEUE_ENTITY_TYPE = ['Observation', 'Meal'] as const;
+export type SyncQueueEntityType = (typeof SYNC_QUEUE_ENTITY_TYPE)[number];
+
 export interface SyncQueueEntry {
   readonly localSeq: number;
   readonly operationId: string;
-  readonly entityType: 'Observation';
+  readonly entityType: SyncQueueEntityType;
   readonly entityId: string;
   readonly operationType: SyncQueueOperationType;
   readonly clientTimestamp: string;
@@ -198,10 +210,12 @@ export function decodeSyncQueueRow(row: SyncQueueRawRow): SyncQueueEntry {
   };
 }
 
-function decodeEntityType(value: string): 'Observation' {
-  if (value === 'Observation') return value;
+function decodeEntityType(value: string): SyncQueueEntityType {
+  if ((SYNC_QUEUE_ENTITY_TYPE as readonly string[]).includes(value)) {
+    return value as SyncQueueEntityType;
+  }
   throw new TypeError(
-    'sync_queue.entity_type held a value other than "Observation" — P2.S2a writes no other entity type.',
+    'sync_queue.entity_type held a value this build does not write (the database file is likely corrupt or was written by a newer schema version).',
   );
 }
 

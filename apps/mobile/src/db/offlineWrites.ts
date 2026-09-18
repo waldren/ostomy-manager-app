@@ -24,6 +24,12 @@ import { generateUuid } from '../lib/utils/uuid';
 
 import type { SqliteExecutor } from './executor';
 import {
+  insertMeal,
+  replaceMeal,
+  tombstoneMeal,
+  type MealSize,
+} from './repositories/mealsRepository';
+import {
   insertObservation,
   replaceObservation,
   tombstoneObservation,
@@ -77,6 +83,13 @@ interface VolumetricFields {
   readonly effectiveDatetime: string;
   readonly measuredOrEstimated: MeasuredOrEstimated;
   readonly enteredMeasurementSystem: MeasurementSystem;
+  /**
+   * The optional fluid categorisation (SRS AC 2.3 AC1), on an INTAKE entry
+   * only. Omitted or `null` everywhere else — the server rejects a
+   * categorisation sent with a code that has no use for one, because nothing
+   * would ever read it.
+   */
+  readonly fluidTypeCode?: string | null;
 }
 
 interface WeightOrHeartRateFields {
@@ -124,6 +137,8 @@ export function buildObservationPayload(fields: {
   enteredMeasurementSystem: MeasurementSystem;
   /** IANA zone captured at entry (ADR-0016). */
   enteredTimezone: string;
+  /** The optional fluid categorisation, on an intake entry only (SRS AC 2.3 AC1). */
+  fluidTypeCode: string | null;
 }): string {
   return JSON.stringify({
     resourceType: 'Observation',
@@ -144,6 +159,10 @@ export function buildObservationPayload(fields: {
     method: fields.method,
     enteredMeasurementSystem: fields.enteredMeasurementSystem,
     enteredTimezone: fields.enteredTimezone,
+    // Always present, `null` when there is none. §7.2 spells the same rule for
+    // `method`: an absent key cannot be told apart from a client that does not
+    // implement the field.
+    fluidTypeCode: fields.fluidTypeCode,
   });
 }
 
@@ -175,6 +194,7 @@ async function enqueueObservationCreate(
     effectiveDatetime: string;
     method: string | null;
     enteredMeasurementSystem: MeasurementSystem;
+    fluidTypeCode?: string | null;
   },
   now: () => Date,
 ): Promise<{ id: string; operationId: string }> {
@@ -204,6 +224,7 @@ async function enqueueObservationCreate(
         enteredMeasurementSystem: fields.enteredMeasurementSystem,
         enteredTimezone,
         localDate,
+        fluidTypeCode: fields.fluidTypeCode ?? null,
         clientUpdatedAt: nowIso,
       },
       nowIso,
@@ -241,6 +262,7 @@ export async function enqueueObservationUpdate(
     effectiveDatetime: string;
     method: string | null;
     enteredMeasurementSystem: MeasurementSystem;
+    fluidTypeCode?: string | null;
   },
   now: () => Date,
 ): Promise<{ operationId: string }> {
@@ -266,6 +288,7 @@ export async function enqueueObservationUpdate(
         enteredMeasurementSystem: fields.enteredMeasurementSystem,
         enteredTimezone,
         localDate,
+        fluidTypeCode: fields.fluidTypeCode ?? null,
         clientUpdatedAt: nowIso,
       },
       nowIso,
@@ -359,6 +382,7 @@ export async function reenqueueCorrectedObservation(
     effectiveDatetime: string;
     measuredOrEstimated: MeasuredOrEstimated;
     enteredMeasurementSystem: MeasurementSystem;
+    fluidTypeCode?: string | null;
   },
   now: () => Date,
 ): Promise<{ operationId: string }> {
@@ -386,6 +410,7 @@ export async function reenqueueCorrectedObservation(
         enteredMeasurementSystem: fields.enteredMeasurementSystem,
         enteredTimezone,
         localDate,
+        fluidTypeCode: fields.fluidTypeCode ?? null,
         clientUpdatedAt: nowIso,
       },
       nowIso,
@@ -437,5 +462,176 @@ export async function discardRejectedCreate(
   await executor.withTransactionAsync(async () => {
     await tombstoneObservation(executor, fields.id, nowIso, nowIso, nowIso);
     await removeOperation(executor, fields.rejectedOperationId);
+  });
+}
+
+/**
+ * Creates a meal locally and queues it for sync, atomically (SRS AC 2.4).
+ *
+ * Same shape as `enqueueVolumetricObservationCreate` and for the same reason:
+ * the entity row and its queue entry commit together, because SRS §4.5's
+ * "the local write is the confirmation" has no meaning if the two can commit
+ * independently — a meal with no queued operation never syncs, and a queued
+ * operation with no meal cannot be built into a payload.
+ *
+ * No Measured/Estimated toggle: that is volumetric-only (CLAUDE.md). No value
+ * either — a meal's size is a relative judgement, deliberately not a quantity.
+ */
+export async function enqueueMealCreate(
+  executor: SqliteExecutor,
+  fields: {
+    description: string | null;
+    size: MealSize;
+    tagCodes: readonly string[];
+    effectiveDatetime: string;
+  },
+  now: () => Date,
+): Promise<{ id: string; operationId: string }> {
+  const id = generateUuid();
+  // Distinct from `id` by construction (§1: "Never the entity id") — two
+  // separate calls, never one value reused for both.
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+  // Read HERE, not taken from the caller. A zone every call site has to
+  // remember to pass is one some call site will forget, and a row written
+  // without it can never have its day recovered (ADR-0016).
+  const enteredTimezone = deviceTimeZone();
+  const localDate = toLocalDate(new Date(fields.effectiveDatetime), enteredTimezone);
+
+  await executor.withTransactionAsync(async () => {
+    await insertMeal(
+      executor,
+      {
+        id,
+        description: fields.description,
+        size: fields.size,
+        tagCodes: fields.tagCodes,
+        effectiveDatetime: fields.effectiveDatetime,
+        enteredTimezone,
+        localDate,
+        clientUpdatedAt: nowIso,
+      },
+      nowIso,
+    );
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'Meal',
+        entityId: id,
+        operationType: 'create',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
+  });
+
+  return { id, operationId };
+}
+
+/** Full-replacement update of a meal (§4: "an update is a full replacement of the entity's fields, not a patch"). */
+export async function enqueueMealUpdate(
+  executor: SqliteExecutor,
+  fields: {
+    id: string;
+    description: string | null;
+    size: MealSize;
+    tagCodes: readonly string[];
+    effectiveDatetime: string;
+  },
+  now: () => Date,
+): Promise<{ operationId: string }> {
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+  const enteredTimezone = deviceTimeZone();
+  const localDate = toLocalDate(new Date(fields.effectiveDatetime), enteredTimezone);
+
+  await executor.withTransactionAsync(async () => {
+    await replaceMeal(
+      executor,
+      {
+        id: fields.id,
+        description: fields.description,
+        size: fields.size,
+        tagCodes: fields.tagCodes,
+        effectiveDatetime: fields.effectiveDatetime,
+        enteredTimezone,
+        localDate,
+        clientUpdatedAt: nowIso,
+      },
+      nowIso,
+    );
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'Meal',
+        entityId: fields.id,
+        operationType: 'update',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
+  });
+
+  return { operationId };
+}
+
+/** Tombstones a meal locally and queues its delete (§3.1: "payload is absent for operationType: delete"). */
+export async function enqueueMealDelete(
+  executor: SqliteExecutor,
+  id: string,
+  now: () => Date,
+): Promise<{ operationId: string }> {
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+
+  // No zone here: a delete tombstones an EXISTING row and carries no payload,
+  // so there is nothing whose day needs deciding.
+  await executor.withTransactionAsync(async () => {
+    await tombstoneMeal(executor, id, nowIso, nowIso, nowIso);
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'Meal',
+        entityId: id,
+        operationType: 'delete',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
+  });
+
+  return { operationId };
+}
+
+/**
+ * Builds the §7.4 wire payload for one meal.
+ *
+ * Called at PUSH time from the `meals` row, never frozen at enqueue — the same
+ * rule migration 2 established for observations, and for the same reason: a
+ * frozen payload is immune to a change in `docs/sync-contract.md`, which is
+ * normative and does change.
+ *
+ * **No `resourceType`.** A meal is app-native; that key is FHIR's, and putting
+ * it here would assert a conformance to `NutritionIntake` this entity does not
+ * have. Every field named explicitly rather than spread, for §6.3's reason.
+ */
+export function buildMealPayload(fields: {
+  id: string;
+  description: string | null;
+  size: MealSize;
+  tagCodes: readonly string[];
+  effectiveDatetime: string;
+  enteredTimezone: string;
+}): string {
+  return JSON.stringify({
+    id: fields.id,
+    description: fields.description,
+    size: fields.size,
+    tagCodes: [...fields.tagCodes],
+    effectiveDateTime: fields.effectiveDatetime,
+    enteredTimezone: fields.enteredTimezone,
   });
 }

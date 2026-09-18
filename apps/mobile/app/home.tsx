@@ -165,6 +165,20 @@ export default function Home(): React.JSX.Element {
         }}
       />
 
+      <Button
+        label={t('mobile:home.addIntakeButton')}
+        onPress={() => {
+          router.push('/add-intake');
+        }}
+      />
+
+      <Button
+        label={t('mobile:home.addMealButton')}
+        onPress={() => {
+          router.push('/add-meal');
+        }}
+      />
+
       {rejectedCount > 0 ? (
         <>
           <BodyText tone="error">
