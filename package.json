@@ -38,9 +38,10 @@
       "@prisma/engines",
       "prisma"
     ],
-    "//overrides": "multer: three high-severity DoS advisories (GHSA-wc9g-mqfw-jrwm, GHSA-qfvm-cv95-jqjf, GHSA-g5hg-p3ph-g8qg) affect multer <2.3.0, and 2.2.0 is what `@nestjs/platform-express` pins. There is nothing to bump to: @nestjs/platform-express@latest IS 12.0.1, the version this repo already uses, and it still depends on multer@2.2.0 — so the override is the only route to a patched version until NestJS releases one. Remove it then, and not before. Safe here specifically because `apps/api` performs no multipart handling at all: there is no FileInterceptor, no @UploadedFile, and no multer import anywhere in src/, and none is planned — SRS_v2 section 4 routes photo uploads through S3 presigned URLs, so bytes never transit the API. multer is dead weight in the dependency graph that `@nestjs/platform-express` drags in regardless. This is scoped to a version range rather than pinned exactly so a 2.3.x patch is picked up without another commit.",
+    "//overrides": "One React for the whole repo, because `.npmrc` sets node-linker=hoisted. Hoisting puts a single react-dom at the root while a workspace whose range excludes the hoisted react keeps its own nested copy - so components render against one React instance and react-dom's dispatcher is bound to another. That does not error: it renders NOTHING, and packages/ui's suite failed 21 tests with an empty <div /> and no clue why. 19.2.3 is Expo SDK 57's pin and the version React Native 0.86 is tested against, so the native side chooses it and everything else follows. Raise this only in step with an Expo upgrade.",
     "overrides": {
-      "multer@<2.3.0": "^2.3.0"
+      "react": "19.2.3",
+      "react-dom": "19.2.3"
     }
   }
 }

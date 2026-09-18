@@ -89,10 +89,17 @@ All three clients that exist are listed below. There is still no `apps/admin`.
   build have separate prerequisites, and it names which one you are missing.
 
   ```bash
-  scripts/android-emulator.sh doctor           # or: pnpm --filter @ostomy/mobile emulator:doctor
-  scripts/android-emulator.sh up               # create + boot + adb reverse (idempotent)
-  pnpm --filter @ostomy/mobile android:build   # expo run:android — the development build
+  scripts/android-emulator.sh doctor      # or: pnpm --filter @ostomy/mobile emulator:doctor
+  scripts/android-emulator.sh up          # create + boot + adb reverse (idempotent)
+  pnpm --filter @ostomy/mobile android    # expo run:android — the development build
   ```
+
+  Build the app with a **JDK between 17 and 21**. Android Studio bundles JDK 25, which AGP 8.12
+  (React Native 0.86's pin) cannot drive CMake on — every native module fails at configure time
+  with a `restricted method in java.lang.System` error that names neither the JDK nor the cause.
+  `doctor` locates a usable JDK (Gradle usually has one at `~/.gradle/jdks/`) and prints the
+  `export JAVA_HOME=...` line. `expo prebuild` generates `apps/mobile/android/` as build output:
+  gitignored, and ignored by Prettier and ESLint, which walk the filesystem rather than git.
 
   SQLCipher is a config-plugin native change, so **Expo Go cannot run this app** — it needs a
   development build. Networking is `adb reverse`, never `10.0.2.2`: `mock-oidc` derives its

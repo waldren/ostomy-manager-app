@@ -137,10 +137,21 @@ done
 # against last year's numbers after an Expo upgrade moves them — and the
 # failure that produces is a Gradle error about a hash string, pointing at
 # nothing.
-RN_VERSIONS="apps/mobile/node_modules/react-native/gradle/libs.versions.toml"
+# Both layouts, because `.npmrc` sets `node-linker=hoisted` (which puts
+# react-native in the ROOT node_modules) while a checkout installed with
+# pnpm's default still nests it under the workspace. Hardcoding either one
+# makes this silently skip its own version checks on the other.
+RN_VERSIONS=""
+for candidate in \
+  "node_modules/react-native/gradle/libs.versions.toml" \
+  "apps/mobile/node_modules/react-native/gradle/libs.versions.toml"
+do
+  if [[ -f "${candidate}" ]]; then RN_VERSIONS="${candidate}"; break; fi
+done
+
 required_pin() {
   local key="$1"
-  [[ -f "${RN_VERSIONS}" ]] || return 1
+  [[ -n "${RN_VERSIONS}" && -f "${RN_VERSIONS}" ]] || return 1
   sed -n "s/^${key}[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "${RN_VERSIONS}" | head -1
 }
 
@@ -218,14 +229,45 @@ cmd_doctor() {
   # Reported, never auto-installed: each of these is a large download, and a
   # script that silently pulls hundreds of megabytes is not one a developer
   # can reason about.
-  local jdk=""
-  for candidate in "${JAVA_HOME:-}/bin/java" "/c/Program Files/Android/Android Studio/jbr/bin/java.exe" "$(command -v java || true)"; do
-    if [[ -n "${candidate}" && -x "${candidate}" ]]; then jdk="${candidate}"; break; fi
+  # The VERSION matters, not merely that a JDK exists. Android Studio 2026
+  # bundles JDK 25, and AGP 8.12 (what React Native 0.86 pins) cannot drive
+  # CMake on it: JEP 472's restricted-method enforcement turns every native
+  # module's configure step into
+  #   "Execution failed for task ':expo-sqlite:configureCMakeDebug[x86_64]'.
+  #    > WARNING: A restricted method in java.lang.System has been called"
+  # which names neither the JDK nor the real cause. Checking only for presence
+  # let that through and cost a full build cycle to diagnose, so the range is
+  # checked here.
+  local jdk="" jdk_major=""
+  for candidate in \
+    "${JAVA_HOME:-}/bin/java" \
+    "${JAVA_HOME:-}/bin/java.exe" \
+    "${HOME}/.gradle/jdks"/*/bin/java.exe \
+    "${HOME}/.gradle/jdks"/*/bin/java \
+    "/c/Program Files/Android/Android Studio/jbr/bin/java.exe" \
+    "$(command -v java || true)"
+  do
+    [[ -n "${candidate}" && -x "${candidate}" ]] || continue
+    jdk_major="$("${candidate}" -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
+    # First one in a supported range wins, so a usable JDK sitting beside an
+    # unusable one is found rather than shadowed by it.
+    if [[ -n "${jdk_major}" ]] && (( jdk_major >= 17 && jdk_major <= 21 )); then
+      jdk="${candidate}"
+      break
+    fi
   done
+
   if [[ -n "${jdk}" ]]; then
-    ok "JDK (${jdk})"
+    ok "JDK ${jdk_major} (${jdk})"
+    if [[ "$("${JAVA_HOME:-}/bin/java" -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)" != "${jdk_major}" ]]; then
+      warn "JAVA_HOME does not point at it. Export this before building:"
+      warn "           export JAVA_HOME=\"$(dirname "$(dirname "${jdk}")")\""
+    fi
   else
-    bad "JDK — Android Studio bundles one at <studio>/jbr; set JAVA_HOME to it"
+    bad "no JDK in the range AGP 8.12 supports (17-21)"
+    printf '          Android Studio bundles JDK 25, which fails every native module at\n'
+    printf '          configure time with a misleading "restricted method" error.\n'
+    printf '          Gradle often has a usable one already: ~/.gradle/jdks/\n'
     failures=$((failures + 1))
   fi
 

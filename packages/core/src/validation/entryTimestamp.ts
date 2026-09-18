@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import type { ValidationError } from './types.js';
 import type { VolumetricValidationThresholds } from './thresholds.js';
-import { TIER1_RULE_CODE } from './tier1.js';
+import { TIER1_RULE_CODE } from './ruleCodes.js';
 
 /**
  * The two Tier 1 rules that are about **when an entry happened**, extracted
