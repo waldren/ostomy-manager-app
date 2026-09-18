@@ -1424,7 +1424,11 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
         status: 'final',
         code: STOMA_OUTPUT_CODE,
         valueQuantity: { value: 350.5, unit: 'mL' },
-        method: null,
+        // ADR-0018 (amended): the delta republishes what was STORED, so a
+        // measured entry comes back as the explicit qualifier even when the
+        // push that created it sent `null`. A second device therefore never
+        // has to re-derive the toggle from `code`.
+        method: '258104002',
         enteredMeasurementSystem: 'metric',
         enteredTimezone: 'America/Chicago',
       });

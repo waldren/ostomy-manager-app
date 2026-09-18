@@ -54,7 +54,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * `packages/core` resolved, so "a `method` the server cannot recognize"
  * (§6.2) is unrepresentable rather than merely unlikely.
  */
-import { ESTIMATION_METHOD_CODE, type MeasuredOrEstimated } from '@ostomy/core/validation';
+import {
+  ESTIMATION_METHOD_CODE,
+  MEASURED_METHOD_CODE,
+  type MeasuredOrEstimated,
+} from '@ostomy/core/validation';
 
 export type MethodWireInterpretation =
   /** `method: null` — the entry was measured. Stored as SQL NULL. */
@@ -74,7 +78,19 @@ export function interpretMethodWireValue(raw: unknown): MethodWireInterpretation
   if (raw === undefined) {
     return { kind: 'not-selected' };
   }
+  // `null` is still accepted and still means measured, and it must stay that
+  // way for the life of v1. A client built before ADR-0018's amendment sends
+  // it, and §8 requires the server to keep understanding an older client —
+  // refusing `null` would reject a correct entry from an app the patient has
+  // simply not updated, and §9 tells that client to re-push it forever.
+  //
+  // What changes is what gets STORED: `toStoredMethod` writes the explicit
+  // code either way, so a row never records the ambiguity even when the wire
+  // carried it.
   if (raw === null) {
+    return { kind: 'measured' };
+  }
+  if (MEASURED_METHOD_CODE.resolved && raw === MEASURED_METHOD_CODE.code) {
     return { kind: 'measured' };
   }
   if (ESTIMATION_METHOD_CODE.resolved && raw === ESTIMATION_METHOD_CODE.code) {
@@ -102,7 +118,34 @@ export function toMeasuredOrEstimated(
   }
 }
 
-/** What the `observations.method` column stores. NULL for a measured entry. */
+/**
+ * What the `observations.method` column stores.
+ *
+ * An explicit SNOMED qualifier for both answers (ADR-0018, amended):
+ * `258104002` |Measured| and `414135002` |Estimated|. NULL is reserved for
+ * an observation the toggle does not apply to at all — weight, resting heart
+ * rate — and is never written for a volumetric entry.
+ *
+ * Normalising here rather than at the wire boundary is what lets the server
+ * keep accepting `null` from an older client (§8) without that ambiguity
+ * reaching a stored row. The wire may be imprecise; the database is not.
+ */
 export function toStoredMethod(interpretation: MethodWireInterpretation): string | null {
-  return interpretation.kind === 'estimated' ? interpretation.methodCode : null;
+  switch (interpretation.kind) {
+    case 'estimated':
+      return interpretation.methodCode;
+    case 'measured':
+      if (!MEASURED_METHOD_CODE.resolved) {
+        // Unreachable while the constant is resolved, and a compile error to
+        // read `.code` without this branch — the same guard the estimated
+        // side has carried since D4.
+        throw new Error(
+          'Cannot store a Measured entry: MEASURED_METHOD_CODE is unresolved in @ostomy/core/validation.',
+        );
+      }
+      return MEASURED_METHOD_CODE.code;
+    case 'not-selected':
+    case 'unrecognized':
+      return null;
+  }
 }

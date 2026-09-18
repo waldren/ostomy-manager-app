@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { toLocalDate, type MeasurementSystem } from '@ostomy/core/units';
 import type { CanonicalWireUnit } from '@ostomy/core/sync';
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 
 import { deviceTimeZone, toWireInstant } from '../lib/utils/clock';
 import { generateUuid } from '../lib/utils/uuid';
@@ -52,28 +52,33 @@ import { enqueueOperation, removeOperation } from './repositories/syncQueueRepos
 export type MeasuredOrEstimated = 'measured' | 'estimated';
 
 /**
- * Resolves the mandatory Measured/Estimated toggle to the wire's
- * `method` value. `null` for measured. For estimated, D4 (the SNOMED CT
- * "Estimation technique" code) is still unresolved — see
- * `@ostomy/core/validation`'s `ESTIMATION_METHOD_CODE` doc comment, which
- * spells out the three sanctioned responses to that: "queue it, error, or
- * block." This picks **error**, deliberately: silently writing `method:
- * null` for an Estimated entry would make it indistinguishable from
- * Measured, and queuing an entry this app cannot yet express correctly
- * would need a second, not-yet-designed local representation for "waiting
- * on D4" that nothing downstream reads. Weight and heart-rate entries
- * never call this function at all — `method` is `null` for them by
- * construction (CLAUDE.md: the toggle "applies to volumetric entries
- * only").
+ * Resolves the mandatory Measured/Estimated toggle to the wire's `method`
+ * value: an explicit SNOMED qualifier either way (ADR-0018, amended).
+ *
+ * `null` is no longer one of the answers here. It used to mean measured,
+ * which also made it indistinguishable from "this observation has no toggle"
+ * — and `method` is the only stored representation of the choice, so AC 2.2
+ * AC2 (history badges every entry Measured or Estimated) had to infer it from
+ * `code` instead of reading it.
+ *
+ * Weight and heart-rate entries never call this at all: `method` is `null`
+ * for them by construction, and that is now the only thing `null` means
+ * (CLAUDE.md: the toggle "applies to volumetric entries only").
  */
 function resolveMethod(measuredOrEstimated: MeasuredOrEstimated): string | null {
-  if (measuredOrEstimated === 'measured') return null;
-  if (!ESTIMATION_METHOD_CODE.resolved) {
+  // Both answers now carry an explicit SNOMED qualifier (ADR-0018, amended).
+  // Sending `null` for measured would still be accepted — the server
+  // normalises it — but then this device's own row and the server's would
+  // disagree about the same entry, and this device is the one a patient reads
+  // offline.
+  const qualifier =
+    measuredOrEstimated === 'measured' ? MEASURED_METHOD_CODE : ESTIMATION_METHOD_CODE;
+  if (!qualifier.resolved) {
     throw new Error(
-      'Cannot save an Estimated entry yet: the SNOMED CT "Estimation technique" code (design decision D4) is still unresolved in @ostomy/core/validation. See ESTIMATION_METHOD_CODE\'s doc comment.',
+      `Cannot save a ${measuredOrEstimated} entry: its SNOMED qualifier is unresolved in @ostomy/core/validation. See ESTIMATION_METHOD_CODE and MEASURED_METHOD_CODE.`,
     );
   }
-  return ESTIMATION_METHOD_CODE.code;
+  return qualifier.code;
 }
 
 interface VolumetricFields {

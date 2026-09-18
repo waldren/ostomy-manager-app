@@ -78,7 +78,10 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
         code: '79560-9',
         valueQuantityValue: '350.0000',
         valueQuantityUnit: 'mL',
-        method: null,
+        // ADR-0018 (amended): a measured entry carries the explicit
+        // |Measured| qualifier, not NULL. NULL now means only "this
+        // observation has no toggle" — weight, resting heart rate.
+        method: '258104002',
         deletedAt: null,
         serverSequence: null,
       });
@@ -124,7 +127,7 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
         code: '79560-9',
         valueQuantity: { value: 350, unit: 'mL' },
         effectiveDateTime: '2026-09-11T14:00:00.000Z',
-        method: null,
+        method: '258104002',
         enteredMeasurementSystem: 'metric',
         // Captured from the device at entry, not passed in by the caller
         // (ADR-0016).
@@ -167,8 +170,12 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
       expect(observation?.method).toBe(ESTIMATION_METHOD_CODE.code);
     });
 
-    /** The other half: a Measured entry stays `null`, so the two are distinguishable in storage. */
-    it('stores null for a Measured entry, keeping the two distinguishable', async () => {
+    /**
+     * The other half. Both answers are now explicit codes (ADR-0018,
+     * amended), so the two are distinguishable from each other AND from an
+     * observation the toggle never applied to.
+     */
+    it('stores the explicit |Measured| code for a Measured entry', async () => {
       const { id } = await enqueueVolumetricObservationCreate(
         executor,
         {
@@ -182,7 +189,7 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
         FIXED_NOW,
       );
 
-      expect((await getObservationById(executor, id))?.method).toBeNull();
+      expect((await getObservationById(executor, id))?.method).toBe('258104002');
     });
 
     it('creates a weight observation with no Measured/Estimated toggle at all (CLAUDE.md: the toggle is volumetric-entry-only)', async () => {

@@ -25,11 +25,34 @@ import {
 } from './estimation-method';
 
 describe('Measured/Estimated toggle (AC 2.2, AC 2.5 AC 2)', () => {
-  it('reads an explicit null as measured, and stores NULL', () => {
+  /**
+   * ADR-0018's amendment: `null` stays ACCEPTED on the wire, because §8
+   * requires understanding a client built before the amendment — but it is
+   * normalised before storage, so the ambiguity never reaches a row.
+   */
+  it('reads an explicit null as measured, and stores the explicit |Measured| code', () => {
     const interpretation = interpretMethodWireValue(null);
     expect(interpretation).toEqual({ kind: 'measured' });
     expect(toMeasuredOrEstimated(interpretation)).toBe('measured');
-    expect(toStoredMethod(interpretation)).toBeNull();
+    expect(toStoredMethod(interpretation)).toBe('258104002');
+  });
+
+  it('reads the explicit |Measured| code as measured, and stores it unchanged', () => {
+    const interpretation = interpretMethodWireValue('258104002');
+    expect(interpretation).toEqual({ kind: 'measured' });
+    expect(toMeasuredOrEstimated(interpretation)).toBe('measured');
+    expect(toStoredMethod(interpretation)).toBe('258104002');
+  });
+
+  /**
+   * The point of the amendment: a stored `method` of NULL now means one thing
+   * only — this observation has no toggle. Nothing on the volumetric write
+   * path may produce it.
+   */
+  it('never stores NULL for an entry that answered the toggle', () => {
+    for (const raw of [null, '258104002', '414135002']) {
+      expect(toStoredMethod(interpretMethodWireValue(raw))).not.toBeNull();
+    }
   });
 
   it('reads an absent key as no selection at all, which Tier 1 then blocks', () => {
@@ -86,12 +109,23 @@ describe('D4 — the estimation-technique code, now resolved', () => {
    * is the one code `packages/core` published.
    */
   it('still refuses any other SNOMED code, including plausible neighbours', () => {
+    // `373067005` |No| — a real qualifier, and nothing this field means.
     expect(interpretMethodWireValue('373067005')).toEqual({ kind: 'unrecognized' });
-    // The paired |Measured (qualifier value)| concept. Real, and deliberately
-    // NOT accepted: `method: null` is what means measured on this wire
-    // (docs/sync-contract.md §7.2), and adopting the code is a separate
-    // decision — see ADR-0018's "What this does not change".
-    expect(interpretMethodWireValue('258104002')).toEqual({ kind: 'unrecognized' });
+    expect(interpretMethodWireValue('')).toEqual({ kind: 'unrecognized' });
+    // Not a code at all. §6.2's "a `method` the server cannot recognize"
+    // stays unrepresentable rather than merely unlikely: the only non-null
+    // values this surface accepts are the two `packages/core` published.
+    expect(interpretMethodWireValue('measured')).toEqual({ kind: 'unrecognized' });
+  });
+
+  it('accepts exactly two non-null codes, and no others', () => {
+    const accepted = ['258104002', '414135002'];
+    for (const code of accepted) {
+      expect(interpretMethodWireValue(code)).not.toEqual({ kind: 'unrecognized' });
+    }
+    for (const code of ['258104003', '414135003', '4141350020']) {
+      expect(interpretMethodWireValue(code)).toEqual({ kind: 'unrecognized' });
+    }
   });
 
   it('still treats null as measured and an absent key as no selection', () => {
