@@ -63,6 +63,16 @@ export const SYNC_FIELD_PATH = {
   ENTERED_MEASUREMENT_SYSTEM: 'enteredMeasurementSystem',
   /** ADR-0016. Client-asserted IANA zone; the derived `localDate` is server-side and never a wire field. */
   ENTERED_TIMEZONE: 'enteredTimezone',
+  /** P3.S1 (SRS AC 2.3 AC1). A `fluid_type` value-set member code — optional on an intake entry, meaningless on any other. */
+  FLUID_TYPE_CODE: 'fluidTypeCode',
+
+  // `Meal` payload fields (§7.4), added at P3.S1. `id` and
+  // `effectiveDateTime` above are shared with `Observation` — the paths are
+  // per-wire-field, not per-entity, and two entities naming the same field
+  // the same way is the point rather than a collision.
+  DESCRIPTION: 'description',
+  SIZE: 'size',
+  TAG_CODES: 'tagCodes',
 } as const;
 
 export type SyncFieldPath = (typeof SYNC_FIELD_PATH)[keyof typeof SYNC_FIELD_PATH];

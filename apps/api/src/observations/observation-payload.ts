@@ -41,8 +41,7 @@ import {
   OBSERVATION_FIELD,
   ACCEPTED_OBSERVATION_STATUS,
   MEASUREMENT_SYSTEMS,
-  STOMA_OUTPUT_CANONICAL_UNIT,
-  STOMA_OUTPUT_LOINC_CODE,
+  acceptedCodeRules,
   type ObservationRequestParsed,
   type ObservationResource,
 } from './observation-wire';
@@ -71,6 +70,8 @@ export interface ObservationWriteInput {
   readonly enteredTimezone: string;
   /** `YYYY-MM-DD`, derived server-side from the instant and the zone. Not monotonic with `effectiveDateTime`. */
   readonly localDate: string;
+  /** A `fluid_type` member code on an intake entry (SRS AC 2.3 AC1); `null` everywhere else and whenever the patient did not categorise. */
+  readonly fluidTypeCode: string | null;
 }
 
 /**
@@ -84,10 +85,12 @@ export interface ObservationWriteInput {
 export function interpretObservationPayload(
   parsed: ObservationRequestParsed,
 ): ObservationWriteInput {
-  if (parsed.code !== STOMA_OUTPUT_LOINC_CODE) {
-    // Not "unknown code" — this release simply has no handling for fluid
-    // intake, voided urine, weight or heart rate yet, and accepting one
-    // would write a row no read path understands.
+  const codeRules = acceptedCodeRules(parsed.code);
+  if (codeRules === undefined) {
+    // Not "unknown code" — this release simply has no handling for voided
+    // urine, weight or heart rate yet, and accepting one would write a row no
+    // read path understands. `ACCEPTED_OBSERVATION_CODES` is the registry that
+    // says which codes this release does understand and what each implies.
     throw payloadMalformed({
       field: OBSERVATION_FIELD.CODE,
       reasonCode: SYNC_REASON_CODE.UNSUPPORTED_CODE,
@@ -99,7 +102,7 @@ export function interpretObservationPayload(
       reasonCode: SYNC_REASON_CODE.UNSUPPORTED_STATUS,
     });
   }
-  if (parsed.valueQuantity.unit !== STOMA_OUTPUT_CANONICAL_UNIT) {
+  if (parsed.valueQuantity.unit !== codeRules.canonicalUnit) {
     // §7.2: the unit is determined by the code. A disagreement between the
     // two is the failure mode that is silent everywhere else — every daily
     // total and hydration computation reading the row would simply be wrong,
@@ -137,6 +140,8 @@ export function interpretObservationPayload(
     });
   }
 
+  const fluidTypeCode = interpretFluidTypeCode(parsed.fluidTypeCode, codeRules.acceptsFluidType);
+
   const effectiveDateTime = new Date(parsed.effectiveDateTime);
 
   return {
@@ -156,7 +161,39 @@ export function interpretObservationPayload(
     // second source of truth whose disagreement nothing would detect
     // (docs/sync-contract.md §7.2).
     localDate: toLocalDate(effectiveDateTime, parsed.enteredTimezone),
+    fluidTypeCode,
   };
+}
+
+/**
+ * The optional fluid categorisation (SRS AC 2.3 AC1).
+ *
+ * Three outcomes, and the third is the one worth being deliberate about:
+ *
+ * - Absent or `null` → `null`. The categorisation is optional even on intake.
+ * - A non-empty string on a code that accepts it → stored as given. The
+ *   MEMBERSHIP of the `fluid_type` value set is deliberately NOT checked here:
+ *   members are admin-managed and retired-never-deleted, so a set this handler
+ *   validated against would start refusing writes the moment an admin retired
+ *   a member a fielded app still offers — rejecting a patient's entry over a
+ *   configuration change they cannot see. An unknown code renders as the
+ *   generic label and is recoverable; a refused entry is not.
+ * - Anything else, including a code sent alongside a NON-intake observation →
+ *   `PAYLOAD_FIELD_INVALID` naming this field. A `fluidTypeCode` on a
+ *   stoma-output row is not a harmless extra: nothing would ever read it, so
+ *   it is data that looks like data and means nothing.
+ */
+function interpretFluidTypeCode(raw: unknown, acceptsFluidType: boolean): string | null {
+  if (raw === undefined || raw === null) return null;
+
+  if (!acceptsFluidType || typeof raw !== 'string' || raw.length === 0 || raw.length > 64) {
+    throw payloadMalformed({
+      field: OBSERVATION_FIELD.FLUID_TYPE_CODE,
+      reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
+    });
+  }
+
+  return raw;
 }
 
 function toCoreMeasurementSystem(raw: string): CoreMeasurementSystem | undefined {
@@ -296,6 +333,10 @@ export function toObservationResource(row: Observation): ObservationResource {
     method: row.method,
     enteredMeasurementSystem: toWireMeasurementSystem(row.enteredMeasurementSystem),
     enteredTimezone: row.enteredTimezone,
+    // Always present, `null` when there is none — never omitted. An absent
+    // key and a null one would read the same to a human and differently to a
+    // client, which is §7.2's own argument for `method`.
+    fluidTypeCode: row.fluidTypeCode,
     // `localDate` is deliberately absent: it is server-derived and not a
     // wire field (docs/sync-contract.md §7.2).
   };

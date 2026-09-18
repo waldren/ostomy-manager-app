@@ -71,8 +71,52 @@ import { z } from 'zod';
  */
 export const STOMA_OUTPUT_LOINC_CODE = '79560-9';
 
+/** LOINC 9000-1, "Fluid intake oral Measured" — accepted from P3.S1 (SRS AC 2.3). */
+export const FLUID_INTAKE_LOINC_CODE = '9000-1';
+
 /** ADR-0004: volume is canonical mL on the wire and at rest, always. */
 export const STOMA_OUTPUT_CANONICAL_UNIT = 'mL';
+
+/**
+ * What each accepted code means for the fields around it.
+ *
+ * A registry rather than a bare list, because the comment above is the whole
+ * argument for the accepted set being code and not configuration: "fluid
+ * intake, voided urine, body weight and heart rate each need their own
+ * canonical unit, their own hydration-signal handling and their own
+ * validation path". Widening the set to a list alone would quietly drop that
+ * claim — a code would be accepted with nothing stating what its unit is or
+ * which optional fields belong with it. Here, adding a code means filling in
+ * those answers or failing to compile.
+ *
+ * `volumetric` is what decides whether the Measured/Estimated toggle applies
+ * (CLAUDE.md: the toggle "applies to volumetric entries only", since a weight
+ * is read off a scale). Both current members are volumetric; body weight, when
+ * it lands, will not be.
+ */
+export interface AcceptedObservationCode {
+  readonly canonicalUnit: 'mL' | 'kg';
+  /** Whether the mandatory Measured/Estimated toggle applies (SRS §3.1). */
+  readonly volumetric: boolean;
+  /**
+   * Whether `fluidTypeCode` is meaningful for this code. AC 2.3 AC1 makes the
+   * categorisation optional ON INTAKE and meaningless everywhere else, so a
+   * `fluidTypeCode` on a stoma-output entry is not a harmless extra — it is a
+   * field whose value no read path would ever interpret.
+   */
+  readonly acceptsFluidType: boolean;
+}
+
+export const ACCEPTED_OBSERVATION_CODES: Readonly<Record<string, AcceptedObservationCode>> = {
+  [STOMA_OUTPUT_LOINC_CODE]: { canonicalUnit: 'mL', volumetric: true, acceptsFluidType: false },
+  [FLUID_INTAKE_LOINC_CODE]: { canonicalUnit: 'mL', volumetric: true, acceptsFluidType: true },
+};
+
+export function acceptedCodeRules(code: string): AcceptedObservationCode | undefined {
+  return Object.prototype.hasOwnProperty.call(ACCEPTED_OBSERVATION_CODES, code)
+    ? ACCEPTED_OBSERVATION_CODES[code]
+    : undefined;
+}
 
 /**
  * FHIR R4 `ObservationStatus`, all eight members, lowercase on the wire.
@@ -102,8 +146,15 @@ const valueQuantitySchema = z
     value: z.number().meta({
       description: 'Canonical mL (ADR-0004). A positive decimal, not an integer-only field.',
     }),
-    unit: z.literal(STOMA_OUTPUT_CANONICAL_UNIT).meta({
-      description: 'Canonical unit for this code. Always mL for stoma output (ADR-0004).',
+    // The published type is the union of canonical units; which one is
+    // CORRECT is decided per code by `ACCEPTED_OBSERVATION_CODES` and
+    // enforced in `observation-payload.ts`. Same shape as `status` above:
+    // the type is wider than the accepted set on purpose, because widening
+    // what a release accepts is additive under §8 while widening a published
+    // type later is not.
+    unit: z.enum(['mL', 'kg']).meta({
+      description:
+        'Canonical unit, determined by `code` (ADR-0004): mL for volumetric entries, kg for weight. A unit that disagrees with the code is PAYLOAD_FIELD_INVALID.',
     }),
   })
   .meta({ title: 'ObservationValueQuantity' });
@@ -127,7 +178,7 @@ export const observationResourceSchema = z
     }),
     code: z.string().meta({
       description:
-        'Bare LOINC code. This release accepts 79560-9 (stoma output) only; anything else is UNSUPPORTED_CODE.',
+        'Bare LOINC code. This release accepts 79560-9 (stoma output) and 9000-1 (oral fluid intake); anything else is UNSUPPORTED_CODE.',
     }),
     valueQuantity: valueQuantitySchema,
     effectiveDateTime: z.iso.datetime({ precision: 3 }).meta({
@@ -145,6 +196,14 @@ export const observationResourceSchema = z
     enteredTimezone: z.string().min(1).max(64).meta({
       description:
         "IANA zone name the device reported at entry (ADR-0016), never a UTC offset. Defines the patient's day, which every daily figure groups by. The server validates only that it resolves.",
+    }),
+    // Additive under §8: a new OPTIONAL payload field on an existing entity.
+    // An older client that never sends it keeps working unchanged, which is
+    // exactly the property §8 calls additive — and the reason this could land
+    // without a version bump.
+    fluidTypeCode: z.string().min(1).max(64).nullable().optional().meta({
+      description:
+        'Which kind of fluid this was, as a `fluid_type` value-set member code (SRS AC 2.3 AC1). Optional on an intake entry and meaningless on any other code — sending it with a non-intake code is PAYLOAD_FIELD_INVALID. A code, never a display label: the patient-facing text comes from the i18n catalog (ADR-0006).',
     }),
   })
   .meta({
@@ -184,6 +243,11 @@ export const observationRequestParseSchema = z.strictObject({
   // transport shape error naming `payload`. The distinction matters to the
   // correction inbox, which shows the patient a field.
   enteredTimezone: z.string(),
+  // `unknown`, for the same reason `method` and `value` are: a
+  // `fluidTypeCode` of the wrong TYPE is content this release reports as
+  // PAYLOAD_FIELD_INVALID naming the field, so the patient's correction inbox
+  // shows them which field — not a transport shape error naming `payload`.
+  fluidTypeCode: z.unknown().optional(),
 });
 
 export type ObservationRequestParsed = z.infer<typeof observationRequestParseSchema>;
@@ -200,6 +264,7 @@ export const OBSERVATION_FIELD = {
   METHOD: SYNC_FIELD_PATH.METHOD,
   ENTERED_MEASUREMENT_SYSTEM: SYNC_FIELD_PATH.ENTERED_MEASUREMENT_SYSTEM,
   ENTERED_TIMEZONE: SYNC_FIELD_PATH.ENTERED_TIMEZONE,
+  FLUID_TYPE_CODE: SYNC_FIELD_PATH.FLUID_TYPE_CODE,
   PAYLOAD: SYNC_FIELD_PATH.PAYLOAD,
 } as const;
 

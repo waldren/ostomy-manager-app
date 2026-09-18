@@ -68,12 +68,86 @@ describe('interpretObservationPayload — release-scope acceptance', () => {
     expect(input.enteredMeasurementSystem).toBe('metric');
   });
 
+  it('accepts a fluid-intake payload, which P3.S1 added to the accepted set', () => {
+    const input = interpretObservationPayload(payload({ code: '9000-1' }));
+
+    expect(input.code).toBe('9000-1');
+    expect(input.unit).toBe('mL');
+  });
+
+  /**
+   * Still refused, and the list is deliberately the codes whose SPRINTS have
+   * not landed. `ACCEPTED_OBSERVATION_CODES`'s own comment is the argument:
+   * each needs its own canonical unit, hydration-signal handling and
+   * validation path, and accepting one early writes rows no read path
+   * understands. `9187-6` lands at P3.S2, `29463-7` and `8867-4` later still.
+   */
   it.each([
     ['29463-7', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
-    ['9000-1', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
+    ['9187-6', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
+    ['8867-4', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
   ])('refuses code %s with %s', (code, reasonCode, field) => {
     const rejection = rejectionOf(() => interpretObservationPayload(payload({ code })));
     expect(rejection.details).toEqual([{ field, reasonCode }]);
+  });
+
+  describe('fluidTypeCode (SRS AC 2.3 AC1)', () => {
+    it('carries a categorisation on an intake entry', () => {
+      const input = interpretObservationPayload(
+        payload({ code: '9000-1', fluidTypeCode: 'water' }),
+      );
+
+      expect(input.fluidTypeCode).toBe('water');
+    });
+
+    it('is null when the patient did not categorise, because the field is optional', () => {
+      expect(interpretObservationPayload(payload({ code: '9000-1' })).fluidTypeCode).toBeNull();
+      expect(
+        interpretObservationPayload(payload({ code: '9000-1', fluidTypeCode: null })).fluidTypeCode,
+      ).toBeNull();
+    });
+
+    /**
+     * Not a harmless extra. Nothing would ever read a fluid type on a
+     * stoma-output row, so storing one is data that looks like data and means
+     * nothing — and the read paths that later assume "a fluid type implies an
+     * intake entry" would be wrong with no error anywhere.
+     */
+    it('refuses a categorisation sent with a code that has no use for one', () => {
+      const rejection = rejectionOf(() =>
+        interpretObservationPayload(payload({ fluidTypeCode: 'water' })),
+      );
+
+      expect(rejection.details).toEqual([
+        { field: 'fluidTypeCode', reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID },
+      ]);
+    });
+
+    it('refuses a non-string, naming the field rather than the payload', () => {
+      const rejection = rejectionOf(() =>
+        interpretObservationPayload(payload({ code: '9000-1', fluidTypeCode: 42 })),
+      );
+
+      expect(rejection.details).toEqual([
+        { field: 'fluidTypeCode', reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID },
+      ]);
+    });
+
+    /**
+     * Membership in the `fluid_type` value set is deliberately NOT checked.
+     * Members are admin-managed and retired-never-deleted, so validating
+     * against the live set would start refusing a patient's entry the moment
+     * an admin retired a member a fielded app still offers — a rejection they
+     * cannot act on, over a configuration change they cannot see. An unknown
+     * code renders as the generic label; a refused entry is unrecoverable.
+     */
+    it('accepts a code this release has never heard of rather than refusing the entry', () => {
+      const input = interpretObservationPayload(
+        payload({ code: '9000-1', fluidTypeCode: 'some_type_added_by_an_admin' }),
+      );
+
+      expect(input.fluidTypeCode).toBe('some_type_added_by_an_admin');
+    });
   });
 
   it('refuses a status this release does not accept, without echoing it', () => {
