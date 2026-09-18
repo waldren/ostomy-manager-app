@@ -108,3 +108,122 @@ jobs:
       - name: Audit everything (informational)
         if: always()
         run: pnpm audit || true
+
+  images:
+    name: Container images build and serve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Obviously-fake, non-secret values. Every required variable in
+    # infra/docker-compose.yml uses `${VAR:?...}`, so Compose refuses to
+    # interpolate the file without them — even for `build`, which never
+    # starts postgres or minio and never reads these.
+    #
+    # Passed as process environment rather than written to a `.env`, because
+    # Compose interpolates from both identically and a file is one more
+    # artifact that could be cached, uploaded, or mistaken for a real one.
+    # Nothing here is a credential: the runner is GitHub-hosted, reaches no
+    # environment of ours, and the stack is never started.
+    #
+    # DEV_HOST_ADDRESS is the one value that reaches a BUILD: web.Dockerfile
+    # bakes the VITE_* args into the bundle. A fake value is correct here
+    # precisely because it makes the resulting image unservable — the images
+    # this job builds exist to prove the build works and are then discarded.
+    # They are never pushed, and the dev host rebuilds its own from source.
+    env:
+      POSTGRES_USER: ci-not-a-real-user
+      POSTGRES_PASSWORD: ci-not-a-real-password
+      POSTGRES_DB: ci-not-a-real-db
+      POSTGRES_RUNTIME_USER: ci-not-a-real-runtime-user
+      POSTGRES_RUNTIME_PASSWORD: ci-not-a-real-runtime-password
+      MINIO_ROOT_USER: ci-not-a-real-minio-user
+      MINIO_ROOT_PASSWORD: ci-not-a-real-minio-password
+      DEV_HOST_ADDRESS: ci-build-only.invalid
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The gap this job closes: nothing in CI built these images, and
+      # `deploy-dev.yml` builds them only AFTER a merge, on the self-hosted
+      # runner. Two drifted silently that way — api.Dockerfile stopped
+      # copying packages/core (P2.S1a, five PRs), and web.Dockerfile served a
+      # placeholder long after apps/web was real (P2.S3, three sprints).
+      # Both surfaced as a broken deploy of an already-merged commit.
+      - name: Build every image
+        run: docker compose -f infra/docker-compose.yml build
+
+      # A build succeeding is necessary and NOT sufficient, which is the
+      # whole lesson of the two drifts above: web.Dockerfile built perfectly
+      # while serving a placeholder, and a missing workspace package fails at
+      # `require` time, not at `docker build` time. So each real image is
+      # asked to do the one thing it exists to do.
+      #
+      # `admin` is deliberately excluded: it is a placeholder page until
+      # apps/admin is scaffolded (infra/docker/admin.Dockerfile), so there is
+      # no real content to assert and pretending otherwise would bake in an
+      # expectation that fails the day it becomes real.
+      - name: API image — the whole boot graph resolves inside the image
+        run: |
+          # `app.module.js`, not a single leaf module: it is what `main.js`
+          # loads at boot, so resolving it proves the image can actually
+          # start. `verify:build-artifact` already loads a leaf on the HOST,
+          # where the whole workspace is on disk — which is exactly why it
+          # never noticed api.Dockerfile had stopped copying packages/core.
+          #
+          # The @ostomy/core assertion is the point of the step, not a
+          # flourish. A leaf like prisma.service.js loads fine with core
+          # missing entirely (verified), so a check that only required one
+          # would restate the bug it claims to catch. Counting the resolved
+          # core modules makes the step fail if the image ever stops
+          # carrying the workspace package again.
+          #
+          # No database is touched: requiring a Nest module graph constructs
+          # no providers.
+          docker run --rm --entrypoint node ostomy/api:dev-latest -e "
+            require('reflect-metadata');
+            require('./dist/app.module.js');
+            const core = Object.keys(require.cache).filter((p) => p.includes('ostomy') && p.includes('core'));
+            if (core.length === 0) {
+              console.error('The api image booted without resolving @ostomy/core. api.Dockerfile has stopped carrying the workspace package — see its COPY lines.');
+              process.exit(1);
+            }
+            console.log('api image: boot graph resolves, @ostomy/core modules loaded: ' + core.length);
+          "
+
+      - name: Web image — serves the built SPA, not a placeholder
+        run: |
+          set -euo pipefail
+          cid=$(docker run -d -p 18080:8080 ostomy/web:dev-latest)
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --max-time 3 http://127.0.0.1:18080/ >/dev/null; then break; fi
+            sleep 1
+          done
+
+          body=$(curl --fail --silent --max-time 5 http://127.0.0.1:18080/)
+
+          # A hashed asset bundle is the thing a placeholder cannot fake: it
+          # only exists if Vite actually built apps/web inside this image.
+          if ! grep -qE '<script[^>]+src="/assets/index-[^"]+\.js"' <<<"$body"; then
+            echo "::error::The web image is not serving a Vite-built bundle. It served:" >&2
+            echo "$body" >&2
+            exit 1
+          fi
+
+          if ! grep -q 'id="root"' <<<"$body"; then
+            echo "::error::The web image served a page with no React mount point." >&2
+            exit 1
+          fi
+
+          # SPA fallback: apps/web is a client-routed SPA, so a deep link
+          # must return index.html and not nginx's 404. A patient following
+          # a link into the app is the case this protects.
+          status=$(curl --silent --output /dev/null --max-time 5 --write-out '%{http_code}' \
+            http://127.0.0.1:18080/a/deep/client-route)
+          if [[ "$status" != "200" ]]; then
+            echo "::error::SPA fallback is broken: a deep link returned $status, not 200." >&2
+            exit 1
+          fi
+
+          echo "web image: serves a Vite-built SPA with working client-route fallback"
