@@ -162,17 +162,34 @@ export const UNSPECIFIED_REJECTION_CODE = 'REJECTED_WITHOUT_REASON_CODE';
 export type DecodedDeltaChange =
   | {
       readonly kind: 'tombstone';
+      readonly entityType: 'Observation';
       readonly entityId: string;
       readonly serverSequence: string;
       readonly clientUpdatedAt: string;
     }
   | {
       readonly kind: 'upsert';
+      readonly entityType: 'Observation';
       readonly entityId: string;
       readonly serverSequence: string;
       readonly clientUpdatedAt: string;
       readonly payload: Observation;
     }
+  /**
+   * An entity type this build does not handle.
+   *
+   * Distinct from `undecodable`, which means the server sent something
+   * malformed. This one is well-formed and simply not ours yet — and
+   * `docs/sync-contract.md` §8 has required clients to tolerate a new
+   * `entityType` since P2.S0: the client skips it and **still advances its
+   * cursor**, which is safe because §5.3's invariant is about never being
+   * DENIED a change, not about applying every one. A client that later learns
+   * the type re-syncs from `since=0`.
+   *
+   * Counted separately so a pull that is quietly dropping half the server's
+   * changes is visible rather than looking like an empty day.
+   */
+  | { readonly kind: 'unsupported-entity'; readonly entityType: string }
   | { readonly kind: 'undecodable' };
 
 export interface DecodedDeltaPage {
@@ -198,8 +215,23 @@ function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
     return { kind: 'undecodable' };
   }
 
+  // BEFORE any payload interpretation, and that order is the whole fix. This
+  // decoder used to branch only on `deleted` and payload presence, so once the
+  // server began sending `Meal` changes (P3.S1) a meal decoded as an
+  // observation upsert and `deltaPull` wrote its fields into the observations
+  // table — a well-formed row of nonsense, with no error anywhere.
+  if (change.entityType !== 'Observation') {
+    return { kind: 'unsupported-entity', entityType: String(change.entityType) };
+  }
+
   if (change.deleted) {
-    return { kind: 'tombstone', entityId, serverSequence, clientUpdatedAt };
+    return {
+      kind: 'tombstone',
+      entityType: 'Observation',
+      entityId,
+      serverSequence,
+      clientUpdatedAt,
+    };
   }
 
   if (change.payload === undefined) {
@@ -211,7 +243,14 @@ function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
     return { kind: 'undecodable' };
   }
 
-  return { kind: 'upsert', entityId, serverSequence, clientUpdatedAt, payload: change.payload };
+  return {
+    kind: 'upsert',
+    entityType: 'Observation',
+    entityId,
+    serverSequence,
+    clientUpdatedAt,
+    payload: change.payload,
+  };
 }
 
 function nonEmptyString(value: unknown): string | undefined {

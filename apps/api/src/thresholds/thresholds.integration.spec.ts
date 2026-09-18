@@ -214,8 +214,8 @@ describe.skipIf(!dockerAvailable)(
       // are retired, never deleted": retirement means "stop offering this",
       // which this assertion is the one that actually proves.
       expect(members).toEqual([
-        { code: 'water', sortOrder: 0 },
-        { code: 'juice', sortOrder: 1 },
+        { code: 'water', sortOrder: 0, numericValue: null, numericUnit: null },
+        { code: 'juice', sortOrder: 1, numericValue: null, numericUnit: null },
       ]);
     });
   },

@@ -206,6 +206,47 @@ describe('decodeDeltaPage', () => {
     expect(page.cursor).toBe('10');
   });
 
+  /**
+   * The defect this guard closes. Before P3.S1 this decoder branched only on
+   * `deleted` and payload presence, so once the server began sending `Meal`
+   * changes a meal decoded as an observation upsert and `deltaPull` wrote its
+   * fields into the observations table — a well-formed row of nonsense, with
+   * no error anywhere.
+   */
+  it('skips an entity type this build does not handle rather than decoding it as an observation', () => {
+    const page = decodeDeltaPage(
+      deltaResponse([
+        {
+          entityType: 'Meal',
+          entityId: 'entity-1',
+          serverSequence: '100',
+          deleted: false,
+          clientUpdatedAt: '2026-09-17T11:00:00.000Z',
+          payload: { id: 'entity-1', description: 'Soup', size: 'medium', tagCodes: [] },
+        },
+      ]),
+    );
+
+    expect(page.changes[0]).toEqual({ kind: 'unsupported-entity', entityType: 'Meal' });
+  });
+
+  /** §8: an entity type added after this build shipped degrades the same way. */
+  it('skips an entity type invented after this build shipped', () => {
+    const page = decodeDeltaPage(
+      deltaResponse([
+        {
+          entityType: 'ApplianceChange',
+          entityId: 'entity-1',
+          serverSequence: '100',
+          deleted: true,
+          clientUpdatedAt: '2026-09-17T11:00:00.000Z',
+        },
+      ]),
+    );
+
+    expect(page.changes[0]).toEqual({ kind: 'unsupported-entity', entityType: 'ApplianceChange' });
+  });
+
   it('decodes a tombstone, which carries no payload by design (§5.2)', () => {
     const page = decodeDeltaPage(
       deltaResponse([
@@ -221,6 +262,10 @@ describe('decodeDeltaPage', () => {
 
     expect(page.changes[0]).toEqual({
       kind: 'tombstone',
+      // Carried from P3.S1: the decoder now narrows on `entityType` BEFORE
+      // interpreting a payload, and keeping it on the decoded change is what
+      // lets a reader tell which table a tombstone belongs to.
+      entityType: 'Observation',
       entityId: 'entity-1',
       serverSequence: '100',
       clientUpdatedAt: '2026-09-15T11:00:00.000Z',

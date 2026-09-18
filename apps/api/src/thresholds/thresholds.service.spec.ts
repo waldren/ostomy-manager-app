@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { THRESHOLD_KEY, ThresholdsService } from './thresholds.service';
+import { THRESHOLD_KEY, ThresholdsService, type ActiveValueSetMember } from './thresholds.service';
 
 /** A minimal stand-in for a Prisma `Decimal` — only `.toNumber()` is ever called on it by this service. */
 function decimal(value: number) {
@@ -177,8 +177,8 @@ describe('ThresholdsService.getActiveValueSetMembers()', () => {
       valueSet: { findUnique: vi.fn().mockResolvedValue({ id: 'value-set-1', key: 'fluid_type' }) },
       valueSetMember: {
         findMany: vi.fn().mockResolvedValue([
-          { code: 'water', sortOrder: 0 },
-          { code: 'juice', sortOrder: 1 },
+          { code: 'water', sortOrder: 0, numericValue: null, numericUnit: null },
+          { code: 'juice', sortOrder: 1, numericValue: null, numericUnit: null },
         ]),
       },
     };
@@ -187,8 +187,8 @@ describe('ThresholdsService.getActiveValueSetMembers()', () => {
     const members = await service.getActiveValueSetMembers('fluid_type');
 
     expect(members).toEqual([
-      { code: 'water', sortOrder: 0 },
-      { code: 'juice', sortOrder: 1 },
+      { code: 'water', sortOrder: 0, numericValue: null, numericUnit: null },
+      { code: 'juice', sortOrder: 1, numericValue: null, numericUnit: null },
     ]);
     expect(prisma.valueSetMember.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ status: 'ACTIVE' }) }),
@@ -214,8 +214,8 @@ describe('ThresholdsService.getActiveValueSetMembers()', () => {
       valueSet: { findUnique: vi.fn().mockResolvedValue({ id: 'value-set-1', key: 'fluid_type' }) },
       valueSetMember: {
         findMany: vi.fn().mockResolvedValue([
-          { code: 'water', sortOrder: 0 },
-          { code: 'juice', sortOrder: 1 },
+          { code: 'water', sortOrder: 0, numericValue: null, numericUnit: null },
+          { code: 'juice', sortOrder: 1, numericValue: null, numericUnit: null },
         ]),
       },
     };
@@ -225,13 +225,13 @@ describe('ThresholdsService.getActiveValueSetMembers()', () => {
     // A careless caller sorting/filtering "in place" — exactly S5's failure
     // mode if getActiveValueSetMembers ever returned the cached array by
     // reference instead of a copy.
-    (first as { code: string; sortOrder: number }[]).reverse();
+    (first as ActiveValueSetMember[]).reverse();
 
     const second = await service.getActiveValueSetMembers('fluid_type');
 
     expect(second).toEqual([
-      { code: 'water', sortOrder: 0 },
-      { code: 'juice', sortOrder: 1 },
+      { code: 'water', sortOrder: 0, numericValue: null, numericUnit: null },
+      { code: 'juice', sortOrder: 1, numericValue: null, numericUnit: null },
     ]);
     expect(second).not.toBe(first);
   });
@@ -241,7 +241,11 @@ describe('ThresholdsService.getActiveValueSetMembers()', () => {
       validationThreshold: { findMany: vi.fn() },
       valueSet: { findUnique: vi.fn().mockResolvedValue({ id: 'value-set-1', key: 'fluid_type' }) },
       valueSetMember: {
-        findMany: vi.fn().mockResolvedValue([{ code: 'water', sortOrder: 0 }]),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { code: 'water', sortOrder: 0, numericValue: null, numericUnit: null },
+          ]),
       },
     };
     const service = new ThresholdsService(prisma as never, 60 * 60 * 1000);

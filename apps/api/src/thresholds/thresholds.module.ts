@@ -21,6 +21,7 @@ import { PatientAuthModule } from '../auth/patient-auth.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ThresholdsController } from './thresholds.controller';
 import { ThresholdsService } from './thresholds.service';
+import { ValueSetsController } from './value-sets.controller';
 
 /**
  * `PatientAuthModule` is imported because `ThresholdsController` is guarded
@@ -30,7 +31,7 @@ import { ThresholdsService } from './thresholds.service';
  */
 @Module({
   imports: [PatientAuthModule, PrismaModule],
-  controllers: [ThresholdsController],
+  controllers: [ThresholdsController, ValueSetsController],
   providers: [ThresholdsService],
   exports: [ThresholdsService],
 })

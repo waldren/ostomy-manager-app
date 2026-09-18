@@ -301,6 +301,52 @@ export function createApiClient(options: ApiClientOptions) {
           requiresAuth: true,
         }),
     },
+
+    valueSets: {
+      /**
+       * Read the active members of every published value set
+       *
+       * Admin-managed configuration a client needs to render entry screens: fluid categories (AC 2.3 AC1), quick-select container sizes with their canonical mL (AC 2.3 AC2), and meal tags (AC 2.4 AC1). Members are codes, never display labels — patient-facing text comes from the i18n catalog (ADR-0006). Retired members are omitted; a retired code still resolves in stored history, which is why a client must read this rather than hold a hardcoded list. Carries no patient identifier and no PHI, and is therefore not an audit event (SRS §5.2). A client caches the response and keeps rendering offline from the cached copy.
+       */
+      get: (): Promise<{
+        readonly valueSets: ReadonlyArray<{
+          /** The set this release publishes: fluid_type, container_size or meal_tag. */
+          readonly key: string;
+          /** ACTIVE members only, in sortOrder. A retired member is omitted here and still resolves in stored history — which is exactly why a client reads this rather than holding a hardcoded list. */
+          readonly members: ReadonlyArray<{
+            /** The stable identifier a clinical record references (CLAUDE.md). NEVER a display label — patient-facing text comes from the i18n catalog (ADR-0006), so there is one localization pipeline rather than two. */
+            readonly code: string;
+            /** Display order within the set. Admin-managed, so a client renders in this order rather than sorting by code. */
+            readonly sortOrder: number;
+            /** The quantity the member carries, when it has one: a container size is 250 with numericUnit "mL" (AC 2.3 AC2). Null for a category — a fluid type or a meal tag is not a measurement. */
+            readonly numericValue: number | null;
+            /** The unit numericValue is in, stored beside it rather than assumed from the set. An admin editing 250 mL to 250 with the unit left wrong is an administratively plausible mistake, and a value with no unit beside it is one a reader has to guess about. */
+            readonly numericUnit: string | null;
+          }>;
+        }>;
+      }> =>
+        request<{
+          readonly valueSets: ReadonlyArray<{
+            /** The set this release publishes: fluid_type, container_size or meal_tag. */
+            readonly key: string;
+            /** ACTIVE members only, in sortOrder. A retired member is omitted here and still resolves in stored history — which is exactly why a client reads this rather than holding a hardcoded list. */
+            readonly members: ReadonlyArray<{
+              /** The stable identifier a clinical record references (CLAUDE.md). NEVER a display label — patient-facing text comes from the i18n catalog (ADR-0006), so there is one localization pipeline rather than two. */
+              readonly code: string;
+              /** Display order within the set. Admin-managed, so a client renders in this order rather than sorting by code. */
+              readonly sortOrder: number;
+              /** The quantity the member carries, when it has one: a container size is 250 with numericUnit "mL" (AC 2.3 AC2). Null for a category — a fluid type or a meal tag is not a measurement. */
+              readonly numericValue: number | null;
+              /** The unit numericValue is in, stored beside it rather than assumed from the set. An admin editing 250 mL to 250 with the unit left wrong is an administratively plausible mistake, and a value with no unit beside it is one a reader has to guess about. */
+              readonly numericUnit: string | null;
+            }>;
+          }>;
+        }>({
+          method: 'GET',
+          path: `/api/v1/value-sets`,
+          requiresAuth: true,
+        }),
+    },
   };
 }
 
