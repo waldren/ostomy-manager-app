@@ -135,17 +135,48 @@ export const web = {
   'physicianView.emptyState.body':
     'No entries were recorded for this day. That does not always mean there was no output — it may not have been logged.',
 
-  // "not available yet" implied a loading or permissions problem that might
-  // resolve on refresh. It will not.
-  'physicianView.netBalance.heading': 'Daily net fluid balance: not shown',
-  // The refusal to render a number is correct and unchanged. The wording is
-  // not: "is not built yet" is roadmap language in a clinical view, and
-  // "could be trusted by mistake" is agentless — trusted by whom? — and puts
-  // the reader in the position of the person who might be mistaken. The
-  // replacement says what this page can and cannot tell you, then what to
-  // read instead.
-  'physicianView.netBalance.body':
-    'Net fluid balance needs fluid intake and stoma output together. This app does not record fluid intake yet, so there is no balance to show. The stoma output total for this day is listed below, and it is only one side of the balance.',
+  // Daily Net Fluid Balance (SRS §3.5), rendered now that intake logging
+  // exists (P3.S1). The figure is intake MINUS output, so it is signed.
+  //
+  // The label does not say "negative" or "positive": a minus sign is already
+  // in the formatted number, and naming the sign in words invites reading it
+  // as a verdict. This view is a physician's, and SRS §3.5 keeps the four
+  // hydration signals separate and uncombined — interpretation is the
+  // reader's, not this page's.
+  'physicianView.netBalance.heading': 'Daily net fluid balance',
+  'physicianView.netBalance.value': '{{amount}}',
+  // Says what the number IS, because a bare signed volume is ambiguous about
+  // which direction is which.
+  'physicianView.netBalance.explanation':
+    'Fluid taken in, minus stoma output, for this day. A figure below zero means more was lost than taken in.',
+  // Urine is excluded on purpose and the page says so unprompted. A reader
+  // who assumes it is included would read a balance that looks reassuring
+  // while urine output is dangerously low — the exact failure SRS §3.7's
+  // separation exists to prevent, and it is invisible unless stated.
+  'physicianView.netBalance.excludesUrine':
+    'Urine is not part of this figure. It is tracked separately.',
+  // The honest empty state: not "unavailable", which implies a fault, but
+  // "nothing was recorded", which is a fact about the day.
+  'physicianView.netBalance.noInputs':
+    'No fluid intake or stoma output was recorded for this day, so there is no balance to show.',
+  // A balance computed from one side only is not a balance. Rendering it
+  // without saying so would let a day of output with no intake logged read
+  // as a genuine deficit, when it may only be an unlogged one.
+  'physicianView.netBalance.intakeMissing':
+    'No fluid intake was recorded for this day. This figure is stoma output alone, and is not a complete balance.',
+  'physicianView.netBalance.outputMissing':
+    'No stoma output was recorded for this day. This figure is fluid intake alone, and is not a complete balance.',
+
+  // ADR-0016: an entry is filed under the patient's local day, derived from
+  // the zone captured at entry. An entry whose zone this runtime cannot
+  // resolve belongs to no day this page can name, so it is excluded — and
+  // said out loud, because the alternative is an empty state asserting
+  // nothing was recorded when something was.
+  'physicianView.undatable.heading': 'Some entries could not be placed on a day',
+  'physicianView.undatable.body_one':
+    '1 entry could not be matched to a calendar day and is not included below. The day shown may be incomplete.',
+  'physicianView.undatable.body_other':
+    '{{count}} entries could not be matched to a calendar day and are not included below. The day shown may be incomplete.',
 
   'physicianView.chart.heading': 'Stoma output over the day',
   'physicianView.chart.caption':

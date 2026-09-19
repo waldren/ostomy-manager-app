@@ -86,6 +86,8 @@ export type ObservationRejectionDetail = {
 };
 
 export type ObservationsListQuery = {
+  /** Narrow to one observation code. Omit to receive every code this release accepts, which is what makes Daily Net Fluid Balance (intake minus output) computable from a single response. An unaccepted code is refused rather than ignored. */
+  readonly code?: string;
   /** Inclusive lower bound on effectiveDateTime. RFC 3339, UTC, three fractional digits. */
   readonly effectiveDateTimeFrom?: string;
   /** Inclusive upper bound on effectiveDateTime. RFC 3339, UTC, three fractional digits. */

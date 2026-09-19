@@ -1100,6 +1100,74 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
   });
 
   describe('GET /api/v1/observations — listing', () => {
+    /**
+     * P3.S2. This endpoint used to hardcode stoma output, which made Daily
+     * Net Fluid Balance unobtainable from it by construction: the figure is
+     * intake MINUS output, and a response carrying one side of a subtraction
+     * cannot produce it. `apps/web` shipped an "unavailable" notice for
+     * exactly that reason.
+     */
+    it('returns intake alongside output, so a balance is computable from one response', async () => {
+      const patient = await seedPatient('METRIC');
+      await request(app.getHttpServer())
+        .post('/api/v1/observations')
+        .set('Authorization', `Bearer ${patient.token}`)
+        .send(validPayload())
+        .expect(201);
+      await request(app.getHttpServer())
+        .post('/api/v1/observations')
+        .set('Authorization', `Bearer ${patient.token}`)
+        .send({ ...validPayload(), code: '9000-1' })
+        .expect(201);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/observations')
+        .set('Authorization', `Bearer ${patient.token}`)
+        .expect(200);
+
+      const codes = (response.body.observations as Array<{ code: string }>).map((o) => o.code);
+      expect(codes).toContain('79560-9');
+      expect(codes).toContain('9000-1');
+    });
+
+    it('narrows to one code when asked', async () => {
+      const patient = await seedPatient('METRIC');
+      await request(app.getHttpServer())
+        .post('/api/v1/observations')
+        .set('Authorization', `Bearer ${patient.token}`)
+        .send(validPayload())
+        .expect(201);
+      await request(app.getHttpServer())
+        .post('/api/v1/observations')
+        .set('Authorization', `Bearer ${patient.token}`)
+        .send({ ...validPayload(), code: '9000-1' })
+        .expect(201);
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/observations?code=9000-1')
+        .set('Authorization', `Bearer ${patient.token}`)
+        .expect(200);
+
+      expect((response.body.observations as Array<{ code: string }>).map((o) => o.code)).toEqual([
+        '9000-1',
+      ]);
+    });
+
+    /**
+     * Refused rather than ignored, for the reason the unrecognised-key rule
+     * gives: a filter the server drops returns 200 with rows the caller did
+     * not ask for, and a reader cannot tell that from the patient genuinely
+     * having them.
+     */
+    it('refuses a code this release does not accept', async () => {
+      const patient = await seedPatient('METRIC');
+
+      await request(app.getHttpServer())
+        .get('/api/v1/observations?code=29463-7')
+        .set('Authorization', `Bearer ${patient.token}`)
+        .expect(400);
+    });
+
     it('orders by the clinical moment, most recent first, and filters by date range', async () => {
       const patient = await seedPatient('METRIC');
       const moments = [
