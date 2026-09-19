@@ -18,12 +18,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import {
   convertVolumeForDisplay,
   formatDailyVolumeTotalForDisplay,
+  isResolvableTimeZone,
+  toLocalDate,
   unitsForMeasurementSystem,
   type CanonicalVolume,
   type DisplayVolume,
   type MeasurementSystemUnits,
 } from '@ostomy/core/units';
 import type { Observation } from '@ostomy/core/api-client';
+import {
+  countsTowardDailyNetFluidBalance,
+  netDailyFluidBalanceMl,
+  NET_FLUID_BALANCE_INTAKE_LOINC_CODES,
+  NET_FLUID_BALANCE_OUTPUT_LOINC_CODES,
+} from '@ostomy/core/hydration';
+import { MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 
 export type EntryMethod = 'measured' | 'estimated';
 
@@ -34,9 +43,27 @@ export interface DisplayOutputEntry {
   readonly method: EntryMethod;
 }
 
-/** `Observation.method` carries a SNOMED CT estimation-technique code when estimated, and is `null` when measured (CLAUDE.md). */
+/**
+ * `Observation.method` carries an explicit SNOMED qualifier both ways since
+ * ADR-0018's amendment: `414135002` |Estimated| and `258104002` |Measured|.
+ *
+ * Compared against the codes `packages/core` publishes rather than testing
+ * for `null`. The old `method === null ? 'measured' : 'estimated'` was
+ * correct only while `null` meant measured — the moment measured entries
+ * started carrying a code, that test badged **every measured entry as
+ * Estimated**, silently, on the one screen a physician reads to judge
+ * whether a volume was eyeballed or actually measured.
+ *
+ * `null` still maps to measured, because the server accepts it from a client
+ * built before the amendment and rows written before the backfill could
+ * carry it. Anything else unrecognised is treated as estimated: of the two
+ * ways to be wrong about an unknown qualifier, over-stating uncertainty is
+ * the safe direction.
+ */
 function toEntryMethod(method: string | null): EntryMethod {
-  return method === null ? 'measured' : 'estimated';
+  if (method === null) return 'measured';
+  if (MEASURED_METHOD_CODE.resolved && method === MEASURED_METHOD_CODE.code) return 'measured';
+  return 'estimated';
 }
 
 /**
@@ -155,3 +182,137 @@ export const CLINICAL_DATE_TIME_OPTIONS: Intl.DateTimeFormatOptions = {
   minute: '2-digit',
   timeZoneName: 'short',
 };
+
+/**
+ * The observations whose PATIENT-LOCAL day is `isoDate` (ADR-0016).
+ *
+ * The local day, not the UTC one. A patient in Chicago logging at 20:00 on
+ * the 18th produces an instant of 01:00 UTC on the 19th, so a UTC-bounded
+ * day silently files their evening under tomorrow and shows them a total
+ * missing it. ADR-0016 is explicit that daily totals group by the patient's
+ * local day at the moment of entry, and this is that rule applied on the
+ * read side.
+ *
+ * Derived here rather than read off the resource: `localDate` is deliberately
+ * absent from the wire (§7.2), so the client recomputes it from the same two
+ * fields the server used — the instant and the zone captured at entry — with
+ * `@ostomy/core`'s shared helper. Two implementations of "which day is this"
+ * is exactly the disagreement ADR-0016 exists to prevent.
+ *
+ * An unresolvable zone (a stored value the runtime's ICU data does not know)
+ * excludes the entry rather than defaulting it into the viewed day. Silently
+ * filing an entry under a day it may not belong to would corrupt the very
+ * figure this page exists to show; an entry missing from one day's list is
+ * visible as an absence, while a wrongly-included one is not.
+ */
+export interface LocalDaySelection {
+  /** The observations whose patient-local day is the requested one. */
+  readonly onDate: readonly Observation[];
+  /**
+   * How many were excluded because their zone could not be resolved, and so
+   * could not be assigned to any day at all.
+   *
+   * Counted and surfaced rather than silently dropped. Excluding them is
+   * right — filing an entry under a day it may not belong to corrupts the
+   * figure this page exists to show — but silence is not: if every entry of a
+   * day were undatable, the page would render its "no entries were recorded"
+   * empty state, which tells a physician something false about the patient
+   * rather than something true about the data. The page warns instead, the
+   * same way it warns about a truncated page.
+   */
+  readonly undatable: number;
+}
+
+export function observationsOnLocalDate(
+  observations: readonly Observation[],
+  isoDate: string,
+): LocalDaySelection {
+  const onDate: Observation[] = [];
+  let undatable = 0;
+
+  for (const observation of observations) {
+    if (!isResolvableTimeZone(observation.enteredTimezone)) {
+      undatable += 1;
+      continue;
+    }
+    if (
+      toLocalDate(new Date(observation.effectiveDateTime), observation.enteredTimezone) === isoDate
+    ) {
+      onDate.push(observation);
+    }
+  }
+
+  return { onDate, undatable };
+}
+
+/**
+ * Daily Net Fluid Balance for display: total intake MINUS total output
+ * (SRS §3.5), converted once.
+ *
+ * The arithmetic is `@ostomy/core`'s, not this module's. Which side of the
+ * subtraction an observation falls on is decided by its LOINC code there, so
+ * voided urine is excluded even when every observation of the day is passed
+ * in undifferentiated — and it must stay excluded: net balance measures
+ * stoma losses while urine output independently signals renal perfusion, and
+ * summing them lets a normal-looking balance hide a dangerously low urine
+ * output (CLAUDE.md, SRS §3.7).
+ *
+ * **The result is signed, and negative is the clinically interesting case** —
+ * an output-dominant day is the classic dehydration presentation. Rounding
+ * uses core's half-away-from-zero, so a negative balance rounds away from
+ * zero exactly as a positive one does rather than drifting toward it.
+ *
+ * Rounded ONCE, from canonical mL, never by summing rounded per-entry
+ * figures (ADR-0005). The entry-system rule is the same as the daily
+ * total's: a day entered wholly in the display system is a readback and is
+ * not rounded; anything else takes the whole-unit conversion rounding.
+ */
+export function toDisplayNetFluidBalance(
+  observations: readonly Observation[],
+  targetSystem: MeasurementSystemUnits,
+): DisplayVolume {
+  const netMl = netDailyFluidBalanceMl(
+    observations.map((observation) => ({
+      loincCode: observation.code,
+      valueMl: observation.valueQuantity.value,
+    })),
+  );
+
+  // Only the observations that actually contribute decide the entry system.
+  // A day whose sole imperial entry is a weight would otherwise be treated as
+  // mixed-system and have its balance rounded for no reason.
+  const contributing = observations.filter((observation) =>
+    countsTowardDailyNetFluidBalance(observation.code),
+  );
+  const uniformEntrySystem = resolveUniformEntrySystem(contributing);
+
+  return convertVolumeForDisplay(netMl, uniformEntrySystem ?? targetSystem, targetSystem);
+}
+
+/** Whether this day holds anything the balance is computed from at all. */
+export function hasFluidBalanceInputs(observations: readonly Observation[]): boolean {
+  return observations.some((observation) => countsTowardDailyNetFluidBalance(observation.code));
+}
+
+/**
+ * Whether this observation is one of the losses the balance subtracts.
+ *
+ * Built on `@ostomy/core/hydration`'s named set rather than a code literal —
+ * that module deliberately withholds its raw codes so it does not become a
+ * second terminology entry point (ADR-0007).
+ *
+ * Today that set is stoma output alone, which is why the chart and table can
+ * carry a "Stoma output" heading. SRS §3.5's "(and other recorded losses)"
+ * is room the set is meant to grow into, and **when it does, this page's
+ * headings stop being true** — the chart would silently plot two kinds of
+ * event under one label. Widen the set and this predicate stays correct
+ * while the copy does not; revisit both together.
+ */
+export function isFluidBalanceOutput(observation: Observation): boolean {
+  return NET_FLUID_BALANCE_OUTPUT_LOINC_CODES.has(observation.code);
+}
+
+/** Whether this observation is one the balance adds. */
+export function isFluidBalanceIntake(observation: Observation): boolean {
+  return NET_FLUID_BALANCE_INTAKE_LOINC_CODES.has(observation.code);
+}

@@ -28,6 +28,7 @@ import { Injectable, type PipeTransform } from '@nestjs/common';
 import { z } from 'zod';
 
 import { OBSERVATION_QUERY_FIELD, queryInvalid, queryUnrecognized } from './observation-rejection';
+import { acceptedCodeRules } from './observation-wire';
 
 /** Page size defaults. Server configuration, not a clinical threshold. */
 export const OBSERVATION_LIST_DEFAULT_LIMIT = 100;
@@ -38,6 +39,13 @@ const instantSchema = z.iso.datetime({ precision: 3 });
 export interface ObservationListQuery {
   readonly effectiveDateTimeFrom: Date | undefined;
   readonly effectiveDateTimeTo: Date | undefined;
+  /**
+   * Narrow to one observation code. Absent means every code this release
+   * accepts — which is what lets a caller assemble Daily Net Fluid Balance,
+   * a figure that is intake MINUS output and therefore unobtainable from any
+   * single-code response.
+   */
+  readonly code: string | undefined;
   readonly limit: number;
 }
 
@@ -85,6 +93,7 @@ export class ObservationQueryPipe implements PipeTransform<unknown, ObservationL
     return {
       effectiveDateTimeFrom,
       effectiveDateTimeTo,
+      code: parseCode(raw.code),
       limit: parseLimit(raw.limit),
     };
   }
@@ -95,6 +104,22 @@ export class ObservationQueryPipe implements PipeTransform<unknown, ObservationL
  * §8; removing one is not, so a parameter retired later should keep being
  * accepted and ignored rather than starting to 400 a fielded client.
  */
+/**
+ * An accepted code, or nothing.
+ *
+ * Refused rather than ignored when unknown, for the reason the unrecognised-key
+ * check above gives: a filter the server silently drops returns 200 with rows
+ * the caller did not ask for, and a reader cannot tell that from the patient
+ * genuinely having those entries.
+ */
+function parseCode(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !acceptedCodeRules(raw)) {
+    throw queryInvalid(OBSERVATION_QUERY_FIELD.CODE);
+  }
+  return raw;
+}
+
 const RECOGNIZED_QUERY_KEYS: ReadonlySet<string> = new Set<string>(
   Object.values(OBSERVATION_QUERY_FIELD),
 );
