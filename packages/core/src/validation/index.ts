@@ -54,7 +54,11 @@ export {
   type MeasuredOrEstimated,
 } from './volumetric.js';
 
-export { ESTIMATION_METHOD_CODE, type EstimationMethodCode } from './estimationMethod.js';
+export {
+  ESTIMATION_METHOD_CODE,
+  MEASURED_METHOD_CODE,
+  type EstimationMethodCode,
+} from './estimationMethod.js';
 
 /**
  * The canonical column's representability bounds.

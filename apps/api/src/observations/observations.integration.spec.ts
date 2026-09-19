@@ -610,13 +610,29 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
       expect(await observationRows(body.id as string)).toHaveLength(0);
     });
 
-    it('accepts an explicit null as "measured" and stores NULL', async () => {
+    /**
+     * ADR-0018 (amended). `null` stays accepted, because §8 requires
+     * understanding a client built before the amendment — but the stored row
+     * carries the explicit qualifier, so the wire's ambiguity never becomes a
+     * row's ambiguity. This asserts the normalisation end to end, against
+     * real PostgreSQL, which is the only place it can actually be proven.
+     */
+    it('accepts an explicit null as "measured" and stores the |Measured| code', async () => {
       const body = validPayload({ method: null });
       const response = await post(patientA, body);
 
       expect(response.status).toBe(201);
       const rows = await observationRows(body.id as string);
-      expect(rows[0]!.method).toBeNull();
+      expect(rows[0]!.method).toBe('258104002');
+    });
+
+    it('accepts the explicit |Measured| code and stores it unchanged', async () => {
+      const body = validPayload({ method: '258104002' });
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(201);
+      const rows = await observationRows(body.id as string);
+      expect(rows[0]!.method).toBe('258104002');
     });
   });
 

@@ -29,11 +29,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * SNOMED CT `414135002` |Estimated (qualifier value)|, recorded in
  * design-specs/data-model/fhir-rxnorm-integration.md and ADR-0018.
  *
- * `null` still means measured on the wire and in storage
- * (docs/sync-contract.md §7.2). SNOMED CT `258104002` |Measured (qualifier
- * value)| exists and is the paired concept, but adopting it would change
- * what `method: null` means and is a separate decision — see ADR-0018's
- * "What this does not change".
+ * The paired concept, SNOMED CT `258104002` |Measured (qualifier value)|, is
+ * **also adopted** (ADR-0018, amended). `method` therefore carries a code for
+ * every volumetric entry, and `null` no longer means "measured" — it means
+ * only "the Measured/Estimated toggle does not apply to this observation",
+ * which today is weight and resting heart rate. Before this, `null` meant
+ * both, separated only by inspecting `code`; a FHIR reader had to know that
+ * rule to interpret a row, and nothing in the data said so.
  *
  * Modelled as a discriminated union, not `string | null` (B4, this
  * sprint's review): Prisma's `observations.method` column is `String?`,
@@ -80,4 +82,27 @@ export type EstimationMethodCode =
 export const ESTIMATION_METHOD_CODE: EstimationMethodCode = {
   resolved: true,
   code: '414135002',
+};
+
+/**
+ * SNOMED CT `258104002` |Measured (qualifier value)|.
+ *
+ * The paired qualifier to `ESTIMATION_METHOD_CODE`, adopted so that a
+ * volumetric entry always states how its number was arrived at rather than
+ * implying it by absence.
+ *
+ * It carries the same union type on purpose. The two codes are a pair: a
+ * release that resolved one and not the other would write rows where `null`
+ * again means two things, which is precisely the state this adoption exists
+ * to end. Narrowing on `resolved` at every call site keeps that impossible to
+ * do by accident.
+ *
+ * **Applies to volumetric entries only.** Weight (LOINC 29463-7) and resting
+ * heart rate (8867-4) leave `method` NULL, because the toggle is not asked
+ * and asserting "Measured" about a number the patient read off a scale would
+ * be recording a choice they never made (CLAUDE.md).
+ */
+export const MEASURED_METHOD_CODE: EstimationMethodCode = {
+  resolved: true,
+  code: '258104002',
 };

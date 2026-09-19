@@ -1,7 +1,7 @@
-# ADR-0018: Record an estimated volumetric entry as SNOMED CT 414135002, and keep `null` for measured
+# ADR-0018: Record a volumetric entry's Measured/Estimated toggle as an explicit SNOMED CT qualifier
 
-- **Status:** Accepted
-- **Date:** 2026-09-17
+- **Status:** Accepted (amended 2026-09-18 — see "Amendment")
+- **Date:** 2026-09-17, amended 2026-09-18
 - **Deciders:** Steven Waldren
 - **Related:** SRS_v2 §4.4, AC 2.2 AC2, AC 2.5 AC2 | [ADR-0001](0001-sync-wire-contract.md) | `docs/sync-contract.md` §7.2 | `design-specs/data-model/fhir-rxnorm-integration.md` | decision D4 in `design-specs/planning/v1-implementation-plan.md`
 
@@ -18,6 +18,8 @@ D4 blocked real work. `apps/mobile`'s Add Output screen (P2.S2b) shipped with bo
 We will record an estimated volumetric entry as **SNOMED CT `414135002` |Estimated (qualifier value)|** in `Observation.method`, published from `packages/core`'s `ESTIMATION_METHOD_CODE`.
 
 We will **keep `null` as the representation of a measured entry** on the wire and in storage, and continue to reject every other non-null `method` value with `PAYLOAD_FIELD_INVALID` — including SNOMED CT `258104002` |Measured (qualifier value)|, which is a real concept this system deliberately does not transmit today.
+
+> **Superseded by the amendment below, 2026-09-18.** `258104002` is now written for every measured volumetric entry. The paragraph above is kept rather than rewritten, because the reasoning it records is what the amendment had to overturn.
 
 ## Consequences
 
@@ -60,3 +62,36 @@ Recorded here rather than left implicit so that whoever builds the FHIR export m
 - `design-specs/data-model/fhir-rxnorm-integration.md` — the open question moves to a recorded resolution.
 - `CLAUDE.md` — the "Data model rules that are easy to get wrong" bullet names the code, and the `packages/core` paragraph no longer describes `ESTIMATION_METHOD_CODE` as unresolved.
 - `SRS_v2.md` §4.4 / AC 2.5 AC2 describe the field, not the code value, and need no change.
+
+
+## Amendment (2026-09-18): adopt `258104002` |Measured|
+
+The open question this ADR recorded — whether `null` should become an explicit |Measured| code — is **resolved: adopted.**
+
+### What changes
+
+A measured volumetric entry is stored as SNOMED CT **`258104002` |Measured (qualifier value)|**, published from `packages/core`'s new `MEASURED_METHOD_CODE`, which carries the same discriminated-union shape as `ESTIMATION_METHOD_CODE` for the same reason. The two are a pair: a release that resolved one and not the other would write rows where `null` again means two things, which is exactly the state this amendment ends.
+
+`method: null` **at rest** now means one thing only: this observation has no Measured/Estimated toggle — weight (LOINC 29463-7) and resting heart rate (8867-4). Asserting "Measured" about a number read off a scale would record a choice the patient was never asked to make.
+
+`method: null` **on the wire** is still accepted, and still means measured. §8 requires the server to keep understanding a client built before this amendment, and refusing `null` would reject a correct entry from an app the patient has simply not updated — which §9 then tells that client to re-push indefinitely. The server normalises it to `258104002` before storing, so the wire may be imprecise while no stored row is.
+
+### Why now rather than never
+
+The original reasoning was that the inference — `method IS NULL` plus a volumetric `code` means measured — is sound inside this system. It is. The problem is that it is **invisible outside** it: an exported FHIR `Observation` with no `method` says *not stated*, not *measured*, and a receiving EHR cannot tell a measured stoma-output entry from one written by a client that never implemented the toggle. AC 2.2 AC2's history badge had the same shape of problem in miniature — it had to consult `code` to render a property of the entry.
+
+The cost of adopting is a backfill migration, and that cost only grows. Doing it while the row count is small is the cheapest this will ever be.
+
+### The backfill, and why it is sound rather than a guess
+
+`20260918120000_adopt_measured_snomed_code` sets `method = '258104002'` where `method IS NULL` **and** `code` is one of the volumetric LOINC codes.
+
+No row can be mislabelled by it. While D4 was unresolved the server refused every estimated entry outright with `PAYLOAD_FIELD_INVALID`, so a NULL `method` on a volumetric row can only ever have been a genuine Measured answer. That is what makes the backfill a restatement of an existing fact rather than an assumption about one.
+
+It is scoped by `code` rather than by `method IS NULL` alone even though every accepted code today is volumetric, because the unscoped form stops being correct the moment weight or heart rate lands (P5–P7) and this migration is re-run against a restored database or copied as a template. The failure it would cause — asserting a patient chose "Measured" for a scale reading — is indistinguishable afterwards from a real answer.
+
+### What it costs
+
+A second value is now load-bearing in stored data, with the same warning as the first: changing it is a data migration, not an edit.
+
+Clients that send `null` are now producing a row whose stored `method` differs from what they sent. That is deliberate and documented in §7.2, but it does mean a device's local row and the server's can disagree about the same entry until the client is updated — which is why `apps/mobile` was changed in the same PR to send the explicit code.
