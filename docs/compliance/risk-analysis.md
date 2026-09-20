@@ -28,7 +28,7 @@ Ranked by the product's own judgement, not a scored matrix.
 | # | Risk | Status |
 |---|---|---|
 | 1 | **Lost or stolen patient phone.** The most likely first incident. | Mitigated: encrypted at rest, device-bound key, session re-lock, enrolment invalidation (ADR-0014, ADR-0015). **Unverified on hardware** |
-| 2 | **iOS cloud backup carries the database off-device.** `expo-file-system@57` removed the exclusion API | Partially mitigated: the file is ciphertext and its key does not migrate on restore. Gap is open and recorded (ADR-0014) |
+| 2 | **Consumer cloud backup carries the database off-device.** Neither Apple nor Google will execute a BAA for consumer backup | Mitigated on the shipping platform: `allowBackup: false` on Android. The iOS half — an open gap in ADR-0014, since `expo-file-system@57` removed the exclusion API — is **closed by scope**, not by a plugin: v1 ships no iOS client (ADR-0020). It returns if that platform does |
 | 3 | **A live coerced unlock.** Someone compels the patient to present a finger or face | **Not mitigated, and not mitigable client-side.** Accepted in ADR-0015 |
 | 4 | **Shared or handed-down device leaking between patients** | Mitigated: database bound to one subject, purged on change or sign-out (ADR-0014) |
 | 5 | **Deletion that does not delete.** Audit rows held clinical values the API could not purge | Mitigated by ADR-0017's privileged job. **Job not yet built** |

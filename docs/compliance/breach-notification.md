@@ -59,7 +59,7 @@ A lost or stolen patient phone is the incident this product is most likely to ha
 
 1. **Establish whether the local store was encrypted.** ADR-0014 encrypts it with SQLCipher, keyed from `expo-secure-store` and bound to the device. Confirm the build the patient was running actually had it — an older build predating that ADR did not.
 2. **Establish whether the key could travel with the file.** The key is stored `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`, which the keychain does not migrate on backup restore. A backup restored onto another device yields an undecryptable file.
-3. **Check the iOS backup gap.** Backup exclusion is *not* implemented on iOS (`expo-file-system@57` removed the API), so the encrypted file does enter iCloud. That is ciphertext without a migrating key, but it is a fact the assessment must state rather than omit.
+3. **Check the backup path for the platform in question.** v1 ships Android only ([ADR-0020](../../design-specs/decisions/0020-android-only-v1.md)) with `allowBackup: false`, so the database does not enter Google backup — confirm that on the build the patient was running rather than assuming it. The iCloud exposure this step used to describe was removed with the iOS platform, not mitigated; if iOS is ever reinstated, it returns with it.
 4. **Revoke.** Revoke the refresh token at the issuer. Note that biometric enrolment change already invalidates it (ADR-0015), and that a *live* coerced unlock is not addressed by any control.
 5. **Assess and record.** Encrypted, key non-migrating, no evidence of decryption → document the reasoning and why no notice is required. Anything else → assume acquisition and start the 60-day clock.
 

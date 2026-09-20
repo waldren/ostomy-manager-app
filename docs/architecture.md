@@ -3,7 +3,7 @@
 High-level system architecture for the ostomy patient management app.
 
 ## Overview
-- `apps/mobile` — React Native (Expo) app for iOS/Android
+- `apps/mobile` — React Native (Expo) app, **Android only in v1** (iOS deferred, [ADR-0020](../design-specs/decisions/0020-android-only-v1.md))
 - `apps/web` — React web app
 - `apps/api` — backend/API: auth, sync, FHIR + RxNorm integration
 - `packages/ui` — shared design-system components used by mobile and web

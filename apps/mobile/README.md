@@ -30,8 +30,12 @@ pnpm start              # expo start (Metro bundler; press i/a for a simulator)
 # would write the clinical database in PLAINTEXT with nothing failing. The
 # executor now probes `PRAGMA cipher_version` and refuses to open rather
 # than let that happen. Use a development build.
-pnpm ios                # expo start --ios
-pnpm android            # expo start --android
+pnpm android            # expo run:android
+#
+# There is deliberately no `ios` script. v1 ships Android only (ADR-0020):
+# this app has never been built for iOS, so its SQLCipher plugin, keychain
+# accessibility class and biometric invalidation have never compiled on that
+# platform. The `ios` block in app.json is retained but inert.
 pnpm typecheck          # tsc --noEmit
 pnpm test               # jest (jest-expo preset — docs/testing.md)
 pnpm test:watch
@@ -41,7 +45,7 @@ pnpm test:watch
 `pnpm -r --if-present run <script>`) alongside every other workspace, plus
 lint and format over `apps/mobile/**`.
 
-Copy `.env.example` to `.env` before running `start`/`ios`/`android` — see
+Copy `.env.example` to `.env` before running `start`/`android` — see
 that file for what each variable means and the OIDC audience assumption this
 sprint records.
 

@@ -76,14 +76,16 @@ All three clients that exist are listed below. There is still no `apps/admin`.
 - **Shared UI (`packages/ui`), P2.S3:** `pnpm --filter @ostomy/ui build | typecheck | test | lint`.
   `build:deps` builds it, so a clean clone gets a real `dist` before anything imports it.
 - **Mobile (`apps/mobile`), P2.S2a:** `cp apps/mobile/.env.example apps/mobile/.env`, then
-  `pnpm --filter @ostomy/mobile start` (`ios` / `android` to open a simulator directly). Set
+  `pnpm --filter @ostomy/mobile start` (`android` to open a device or emulator directly; there is no
+  `ios` script — v1 ships Android only, [ADR-0020](../design-specs/decisions/0020-android-only-v1.md)). Set
   `EXPO_PUBLIC_API_URL` to the development server's LAN address; the test device must be on the same
   network. `typecheck | test | test:watch` on the same filter — the suite runs against Node's
   built-in SQLite rather than a simulator, so `test` needs no device.
 
   Its device-side security controls (SQLCipher, keychain accessibility, biometric enrolment
-  invalidation) **cannot be exercised by `pnpm test`** — jest runs no keychain. They need real iOS
-  and Android hardware; see ADR-0014 and ADR-0015.
+  invalidation) **cannot be exercised by `pnpm test`** — jest runs no keychain. They need real Android
+  hardware; see ADR-0014, ADR-0015 and `docs/gate-b-hardware-verification.md`, which holds the steps
+  (none run yet — issue #39).
 - **Android emulator (`apps/mobile`):** `scripts/android-emulator.sh` manages a Pixel 8 AVD for
   on-device testing, wired to the Compose stack. `doctor` first — the emulator and the development
   build have separate prerequisites, and it names which one you are missing.

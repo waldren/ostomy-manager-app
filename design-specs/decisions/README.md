@@ -38,14 +38,19 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0017](0017-phi-retention-deletion-and-the-audit-exception.md) | PHI lives for the account's lifetime, and deletion reaches the audit log | Accepted |
 | [0018](0018-estimation-method-snomed-code.md) | The Measured/Estimated toggle is an explicit SNOMED qualifier both ways: 414135002 estimated, 258104002 measured | Accepted (amended 2026-09-18) |
 | [0019](0019-clock-skew-allowance.md) | A synced operation's clientTimestamp may run five minutes ahead before it is refused | Accepted |
+| [0020](0020-android-only-v1.md) | Ship v1's mobile client on Android only; iOS is deferred, not dropped | Accepted |
 
 **ADR-0012 completes ADR-0005** rather than superseding it. ADR-0005's decisions all stand; it simply had no source of truth for the entry measurement system, and ADR-0012 supplies one. ADR-0005 is not edited, per the immutability rule above.
+
+**ADR-0020 narrows ADR-0014** rather than superseding it. ADR-0014's reasoning stands in full for the platform it was written about; the iOS backup gap it recorded is closed by removing that platform, not by implementing the exclusion. ADR-0014 is not edited, per the immutability rule above.
+
+**ADR-0020 changed the spec.** SRS_v2 was updated to v2.6 in the same change: §2 Cross-Platform Availability and §4.2 now name Android for v1, with iOS deferred.
 
 **ADR-0005 changed the spec.** SRS_v2 was updated to v2.4 in the same change: AC 2.1 AC 1 now accepts decimal volumes, and a new AC 2.1 AC 4 specifies conversion rounding.
 
 ### Decided elsewhere, deliberately not an ADR
 
 - **Git workflow and branch strategy** — `docs/git-workflow.md`. Blocking for P0 but not architectural.
-- **SNOMED CT estimation-technique code** — still open, and blocked on a terminology lookup rather than on engineering. Tracked in `design-specs/data-model/fhir-rxnorm-integration.md`; write an ADR when it resolves. Do not invent a code.
+- **SNOMED CT estimation-technique code** — no longer open. It resolved to `414135002` |Estimated| and, on amendment, `258104002` |Measured|; see [ADR-0018](0018-estimation-method-snomed-code.md). The discipline it was listed under stands for the next unresolved code: do not invent one.
 
 Decisions predating this folder are captured in `SRS_v2.md` §4 and summarized in `CLAUDE.md`.
