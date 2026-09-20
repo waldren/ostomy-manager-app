@@ -1,33 +1,20 @@
 # v1 Implementation Plan — Ostomy Patient Management Application
 
-Status: active · Derived from `design-specs/requirements/SRS_v2.md` (now v2.4)
+Status: active (revision 2, 2026-09-19) · Derived from `design-specs/requirements/SRS_v2.md` (v2.5) and the nineteen accepted ADRs in `design-specs/decisions/`
 
-**Decision status (updated 2026-09-05).** D1–D2 and D5–D10 are now accepted ADRs; F1 and F2 are resolved and the spec is corrected. Read the ADR, not this plan's summary, before implementing — the ADRs are normative and this section is a pointer.
+**Revision 2 exists because revision 1 stopped describing the repository.** Its "current state" section described a scaffolding-only repo that has since shipped P0, P1, P2 and half of P3; its decision table still listed items that are now accepted ADRs; and roughly a third of the merged commits since Gate B was written belong to no sprint in it. This revision re-baselines against what is actually built, folds the unowned work into named sprints and a tracked debt lane, and records four decisions taken on 2026-09-19 (§3.2).
 
-| Plan item                              | Now recorded as                                                                                          |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| D1 sync contract                       | [ADR-0001](../decisions/0001-sync-contract-and-conflict-semantics.md)                                    |
-| D2 testing strategy                    | [ADR-0002](../decisions/0002-testing-strategy.md)                                                        |
-| D7 monorepo tooling                    | [ADR-0003](../decisions/0003-monorepo-task-tooling.md)                                                   |
-| D9 canonical units                     | [ADR-0004](../decisions/0004-canonical-storage-units.md)                                                 |
-| F2 decimal entry + conversion rounding | [ADR-0005](../decisions/0005-decimal-volumetric-entry-and-conversion-rounding.md) — **changed the spec** |
-| D8 i18n                                | [ADR-0006](../decisions/0006-i18n-library-and-shared-catalog.md)                                         |
-| D10 `packages/core` ownership          | [ADR-0007](../decisions/0007-packages-core-ownership.md)                                                 |
-| D5 admin console timing                | [ADR-0008](../decisions/0008-admin-config-api-before-console.md)                                         |
-| D6 seed data                           | [ADR-0009](../decisions/0009-synthetic-seed-data-generation.md)                                          |
-| F1 three-vs-four signals               | Fixed in SRS v2.4, AC 17.3 AC 2                                                                          |
-| D3 git workflow                        | Still open — belongs in `docs/git-workflow.md` at P0.S2, not an ADR                                      |
-| D4 SNOMED estimation code              | Still open — external terminology lookup. Do not invent a code.                                          |
+**What did not change:** the phase structure after P3, the delegation model (§5), the cross-cutting table (§6), and every architecture decision in SRS §4. This is a re-baseline, not a redesign.
 
-**Still blocking P0.S1: D3 only.** D2 and D7 are settled.
+---
 
 ## 1. Objective
 
-Sequence the work from today's scaffolding-only repo through complete v1 (all six approved SRS phases), as a series of bounded delegation units sized by reviewable diff.
+Sequence the remaining work from today's repository through complete v1, as bounded delegation units sized by reviewable diff.
 
-**In scope:** repo tooling and process docs; the on-prem Docker Compose dev stack; the FHIR-shaped schema; `packages/core`; the API; both patient clients; the admin console; staging/production IaC; the compliance artifacts that gate production.
+**In scope:** the rest of the entry types and the configuration surface; onboarding, preferences and suggested ranges; history, physician view and exports; weight and composite hydration status; resting heart rate and concordance; the admin console; staging and production IaC; the compliance artifacts that gate production.
 
-**Deliberately excluded:** everything in SRS Appendix A (urostomy, wearables, education library, gamification, live care-team portal accounts). Spanish or any second locale — v1 is English-only, though the i18n plumbing is in scope from sprint one. Numeric performance targets, which SRS §5.1 defers until a spike exists (the spike is scheduled; the targets are not invented here).
+**Deliberately excluded:** everything in SRS Appendix A (urostomy, wearables, education library, gamification, live care-team portal accounts); a second locale; numeric performance targets, which SRS §5.1 defers until the spike (§4.4); and — new in this revision — **iOS** (§3.2, decision 1).
 
 **No durations anywhere.** Sizing is S/M/L by review surface only:
 
@@ -39,464 +26,312 @@ Sequence the work from today's scaffolding-only repo through complete v1 (all si
 
 ---
 
-## 2. Current state (verified)
+## 2. Current state (verified 2026-09-19)
 
-- `package.json` — name, version, description, license; **empty `scripts`, empty `devDependencies`**. No lockfile.
-- `pnpm-workspace.yaml` — `apps/*` and `packages/*`. Nothing to resolve.
-- `apps/api`, `apps/web`, `apps/mobile` — README stubs, each marked "Not yet scaffolded." **No `apps/admin`.**
-- `packages/core`, `packages/ui`, `packages/config` — one-line README stubs. No source, no `package.json`.
-- `.github/workflows/` — README only, no workflows.
-- `infra/`, `scripts/` — README only.
-- `design-specs/decisions/` — **`README.md` + `0000-template.md` only. Index reads "No decisions recorded yet." Confirmed: zero accepted ADRs.** Every architecture constraint currently in force comes from SRS §4 and `CLAUDE.md`.
-- Docs written and substantive: `deployment-development.md` (the dev environment methodology, including the deferred-risk list), `architecture.md` (thin), `license-header.md`, `getting-started.md` (commands are `TBD`).
-- Docs that are stubs and gate work below: `coding-standards.md`, `git-workflow.md`, `testing.md`, and the "Developer practices" half of `security-hipaa.md`.
-- `design-specs/data-model/fhir-rxnorm-integration.md` — three short sections; open questions include the SNOMED CT estimation-technique code, the RxNorm subset/API, and FHIR versioning. It cites the v1.0 PDF as "the SRS," which is now stale.
-- `.claude/agents/` — nine agents: five builders, one planner, three reviewers. Reviewers and planner have no write tools by design.
+### 2.1 What is built
 
-**Consequence:** there is no `pnpm install` that works, no lint, no typecheck, no test runner. Every sprint's exit criteria below depend on P0 existing first.
+| Phase | Status | Evidence |
+| ----- | ------ | -------- |
+| **P0** — repo foundations | **Complete** | `packages/config` (tsconfig, ESLint flat config, Prettier); root `pnpm verify` running check:env + format + build:deps + lint + typecheck + test + three verify steps; `.github/workflows/pr.yml` and `deploy-dev.yml`; three build-failing lint rules with their own tests |
+| **P1** — foundation | **Complete** | API skeleton with typed config, structurally separate patient/admin OIDC guards, Pino logger with credential redaction; Compose dev stack; Prisma schema + migrations; `packages/core` kernel; global `AuditInterceptor` with `route-guard-coverage.spec.ts` failing the build on an unaudited mutating route |
+| **P2** — stoma output slice | **Code complete, gate unrun** | P2.S0 sync contract; P2.S1a/b observations + sync endpoints; P2.S2a/b mobile substrate, entry screen, sync worker, correction inbox; P2.S3 web SPA; P2.S4 seed generator. **The Gate B walkthrough has never been run or recorded** |
+| **P3** — entry types + config | **S1 done, S1b in flight** | P3.S1 fluid intake and meals (PRs A–E); P3.S1b Daily Net Fluid Balance on web, unmerged on `feat/web-net-fluid-balance` |
+
+Nineteen ADRs accepted (ADR-0001 to ADR-0019). `docs/sync-contract.md` is normative and governs its implementations.
+
+### 2.2 What is not built, and is scheduled
+
+P3.S2 voided urine · P3.S3 admin config API · P3.S4 Quick-Add · P3.S5 remaining seed scenarios · all of P4–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
+
+### 2.3 What is not built, and was owned by nobody until this revision
+
+This is the finding that motivated the re-baseline. Each item below was recorded honestly at the time — in an ADR, a commit body, a README or a reviewer's report — and then had no sprint to land in.
+
+| Item | Recorded in | Now |
+| ---- | ----------- | --- |
+| Device-side controls unverified on hardware (HW-1..HW-10) | ADR-0014, ADR-0015, CLAUDE.md, `docs/gate-b-hardware-verification.md` | Debt lane, after R.S2 rescopes it to Android |
+| An OS-invalidated refresh token has no route back to sign-in | Read from `AuthContext.tsx` during this review | Debt lane — predicted failure of HW-6 |
+| iOS backup exclusion plugin | ADR-0014 "known gap" | **Closed by decision** — out of v1 scope (§3.2) |
+| WCAG 1.4.4: SVG tick labels do not scale with text zoom | P2.S3 reviewer deferral | Debt lane, `accessibility` |
+| Chart's hidden description duplicates the table verbatim | P2.S3 reviewer deferral | Debt lane, `accessibility` |
+| jest-axe; a web error boundary; an ADR for `sessionStorage` tokens | P2.S3 reviewer deferrals | Debt lane |
+| Announcement convention for Tier 1 / Tier 2 / red-flag prompts | P2.S2b deferral | Debt lane — **blocks P7.S3**, see §7 R6 |
+| `withExclusiveTransactionAsync` for the production SQLite adapter | P2.S2b deferral | Debt lane |
+| Monotonic clock reference for last-write-wins | P2.S2b deferral | Debt lane |
+| Mixed-entry-system daily totals policy | `apps/web/README.md` known gaps | Debt lane |
+| Stale-cursor recovery never exercised against a live 409 | #34 commit body | Debt lane |
+| `docs/coding-standards.md` still `TBD` | Revision 1 §2 | Debt lane |
+| Doc drift: `security-hipaa.md` owes a warning that shipped; `CLAUDE.md` calls `.github/workflows/` empty | This review | R.S3 |
+
+### 2.4 Off-plan work is a first-class lane, and revision 1 denied it
+
+Eight of the last fifteen merged PRs belong to no sprint: the Android emulator harness (#30, #31, #37), container images built and *run* in PR CI (#33), two dev-stack image repairs (#22, #24), a security-commit repair with the tests it never had (#17), advisory remediation, and the §5.4 stale-cursor recovery (#34). Two of those repairs existed because images drifted undetected for three and five PRs respectively.
+
+This is not waste and it is not scope creep — it is the cost of running a real deployment target. Revision 2 stops pretending the plan is a complete accounting of the work and instead names the lane (§5.7) so its volume is visible when sequencing.
 
 ---
 
-## 3. Decisions needed before work starts
+## 3. Decisions
 
-Each is labeled by provenance. **[SPEC]** = SRS states it, not open. **[GAP]** = the spec does not cover it and you must decide. **[EXTERNAL]** = blocked on someone outside engineering.
+### 3.1 Settled — read the ADR, never this summary
 
-### D1. Sync contract shape and conflict/idempotency semantics — ADR (highest priority)
+| Area | ADR |
+| ---- | --- |
+| Sync contract and conflict semantics | [ADR-0001](../decisions/0001-sync-contract-and-conflict-semantics.md) |
+| Testing strategy | [ADR-0002](../decisions/0002-testing-strategy.md) |
+| Monorepo task tooling | [ADR-0003](../decisions/0003-monorepo-task-tooling.md) |
+| Canonical units | [ADR-0004](../decisions/0004-canonical-storage-units.md) |
+| Decimal entry and conversion rounding | [ADR-0005](../decisions/0005-decimal-volumetric-entry-and-conversion-rounding.md) |
+| i18n and the shared catalog | [ADR-0006](../decisions/0006-i18n-library-and-shared-catalog.md) |
+| `packages/core` ownership | [ADR-0007](../decisions/0007-packages-core-ownership.md) |
+| Admin config API before console | [ADR-0008](../decisions/0008-admin-config-api-before-console.md) |
+| Synthetic seed data | [ADR-0009](../decisions/0009-synthetic-seed-data-generation.md) |
+| API CommonJS module system | [ADR-0010](../decisions/0010-api-commonjs-module-system.md) |
+| Database roles and audit immutability | [ADR-0011](../decisions/0011-database-roles-and-audit-immutability.md) |
+| Entered measurement system provenance | [ADR-0012](../decisions/0012-entered-measurement-system-provenance.md) |
+| Delta cursor visibility | [ADR-0013](../decisions/0013-delta-cursor-visibility-mechanism.md) |
+| On-device PHI encryption and ownership | [ADR-0014](../decisions/0014-local-phi-encryption-and-device-ownership.md) |
+| Biometric local access | [ADR-0015](../decisions/0015-biometric-local-access.md) |
+| Patient-local day boundary | [ADR-0016](../decisions/0016-patient-local-day-boundary.md) |
+| PHI retention, deletion, the audit exception | [ADR-0017](../decisions/0017-phi-retention-deletion-and-the-audit-exception.md) |
+| Measured/Estimated SNOMED qualifiers | [ADR-0018](../decisions/0018-estimation-method-snomed-code.md) |
+| Client clock-skew allowance | [ADR-0019](../decisions/0019-clock-skew-allowance.md) |
 
-**[SPEC]** settles: local write → `sync_queue` (op type, entity, payload, client UUID, client timestamp); push in timestamp order; last-write-wins by timestamp applied server-side; loser to the audit log; `updated_since` delta pull; rejected ops retained locally and surfaced (§4.5, §3.8, AC 13.1 AC4).
+Revision 1's D1–D10 are all recorded above. **D3 (git workflow) is resolved** in `docs/git-workflow.md`. **D4 (the SNOMED estimation code) is resolved** by ADR-0018 — the "do not invent a code" discipline worked, and the amendment that followed it is why `method: null` now means exactly one thing.
 
-**[GAP]** — everything about the wire format:
+### 3.2 Decided 2026-09-19, and what each one obliges
 
-| Open question        | Options                                            | Recommendation                                                                                                                                                                                                       |
-| -------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Idempotency key      | Client entity UUID / separate per-operation UUID   | **Per-operation UUID.** Entity UUID alone cannot distinguish a replayed create from a legitimate later update of the same row.                                                                                       |
-| Batch failure mode   | All-or-nothing / per-operation results             | **Per-operation results** (`accepted` \| `rejected` + machine-readable reason + field). All-or-nothing makes one bad row block a patient's entire backlog, which is exactly the data-loss shape §5.3 forbids.        |
-| Delete semantics     | Hard delete / tombstone rows                       | **Tombstones.** A hard delete cannot propagate through a delta cursor to a second device, and §3.6 requires the deletion be auditable anyway.                                                                        |
-| Cursor type          | `updated_at` timestamp / monotonic server sequence | **Server-assigned monotonic sequence.** Timestamp cursors lose rows written inside the same millisecond and break on any clock adjustment.                                                                           |
-| Clock-skew allowance | Constant in code / admin-managed threshold         | **Admin-managed threshold** like every other bound, with a stated default. This is a _proposal_ — the spec does not name a value, and inventing one as a code constant would violate "thresholds are configuration." |
-| Ordering             | Strict client-timestamp order / server-reordered   | **Strict client-timestamp order within a batch**, since LWW resolution depends on it.                                                                                                                                |
+**1 — v1 ships Android only.** iOS leaves v1 scope. `apps/mobile` has never been built for iOS: no `eas.json`, no macOS in the development loop, and the native configuration (the SQLCipher config plugin, `NSFaceIDUsageDescription`, keychain accessibility classes) has never compiled. Rather than carry a platform claim nothing verifies, v1 states one platform and proves it.
 
-Write `docs/sync-contract.md` **and** the ADR before any sync code exists. This is the single most expensive thing to change later.
+_Obliges:_ ADR-0020; amendments to SRS §2 (line 39, "iOS and Android"), §4.2 (line 248) and §4.3 (line 273); `app.json`'s `platforms`; a rescope of `docs/gate-b-hardware-verification.md` to its Android steps; CLAUDE.md. Closes the iOS backup-exclusion gap by removing its platform. **This is R.S2 and it is not optional bookkeeping** — until it lands, five HW steps are blocked on a build path nobody is building.
 
-### D2. Testing strategy — fills `docs/testing.md`; ADR-worthy for the framework split only
+**2 — Gate B is run now, blocking further feature work.** P3 proceeded past an unrun gate. The gate exists to stress sync, conflict, idempotency, offline re-enforcement and audit coverage *while they are still cheap to move*, and every sprint added since makes them less so. This is R.S1.
 
-**[GAP].** `docs/testing.md` is a stub and every sprint below cites test-based exit criteria, so this blocks sprint one.
+**3 — The staging/Cognito spike becomes a named sprint at Gate C** (P4.S6), not a footnote under a gate heading. Revision 1 called pulling it forward "the strongest structural recommendation in this plan" and then gave it no owner, no exit criteria and no ID — which is why it did not happen.
 
-**Recommendation (proposal):**
+**4 — The debt lane is tracked as GitHub issues**, labelled `debt`, and **one debt item is dispatched between every two feature sprints**. Not a register file: a file nobody is forced to open drifts exactly the way the deferrals in §2.3 did. The rule is the mechanism; the label is only how you find them.
 
-- **Vitest** for `packages/core`, `packages/ui` (web), `apps/api` unit, `apps/web`, `apps/admin`.
-- **jest-expo** for `apps/mobile` — forced, not chosen; Vitest does not carry the React Native preset cleanly.
-- **Supertest + a real Postgres** (Testcontainers locally and in CI) for API integration. Mocking Prisma would not exercise the constraint that matters most: the audit table having no update/delete path.
-- **Playwright** for web e2e; **defer mobile e2e** (Maestro) until Gate C — the sync path is the thing worth e2e testing and it does not stabilize until then.
-- **AC traceability convention:** any test covering a spec acceptance criterion names it (`describe('AC 13.1 AC3 — server-side re-enforcement')`). This is the only mechanism that keeps SRS §7 connected to code once the repo grows.
+### 3.3 Still open
 
-The cost: two test runners in one monorepo, and `pnpm test` at root must fan out to both. Accept it — the alternative is Jest everywhere, which is slower and worse for the packages that are the majority of the code.
+| Open question | Blocks | Disposition |
+| ------------- | ------ | ----------- |
+| Mobile e2e tooling (Maestro or otherwise) | Nothing yet | ADR-0002 defers to Gate C. The emulator harness changes the calculus — decide at P4.S7 |
+| Does `packages/ui` share across React Native and web, or stay tokens + web components? | P5 and P6 client work | R4. Decide at P4.S7 and write the ADR either way |
+| Mixed-entry-system daily totals policy | Correctness of a displayed total | Debt lane; needs a stated policy, not more rounding |
+| Announcement convention for Tier 1 / Tier 2 / red-flag prompts | **P7.S3** | Debt lane, but must be closed before P7.S3 is dispatched |
+| Acceptance criteria for Epics 3–11, 15, 16 | P3.S4, P5.S2, P5.S6 | R6. Write AC into the spec before dispatching P5.S2 and P5.S6 |
+| RxNorm subset and API | P5.S4 | External. Resolve by Gate C |
+| Retention horizon's operational *value* for tombstone purge | P5.S7 | ADR-0017 set the policy; the purge job sets the mechanism |
 
-### D3. Git workflow and branch/PR strategy — fills `docs/git-workflow.md`; not ADR-worthy, but blocking
-
-**[GAP].** Blocking because `docs/deployment-development.md` specifies the dev deploy triggers on **push to `main`** — so the branch model determines when the dev host redeploys.
-
-**Recommendation (proposal):** one short-lived branch per sprint (`sprint/p2-s1-observations-api`), PR required, squash merge to `main`, Conventional Commits, PR template carrying a reviewer-agent checklist (which of the three reviewers ran, and their verdict). No long-lived develop branch — with one human reviewer, a second integration branch is pure overhead.
-
-### D4. SNOMED CT estimation-technique code — [EXTERNAL] terminology lookup, not engineering
-
-`CLAUDE.md`, SRS §4.4, and `fhir-rxnorm-integration.md` all flag this as open. **Do not invent a code.** A wrong SNOMED code is a silent, durable data-quality defect that only surfaces at FHIR export or EHR integration — i.e. after thousands of rows carry it.
-
-**Recommendation:** define it in exactly one place in `packages/core` as `ESTIMATION_METHOD_CODE` with a `TODO(code-unverified)` marker, so resolution is a one-line change plus a data migration over `observations.method`. Do not let it block the P2 slice. Record the resolution in `fhir-rxnorm-integration.md` and write an ADR when it lands. The same discipline applies to the RxNorm subset/API question, which blocks P5.S4 and should be resolved by Gate C.
-
-### D5. Does the admin console land in this plan, and when? — ADR
-
-**[SPEC]** requires the console (§3.11) and requires thresholds and value sets to be database configuration from the first validation rule (§3.8). Those two facts have different timing.
-
-**Recommendation:** split them. The **config tables and the `/api/v1/admin/...` API surface land at P1/P3** because validation cannot be spec-compliant without them. The **console SPA lands at P8**, after the four hydration signals. Until P8, config is seeded by migration and changed by a maintenance script.
-
-**What this costs:** between P3 and P8, a clinical threshold change requires running a script against the dev database rather than clicking a UI — acceptable while the only user is the developer. **What it forecloses:** nothing, provided the admin API is built to its final shape (separate guard, separate audience, audit-logged, retire-never-delete) at P3 and the console is only a client of it. Building a shortcut admin API and rewriting it at P8 would be the failure mode.
-
-### D6. Synthetic seed data generation — ADR-lite
-
-**[SPEC]** names the six scenarios, determinism, relative-to-now timestamps, valid-by-construction, and synthetic-always (`docs/deployment-development.md`).
-
-**[GAP]** — where it lives and how it writes.
-
-**Recommendation:** a `packages/seed` workspace that writes through **Prisma directly** but **validates every generated row against `packages/core` before insert**. Writing through the HTTP API would exercise validation for free but makes seeding slow, dependent on a running API, and awkward to invoke from the `migrate` one-shot container. Validating pre-insert gets the guarantee without the coupling. The `validation-edge-cases` scenario deliberately bypasses Tier 2 (that is its purpose) but never Tier 1.
-
-### D7. Monorepo tooling — proposal, ADR only if adopted
-
-**[GAP].** SRS §4 specifies pnpm workspaces and says nothing about a task runner.
-
-**Recommendation: plain pnpm scripts now; revisit at Gate C.** Turborepo's caching layer has to be reconciled with the multi-stage Docker build strategy already written into `docs/deployment-development.md`, and adding that complexity before there are five workspaces and a real test suite buys nothing. The trigger to revisit is PR CI time, not workspace count.
-
-### D8. i18n library and catalog ownership — ADR (cheap now, expensive later)
-
-**[SPEC]** requires no hardcoded strings and locale-aware formatting from day one (§5.4), which means this must be decided **before the first screen**, not before the first translation.
-
-**Recommendation:** `i18next` + `react-i18next` (the only mature option that works unchanged across React Native and web), with `Intl`-based date/time/number/unit formatters in `packages/core`. **One shared English catalog in `packages/core/i18n/`**, not per-app catalogs — because `accessibility-copy-reviewer` must be able to audit reading level, tone, and the red-flag/warning voice distinction in one place. Per-app catalogs would let the same warning be phrased two ways on two clients, which is precisely the failure mode that agent exists to catch.
-
-### D9. Canonical storage units — ADR
-
-**[GAP].** SRS §3.10 says stored canonical values are never rewritten when preference changes, but never states what canonical _is_.
-
-**Recommendation:** canonical is **mL and kg**; imperial is a render-time conversion. Store the unit string on the row anyway (FHIR `valueQuantity.unit` requires it, and it makes a future re-interpretation recoverable). This is trivially cheap to decide now and data-corrupting to decide after rows exist.
-
-### D10. `packages/core` ownership — ADR (see §5.2)
-
-**[GAP], and a genuine conflict in the current agent roster.** `react-web-developer`'s charter claims `packages/core`; `nestjs-api-developer` and `expo-mobile-developer` both consume it and will both want to change it mid-sprint. Resolution in §5.2.
-
-### D11–D14. Blocked externally, do not schedule as engineering work
-
-| Item                                                                       | Blocked on                                                           | Gates                                |
-| -------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------ |
-| PHI retention period, deletion SLA                                         | Legal/compliance counsel (§5.2 says explicitly: not set in the spec) | Production only, not any code sprint |
-| Penetration test cadence                                                   | Security counsel                                                     | P9                                   |
-| BAA execution covering RDS, S3, Fargate/ECS, Cognito, KMS, Secrets Manager | Legal                                                                | Production PHI, per §4.6             |
-| RxNorm and SNOMED CT license terms                                         | Legal (§5.2)                                                         | P5.S4 design, P9 sign-off            |
-| Numeric performance targets (§5.1)                                         | The spike, scheduled at Gate C                                       | P9.S4                                |
-
-**Do not invent values for any of these.** Note which sprint each gates, so their absence is visible rather than forgotten.
+**Blocked externally — do not schedule as engineering work:** penetration-test cadence (P9); RxNorm and SNOMED CT license terms (P5.S4 design, P9 sign-off); numeric performance targets (P9.S4, pending P4.S5). Note that ADR-0017 and `docs/compliance/breach-notification.md` changed the compliance framing: the FTC Health Breach Notification Rule governs, so **no BAA is legally required** and P9.S5 must be re-derived from that document rather than from revision 1's HIPAA assumption.
 
 ---
 
 ## 4. Sequenced work
 
-Dependency-ordered, not epic-ordered. Six internal gates.
+### 4.1 Phase R — Reset (next, blocking)
 
-### P0 — Repo foundations
+_Produces no new capability. Closes the gate that P3 walked past, and makes the scope claims true._
 
-_Produces nothing demonstrable. Blocks every subsequent dispatch, because there is currently no way to lint, typecheck, or test anything an agent writes._
+**R.S1 — Gate B walkthrough (M) — `expo-mobile-developer` + main session**
+Merge `feat/web-net-fluid-balance` first. Bring up the Compose stack, `scripts/dev-reset.sh`, and the emulator harness. Run the Gate B script end to end and record it in `docs/gate-b-walkthrough.md`: airplane-mode entry with an instant local save confirmation; reconnect and sync; an audit row carrying before/after; a forced conflict leaving the loser in `audit_events`; an intentionally invalid queued operation reaching the correction inbox rather than vanishing; the web view rendering the entry with its Measured/Estimated badge.
+_Exit:_ every clause observed and recorded, or recorded as failed with a `bug` issue. The walkthrough doc is committed. **Recorded as "exercised on an emulator"** — it does not touch the hardware caveat.
+_Reviewers:_ `code-reviewer` on any fix; `hipaa-compliance-reviewer` if the audit or sync clauses fail.
 
-| Sprint    | Size | Owner                        | Goal                                                                                                                                                                                                                                                                                                                                                       | Touches                                              |
-| --------- | ---- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| **P0.S1** | S    | `devops-deployment-engineer` | Workspace tooling: root scripts, Node LTS pin, `packages/config` with base tsconfig, ESLint flat config, Prettier. Three lint rules matter and must exist now: **AGPL header enforcement** on new files under `apps/`/`packages/`, an **import-boundary rule** reserving the admin/patient separation, and **no-literal-string** scoped to UI directories. | `package.json`, `packages/config/*`, `.editorconfig` |
-| **P0.S2** | S    | `devops-deployment-engineer` | Process docs + PR CI: fill `docs/git-workflow.md`, `docs/testing.md`, `docs/coding-standards.md`, and the "Developer practices" section of `docs/security-hipaa.md`. `.github/workflows/pr.yml` — lint, typecheck, test, dependency/vulnerability scan (§5.2) on GitHub-hosted runners. PR template with the reviewer-agent checklist.                     | `docs/*`, `.github/`                                 |
+**R.S2 — Android-only v1 (S) — main session + `expo-mobile-developer`**
+ADR-0020 recording the cut and its reasoning; SRS amendments at §2, §4.2, §4.3; `app.json` `platforms` narrowed; `docs/gate-b-hardware-verification.md` rescoped to HW-1, HW-2, HW-3, HW-6a, HW-7, HW-8 plus an Android background-termination step replacing HW-10; CLAUDE.md's platform and caveat lines.
+_Exit:_ no document in the repo claims iOS in v1; no HW step is blocked on a build path that does not exist; ADR-0014's iOS backup gap is closed by scope rather than left open.
+_Reviewers:_ `hipaa-compliance-reviewer` (the gap being closed is a PHI-egress gap), `code-reviewer`.
 
-**Dependencies:** D2, D3, D7 decided first.
-**Exit:** `pnpm install`, `pnpm lint`, `pnpm typecheck`, `pnpm test` all run green across an empty workspace set; a trivial PR passes CI; a file without the AGPL header fails lint.
-**Reviewers:** `code-reviewer`.
-**Note:** P0.S1 and P0.S2 can be one dispatch (combined = M) if D2/D3/D7 are settled beforehand.
+**R.S3 — Plan and doc reconciliation (S) — main session**
+Fix the drift this review found: `docs/security-hipaa.md` still owes the unsynced-entry warning that shipped; `CLAUDE.md` describes `.github/workflows/` as empty; the P3.S1b label (see below). Open the `debt` issues from §2.3. Adopt the sprint-ID rule in §5.8.
+_Exit:_ every statement in CLAUDE.md and `docs/` that this review found stale is corrected or has an issue.
 
-### P1 — Foundation
+> **The P3.S1b label.** The Daily Net Fluid Balance work on `feat/web-net-fluid-balance` was labelled P3.S2 in CLAUDE.md, but `apps/api`'s code comments already use P3.S2 for voided urine (`9187-6`). It is the web consumer of P3.S1's intake data, so it is **P3.S1b**, and CLAUDE.md is corrected on that branch before merge. Voided urine keeps P3.S2 — one CLAUDE.md line changes instead of a dozen code comments.
 
-_Still nothing a patient could use. Every item here is either load-bearing for correctness (audit interceptor, validation kernel) or for the environment existing at all (Compose stack). Building any feature before them means retrofitting audit logging and threshold configuration across code that already exists — the single most expensive mistake available in this plan._
+### 4.2 Phase P3 — Remaining entry types and the configuration surface (resumes after R)
 
-**P1.S1 — API skeleton (S) — `nestjs-api-developer`**
-NestJS app; `ConfigModule` with a typed, schema-validated env contract; an **OIDC-agnostic** `JwtAuthGuard` taking issuer, JWKS URI, audience, and claim mapping from config (`jose`/`jwks-rsa`, never a Cognito SDK); a **structurally separate** `AdminJwtAuthGuard` bound to a different issuer/audience, sharing no code with the patient guard; `GET /api/v1/health`; OpenAPI document generation; Pino logger configured with body logging **off** and a PHI-scrubbing serializer.
-_Touches:_ `apps/api/src/{main.ts,app.module.ts,config/,auth/,health/}`.
-_Exit:_ health returns 200 unauthenticated; a protected stub rejects wrong-audience and unsigned tokens; `grep -ri cognito apps/api/src` returns nothing.
-_Reviewers:_ `hipaa-compliance-reviewer`, `code-reviewer`.
+| Sprint | Size | Owner | Goal | Spec / AC |
+| ------ | ---- | ----- | ---- | --------- |
+| **P3.S2** | M | `expo-mobile-developer` + `nestjs-api-developer` (serial) | Voided urine: same Measured/Estimated contract, the pale-to-dark colour scale **with a text label on every step**, colour-without-volume as a valid entry, and **exclusion from Daily Net Fluid Balance** | §3.7, AC 12.1 AC1–AC4 |
+| **P3.S3** | M | `nestjs-api-developer` + `fhir-data-modeler` | `/api/v1/admin/...` config API at final shape: value sets (retire, never delete), default range tables, validation thresholds. Separate guard, separate audience, every change audit-logged. **Plus the maintenance script R7 promised and revision 1 never scheduled** — today a threshold can only be changed by editing a migration | §3.11, §5.2, ADR-0008 |
+| **P3.S4** | S | `expo-mobile-developer` | Quick-Add widgets generated from the patient's own recent entries. Must resolve on tap with **no loading state**. No spec AC — state exit criteria in the dispatch | §3.1, Epic 3 |
+| **P3.S5** | S | `fhir-data-modeler` | Remaining seed scenarios except `leak-cluster` (P5): `high-output-dehydration`, `new-post-op`, `colostomy-baseline`, `validation-edge-cases` | `deployment-development.md` |
 
-**P1.S2 — Dev stack (M) — `devops-deployment-engineer`**
-Multi-stage Dockerfiles per the strategy in `docs/deployment-development.md`; `docker-compose.yml` with `web`, `admin` (placeholder), `api`, one-shot `migrate`, `postgres`, `minio`, `mock-oidc` (`navikt/mock-oauth2-server` — the open item in that doc, decide here); `.env.example` with placeholders only; `scripts/dev-reset.sh`; `.github/workflows/deploy-dev.yml` targeting the self-hosted runner labels.
-_Touches:_ `infra/`, `scripts/`, `.github/workflows/`, `docs/getting-started.md` (replace the `TBD` commands).
-_Depends on:_ P1.S1. _Parallel with:_ P1.S3, P1.S4.
-_Exit:_ `docker compose up` brings the API healthy against MinIO and mock OIDC; the deploy workflow reaches the `/api/v1/health` check on the dev host; migrations run in the `migrate` service before `api` starts.
-_Reviewers:_ `hipaa-compliance-reviewer` (secrets handling, log drivers, no-PHI rule), `code-reviewer`.
+### 4.3 Phase P4 — Onboarding, preferences, suggested ranges, and the Gate C spikes
 
-**P1.S3 — Schema core (M) — `fhir-data-modeler`**
-Prisma schema and initial migration for only what the slice and configuration need: `patients`/`profiles`; `observations` with FHIR-mirroring columns (`resource_type`, `code`, `value_quantity_value`, `value_quantity_unit`, `effective_datetime`, `method`, `status`); `audit_events` (append-only, **no update/delete grant**); `sync_operations`; and the config family — `value_sets`/`value_set_members` with active/retired status, `clinical_default_ranges`, `validation_thresholds`, `effective_ranges` with a provenance enum in the §3.9 precedence order. Client-generated UUID primary keys on every synced entity.
-_Touches:_ `apps/api/prisma/`, `design-specs/data-model/fhir-rxnorm-integration.md`.
-_Exit:_ migration applies cleanly to both an empty and a populated database; a written handoff note listing which FHIR fields are covered, which codes are verified vs. `TODO(code-unverified)`, and what a `Bundle` from these tables would look like.
-_Reviewers:_ `hipaa-compliance-reviewer`, `code-reviewer`.
-_Note:_ deliberately partial. Appliance, leak, skin, medication, reminder, and Quick-Add tables arrive with their features as additive migrations — which is also how the migration path gets exercised against existing rows.
+_This is where the app becomes usable by a real patient. Note the prerequisite nothing states today: a `patients` row currently exists only because the seeder wrote one, so **P4.S1 is what makes a genuine first run possible at all**._
 
-**P1.S4 — `packages/core` kernel (M) — `react-web-developer`**
-Canonical unit types and conversion (mL↔oz, kg↔lb) per D9; the **two-tier validation engine with thresholds injected, never constant**; FHIR `Observation` mapping types; the i18n catalog scaffold and `Intl` format helpers per D8; the `ESTIMATION_METHOD_CODE` TODO constant per D4; AC-traceable unit tests.
-_Touches:_ `packages/core/src/{units,validation,fhir,i18n}/`.
-_Exit:_ Tier 1 and Tier 2 rules for volumetric entries at full branch coverage; a threshold-injection interface the API and both clients can each satisfy; zero numeric thresholds hardcoded; a soft warning is structurally incapable of blocking (the return type distinguishes them).
-_Reviewers:_ `accessibility-copy-reviewer` (catalog structure, warning copy tone — "never scold"), `code-reviewer`.
+| Sprint | Size | Owner | Goal | Spec / AC |
+| ------ | ---- | ----- | ---- | --------- |
+| **P4.S1** | M | `expo-mobile-developer`, then `react-web-developer` | Onboarding: **only three mandatory fields** (ostomy type, surgery date, measurement system), everything else skippable with deferred prompts. Surgery date becomes the Tier 1 lower timestamp bound | §3.0, Epic 7 |
+| **P4.S2** | M | `nestjs-api-developer` + `react-web-developer` | Suggested ranges seeded from clinical defaults keyed to ostomy type and time since surgery; **an unconfirmed suggestion is never an active threshold**; adaptation proposed, never silent; physician-set values never auto-changed | §3.9, AC 14.1 AC1–AC4 |
+| **P4.S3** | M | `expo-mobile-developer` + `react-web-developer` | Preferences covering everything §3.10 lists; preference changes queue through the sync path like any other write | §3.10, Epic 15 |
+| **P4.S4** | S | `react-web-developer` | Measurement-system switch re-renders all history in the new units **without rewriting stored canonical values** | §3.10, ADR-0004 |
+| **P4.S5** | S | `nestjs-api-developer` + clients | **The §5.1 performance spike.** Measure real p95 save latency, cold start, and 30–90 day history load, so §5.1's directional statements can become testable targets at P9.S4 | §5.1 |
+| **P4.S6** | M | `devops-deployment-engineer` | **The staging/Cognito spike** (decision 3). A minimal Fargate task, a real Cognito user pool, TLS. Proves only two things: the OIDC adapter's claim mapping works against real Cognito with no code change, and the container runs under Fargate's health-check semantics. Not full staging | R2 |
+| **P4.S7** | S | `react-web-developer` + `expo-mobile-developer` | **Two deferred decisions, closed with ADRs either way:** does `packages/ui` share across React Native and web (R4), and what mobile e2e tooling (ADR-0002). The emulator harness is now evidence for the second | R4, ADR-0002 |
 
-**P1.S5 — Audit interceptor and threshold service (S) — `nestjs-api-developer`**
-A NestJS `AuditInterceptor` writing user identity, timestamp, and before/after values to `audit_events`; an `AuditContext` that sync-applied writes and conflict losers pass through, so coverage is structural rather than remembered per-handler; a `ThresholdsService` reading validation thresholds and value sets from the database with cache invalidation.
-_Depends on:_ P1.S3, P1.S4.
-_Exit:_ an integration test proves a PHI write with no corresponding audit row fails; there is no code path and no database grant permitting `UPDATE`/`DELETE` on the audit table.
-_Reviewers:_ `hipaa-compliance-reviewer` **(mandatory, blocking)**, `code-reviewer`.
+> **GATE C — usable core.** A patient onboards in three fields, logs output/intake/urine/meals offline, adjusts preferences and targets, and a reader sees a correct view of two of the four hydration signals. Both spikes have run and produced numbers and an ADR respectively; P4.S7's two decisions are recorded.
 
-> **GATE A.** Dev host serves a healthy API against Postgres, MinIO, and mock OIDC. Migrations run automatically on deploy. PR CI green. **The audit interceptor and threshold service exist before a single PHI write endpoint does.** Nothing here is demonstrable to a patient; all of it is unaffordable to retrofit.
+### 4.4 Phase P5 — History, physician view, exports, appliance/skin, medications, reminders, deletion
 
-### P2 — Vertical slice: stoma output, end to end
+| Sprint | Size | Owner | Goal |
+| ------ | ---- | ----- | ---- |
+| **P5.S1** | M | `expo-mobile-developer` + `react-web-developer` | History: filter/search by category; edit and delete with the §3.6 audit trail (original + corrected value) |
+| **P5.S2** | M | `react-web-developer` | Physician view proper: chronological overlays with medication times, intake, output, appliance and skin events; anomaly highlighting against effective ranges with provenance shown. **Signals stay separate.** Needs AC written into the spec first (R6) |
+| **P5.S3** | M | `expo-mobile-developer` + `nestjs-api-developer` + `fhir-data-modeler` | Appliance changes with auto-calculated wear time, leak events, peristomal skin severity, photos via **short-lived presigned URLs with path-style addressing** and **no patient identifier or clinical value in the object key**. Plus the `leak-cluster` seed scenario |
+| **P5.S4** | M | `nestjs-api-developer` + `expo-mobile-developer` | Medications: RxNorm lookup, patient-friendly term mapping, RXCUI storage in `medication_administrations`. _Blocked on the RxNorm subset/API question_ |
+| **P5.S5** | M | `expo-mobile-developer` + `nestjs-api-developer` | Reminders: medication, adaptive appliance-change, hydration nudges; quiet hours; per-category enable/disable; push behind the adapter |
+| **P5.S6** | M | `fhir-data-modeler` + `nestjs-api-developer` | FHIR R4 `Bundle` export (`packages/core/src/fhir` is built here), PDF generation, and **read-only expiring scoped share links** — the route by which a physician is intended to reach the data. Until this lands, `apps/web` must keep claiming no physician audience. Needs AC written into the spec first (R6) |
+| **P5.S7** | M | `nestjs-api-developer` + `fhir-data-modeler` | **NEW — account deletion and the ADR-0017 purge job.** Revocation and sync refusal at once; a privileged job running as the owner role, **unreachable from request handling**, hard-purging observations, tombstones, queue state, profile **and that patient's audit rows** within 30 days; idempotent, re-runnable, and recording completion rather than merely starting. Tombstone purge horizon follows from it (`sync-contract.md` §10) |
 
-**Why stoma output is the right first slice.** Of the five candidate entry types it is the only one that exercises every seam at once:
+> **P5.S7 is a compliance obligation with a policy and no mechanism.** ADR-0017 is accepted, `docs/compliance/breach-notification.md` relies on it, and nothing in `apps/api` implements it. It narrows ADR-0011 rather than contradicting it: the guarantee is "no request handler can delete an audit row", never "nothing can".
 
-- It is the app's core entity, and **the only epic SRS §7 specifies to full acceptance-criteria depth from v1.0** (AC 2.1, 2.2, 2.5) — so the exit criteria are given, not invented.
-- It carries the mandatory **Measured/Estimated toggle**, which exercises `Observation.method`, the Tier 1 "missing mandatory selection" block, and forces the SNOMED gap into the open at minimum cost.
-- It has **both validation tiers with concrete numbers** — negative/non-numeric (Tier 1), >2,000 mL (Tier 2, AC 2.1 AC2) — so the block-vs-warn distinction is tested from day one.
-- It is **volumetric**, so the unit preference path is real, not deferred.
-- It **feeds Daily Net Fluid Balance**, giving the physician view something correct to render.
+### 4.5 Phases P6–P9 — unchanged in content
 
-Weight is simpler — no toggle, no method, no unit ambiguity beyond kg/lb — and that simplicity is exactly why it is the wrong first slice. The point of a slice is to stress the seams while they are still cheap to move.
+P6 (weight and composite hydration status), P7 (resting heart rate, concordance, red flag), P8 (admin console) and P9 (staging parity, hardening, pre-launch) stand as written in revision 1, with three amendments:
 
-**P2.S0 — Sync contract (S) — main session authors ADR, `nestjs-api-developer` authors types**
-`docs/sync-contract.md` plus wire types in `packages/core/src/sync/`. Merged **before** any sync code.
+1. **P7.S3 cannot be dispatched until the announcement-convention debt item is closed** (§3.3). The distinctness of the red-flag voice from a validation warning is a patient-safety property carried entirely by copy and by how it is announced to a screen reader; deciding that convention inside the red-flag sprint is deciding it under the worst possible pressure.
+2. **P9.S4** converts P4.S5's spike results into §5.1 numeric targets — the dependency now has an ID.
+3. **P9.S5** is re-derived from `docs/compliance/breach-notification.md`. Under the FTC rule this product is neither a covered entity nor a business associate, so "BAA execution" is not a gating artifact in the form revision 1 assumed. The technical safeguards still stand as a voluntary standard, and the framing changes the moment a provider offers the app to their patients — the likely route being P5.S6's share link.
 
-**P2.S1 — Slice API (L → split) — `nestjs-api-developer`**
-
-- **P2.S1a (M):** `POST /api/v1/observations` and `GET /api/v1/observations` for stoma output only. Server-side re-enforcement of every `packages/core` rule. Ownership authorization (a valid patient token must not reach another patient's row by ID). Audit coverage via the P1.S5 interceptor. OpenAPI emitted; typed client generated into `packages/core`.
-- **P2.S1b (M):** `POST /api/v1/sync/push` and `GET /api/v1/sync/delta`. Per-operation accepted/rejected results; idempotency on the per-operation UUID; LWW conflict resolution with **the losing version written to the audit log**; the delta cursor.
-
-_Exit:_ AC 2.5 AC1 (FHIR field names on the wire), AC 2.5 AC2 (`method` populated, with the SNOMED code as the tracked TODO), AC 13.1 AC3 (server-side re-enforcement on both direct and sync paths), AC 13.1 AC4 (rejection returns a correctable result, never a silent drop). A replayed batch creates no duplicate rows. A forced conflict leaves the loser in `audit_events`.
-_Reviewers:_ `hipaa-compliance-reviewer`, `code-reviewer`.
-
-**P2.S2 — Slice mobile (L → split) — `expo-mobile-developer`**
-
-- **P2.S2a (M):** Expo app skeleton, Expo Router, `expo-sqlite` schema mirroring the slice entities plus `sync_queue`, OIDC login against mock provider, refresh token in `expo-secure-store` unlocked by `expo-local-authentication`.
-- **P2.S2b (M):** Add Output screen — mandatory Measured/Estimated toggle, timestamp auto-populated and editable, **local-first save confirmed from the local write, never from a network response**; the background sync worker; the rejected-operation correction inbox.
-
-_Depends on:_ P2.S0, P2.S1, P1.S4.
-_Exit:_ AC 2.1 (1, 2, 3), AC 2.2 AC1, AC 13.1 AC1/AC2/AC4, AC 13.2 AC1. Local data survives app restart and OS background termination; sync resumes with no user action.
-_Reviewers:_ `accessibility-copy-reviewer`, `hipaa-compliance-reviewer` (SecureStore, no PHI in logs or crash breadcrumbs), `code-reviewer`.
-
-**P2.S3 — Slice web (M) — `react-web-developer`**
-Vite SPA skeleton with OIDC PKCE auth; `packages/ui` primitives (accessible input, label, button, toggle, design tokens); a minimal physician view showing the day's stoma output with Measured/Estimated badges and a chronological plot. Net Fluid Balance renders as explicitly incomplete until intake exists at P3 — **state that in the UI rather than showing a wrong number**.
-_Depends on:_ P2.S1a. _Parallel with:_ P2.S2.
-_Exit:_ AC 2.2 AC2 (visual differentiation in history, not by color alone); full keyboard operability with visible focus; the chart has a table equivalent.
-_Reviewers:_ `accessibility-copy-reviewer`, `code-reviewer`.
-
-**P2.S4 — Seed generator, first scenario (S) — `fhir-data-modeler` authors, `devops-deployment-engineer` wires**
-`packages/seed` per D6, with `stable-ileostomy` only. Deterministic seed, relative-to-now timestamps, wired into `dev-reset`.
-
-> **GATE B — the first demonstrable milestone.** On the dev host, in one live walkthrough: a phone in airplane mode logs a stoma output and the save confirms instantly; reconnecting syncs it; an audit row carries before/after; a forced conflict puts the loser in the audit log; an intentionally invalid queued operation is rejected server-side and surfaces in the correction inbox rather than disappearing; the web view renders the entry with its Measured/Estimated badge.
->
-> Every hard seam in this system — sync, conflict, idempotency, offline validation re-enforcement, audit coverage on the sync path — is now exercised, while it is still cheap to change.
-
-### P3 — Remaining entry types and the configuration surface
-
-| Sprint    | Size | Owner                                                     | Goal                                                                                                                                                                                                                                                 | Spec / AC                   |
-| --------- | ---- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
-| **P3.S1** | M    | `expo-mobile-developer` + `nestjs-api-developer` (serial) | Fluid intake and meals. Meals are app-native (table + quick-tag value set); intake needs the fluid-type value set and quick-select container sizes.                                                                                                  | §3.1, AC 2.3, AC 2.4        |
-| **P3.S2** | M    | `expo-mobile-developer` + `nestjs-api-developer` (serial) | Voided urine: same Measured/Estimated contract, the pale-to-dark color scale **with a text label on every step**, color-without-volume as a valid entry, and **exclusion from Daily Net Fluid Balance**.                                             | §3.7, AC 12.1 AC1–AC4       |
-| **P3.S3** | M    | `nestjs-api-developer` + `fhir-data-modeler`              | `/api/v1/admin/...` config API at final shape: value sets (retire, never delete), default range tables, validation thresholds. Separate guard, separate audience, every change audit-logged. **No UI yet** — seeded by migration, changed by script. | §3.11, §5.2, D5             |
-| **P3.S4** | S    | `expo-mobile-developer`                                   | Quick-Add widgets generated from the patient's own recent entries. Must resolve on tap with **no loading state**.                                                                                                                                    | §3.1, Epic 3                |
-| **P3.S5** | S    | `fhir-data-modeler`                                       | Remaining seed scenarios except `leak-cluster` (deferred to P5, when leak entities exist): `high-output-dehydration`, `new-post-op`, `colostomy-baseline`, `validation-edge-cases`.                                                                  | `deployment-development.md` |
-
-**Note on exit criteria:** SRS §7 has no acceptance criteria for Epics 3–11, 15, or 16 — the spec says so explicitly and calls it a backlog-refinement task. **P3.S4 and everything in P5 therefore have no spec-given AC.** Before dispatching those sprints, the main session must either write AC into the spec or accept looser, agent-negotiated exit criteria. Recommend the former for P5.S2 (physician view) and P5.S6 (export), which are the two where "done" is genuinely ambiguous.
-
-### P4 — Onboarding, preferences, suggested ranges
-
-_This is where the app becomes usable by a real patient._
-
-| Sprint    | Size | Owner                                                       | Goal                                                                                                                                                                                                                                                                       | Spec / AC             |
-| --------- | ---- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| **P4.S1** | M    | `expo-mobile-developer`, then `react-web-developer`         | Onboarding: **only three mandatory fields** (ostomy type, surgery date, measurement system), everything else skippable with deferred prompts. Surgery date becomes the Tier 1 lower timestamp bound.                                                                       | §3.0, Epic 7          |
-| **P4.S2** | M    | `nestjs-api-developer` + `react-web-developer` (core logic) | Suggested ranges: seeded from clinical defaults keyed to ostomy type and time since surgery; pre-filled with plain-language basis; **an unconfirmed suggestion is never an active threshold**; adaptation proposed, never silent; physician-set values never auto-changed. | §3.9, AC 14.1 AC1–AC4 |
-| **P4.S3** | M    | `expo-mobile-developer` + `react-web-developer`             | Preferences area covering everything §3.10 lists; preference changes queue through the sync path like any other write and propagate via delta.                                                                                                                             | §3.10, Epic 15        |
-| **P4.S4** | S    | `react-web-developer`                                       | Measurement-system switch re-renders all history in the new units **without rewriting stored canonical values**.                                                                                                                                                           | §3.10, D9             |
-
-> **GATE C — usable core.** A patient onboards in three fields, logs output/intake/urine/meals offline, adjusts preferences and targets, and a clinician reads a correct physician view for two of the four hydration signals.
->
-> **Two things must also happen at this gate, and both are easy to skip:**
->
-> 1. **The §5.1 performance spike** — establish real p95 save latency, cold start, and 30–90 day history load numbers, so §5.1's directional statements can become testable targets at P9.
-> 2. **A staging spike** (see Risk R2). A minimal Fargate + real-Cognito + TLS proof, not full staging. Deferring all parity risk to P9 concentrates it at the worst possible moment.
-
-### P5 — History, physician view, exports, appliance/skin, medications, reminders
-
-_Largely parallelizable across agents once P4 lands, but each is a separate dispatch and a separate review._
-
-| Sprint    | Size | Owner                                                                  | Goal                                                                                                                                                                                                                                                                                                 |
-| --------- | ---- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **P5.S1** | M    | `expo-mobile-developer` + `react-web-developer`                        | History: filter/search by category; edit and delete with the §3.6 audit trail (original + corrected value).                                                                                                                                                                                          |
-| **P5.S2** | M    | `react-web-developer`                                                  | Physician view proper: chronological overlays (morning/afternoon/evening/night) with medication times, intake, output, appliance and skin events; anomaly highlighting against effective ranges with provenance shown. **Signals stay separate.**                                                    |
-| **P5.S3** | M    | `expo-mobile-developer` + `nestjs-api-developer` + `fhir-data-modeler` | Appliance changes with auto-calculated wear time, leak events with severity and cause tags, peristomal skin severity, photos via **short-lived presigned URLs with path-style addressing** and **no patient identifier or clinical value in the object key**. Plus the `leak-cluster` seed scenario. |
-| **P5.S4** | M    | `nestjs-api-developer` + `expo-mobile-developer`                       | Medications: RxNorm lookup, patient-friendly term mapping, RXCUI storage in `medication_administrations`. _Blocked on D4's RxNorm subset/API question._                                                                                                                                              |
-| **P5.S5** | M    | `expo-mobile-developer` + `nestjs-api-developer`                       | Reminders: medication, adaptive appliance-change, hydration nudges; quiet hours; per-category enable/disable; push behind the adapter (Expo in production, log-only in dev).                                                                                                                         |
-| **P5.S6** | M    | `fhir-data-modeler` + `nestjs-api-developer`                           | FHIR R4 `Bundle` export module, PDF generation, and read-only expiring scoped share links. Plus the §3.6 full personal-history export, which is a distinct artifact from the physician summary.                                                                                                      |
-
-### P6 — Weight and composite hydration status (SRS Phase 5)
-
-| Sprint    | Size | Owner                                                        | Goal                                                                                                                                                                                                                          | AC              |
-| --------- | ---- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| **P6.S1** | S    | `fhir-data-modeler` + `expo-mobile-developer`                | Weight as an observation (LOINC 29463-7), `method` **unpopulated**, **no Measured/Estimated toggle**, one decimal place, unit from the measurement system. Absolute bounds Tier 1; day-over-day change Tier 2.                | AC 17.1 AC1–AC4 |
-| **P6.S2** | M    | `react-web-developer` (core logic) + `expo-mobile-developer` | Rolling baseline tracking legitimate post-op recovery; physician-set dry weight takes precedence; time-of-day mismatch annotated rather than presented as change; patient-facing copy in **absolute terms**, never percent.   | AC 17.2 AC1–AC4 |
-| **P6.S3** | M    | `react-web-developer` + `expo-mobile-developer`              | Composite hydration status on the patient dashboard (three signals at this point), always explainable with drill-down. **Physician view keeps them separate.** Disabling weight removes it cleanly while history is retained. | AC 17.3 AC1–AC4 |
-
-### P7 — Resting heart rate, concordance, red flag (SRS Phase 6)
-
-| Sprint    | Size | Owner                                           | Goal                                                                                                                                                                                                                                                                                                                                                 | AC              |
-| --------- | ---- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| **P7.S1** | M    | `fhir-data-modeler` + `expo-mobile-developer`   | HR observation (LOINC 8867-4), measurement source and resting-conditions as **coded components**; non-resting readings stored and displayed but **excluded from baseline via a queryable flag, not by omitting rows**; absolute bounds Tier 1.                                                                                                       | AC 18.1 AC1–AC3 |
-| **P7.S2** | M    | `expo-mobile-developer`                         | Orthostatic pair as two linked observations, **postural rise derived not stored**; safety guidance shown **every time the flow starts**, not once at setup.                                                                                                                                                                                          | AC 18.2 AC1–AC3 |
-| **P7.S3** | M    | `react-web-developer` + `expo-mobile-developer` | Concordance escalation with the agreeing signals named; a single outlier informs without dominating; **the red-flag prompt routed entirely outside the validation path** — the entry saves normally with no data-quality warning; the red-flag threshold not patient-adjustable; the beta-blocker caveat in both patient- and physician-facing copy. | AC 18.3 AC1–AC5 |
-| **P7.S4** | S    | `expo-mobile-developer`                         | The **single** combined daily check-in reminder covering weight and heart rate, subject to quiet hours — not a second notification type.                                                                                                                                                                                                             | §3.4            |
-
-> **GATE D — four signals live.** Composite status is concordance-driven and explainable; the physician view keeps all four separate; the red flag is visually and behaviorally distinct from every validation warning. `accessibility-copy-reviewer` review of P7.S3 is **blocking** — the distinctness of the red-flag voice is the one thing in this system that is a patient-safety property carried entirely by copy.
-
-### P8 — Admin console
-
-| Sprint    | Size | Owner                 | Goal                                                                                                                                                                                                                                                |
-| --------- | ---- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **P8.S1** | S    | `react-web-developer` | `apps/admin` scaffold: separate identity pool config, MFA enforced, wired into the compose stack's `admin` service. The P0.S1 import-boundary lint rule now becomes load-bearing — it must **fail the build** if any patient data type is imported. |
-| **P8.S2** | M    | `react-web-developer` | Value-set management with **retire, never delete**; retired members still resolve in historical rendering.                                                                                                                                          |
-| **P8.S3** | M    | `react-web-developer` | Default range tables and validation threshold editing, every change audit-logged with admin identity and before/after.                                                                                                                              |
-
-> **GATE E.** An administrator changes a soft-warning threshold in the console and the next patient entry is governed by the new value **with no application release** — AC 13.2 AC2 satisfied end to end for the first time.
-
-### P9 — Staging parity gate, hardening, pre-launch
-
-| Sprint    | Size | Owner                            | Goal                                                                                                                                                                                                                                                                                                                                                                                     |
-| --------- | ---- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **P9.S1** | M    | `devops-deployment-engineer`     | AWS CDK: staging account, Fargate/ECS, RDS PostgreSQL Multi-AZ, S3 with SSE-KMS, S3+CloudFront for both SPAs (admin network-restricted), Cognito with **two disjoint pools**, Secrets Manager, private subnets with only the LB edge internet-facing.                                                                                                                                    |
-| **P9.S2** | M    | `devops-deployment-engineer`     | **Clear the deferred-risk list in `docs/deployment-development.md` item by item**: Fargate orchestration semantics, TLS and secure cookie flags and HSTS, real Cognito token lifetimes / refresh rotation / MFA / hosted-UI flows / email flows, KMS and SSE-KMS, Multi-AZ failover, and a **backup/DR rehearsal actually measured against RPO ≤ 24h and RTO ≤ 4h** rather than assumed. |
-| **P9.S3** | S    | `devops-deployment-engineer`     | Observability: CloudWatch logs/metrics/alarms against the 99.9% target; Sentry with `beforeSend` redaction, bodies and breadcrumbs off; restricted access to the audit store.                                                                                                                                                                                                            |
-| **P9.S4** | M    | `nestjs-api-developer` + clients | Convert the Gate C spike results into §5.1 numeric targets and test against them.                                                                                                                                                                                                                                                                                                        |
-| **P9.S5** | —    | **Not engineering**              | BAA execution; PHI retention period and deletion SLA from counsel; breach-notification procedure and a designated Security/Privacy Officer; third-party penetration test; RxNorm/SNOMED license confirmation; **the §5.4 pre-launch usability review with representative patients** — which automated WCAG scanning does not substitute for.                                             |
-
-> **GATE F — production eligible.** Every item on the deferred-risk list cleared; every P9.S5 artifact signed off. **Production is the only environment permitted to hold real PHI, and only after this gate.**
+Gates D (four signals live), E (a threshold change governs the next entry with no release) and F (production eligible) are unchanged.
 
 ---
 
 ## 5. Delegation and collaboration model
 
-### 5.1 The structural constraint that shapes everything below
+### 5.1 The structural constraint
 
-Subagents **start with a fresh context window every invocation and cannot dispatch each other**. The main session is the only coordinator. This has one hard consequence:
+Subagents start with a fresh context window every invocation and cannot dispatch each other. The main session is the only coordinator.
 
 > **Anything that must survive between two agent invocations has to be in a file. The main session's conversation is not a durable channel.**
 
-Durable state, by kind:
+| State | Lives in |
+| ----- | -------- |
+| Settled decisions | `design-specs/decisions/NNNN-*.md` |
+| Sync wire contract | `docs/sync-contract.md` + `packages/core/src/sync/` |
+| Data contract | `apps/api/prisma/schema.prisma` |
+| API contract | generated OpenAPI → `packages/core/src/api-client` |
+| Validation, units, hydration, i18n | `packages/core` |
+| Terminology status | `design-specs/data-model/fhir-rxnorm-integration.md` |
+| Test conventions | `docs/testing.md` |
+| Real commands | `docs/getting-started.md` |
+| Device verification status | `docs/gate-b-hardware-verification.md` |
+| **Open debt** | **GitHub issues labelled `debt`** |
 
-| State                              | Lives in                                                  | Read by                       |
-| ---------------------------------- | --------------------------------------------------------- | ----------------------------- |
-| Settled decisions                  | `design-specs/decisions/NNNN-*.md`                        | every agent, every invocation |
-| Sync wire contract                 | `docs/sync-contract.md` + `packages/core/src/sync/`       | API, mobile                   |
-| Data contract                      | `apps/api/prisma/schema.prisma` + generated Prisma client | API, seed                     |
-| API contract                       | generated OpenAPI → typed client in `packages/core`       | web, mobile, admin            |
-| Validation, units, hydration logic | `packages/core`                                           | API, web, mobile              |
-| Terminology status and open codes  | `design-specs/data-model/fhir-rxnorm-integration.md`      | data modeler, API             |
-| Test conventions                   | `docs/testing.md`                                         | every builder                 |
-| Real commands                      | `docs/getting-started.md`                                 | every builder                 |
+### 5.2 Ownership of `packages/core`
 
-If a decision is made in conversation and not written to one of these, the next agent invocation will not know it and will re-decide it differently. That is the primary failure mode of this execution model.
+| Path | Authored by | Everyone else |
+| ---- | ----------- | ------------- |
+| `src/{validation,units,hydration,i18n}` | `react-web-developer` | read-only |
+| `src/fhir` | `fhir-data-modeler` | read-only |
+| `src/sync` | `nestjs-api-developer` | read-only |
+| `src/api-client` | **generated; never hand-edited** | generated |
 
-### 5.2 Ownership, and resolving the `packages/core` conflict
+An agent needing a change in a path it does not own **stops and reports** rather than editing. The main session dispatches a separate S-sized sprint to the owner, then re-dispatches.
 
-`react-web-developer`'s charter claims `packages/core`, but `nestjs-api-developer` and `expo-mobile-developer` both consume it and will both want to change it mid-sprint. Left unresolved, the validation rules get forked three ways — which is exactly what "defined once in `packages/core`" (§3.8) exists to prevent.
+### 5.3 Serial vs. parallel dispatch
 
-**Recommendation (proposal — worth a short ADR):** partition `packages/core` by author, and make it read-only to everyone else.
+**Strictly serial:** any API endpoint → the client consuming it (the generated client is the gate); schema → audit/threshold service → endpoints; contract → sync endpoints → mobile sync.
 
-| Path                                                  | Authored by                                                   | Everyone else |
-| ----------------------------------------------------- | ------------------------------------------------------------- | ------------- |
-| `packages/core/src/{validation,units,hydration,i18n}` | `react-web-developer`                                         | read-only     |
-| `packages/core/src/fhir`                              | `fhir-data-modeler` (owns terminology)                        | read-only     |
-| `packages/core/src/sync`                              | `nestjs-api-developer` (owns the server side of the contract) | read-only     |
-| `packages/core/src/api-client`                        | **generated from OpenAPI; never hand-edited by anyone**       | generated     |
+**Safe in parallel:** within P3, S2 ∥ S4 after their shared migration; within P4, S5 ∥ S6 ∥ S7 (spikes and decisions touch no product code); within P5, S1 / S3 / S4 / S5 touch largely disjoint modules.
 
-**Conflict procedure:** an agent that needs a change in a path it does not own **stops and reports the need** rather than editing. The main session dispatches a separate S-sized sprint to the owning agent, then re-dispatches the blocked sprint. This costs an extra round trip and is worth it — the alternative is two agents silently diverging a shared rule between invocations that cannot see each other.
+**Never parallel, for boundary reasons:** an `apps/web` sprint and an `apps/admin` sprint, in the same invocation or to the same agent instance.
 
-### 5.3 Handoff artifacts
+### 5.4 Reviewer cadence
 
-| Producer → Consumer                          | Handoff artifact                                                             | Sufficient when                                                     |
-| -------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `fhir-data-modeler` → `nestjs-api-developer` | Committed `schema.prisma` + applied migration + the written coverage note    | Prisma client generates and the migration applies to a populated DB |
-| main session → `nestjs-api-developer`        | `docs/sync-contract.md` + the accepted ADR                                   | Contract merged **before** sync code                                |
-| `nestjs-api-developer` → both clients        | Generated OpenAPI + typed client committed to `packages/core/src/api-client` | Client compiles against the running API                             |
-| `react-web-developer` → both clients         | `packages/core` validation + unit types + i18n catalog, with tests           | Both apps can inject thresholds and get typed block/warn results    |
-| `devops-deployment-engineer` → everyone      | Working compose stack + real commands in `docs/getting-started.md`           | An agent can bring the stack up from the doc alone                  |
-| any builder → reviewers                      | The branch diff                                                              | PR open, CI green                                                   |
+All three reviewers are read-only. **They report; the main session applies fixes.**
 
-### 5.4 Serial vs. parallel dispatch
+| Reviewer | Runs on |
+| -------- | ------- |
+| `code-reviewer` | Every sprint, without exception |
+| `hipaa-compliance-reviewer` | Any sprint touching PHI paths, audit logging, auth, logging, seed/test data, infrastructure, or the admin boundary. **Blocking on R.S2, P3.S3, P5.S3, P5.S7, P8.S1 and all of P9** |
+| `accessibility-copy-reviewer` | Any sprint producing user-facing UI or strings. **Blocking on P3.S2 (the colour scale), P6.S2 (absolute-terms copy) and P7.S3 (red-flag distinctness)** |
 
-**Strictly serial (do not parallelize):**
+A reviewer deferral is not a closure. **Every "deferred, with reasoning recorded" outcome becomes a `debt` issue in the same session that records it** — that rule is the direct lesson of §2.3, where nine such deferrals sat in commit bodies nobody re-read.
 
-- P1.S3 (schema) → P1.S5 (audit/threshold service) → P2.S1 (slice API)
-- P2.S0 (sync contract) → P2.S1b (sync endpoints) → P2.S2b (mobile sync)
-- Any API endpoint → the client consuming it (the generated client is the gate)
+### 5.5 What every delegation prompt must carry
 
-**Safe to dispatch in parallel from the main session:**
+1. The sprint ID and its one-sentence goal.
+2. The exact file paths in scope, and the paths explicitly out of scope.
+3. The contract files to read first.
+4. The SRS §7 acceptance criteria by ID that constitute exit — or, where none exist, the exit criteria stated explicitly.
+5. Which cross-cutting requirements apply.
+6. Which reviewers will run.
 
-- P1.S2 (dev stack), P1.S3 (schema), P1.S4 (core kernel) — after P1.S1
-- P2.S2 (mobile) ∥ P2.S3 (web) — after P2.S1a
-- Within P5: S1 / S3 / S4 / S5 / S6 touch largely disjoint modules
-- Within P3: S1 ∥ S2 after their shared schema migration lands
+### 5.6 Roster
 
-**Never parallel, for boundary reasons rather than dependency:** an `apps/web` sprint and an `apps/admin` sprint must not be dispatched in the same invocation or to the same agent instance.
+Nine agents: five builders, one planner, three read-only reviewers. Unchanged, and still correct. The `apps/admin` ownership gap remains the most concerning: the same agent owns the patient web app and the zero-PHI console. Mitigations stand — never dispatched together, `hipaa-compliance-reviewer` on every admin sprint, and the import-boundary lint rule as a fast secondary check behind the load-bearing controls (a disjoint identity pool and `apps/admin`'s dependency closure).
 
-### 5.5 Reviewer cadence
+### 5.7 The maintenance lane
 
-All three reviewers are read-only by design. **They report; the main session applies fixes.** Never ask a reviewer to fix what it found.
+Infrastructure repair, CI gaps, dependency advisories and tooling are **expected recurring work**, not interruptions. Revision 1 had no lane for them and they consumed roughly a third of merged PRs anyway. Sequence with that in mind rather than treating each as a surprise.
 
-| Reviewer                      | Runs on                                                                                                                                                                                                                  |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `code-reviewer`               | **Every sprint, without exception.**                                                                                                                                                                                     |
-| `hipaa-compliance-reviewer`   | Any sprint touching PHI paths, audit logging, auth or authorization, logging or error tracking, seed/test data, infrastructure, or the admin boundary. **Blocking on P1.S5, P2.S1, P3.S3, P5.S3, P8.S1, and all of P9.** |
-| `accessibility-copy-reviewer` | Any sprint producing user-facing UI or strings. **Blocking on P2.S2b, P2.S3, P3.S2 (the color scale), P6.S2 (absolute-terms copy), and P7.S3 (red-flag distinctness).**                                                  |
+Two rules earned by §2.4's two image-drift incidents:
 
-Run reviewers on the diff before merge, not after. With one human reviewer, the reviewer agents are the pre-screen that makes the human review tractable — which is the load-bearing assumption of this whole execution model.
+- **A CI check that only builds an artifact proves less than it appears to.** `pr.yml` now also *runs* the images and asserts their content, because the web placeholder built perfectly for three sprints and a missing workspace package fails at `require` time, not at `docker build` time.
+- **A green `pnpm verify` is not a uniform signal.** The integration suite skips itself when Docker is unreachable, so ownership authorization, audit coverage, the append-only grant check and the no-PHI-in-logs assertions can all silently not run. Start Docker before trusting it, and say which way it ran when reporting.
 
-### 5.6 What every delegation prompt must carry
+### 5.8 Sprint-ID discipline
 
-1. **The sprint ID and its one-sentence goal.**
-2. **The exact file paths in scope**, and the paths explicitly out of scope (especially `packages/core` sub-paths the agent does not own).
-3. **The contract files to read first** — the relevant ADRs, `docs/sync-contract.md`, the Prisma schema, `docs/testing.md`.
-4. **The SRS §7 acceptance criteria by ID** that constitute exit. Where none exist (Epics 3–11, 15, 16), say so and state the exit criteria explicitly instead.
-5. **Which cross-cutting requirements apply.**
-6. **Which reviewers will run**, so the agent builds toward them.
-
-`CLAUDE.md` loads automatically and the agent definitions deliberately do not restate project rules — so the dispatch must not either. Add sprint-specific context only.
-
-### 5.7 Roster gaps this plan will hit
-
-| Gap                                                    | Assessment                                                                                                                                                                    | Recommendation                                                                                                                                                                                                                                                                                                                     |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **No test-strategy agent**                             | Manageable. `docs/testing.md` (D2) written before P0 gives every builder the same conventions, and `code-reviewer` checks coverage of what changed.                           | **Do not add one now.** Revisit at Gate C.                                                                                                                                                                                                                                                                                         |
-| **No `apps/admin` owner beyond `react-web-developer`** | **The most concerning gap.** The same agent owning both the patient web app and the zero-PHI admin console is precisely the boundary-blurring risk §3.11 makes architectural. | **Do not add a separate agent.** Instead: (a) admin sprints are **never** dispatched in the same invocation as a patient-web sprint; (b) `hipaa-compliance-reviewer` runs on **every** admin sprint; (c) the import-boundary lint rule fails the build on `@ostomy/*` specifiers from admin code — but it is a fast secondary check only, and the load-bearing controls are the disjoint identity pool and `apps/admin`'s dependency closure, which is what P8.S1 must actually establish. |
-| **No performance agent**                               | Correct to omit — §5.1 defers numeric targets pending the spike.                                                                                                              | Add at P9.S4 **only if** the Gate C spike produces targets that are not being met.                                                                                                                                                                                                                                                 |
-| **No coordinator agent**                               | Correctly omitted.                                                                                                                                                            | The main session is the lead. The cost is that context discipline (§5.6) is entirely manual.                                                                                                                                                                                                                                       |
+A sprint ID is claimed in this document **before** it appears in a commit message, a code comment or CLAUDE.md. P3.S2 was simultaneously voided urine (in `apps/api`'s comments) and the web fluid-balance work (in CLAUDE.md) because an off-plan sprint borrowed a number nobody had reserved. Off-plan work takes a letter suffix on the sprint whose surface it extends (P3.S1b), or no ID at all.
 
 ---
 
-## 6. Cross-cutting requirements — what the _first_ sprint touching each must do
+## 6. Cross-cutting requirements — status
 
-| Concern                            | First sprint                                   | What that sprint must do so it is never retrofitted                                                                                                                                                                                                                                                                                 |
-| ---------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Audit logging**                  | **P1.S5, before any PHI endpoint exists**      | Ship the interceptor and the `AuditContext` _before_ the first write endpoint, so coverage is structural. Integration test: a PHI write without an audit row **fails**. No `UPDATE`/`DELETE` grant on `audit_events`. The sync path and the conflict loser both route through the same context — those are the two that get missed. |
-| **i18n externalization**           | **P0.S1 (lint rule) + P1.S4 (catalog)**        | The `no-literal-string` ESLint rule exists before the first screen, not after. One shared catalog in `packages/core/i18n/`. All date/time/number/unit formatting through `Intl` helpers from the first render, even though v1 is English-only.                                                                                      |
-| **Unit preference**                | **P1.S4**                                      | Canonical mL/kg types defined before the first observation is stored (D9). Conversion is render-time only. Make mixed-system states unrepresentable in the type, not merely unselectable in the UI.                                                                                                                                 |
-| **Accessibility**                  | **P2.S3 (`packages/ui` primitives)**           | The shared primitives carry accessible names, label association, focus indication, and minimum touch-target sizing **in the component**, so every later screen inherits them. `accessibility-copy-reviewer` runs on the slice, not first at P8.                                                                                     |
-| **Admin/patient boundary**         | **P0.S1 (lint rule) + P1.S1 (separate guard)** | The import-boundary rule exists at P0 even though `apps/admin` does not. `AdminJwtAuthGuard` is structurally separate from `JwtAuthGuard` from P1.S1 — never a shared guard with a role check. The boundary is an identity-layer property (§4.6).                                                                                   |
-| **AGPL header**                    | **P0.S1**                                      | Enforced by lint, failing CI. Never by memory.                                                                                                                                                                                                                                                                                      |
-| **No real PHI outside production** | **P1.S2 + P2.S4**                              | `.env.example` carries placeholders only; a CI check rejects a committed `.env`. The seed generator is deterministic and synthetic by construction (D6).                                                                                                                                                                            |
-| **Never log PHI**                  | **P1.S1**                                      | Pino configured with body logging off and a scrubbing serializer at skeleton time. Validation errors return field identifiers and rule IDs, **never the offending clinical value**. Sentry `beforeSend` redaction lands with the first client, not at P9.                                                                           |
-| **Thresholds as configuration**    | **P1.S4 + P1.S5**                              | The validation engine takes thresholds as injected data. There is no code path where a numeric bound is a constant. This is what makes AC 13.2 AC2 satisfiable at Gate E without rewriting the validation layer.                                                                                                                    |
+| Concern | Established at | Standing rule |
+| ------- | -------------- | ------------- |
+| **Audit logging** | P1.S5 | Global interceptor; `route-guard-coverage.spec.ts` fails the build on an unaudited mutating route. The observation write and its audit row commit **in one transaction** — copy that shape, never re-derive it |
+| **i18n externalization** | P0.S1 lint rule + P1.S4 catalog | Every namespace in `packages/core`. `mobile` and `web` are scoped by app, not audience, and may hold only shell copy with no clinical meaning |
+| **Unit preference** | P1.S4 | Canonical mL/kg; conversion is render-time; mixed-system values unrepresentable in the type |
+| **Accessibility** | P2.S3 `packages/ui` | Primitives carry accessible names, label association, focus indication and touch-target sizing. Contrast ratios are **computed, not claimed** — every hand-written ratio in the first version was wrong. Two AA defects are open in the debt lane |
+| **Admin/patient boundary** | P0.S1 lint rule + P1.S1 guards | Structurally separate guards, never a shared guard with a role check |
+| **AGPL header** | P0.S1 | Enforced by lint, failing CI |
+| **No real PHI outside production** | P1.S2 + P2.S4 | Seeded rows carry **no audit events** — a test asserting audit coverage must create its data through the API |
+| **Never log PHI** | P1.S1 | Serializers never assemble a body into a log line. There is nothing for a "scrubber" to scrub because no PHI payload is logged in the first place |
+| **Thresholds as configuration** | P1.S4 + P1.S5 | Seeded by **migration**, not by `packages/seed` — `ThresholdsService` throws without them and that sits on every clinical write path. Mobile's cache is deliberately unseeded: a default there is a hardcoded threshold wearing a database costume |
+| **Patient-local day** | P2.S2b (ADR-0016) | Captured per observation as IANA zone + `local_date`; never re-derived from a profile or a reader's timezone |
+| **Device-side controls** | P2.S2a (ADR-0014/0015) | **Implemented, unverified.** `docs/gate-b-hardware-verification.md` holds HW-1..HW-10; none are closed. An emulator pass never closes one |
 
 ---
 
 ## 7. Risks
 
-**R1 — The sync engine is the hardest thing in this system.** Offline queue ordering, per-operation idempotency, last-write-wins against skewed device clocks, tombstone propagation, server-side re-enforcement of validation on untrusted queued payloads, and rejected-operation retention with a correction path — all interacting.
-_Earliest visible:_ Gate B. Fully visible only at Gate C with two devices and real preference sync.
-_Mitigation:_ the contract is written and ADR'd before any code (P2.S0); the slice exists specifically to stress it; P2.S1 is split so sync gets its own reviewable diff.
+**R1 — The sync engine is the hardest thing in this system.** _Partly retired._ The contract is written and normative, conflict and idempotency are implemented and tested, and §5.4's stale-cursor recovery now performs rather than reports. _Still live:_ nothing has been exercised against a live 409, and the whole path has never been observed end to end on a device — which is precisely what R.S1 closes.
 
-**R2 — Staging is the parity gate, and P9 concentrates every deferred risk at the end.** Fargate orchestration, TLS, real Cognito (token lifetimes, refresh rotation, MFA, hosted UI, email flows), KMS, Multi-AZ, and DR are all untested until staging exists.
-_Earliest visible:_ P9.S2 — far too late for a Cognito claim-shape surprise to be cheap.
-_Mitigation, and the strongest structural recommendation in this plan:_ **pull a staging spike forward to Gate C.** A minimal Fargate task + a real Cognito pool + TLS, proving only that the OIDC adapter's claim mapping works against real Cognito and that the container runs under Fargate's health-check semantics.
+**R2 — Staging concentrates every parity risk at the end.** _Mitigation now has an ID:_ P4.S6. Fargate orchestration, TLS, real Cognito token lifetimes and refresh rotation, MFA, hosted-UI and email flows, KMS, Multi-AZ and DR remain untested until it runs.
 
-**R3 — Single-human review bandwidth.** Every sprint produces a diff one person must read and accept.
-_Earliest visible:_ the first sprint where review is deferred rather than done.
-_Mitigation:_ the S/M/L discipline; the three reviewer agents as a pre-screen; a standing rule that any sprint estimated L is split before dispatch, not during review.
+**R3 — Single-human review bandwidth.** Unchanged, and the §2.3 list is what it looks like when it binds: work gets recorded instead of done. The debt lane's one-item-between-sprints rule is the throttle.
 
-**R4 — `packages/ui` sharing between React Native and web may not pay off.** React Native Web is the assumed bridge (§4.2 says "where feasible"), and forced sharing produces components worse on both platforms than two honest implementations.
-_Earliest visible:_ P2.S3.
-_Mitigation:_ treat `packages/ui` initially as **design tokens + web components**, with cross-platform sharing proven on two or three primitives before committing. Decide by Gate C, and write the ADR either way.
+**R4 — `packages/ui` cross-platform sharing may not pay off.** Now decided at P4.S7, ADR either way. Currently tokens + web components, which is the conservative position revision 1 recommended.
 
-**R5 — The SNOMED estimation-technique code is unresolved, and a wrong guess is invisible until export.**
-_Earliest visible:_ P5.S6 at the earliest, realistically at first EHR integration.
-_Mitigation:_ the single-constant discipline in D4. Never a plausible-looking number.
+**R5 — The SNOMED estimation code.** _Retired._ ADR-0018, amended: both answers carry an explicit qualifier and `method: null` at rest means one thing.
 
-**R6 — Missing acceptance criteria for Epics 3–11, 15, 16.** SRS §7 states this openly.
-_Earliest visible:_ P3.S4, acutely at P5.S2 and P5.S6.
-_Mitigation:_ write AC into the spec before dispatching those two, or accept explicitly-stated looser exit criteria in the dispatch itself.
+**R6 — Missing acceptance criteria for Epics 3–11, 15, 16.** Live and now acute: P5.S2 and P5.S6 are the two where "done" is genuinely ambiguous, and P5.S6 is also the physician-access route. Write AC into the spec before dispatching either.
 
-**R7 — Configuration-driven thresholds are load-bearing much earlier than the console that manages them.**
-_Earliest visible:_ the first threshold change on the dev host (likely P3.S2).
-_Mitigation:_ build the admin API at its final shape at P3.S3; ship a maintenance script alongside it.
+**R7 — Thresholds are load-bearing long before the console that manages them.** _Partly retired_ — defaults ship by migration with `ON CONFLICT DO NOTHING`. _Still live:_ there is no way to change one without editing a migration. P3.S3 carries the maintenance script.
+
+**R8 — NEW: verification is weaker than it looks.** Three suites can be green while proving much less than a reader assumes: the integration suite skips itself without Docker; no device or simulator runs anywhere in CI; and there is no mobile e2e at all. The mitigation is not more unit tests — it is R.S1, the HW list, and P4.S7's e2e decision.
+
+**R9 — NEW: documentation drift is a recurring defect class, not an oversight.** CLAUDE.md described an empty `.github/workflows/`; `security-hipaa.md` owed a warning that had shipped; this plan described a repo that no longer existed; a sprint ID meant two things. Each was written accurately and then outlived its truth. The rule that answers it is already in CLAUDE.md — *when a decision changes something this file states, change it in the same commit* — and it needs extending to `docs/` and to this plan, which is why R.S3 exists and why §5.8 is a rule rather than an observation.
+
+**R10 — NEW: the Android-only cut narrows the tested surface, not the claimed one, unless R.S2 actually lands.** `app.json` still names iOS, SRS still names iOS in three places, and Expo will still happily build an iOS bundle nobody has run. A scope cut that lives only in a planning document is worse than no cut, because it removes the pressure to verify without removing the claim.
 
 ---
 
-## 8. Findings — outside the plan, for decision
+## 8. Findings from this review
 
-**F1 — RESOLVED (SRS v2.4).** AC 17.3 AC 2 read _"net fluid balance, urine output, and weight appear as **three** distinct signals"_ — Phase 6 added resting heart rate to §3.5, §3.12 and `CLAUDE.md` but never updated the criterion, and it was the only AC asserting that the physician view keeps signals separate. Corrected to four signals.
+**F5 — The Gate B walkthrough was never run, and P3 proceeded past it.** Addressed by decision 2 and R.S1. Worth naming as a process failure rather than an oversight: nothing in the plan made a gate *blocking* in any mechanical sense, so it was simply not a step anyone had to take.
 
-**F2 — RESOLVED ([ADR-0005](../decisions/0005-decimal-volumetric-entry-and-conversion-rounding.md), SRS v2.4).** Volume fields accept positive decimals; stored values keep their entered precision; a volume converted between measurement systems is rounded to the nearest whole unit for **display only**. **Weight is excluded** and keeps one decimal place in both systems — rounding a converted weight to a whole unit would discard exactly the sub-kilogram day-over-day changes §3.12 exists to detect. AC 2.1 AC 1 rewritten, AC 2.1 AC 4 added.
+**F6 — Nine reviewer deferrals were recorded in commit bodies and never re-read.** Addressed by decision 4 and the §5.4 rule. The deferrals were the right call each time; the failure was that a commit body is a write-only medium.
 
-**F3 — A stale reference.** `design-specs/data-model/fhir-rxnorm-integration.md` line 3 cites `Ostomy_App_Specification_v1.pdf` as "the SRS." `CLAUDE.md` is explicit that the PDF is historical reference only. Worth a one-line fix at P1.S3.
+**F7 — A predicted defect in the biometric invalidation path.** `AuthContext.unlock()` reads the refresh token inside a `try` with a deliberately silent `catch`, and `hasStoredRefreshToken()` answers from a marker key that an OS invalidation does not clear. So when the OS invalidates the key after a biometric enrolment change, the app unlocks, reports an authenticated session, holds no access token, syncs nothing, and offers no route to sign-in. ADR-0015's "forces a full OIDC re-login" describes an intention the build does not implement. Read from the code, not observed — HW-6a is the step that settles it.
 
-**F4 — Nothing in SRS §4 was re-opened.** Every architecture decision there is treated as settled. Where this plan proposes something the spec does not cover, it is labeled `[GAP]` and carries a recommendation rather than an assumption.
+**F8 — `apps/web` has no patient-facing entry surface and no physician access route.** It renders the signed-in account's own records; `GET /api/v1/observations` takes no patient identifier anywhere, so there is no physician identity and no patient-selection path, and the copy deliberately claims neither. That is correct today and it means the web client's role in v1 is decided by P5.S6's share link. Do not let a P5.S2 "physician view" sprint reintroduce an audience the API cannot authorize.
+
+**F9 — Nothing owns the ADR-0017 purge job.** Policy accepted, compliance documentation relying on it, no mechanism. Now P5.S7.
+
+**F10 — Revision 1's §2 was allowed to describe a repository that had not existed for months.** A planning document with a stale "current state" is not merely unhelpful: agents read it and trust it. This revision dates its state section and §5.8 makes the ID discipline explicit, but the durable fix is to re-baseline at every gate rather than at every crisis.
