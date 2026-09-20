@@ -29,9 +29,20 @@ import {
 } from './oidcSession';
 
 /**
- * The options handed to `makeRedirectUri`. Exported so the invariant that
- * matters — a scheme AND a non-empty path — is assertable directly, the
- * way `oidcSession.ts` keeps the plain testable pieces out of the hook.
+ * The options handed to `makeRedirectUri`, and therefore the URI the
+ * authorization endpoint sends the patient back to.
+ *
+ * **`path` must match the filename of a route in `app/`** — `redirect`
+ * here means `app/redirect.tsx` has to exist. Android delivers the
+ * redirect to the app as an ordinary deep link as well as resolving
+ * `promptAsync()`, so Expo Router routes on it: with no such file, a
+ * patient whose sign-in fully succeeded lands on "Unmatched Route"
+ * holding a live session (R.S1). Rename one without the other and
+ * sign-in appears to break again.
+ *
+ * Exported so the invariant that matters — a scheme AND a non-empty path —
+ * is assertable directly, the way `oidcSession.ts` keeps the plain
+ * testable pieces out of the hook.
  */
 export const REDIRECT_URI_OPTIONS = { scheme: 'ostomydiary', path: 'redirect' } as const;
 
