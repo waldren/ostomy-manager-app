@@ -192,3 +192,8 @@ This unblocks the emulator-testable part of Gate B's phone-dependent steps.
 Record the result as an emulator walkthrough. The steps that exist to prove
 hardware-backed key behaviour still need a physical device on a dev build —
 resolve those as still-open rather than closing them from an emulator pass.
+
+Those steps are written out as HW-1 to HW-10 in
+`docs/gate-b-hardware-verification.md`, with what each one proves and what its
+failure would mean. That document also lists what an emulator run already
+discharges, so a walkthrough here does not repeat them. Cite a step by its ID.
