@@ -264,6 +264,57 @@ services:
     logging: *default-logging
     environment:
       LOG_LEVEL: INFO
+      # Make `aud` the client_id, which is what apps/api checks.
+      #
+      # WITHOUT this the server issues `aud: "default"` and puts the
+      # client_id in `azp` instead — verified by running the real
+      # Authorization Code + PKCE flow against the pinned digest above
+      # (R.S1). apps/api's guards check `audience` by exact match, so every
+      # token this server minted was refused: `/thresholds`, `/sync/delta`
+      # and `/value-sets` all returned 401 on a valid signature, and
+      # apps/mobile could not load a threshold, sync, or save an entry.
+      #
+      # apps/mobile/.env.example had recorded the opposite as an ASSUMPTION
+      # since P2.S2a — "an issued token's `aud` claim equals the
+      # authorization request's `client_id` verbatim" — and asked for it to
+      # be verified the first time the app ran against this stack. It was
+      # wrong.
+      #
+      # Fixed HERE rather than by setting OIDC_AUDIENCE=default on the API,
+      # which was the other option. The audience check is a real control —
+      # it is what stops a token minted for a different client being
+      # replayed against this API — so the dev IdP is made to behave like a
+      # real one instead of the API being taught to accept a placeholder.
+      # It also keeps the patient and admin audiences distinct, which
+      # matching on "default" would have collapsed.
+      #
+      # `requestMappings` matches on the client_id in the request, so each
+      # issuer only stamps the audience belonging to its own client.
+      JSON_CONFIG: >-
+        {
+          "tokenCallbacks": [
+            {
+              "issuerId": "patient-issuer",
+              "requestMappings": [
+                {
+                  "requestParam": "client_id",
+                  "match": "ostomy-patient-app",
+                  "claims": { "aud": ["ostomy-patient-app"] }
+                }
+              ]
+            },
+            {
+              "issuerId": "admin-issuer",
+              "requestMappings": [
+                {
+                  "requestParam": "client_id",
+                  "match": "ostomy-admin-console",
+                  "claims": { "aud": ["ostomy-admin-console"] }
+                }
+              ]
+            }
+          ]
+        }
     networks:
       - ostomy-dev
     ports:
