@@ -143,9 +143,13 @@ ADR-0020 recording the cut and its reasoning; SRS amendments at §2 and §4.2 (t
 _Exit:_ no document in the repo claims iOS in v1; no HW step is blocked on a build path that does not exist; ADR-0014's iOS backup gap is closed by scope rather than left open.
 _Reviewers:_ `hipaa-compliance-reviewer` (the gap being closed is a PHI-egress gap), `code-reviewer`.
 
-**R.S3 — Plan and doc reconciliation (S) — main session**
+**R.S3 — Plan and doc reconciliation (S) — main session** · _done_
 Fix the drift this review found: `docs/security-hipaa.md` still owes the unsynced-entry warning that shipped; `CLAUDE.md` describes `.github/workflows/` as empty; the P3.S1b label (see below). Open the `debt` issues from §2.3. Adopt the sprint-ID rule in §5.8.
 _Exit:_ every statement in CLAUDE.md and `docs/` that this review found stale is corrected or has an issue.
+
+> **What it found, beyond the list above.** CLAUDE.md still said SRS was v2.5 and that nineteen ADRs were accepted — **both made stale by R.S2 itself**, which bumped the spec to v2.6 and added ADR-0020 without updating the pointers. A sprint whose entire purpose was making the repo's claims true created two new false ones in the same commit. It also still described `.github/workflows/` as empty (two workflows), and called `docs/getting-started.md`'s app sections `TBD` (they are written).
+>
+> One further drift outside CLAUDE.md: `scripts/android-emulator.sh`'s header asserted that `apps/api`'s `OIDC_ISSUER` *is* `http://localhost:8090/patient-issuer`. It is not fixed — Compose derives it from `DEV_HOST_ADDRESS`, and R.S1 lost hours to that value being `127.0.0.1`, which is not string-equal to `localhost`.
 
 > **The P3.S1b label.** The Daily Net Fluid Balance work on `feat/web-net-fluid-balance` was labelled P3.S2 in CLAUDE.md, but `apps/api`'s code comments already use P3.S2 for voided urine (`9187-6`). It is the web consumer of P3.S1's intake data, so it is **P3.S1b**, and CLAUDE.md is corrected on that branch before merge. Voided urine keeps P3.S2 — one CLAUDE.md line changes instead of a dozen code comments.
 
@@ -316,7 +320,9 @@ A sprint ID is claimed in this document **before** it appears in a commit messag
 
 **R8 — NEW: verification is weaker than it looks.** Three suites can be green while proving much less than a reader assumes: the integration suite skips itself without Docker; no device or simulator runs anywhere in CI; and there is no mobile e2e at all. The mitigation is not more unit tests — it is R.S1, the HW list, and P4.S7's e2e decision.
 
-**R9 — NEW: documentation drift is a recurring defect class, not an oversight.** CLAUDE.md described an empty `.github/workflows/`; `security-hipaa.md` owed a warning that had shipped; this plan described a repo that no longer existed; a sprint ID meant two things. Each was written accurately and then outlived its truth. The rule that answers it is already in CLAUDE.md — *when a decision changes something this file states, change it in the same commit* — and it needs extending to `docs/` and to this plan, which is why R.S3 exists and why §5.8 is a rule rather than an observation.
+**R9 — NEW: documentation drift is a recurring defect class, not an oversight.** CLAUDE.md described an empty `.github/workflows/`; `security-hipaa.md` owed a warning that had shipped; this plan described a repo that no longer existed; a sprint ID meant two things. Each was written accurately and then outlived its truth.
+
+_Sharpened by R.S3, which is the strongest evidence for this risk in the document:_ **R.S2 — a sprint whose whole purpose was making the repo's platform claims true — itself left CLAUDE.md asserting SRS v2.5 and nineteen ADRs**, having just written v2.6 and ADR-0020. Discipline applied by intention does not survive; only a mechanical check does. Treat "update the pointer in the same commit" as a rule needing enforcement, not as a habit. The rule that answers it is already in CLAUDE.md — *when a decision changes something this file states, change it in the same commit* — and it needs extending to `docs/` and to this plan, which is why R.S3 exists and why §5.8 is a rule rather than an observation.
 
 **R10 — NEW: the Android-only cut narrows the tested surface, not the claimed one, unless R.S2 actually lands.** `app.json` still names iOS, SRS still names iOS in three places, and Expo will still happily build an iOS bundle nobody has run. A scope cut that lives only in a planning document is worse than no cut, because it removes the pressure to verify without removing the claim.
 

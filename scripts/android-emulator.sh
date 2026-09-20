@@ -17,11 +17,20 @@
 #   Host: localhost:8090  ->  "issuer": "http://localhost:8090/patient-issuer"
 #   Host: 10.0.2.2:8090   ->  "issuer": "http://10.0.2.2:8090/patient-issuer"
 #
-# apps/api validates `iss` against its own `OIDC_ISSUER`, which is
-# `http://localhost:8090/patient-issuer`. So a device reaching the IdP as
-# 10.0.2.2 gets tokens the API rejects with a bare 401, after a sign-in that
-# appeared to succeed. `adb reverse` keeps the hostname identical on both
-# sides, which is what makes apps/mobile/.env work unmodified.
+# apps/api validates `iss` against its own `OIDC_ISSUER`, by EXACT STRING
+# EQUALITY. So a device reaching the IdP as 10.0.2.2 gets tokens the API
+# rejects with a bare 401, after a sign-in that appeared to succeed. `adb
+# reverse` keeps the hostname identical on both sides, which is what makes
+# apps/mobile/.env work unmodified.
+#
+# `OIDC_ISSUER` is NOT fixed at localhost: infra/docker-compose.yml derives it
+# from ${DEV_HOST_ADDRESS}. For this emulator path that value must be exactly
+# `localhost`, because that is the host the device presents. R.S1 hit this with
+# `DEV_HOST_ADDRESS=127.0.0.1` — which looks interchangeable and is not, since
+# the comparison is string equality, so `/thresholds`, `/sync/delta` and
+# `/value-sets` all returned 401 on a valid signature. Note .env.example warns
+# against `localhost` for any LAN client; the emulator is the exception, not
+# the rule.
 #
 # ## Usage
 #
