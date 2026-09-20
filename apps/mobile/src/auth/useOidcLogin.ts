@@ -29,6 +29,24 @@ import {
 } from './oidcSession';
 
 /**
+ * The options handed to `makeRedirectUri`, and therefore the URI the
+ * authorization endpoint sends the patient back to.
+ *
+ * **`path` must match the filename of a route in `app/`** — `redirect`
+ * here means `app/redirect.tsx` has to exist. Android delivers the
+ * redirect to the app as an ordinary deep link as well as resolving
+ * `promptAsync()`, so Expo Router routes on it: with no such file, a
+ * patient whose sign-in fully succeeded lands on "Unmatched Route"
+ * holding a live session (R.S1). Rename one without the other and
+ * sign-in appears to break again.
+ *
+ * Exported so the invariant that matters — a scheme AND a non-empty path —
+ * is assertable directly, the way `oidcSession.ts` keeps the plain
+ * testable pieces out of the hook.
+ */
+export const REDIRECT_URI_OPTIONS = { scheme: 'ostomydiary', path: 'redirect' } as const;
+
+/**
  * The one hook `app/login.tsx` calls to run the full Authorization
  * Code + PKCE flow against the patient OIDC provider (`useAuthRequest`/
  * `useAutoDiscovery` are React hooks and cannot live in a plain function —
@@ -41,7 +59,22 @@ export function useOidcLogin(): {
 } {
   const config = useMemo(() => getOidcClientConfig(), []);
   const discovery = useAutoDiscovery(config.issuer);
-  const redirectUri = useMemo(() => AuthSession.makeRedirectUri(), []);
+  // `scheme` and `path` are both explicit, and the path is what matters.
+  //
+  // `makeRedirectUri()` with no arguments returns the bare scheme —
+  // `ostomydiary://`, with no authority and no path. That is not a legal
+  // absolute URI, and the authorization endpoint refuses the request
+  // before any user interaction: mock-oauth2-server answers
+  // `invalid_request` / "illegal redirect_uri parameter" (Nimbus
+  // `ParseException`), so sign-in could never complete against the
+  // development stack. Found by the Gate B walkthrough (R.S1); the unit
+  // tests around it had always used `ostomydiary://redirect` as their
+  // fixture, so they asserted a value this function never produced.
+  //
+  // Passing `scheme` explicitly also pins the dev-build case, where
+  // `makeRedirectUri` would otherwise derive an `exp+...` development-client
+  // URL that no OIDC provider has been registered with.
+  const redirectUri = useMemo(() => AuthSession.makeRedirectUri(REDIRECT_URI_OPTIONS), []);
   const requestConfig = useMemo(
     () => buildAuthRequestConfig(config, redirectUri),
     [config, redirectUri],

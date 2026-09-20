@@ -132,8 +132,15 @@ cannot find the bundler. `wire` detects this and prints the fix:
 
 ```bash
 pnpm --filter @ostomy/mobile start --port 8082
-adb -s emulator-5554 reverse tcp:8082 tcp:8082
+adb -s emulator-5554 reverse tcp:8081 tcp:8082
 ```
+
+**Note the ports do not match, and that is the point.** An already-built
+development build has `localhost:8081` baked in as its bundler URL and will ask
+for 8081 no matter where Metro is listening. Reversing `8082 -> 8082` leaves it
+asking 8081, reaching the admin SPA, and dying with "Unable to load script".
+Mapping the device's 8081 to the host's 8082 puts Metro where the app already
+looks, and leaves the admin container alone. (Found in R.S1.)
 
 ## Before you conclude anything from a run
 
@@ -167,6 +174,13 @@ Router navigation, the OIDC browser redirect, the sync worker against a real
 API over a real socket, backgrounding and foregrounding, and — after
 `fingerprint` — biometric enrolment, unlock, rejection and
 enrolment-invalidation.
+
+**The OIDC redirect only counts if the AVD has a Custom Tabs provider.** The
+`default` system image ships none — `com.android.webview` and the Chromium
+shell, no Chrome — so `WebBrowser.openAuthSessionAsync` has nothing to open and
+sign-in cannot complete. `SYSTEM_IMAGE_TAG` is `google_apis` for that reason
+(R.S1); if you point this harness at a `default` image, strike the OIDC
+redirect off the list above.
 
 It does **not** discharge the "verified on hardware" caveat in CLAUDE.md. The
 emulator reports `android.hardware.fingerprint` and a `hardware_keystore`, but
