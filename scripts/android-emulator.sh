@@ -90,13 +90,33 @@ EMULATOR_SERIAL="${ANDROID_EMULATOR_SERIAL:-emulator-5554}"
 EMULATOR_PORT="${ANDROID_EMULATOR_PORT:-5554}"
 APP_PACKAGE="org.ostomy.diary"
 
-# The system image to build the AVD from. `default` rather than
-# `google_apis`: nothing in this app talks to a Google service — push delivery
-# sits behind an adapter that is log-only in development
-# (docs/deployment-development.md) — and the Play image forbids `adb root`,
-# which is the only way to inspect app-private storage when debugging.
+# The system image to build the AVD from. `google_apis` — NOT `default`, and
+# NOT `google_apis_playstore`.
+#
+# This was `default`, on the reasoning that nothing in this app talks to a
+# Google service (push delivery sits behind an adapter that is log-only in
+# development, docs/deployment-development.md) and that the Play image forbids
+# `adb root`, which is the only way to inspect app-private storage when
+# debugging. Both halves of that are still true and are why the Play image is
+# still wrong here.
+#
+# What it missed, found by the Gate B walkthrough (R.S1): the `default` image
+# ships **no browser that provides Custom Tabs**. It carries
+# `com.android.webview` and the Chromium shell and nothing else. OIDC sign-in
+# goes through `WebBrowser.openAuthSessionAsync`, which needs a Custom Tabs
+# provider to intercept the redirect back to `ostomydiary://redirect`. Without
+# one, Android delivers the redirect to the app as an ordinary deep link,
+# Expo Router has no route for it and renders "Unmatched Route", and
+# `promptAsync()` never resolves — so the token exchange never happens and
+# **no signed-in session is reachable on this AVD at all**. Every clinical
+# screen sits behind that sign-in, so the emulator could not exercise any of
+# them.
+#
+# `google_apis` includes Chrome, which supplies Custom Tabs, and still permits
+# `adb root`. It satisfies both of the original constraints rather than
+# trading one away.
 SYSTEM_IMAGE_API="${ANDROID_SYSTEM_IMAGE_API:-36}"
-SYSTEM_IMAGE_TAG="default"
+SYSTEM_IMAGE_TAG="google_apis"
 SYSTEM_IMAGE_ABI="x86_64"
 
 # Host ports the emulator must reach as its own `localhost`. Keep this list in
