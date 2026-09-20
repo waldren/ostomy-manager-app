@@ -103,7 +103,7 @@ Revision 1's D1–D10 are all recorded above. **D3 (git workflow) is resolved** 
 
 **1 — v1 ships Android only.** iOS leaves v1 scope. `apps/mobile` has never been built for iOS: no `eas.json`, no macOS in the development loop, and the native configuration (the SQLCipher config plugin, `NSFaceIDUsageDescription`, keychain accessibility classes) has never compiled. Rather than carry a platform claim nothing verifies, v1 states one platform and proves it.
 
-_Obliges:_ ADR-0020; amendments to SRS §2 (line 39, "iOS and Android"), §4.2 (line 248) and §4.3 (line 273); `app.json`'s `platforms`; a rescope of `docs/gate-b-hardware-verification.md` to its Android steps; CLAUDE.md. Closes the iOS backup-exclusion gap by removing its platform. **This is R.S2 and it is not optional bookkeeping** — until it lands, five HW steps are blocked on a build path nobody is building.
+_Obliges:_ ADR-0020; amendments to SRS §2 and §4.2; `app.json`'s `platforms`; a rescope of `docs/gate-b-hardware-verification.md` to its Android steps; CLAUDE.md. Closes the iOS backup-exclusion gap by removing its platform. **This is R.S2 and it is not optional bookkeeping** — until it lands, five HW steps are blocked on a build path nobody is building.
 
 **2 — Gate B is run now, blocking further feature work.** P3 proceeded past an unrun gate. The gate exists to stress sync, conflict, idempotency, offline re-enforcement and audit coverage *while they are still cheap to move*, and every sprint added since makes them less so. This is R.S1.
 
@@ -139,7 +139,7 @@ _Exit:_ every clause observed and recorded, or recorded as failed with a `bug` i
 _Reviewers:_ `code-reviewer` on any fix; `hipaa-compliance-reviewer` if the audit or sync clauses fail.
 
 **R.S2 — Android-only v1 (S) — main session + `expo-mobile-developer`**
-ADR-0020 recording the cut and its reasoning; SRS amendments at §2, §4.2, §4.3; `app.json` `platforms` narrowed; `docs/gate-b-hardware-verification.md` rescoped to HW-1, HW-2, HW-3, HW-6a, HW-7, HW-8 plus an Android background-termination step replacing HW-10; CLAUDE.md's platform and caveat lines.
+ADR-0020 recording the cut and its reasoning; SRS amendments at §2 and §4.2 (the two sections that actually name iOS — §4.3 does not); `app.json` `platforms` narrowed; `docs/gate-b-hardware-verification.md` rescoped to HW-1, HW-2, HW-3, HW-6a, HW-7, HW-8 plus an Android background-termination step replacing HW-10; CLAUDE.md's platform and caveat lines.
 _Exit:_ no document in the repo claims iOS in v1; no HW step is blocked on a build path that does not exist; ADR-0014's iOS backup gap is closed by scope rather than left open.
 _Reviewers:_ `hipaa-compliance-reviewer` (the gap being closed is a PHI-egress gap), `code-reviewer`.
 

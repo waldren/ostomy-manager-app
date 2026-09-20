@@ -6,9 +6,11 @@ This document is the remainder — the checks that exist to prove the **device-s
 
 Every step has an ID. Cite it — "HW-6 is still open" — instead of re-describing the check each time it comes up.
 
+**v1 ships Android only ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)), so the in-scope steps are HW-1, HW-2, HW-3, HW-6, HW-7, HW-8 and HW-10.** HW-4, HW-5 and HW-9 are iOS-specific and are marked out of scope below rather than deleted: they are the list iOS reinstatement starts from, and deleting them would mean rediscovering it. The IDs never move — issue #39 and the implementation plan both cite them by number.
+
 ## Why an emulator cannot close them
 
-The Android emulator reports `android.hardware.fingerprint` and a `hardware_keystore`, but never `android.hardware.strongbox_keystore`: it is KeyMint in software. It has no Play Services backup transport, no second physical handset to restore a backup onto, no Class 2-only face sensor, and no iOS at all. It therefore exercises the _logic_ of [ADR-0014](../design-specs/decisions/0014-local-phi-encryption-and-device-ownership.md) and [ADR-0015](../design-specs/decisions/0015-biometric-local-access.md) and says nothing about the hardware guarantees those decisions rest on.
+The Android emulator reports `android.hardware.fingerprint` and a `hardware_keystore`, but never `android.hardware.strongbox_keystore`: it is KeyMint in software. It has no Play Services backup transport, no Class 2-only face sensor, and it reclaims nothing under memory pressure. It therefore exercises the _logic_ of [ADR-0014](../design-specs/decisions/0014-local-phi-encryption-and-device-ownership.md) and [ADR-0015](../design-specs/decisions/0015-biometric-local-access.md) and says nothing about the hardware guarantees those decisions rest on.
 
 Record an emulator pass as "exercised on an emulator". It never closes a step here, and it is never grounds for editing CLAUDE.md's caveat.
 
@@ -18,13 +20,13 @@ Sign-in, SQLCipher opening the store, the subject-binding purge, the unsent-entr
 
 ## Blockers to running these at all
 
-**There is no iOS build path in this repo.** No `eas.json`, no macOS in the loop, and `apps/mobile` has never been built for iOS. HW-4, HW-5, HW-6b, HW-9 and HW-10 are blocked until one exists — a macOS machine with Xcode, or an EAS Build account. That choice is not made here, but nothing on the iOS half of this list can be scheduled before it is.
+**The iOS steps are out of scope, not blocked.** There is no `eas.json`, no macOS in the loop, and `apps/mobile` has never been built for iOS — which is why v1 now ships Android only ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)). HW-4, HW-5 and HW-9 are retained for the phase that reinstates the platform, and nothing on this list waits on them.
 
 **Android needs a development build on the handset**, not Expo Go. `app.json` turns SQLCipher on through the `expo-sqlite` config plugin; Expo Go would run with an unencrypted store and prove the opposite of what these steps are for.
 
-**Three steps need hardware we may not have**: HW-3 a device with a Google account and backup enabled; HW-4 two iPhones; HW-7 an Android handset whose only enrolled biometric is Class 2 face unlock.
+**Two steps need hardware we may not have**: HW-3 a handset signed into a Google account with backup enabled; HW-7 a handset whose only enrolled biometric is Class 2 face unlock.
 
-**Networking.** On a USB-attached Android handset, `adb reverse tcp:3000 tcp:3000` and `tcp:8090` keep `localhost` identical on both sides, exactly as the emulator harness does. Over Wi-Fi — and on iOS, where `adb reverse` does not exist — point `.env`'s `DEV_HOST_ADDRESS` and `apps/mobile/.env` at the host's LAN address, the **same value on both sides**. mock-oauth2-server mints `iss` from the Host header the client used and `apps/api` compares it by exact string equality, so a mismatch presents as a clean sign-in followed by a bare 401 on every call — which reads as a broken auth guard and is not.
+**Networking.** On a USB-attached handset, `adb reverse tcp:3000 tcp:3000` and `tcp:8090` keep `localhost` identical on both sides, exactly as the emulator harness does. Over Wi-Fi, point `.env`'s `DEV_HOST_ADDRESS` and `apps/mobile/.env` at the host's LAN address, the **same value on both sides**. mock-oauth2-server mints `iss` from the Host header the client used and `apps/api` compares it by exact string equality, so a mismatch presents as a clean sign-in followed by a bare 401 on every call — which reads as a broken auth guard and is not.
 
 **Synthetic data only.** A test handset is as much "outside production" as the dev host is. Nothing about holding a real phone relaxes that rule.
 
@@ -70,7 +72,9 @@ adb shell bmgr backupnow org.ostomy.diary
 
 **A failure means** the diary is being copied into the patient's personal Google account — a destination that can never appear on SRS_v2 §4.6's covered-service list, because Google does not execute a BAA for consumer backup.
 
-### HW-4 — iOS: a backup restored onto a _second_ phone yields nothing readable
+### HW-4 — iOS: a backup restored onto a _second_ phone yields nothing readable — OUT OF SCOPE (v1 is Android only)
+
+> Retained for the phase that reinstates iOS ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)). Nothing in v1 waits on it, and it must not be counted as open work.
 
 This is the step that carries ADR-0014's accepted gap. `expo-file-system@57` removed `setIsExcludedFromBackupAsync`, so the database does enter iCloud and Finder backups. What makes that acceptable is the pairing of SQLCipher with an `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY` key the keychain does not migrate. Until this runs, that pairing is an argument, not evidence.
 
@@ -80,7 +84,9 @@ Make entries on phone 1; take an encrypted Finder backup; restore it onto phone 
 
 **A failure means** the iOS backup-exclusion config plugin stops being defence in depth and becomes required work.
 
-### HW-5 — iOS: a backup restored onto the _same_ phone still works
+### HW-5 — iOS: a backup restored onto the _same_ phone still works — OUT OF SCOPE (v1 is Android only)
+
+> Retained for the phase that reinstates iOS ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)). Nothing in v1 waits on it, and it must not be counted as open work.
 
 The converse of HW-4, and not the same test. ADR-0014 claims a same-device restore still decrypts, because that is where the keychain item survives.
 
@@ -92,8 +98,9 @@ The converse of HW-4, and not the same test. ADR-0014 claims a same-device resto
 
 The centre of ADR-0015, and the one OS guarantee this design depends on and has never observed.
 
-- **6a Android:** enrol one fingerprint, sign in, add a second fingerprint in Settings, cold-start the app.
-- **6b iOS:** enrol Face ID, sign in, reset Face ID, cold-start the app.
+Enrol one fingerprint, sign in, add a second fingerprint in Settings, cold-start the app.
+
+(This step was HW-6a while iOS was in scope. Its iOS half, HW-6b, is retained in ADR-0020's reinstatement list and is not open work. Issue #39 cites "HW-6a"; it means this step.)
 
 **Pass, both halves:** the stored refresh token is unreadable and the app routes to a full OIDC sign-in, **and the local diary survives**. ADR-0014 deliberately leaves `requireAuthentication` off the database key so that adding a fingerprint never costs the patient unsynced entries; the second half is the one that is easy to forget and expensive to get wrong.
 
@@ -113,7 +120,9 @@ Fail the sensor enough times to trigger the OS lockout, then check two things.
 
 **Pass:** (a) the device-credential path still opens the app; (b) **sign-out still purges** — the token is cleared and the database file is gone. `signOut()` guards its token read for exactly this state, because an unguarded read previously let a patient hand over a phone with the refresh token and the entire diary still on it while the UI reported a signed-out session. Lockout is the cheapest way to reach that state on real hardware.
 
-### HW-9 — iOS: how many prompts the patient actually sees
+### HW-9 — iOS: how many prompts the patient actually sees — OUT OF SCOPE (v1 is Android only)
+
+> Retained for the phase that reinstates iOS ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)). Nothing in v1 waits on it, and it must not be counted as open work.
 
 ADR-0015 records the create/read asymmetry as a polish regression nobody has watched, and `tokenStorage.ts`'s marker key exists because an earlier build showed the OS sheet before the app had rendered its own unlock affordance, and then prompted a second time.
 
@@ -121,19 +130,21 @@ Record what the patient sees, in order, at: first login, cold start, unlock, sig
 
 **Pass:** no sheet before the app has rendered, exactly one sheet at the cold-start unlock, and none when the token is stored at login.
 
-### HW-10 — iOS: the OS kills the app in the background with entries queued
+### HW-10 — Android: the OS kills the app in the background with entries queued
 
-`docs/testing.md` requires that queued data survives app restart and OS background termination. jetsam is not modelled by an emulator, and the simulator's approximation is not worth trusting.
+`docs/testing.md` requires that queued data survives app restart and OS background termination. An emulator with generous memory and no competing apps rarely reclaims anything, so it does not exercise this — which is the point of running it on a real handset under real memory pressure.
 
-Queue entries offline, background the app, force the OS to reclaim it, relaunch.
+Queue entries offline, background the app, then force the reclaim: `adb shell am kill org.ostomy.diary` for the deterministic case, and Developer options' **Don't keep activities** plus ordinary heavy app use for the realistic one. Run both — the first proves the store survives, the second proves the app comes back to the right place after the OS took it without warning. Relaunch.
 
 **Pass:** the lock gate appears rather than the previous screen, every queued entry is still present, and they push when connectivity returns.
+
+**A failure means** the patient loses entries they were told were saved, which is what `sync-contract.md` §9.5 exists to prevent.
 
 ## Recording a result
 
 A step is closed by a recorded run naming the handset, the OS version, the build, and the outcome — not by an argument that it ought to work. Add a row below, keep the failures, and open a fix rather than editing the step to match what happened.
 
-When every step is closed, CLAUDE.md's "none of the mobile device-side controls are verified on hardware" is the sentence to change, in the same commit.
+When every **in-scope** step is closed — HW-1, HW-2, HW-3, HW-6, HW-7, HW-8, HW-10 — CLAUDE.md's "none of the mobile device-side controls are verified on hardware" is the sentence to change, in the same commit. The out-of-scope iOS steps do not hold it open.
 
 | Step           | Device | OS  | Build | Date | Outcome |
 | -------------- | ------ | --- | ----- | ---- | ------- |

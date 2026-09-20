@@ -32,14 +32,13 @@ What is implemented (ADR-0014, ADR-0015):
 - **Android cloud backup is disabled** (`allowBackup: false`). Consumer iCloud and Google Drive backup can never be BAA-covered, so they must not receive PHI.
 - **Sessions re-lock** on return from background past a grace period, and on foreground idle.
 - **The refresh token is invalidated by the OS on biometric enrolment change** (`requireAuthentication`), and is device-bound so it cannot ride a backup onto another phone.
+- **Sign-out purges the local database, and warns with a count first** when entries are unsent. The warning closed the gap ADR-0014 recorded: purging unconditionally protected the next patient on a shared phone at the cost of the previous one's unsynced entries.
 
 Known gaps, recorded rather than implied to be closed:
 
-- **iOS backup exclusion is not implemented.** `expo-file-system@57` removed `setIsExcludedFromBackupAsync`, so the database still enters iCloud backup. The ciphertext is useless there because the key is `_THIS_DEVICE_ONLY` and does not migrate on restore, but the file itself still leaves the device. Needs an Expo config plugin.
-- **Sign-out destroys unsynced queued entries.** Warning the patient first needs UI that does not exist yet; it must land with the sync worker (P2.S2b).
-- **None of the device-side controls are verified on hardware.** jest runs no keychain and cannot simulate biometric enrolment invalidation.
+- **None of the device-side controls are verified on hardware.** jest runs no keychain and cannot simulate biometric enrolment invalidation, and the Android emulator has software KeyMint rather than secure hardware. `docs/gate-b-hardware-verification.md` holds the steps that would close this; none have been run. Tracked as issue #39.
 
-Apple iCloud Backup and Google Auto Backup belong on the BAA-review list as **must be disabled**, not as pending coverage — neither vendor will execute a BAA for consumer backup.
+Google Auto Backup belongs on the BAA-review list as **must be disabled**, not as pending coverage — no consumer-backup vendor will execute a BAA. Apple iCloud Backup leaves that list with the iOS platform ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)) and returns with it.
 
 ### Never log PHI
 

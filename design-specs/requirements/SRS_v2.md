@@ -1,4 +1,4 @@
-# Software Requirements Specification — Ostomy Patient Management Application (v2.5)
+# Software Requirements Specification — Ostomy Patient Management Application (v2.6)
 
 Prepared by: Steven E. Waldren, MD, MS
 Supersedes: `Ostomy_App_Specification_v1.pdf` (v1.0), which is retained only as a historical reference — this document is fully self-contained and does not require consulting the v1.0 PDF.
@@ -24,6 +24,10 @@ Status: all six discussion phases complete.
 
 - **AC 2.1 AC 2**'s prompt copy read "This is a high volume for a single entry. Please confirm this amount is correct." The second sentence made saving read as conditional on the amount being "correct," centring error language for what Section 3.8 identifies as "precisely the data point the care team most needs to see." Corrected to "This amount is higher than most entries. If it is right, save it. Your care team needs to see days like this." The warning remains soft and always-overridable; only the wording changed.
 
+**v2.6 scope change (2026-09-19).** No new phase. v1's mobile client targets **Android only**; iOS is deferred. Recorded in [ADR-0020](../decisions/0020-android-only-v1.md).
+
+- `apps/mobile` had never been built for iOS — no build path existed, and the device-side security controls that platform would run (the SQLCipher config plugin, the keychain accessibility class, `biometryCurrentSet` invalidation) had therefore never compiled, let alone been verified. A platform claim nothing tests is the failure mode [ADR-0014](../decisions/0014-local-phi-encryption-and-device-ownership.md) and [ADR-0015](../decisions/0015-biometric-local-access.md) exist to prevent. Sections 2 and 4.2 are corrected; iPhone users reach the product through the browser SPA, which is online-only and holds no PHI at rest, so what is deferred is offline capture rather than access. This is a platform deferral, not a feature deferral, and it is deliberately **not** listed in Appendix A alongside urostomy.
+
 Sections below are updated as each phase is completed. Sections not yet revisited are carried forward from v1.0 unchanged and marked as such.
 
 ---
@@ -36,7 +40,9 @@ This application is a dual-platform (Mobile & Web) patient-facing diary designed
 ## 2. Platforms & Accessibility
 *(carried forward from v1.0, unchanged — accessibility requirements are now formally specified in Section 5.4)*
 
-- **Cross-Platform Availability:** The application must be fully functional and accessible via a native/hybrid mobile application (iOS and Android) as well as a standard web browser.
+- **Cross-Platform Availability:** The application must be fully functional and accessible via a native/hybrid mobile application (**Android** in v1) as well as a standard web browser. The browser app is the route for patients on other platforms, including iOS.
+
+*Revised in v2.6 (see [ADR-0020](../decisions/0020-android-only-v1.md)). The original requirement read "iOS and Android". `apps/mobile` had never been built for iOS, so the offline store's encryption, the keychain accessibility class and biometric-enrolment invalidation had never run on that platform — controls whose failure is a PHI disclosure rather than a broken screen. iOS is deferred rather than dropped, and the iOS configuration is retained in `app.json` so reinstating the platform is a scope decision rather than an archaeology exercise.*
 - **Offline-First Architecture:** Because patients will track data on-the-go (e.g., in public restrooms or while traveling), the application must utilize a local database (e.g., SQLite or Realm) to allow continuous data entry and historical review without an active internet connection. Data will automatically synchronize with the central secure cloud server once connectivity is restored.
 
 ## 3. Core Features & Workflows (User Functionality)
@@ -245,7 +251,7 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 *(Phase 3 — approved 2026-09-04)*
 
 ### 4.1 System Overview
-- **Mobile app** (Expo/React Native, iOS + Android) — the primary offline-capable client. Writes to a local SQLite database first, then syncs to the backend when connectivity is available.
+- **Mobile app** (Expo/React Native, **Android** in v1 — iOS deferred, [ADR-0020](../decisions/0020-android-only-v1.md)) — the primary offline-capable client. Writes to a local SQLite database first, then syncs to the backend when connectivity is available.
 - **Web app** (React SPA) — online-only client (per Phase 3 scope decision); reads/writes go directly to the backend API, no local persistence layer beyond normal browser caching.
 - **Backend API** (Node.js/TypeScript) — the single system of record; exposes a versioned REST API consumed by both clients; owns authentication, business logic, FHIR-shaped data storage, and RxNorm lookups.
 - **PostgreSQL database** — system-of-record for all patient data, schema designed to map cleanly to FHIR resource fields (Section 4.4).
