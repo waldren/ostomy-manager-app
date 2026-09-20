@@ -1101,7 +1101,7 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
 
   describe('GET /api/v1/observations — listing', () => {
     /**
-     * P3.S2. This endpoint used to hardcode stoma output, which made Daily
+     * P3.S1b. This endpoint used to hardcode stoma output, which made Daily
      * Net Fluid Balance unobtainable from it by construction: the figure is
      * intake MINUS output, and a response carrying one side of a subtraction
      * cannot produce it. `apps/web` shipped an "unavailable" notice for

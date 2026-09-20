@@ -100,7 +100,7 @@ function todayIsoDate(): string {
  * The physician view (SRS §3.5): one patient-local day of stoma output, plus
  * Daily Net Fluid Balance.
  *
- * The balance is rendered rather than explained-away as of P3.S2. It needed
+ * The balance is rendered rather than explained-away as of P3.S1b. It needed
  * two things that did not exist when this page shipped: fluid intake logging
  * (P3.S1), and a `GET /api/v1/observations` that returns more than stoma
  * output — the figure is intake MINUS output, so a single-code response
