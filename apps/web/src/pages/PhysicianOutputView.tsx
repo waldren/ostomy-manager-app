@@ -32,6 +32,11 @@ import { UnitToggle } from '../components/UnitToggle.js';
 import {
   toDisplayDailyTotal,
   toDisplayOutputEntries,
+  observationsOnLocalDate,
+  isFluidBalanceIntake,
+  isFluidBalanceOutput,
+  toDisplayNetFluidBalance,
+  hasFluidBalanceInputs,
 } from '../format/formatObservationsForDisplay.js';
 
 type LoadState =
@@ -65,9 +70,25 @@ type LoadState =
  */
 const DAILY_PAGE_SIZE = 500;
 
-function dayBoundsUtc(isoDate: string): { from: string; to: string } {
+/**
+ * A window wide enough to contain the requested PATIENT-LOCAL day, whatever
+ * zone it was entered in (ADR-0016).
+ *
+ * A local day is not a UTC day. UTC+14 and UTC-12 both exist, so an entry
+ * filed under local `isoDate` can carry an instant anywhere from 10:00 the
+ * previous UTC day to 12:00 the following one. Asking for the UTC day alone
+ * — which this page used to do — silently drops a Chicago patient's whole
+ * evening from their total and files it under tomorrow.
+ *
+ * So the fetch is deliberately over-wide and `observationsOnLocalDate` does
+ * the exact selection. Over-fetching costs a larger response; under-fetching
+ * costs a wrong clinical figure with nothing on screen to suggest it.
+ */
+function localDayFetchWindowUtc(isoDate: string): { from: string; to: string } {
   const from = new Date(`${isoDate}T00:00:00.000Z`);
+  from.setUTCDate(from.getUTCDate() - 1);
   const to = new Date(`${isoDate}T23:59:59.999Z`);
+  to.setUTCDate(to.getUTCDate() + 1);
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
@@ -76,10 +97,21 @@ function todayIsoDate(): string {
 }
 
 /**
- * The physician view (SRS §3.5). This minimal slice covers stoma output
- * only — the first, and so far only, hydration signal available through
- * `GET /api/v1/observations` (P2.S1a). It deliberately does NOT compute a
- * Daily Net Fluid Balance figure: see `DailyBalanceNotice`.
+ * The physician view (SRS §3.5): one patient-local day of stoma output, plus
+ * Daily Net Fluid Balance.
+ *
+ * The balance is rendered rather than explained-away as of P3.S1b. It needed
+ * two things that did not exist when this page shipped: fluid intake logging
+ * (P3.S1), and a `GET /api/v1/observations` that returns more than stoma
+ * output — the figure is intake MINUS output, so a single-code response
+ * cannot produce it.
+ *
+ * **The day is the patient's local day** (ADR-0016), not a UTC one. The fetch
+ * window is deliberately wider than the day and `observationsOnLocalDate`
+ * makes the exact selection, because a local day can straddle two UTC days in
+ * either direction. Everything below — chart, table, total, balance — reads
+ * from that one selection, so they cannot disagree about which day they
+ * describe.
  *
  * This is emphatically not the patient dashboard (SRS §3.12): there is no
  * composite status here, and there will not be one even once the other
@@ -118,7 +150,7 @@ export function PhysicianOutputView() {
     const isStale = () => ticket !== requestTicket.current;
 
     setState({ status: 'loading' });
-    const { from, to } = dayBoundsUtc(isoDate);
+    const { from, to } = localDayFetchWindowUtc(isoDate);
 
     apiClient.observations
       .list({ effectiveDateTimeFrom: from, effectiveDateTimeTo: to, limit: DAILY_PAGE_SIZE })
@@ -173,9 +205,36 @@ export function PhysicianOutputView() {
   // Computed once. `toDisplayOutputEntries` was called twice per render —
   // once for the chart, once for the table — converting and sorting the
   // same day twice over.
-  const observations = state.status === 'loaded' ? state.observations : undefined;
+  const fetched = state.status === 'loaded' ? state.observations : undefined;
+
+  // The requested LOCAL day, selected from the deliberately over-wide fetch
+  // window. Everything below reads from this, so the chart, the table, the
+  // total and the balance cannot disagree about which day they describe.
+  const selection = useMemo(
+    () => (fetched ? observationsOnLocalDate(fetched, isoDate) : { onDate: [], undatable: 0 }),
+    [fetched, isoDate],
+  );
+  const observations = selection.onDate;
+
+  // The chart and table remain stoma output. `GET /api/v1/observations` now
+  // returns intake as well — which is what makes the balance computable —
+  // and rendering both in one undifferentiated timeline would present a
+  // drink and an emptying as the same kind of event.
+  const outputObservations = useMemo(
+    () => observations.filter(isFluidBalanceOutput),
+    [observations],
+  );
+
   const entries = useMemo(
-    () => (observations ? toDisplayOutputEntries(observations, targetSystem) : []),
+    () => toDisplayOutputEntries(outputObservations, targetSystem),
+    [outputObservations, targetSystem],
+  );
+
+  const balance = useMemo(
+    () =>
+      hasFluidBalanceInputs(observations)
+        ? toDisplayNetFluidBalance(observations, targetSystem)
+        : undefined,
     [observations, targetSystem],
   );
 
@@ -205,7 +264,11 @@ export function PhysicianOutputView() {
         <DateNav isoDate={isoDate} onChangeDate={setIsoDate} />
         <UnitToggle value={displaySystem} onChange={setDisplaySystem} />
 
-        <DailyBalanceNotice />
+        <DailyBalanceNotice
+          balance={balance}
+          hasIntake={observations.some(isFluidBalanceIntake)}
+          hasOutput={observations.some(isFluidBalanceOutput)}
+        />
 
         {/*
           ONE region, mounted for every state (WCAG 4.1.3).
@@ -223,7 +286,7 @@ export function PhysicianOutputView() {
           {state.status === 'loading' ? t('physicianView.loading') : null}
           {state.status === 'loaded'
             ? t('physicianView.loadedStatus', {
-                count: state.observations.length,
+                count: observations.length,
                 date: formatDateTime(new Date(`${isoDate}T00:00:00.000Z`), undefined, {
                   dateStyle: 'long',
                   timeStyle: undefined,
@@ -241,14 +304,24 @@ export function PhysicianOutputView() {
           </InlineNotice>
         ) : null}
 
-        {state.status === 'loaded' && state.observations.length === 0 ? (
+        {state.status === 'loaded' && observations.length === 0 ? (
           <InlineNotice variant="info" title={t('physicianView.emptyState.heading')}>
             <p>{t('physicianView.emptyState.body')}</p>
           </InlineNotice>
         ) : null}
 
-        {state.status === 'loaded' && state.observations.length > 0 ? (
+        {state.status === 'loaded' && observations.length > 0 ? (
           <>
+            {selection.undatable > 0 ? (
+              <InlineNotice
+                variant="warning"
+                icon={<NoticeIcon />}
+                title={t('physicianView.undatable.heading')}
+                live="polite"
+              >
+                <p>{t('physicianView.undatable.body', { count: selection.undatable })}</p>
+              </InlineNotice>
+            ) : null}
             {state.truncated ? (
               <InlineNotice
                 variant="warning"
@@ -263,7 +336,7 @@ export function PhysicianOutputView() {
             <h2>{t('physicianView.table.heading')}</h2>
             <OutputTable
               entries={entries}
-              total={toDisplayDailyTotal(state.observations, targetSystem)}
+              total={toDisplayDailyTotal(outputObservations, targetSystem)}
             />
           </>
         ) : null}

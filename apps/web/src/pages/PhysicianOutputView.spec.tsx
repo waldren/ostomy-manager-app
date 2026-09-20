@@ -67,11 +67,35 @@ function observation(overrides: Partial<Observation> = {}): Observation {
     status: 'final',
     code: '79560-9',
     valueQuantity: { value: 100, unit: 'mL' },
-    effectiveDateTime: '2026-09-07T02:00:00.000Z',
+    // On the day the page shows by default (today), because the page now
+    // genuinely selects by patient-local day (ADR-0016) rather than
+    // rendering whatever the response contained. A fixture pinned to a fixed
+    // past date is simply not on the viewed day and is correctly excluded —
+    // which is the behaviour under test elsewhere, not a property these
+    // tests want.
+    effectiveDateTime: `${new Date().toISOString().slice(0, 10)}T02:00:00.000Z`,
     method: null,
     enteredMeasurementSystem: 'metric',
+    // Required on the wire (§7.2) and load-bearing here since ADR-0016: the
+    // page files an entry under its PATIENT-LOCAL day, so a fixture without a
+    // zone belongs to no day and is excluded from every assertion below. UTC
+    // keeps the fixture instants and the local dates identical, so these
+    // tests stay about what they are about; the local-day selection has its
+    // own tests in `formatObservationsForDisplay.spec.ts`.
+    enteredTimezone: 'UTC',
     ...overrides,
   } as Observation;
+}
+
+/**
+ * An ISO date `days` from today, for a test that navigates away from the
+ * default day. The page selects by patient-local day (ADR-0016), so a fixture
+ * has to sit on the day the test is actually looking at.
+ */
+function isoDateOffset(days: number): string {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 /** A promise plus the handles to settle it, so a test controls arrival order. */
@@ -106,12 +130,27 @@ describe('PhysicianOutputView — request ordering', () => {
 
     // The SECOND request answers first, then the superseded first request
     // lands — the out-of-order arrival that produced the bug.
-    second.resolve({ observations: [observation({ valueQuantity: { value: 222, unit: 'mL' } })] });
+    // Dated to the day the test navigated TO, not today.
+    second.resolve({
+      observations: [
+        observation({
+          valueQuantity: { value: 222, unit: 'mL' },
+          effectiveDateTime: `${isoDateOffset(-1)}T02:00:00.000Z`,
+        }),
+      ],
+    });
     // Plural: the value legitimately appears in the table, the chart's
     // visually-hidden list, and the daily total.
     await screen.findAllByText(/222/);
 
-    first.resolve({ observations: [observation({ valueQuantity: { value: 999, unit: 'mL' } })] });
+    first.resolve({
+      observations: [
+        observation({
+          valueQuantity: { value: 999, unit: 'mL' },
+          effectiveDateTime: `${isoDateOffset(-1)}T02:00:00.000Z`,
+        }),
+      ],
+    });
 
     // The stale value must never appear. `findByText` would pass on a
     // transient render, so assert its continued absence after a flush.

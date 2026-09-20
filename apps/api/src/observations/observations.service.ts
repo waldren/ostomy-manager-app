@@ -79,7 +79,7 @@ import {
 import type { ObservationListQuery } from './observation-query.pipe';
 import {
   OBSERVATION_FIELD,
-  STOMA_OUTPUT_LOINC_CODE,
+  ACCEPTED_OBSERVATION_CODES,
   type ObservationRequestParsed,
   type ObservationResource,
 } from './observation-wire';
@@ -261,7 +261,22 @@ export class ObservationsService {
     const rows = await this.prisma.observation.findMany({
       where: {
         patientId: patient.patientId,
-        code: STOMA_OUTPUT_LOINC_CODE,
+        // Every code this release accepts, unless the caller narrowed it.
+        //
+        // This used to be hardcoded to stoma output, which made Daily Net
+        // Fluid Balance unobtainable from this endpoint by construction: the
+        // figure is intake MINUS output (SRS §3.5), and a response that can
+        // only ever carry one side of a subtraction cannot produce it. That
+        // is why `apps/web` shipped an "unavailable" notice where the number
+        // belongs.
+        //
+        // Restricted to the accepted set rather than dropped entirely: a
+        // caller rendering these as volumetric entries must not silently
+        // start receiving a weight row the day P5 lands. A client still may
+        // not assume homogeneity — `code` is on every resource and is what
+        // says which kind each one is.
+        code:
+          query.code === undefined ? { in: Object.keys(ACCEPTED_OBSERVATION_CODES) } : query.code,
         // Tombstones are never returned by a read path (ADR-0001).
         deletedAt: null,
         ...(query.effectiveDateTimeFrom || query.effectiveDateTimeTo

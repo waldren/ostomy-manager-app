@@ -63,6 +63,7 @@ import {
 export const OBSERVATION_QUERY_FIELD = {
   EFFECTIVE_DATE_TIME_FROM: 'effectiveDateTimeFrom',
   EFFECTIVE_DATE_TIME_TO: 'effectiveDateTimeTo',
+  CODE: 'code',
   LIMIT: 'limit',
 } as const;
 
