@@ -22,7 +22,7 @@ See `apps/api/README.md`.
 
 **The generated API client cannot express the sync contract's discriminated unions** — OpenAPI flattens them, so `@ostomy/core/api-client`'s `SyncOperationResult` has every union member optional. `apps/mobile/src/sync/responseDecoding.ts` is the decode boundary that restores the invariants; never consume those generated sync types directly.
 
-**None of the mobile device-side controls are verified on hardware.** jest runs no keychain and cannot simulate biometric enrolment invalidation, so a green `pnpm verify` proves nothing about them. The same caveat covers the entry screen's rendering: the logic is unit-tested, but nothing in CI runs it on a device or a simulator.
+**None of the mobile device-side controls are verified on hardware.** jest runs no keychain and cannot simulate biometric enrolment invalidation, so a green `pnpm verify` proves nothing about them. The same caveat covers the entry screen's rendering: the logic is unit-tested, but nothing in CI runs it on a device or a simulator. `docs/gate-b-hardware-verification.md` enumerates the steps that would close this (HW-1 to HW-10) and records which have been run — none yet. An emulator pass never closes one, so do not edit this sentence on the strength of one.
 
 `packages/ui` (P2.S3) holds the shared accessible primitives and design tokens both SPAs build on. Its tokens are asserted against `styles.css` by a completeness test, and its contrast ratios are computed rather than claimed — every hand-written ratio in the first version was wrong, all understated.
 

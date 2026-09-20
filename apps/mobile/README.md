@@ -146,6 +146,21 @@ except when it produces something to correct.
   `EFFECTIVE_DATE_TIME_BEFORE_SURGERY` is enforced server-side only. It lands
   here at P4.S1 when onboarding captures the date.
 
+## What the test suite cannot prove about this app
+
+jest runs no keychain, cannot simulate a biometric enrolment change, and has
+no backup transport, so the device-side controls this app carries —
+ADR-0014's SQLCipher store and device binding, ADR-0015's
+`requireAuthentication` invalidation and Class 3 requirement — are unproven
+by a green `pnpm test`. The emulator harness
+(`.claude/skills/android-emulator/SKILL.md`) exercises their logic and not
+the hardware guarantees underneath.
+
+`docs/gate-b-hardware-verification.md` is the standing list of what closes
+that gap: HW-1 to HW-10, each with its procedure, its pass condition, and
+what its failure would mean. None have been run. Do not describe any of
+these controls as verified until a step there is closed with a recorded run.
+
 ## What this app must never do
 
 See `docs/sync-contract.md` §9 in full. The two most load-bearing for this
