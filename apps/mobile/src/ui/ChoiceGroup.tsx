@@ -39,6 +39,17 @@ export interface Choice<TValue extends string> {
   readonly value: TValue;
   readonly label: string;
   readonly hint?: string | undefined;
+  /**
+   * An optional colour swatch rendered beside the label — today, a step of
+   * the urine colour scale (SRS §3.7, AC 12.1 AC3).
+   *
+   * **Decorative, always.** It is hidden from assistive technology and the
+   * `label` carries the whole meaning, so a patient who cannot distinguish
+   * the colours reads exactly the same scale. That is the rule SRS §5.4
+   * states and this prop is shaped to make hard to break: there is no way
+   * to supply a swatch INSTEAD of a label, because `label` is required.
+   */
+  readonly swatchColor?: string | undefined;
 }
 
 export interface ChoiceGroupProps<TValue extends string> {
@@ -54,6 +65,15 @@ export interface ChoiceGroupProps<TValue extends string> {
    */
   readonly value: TValue | undefined;
   readonly onChange: (next: TValue) => void;
+  /**
+   * A line under the group's label, for something the label cannot carry
+   * without becoming a paragraph — "colour on its own is a useful entry",
+   * say. Visible text, and referenced by `aria-describedby` so a screen
+   * reader reaches it from the group rather than only when tabbing past it.
+   *
+   * Distinct from a `Choice`'s own `hint`, which describes ONE option.
+   */
+  readonly hint?: string | undefined;
   readonly errorMessage?: string | undefined;
 }
 
@@ -75,9 +95,11 @@ export function ChoiceGroup<TValue extends string>({
   choices,
   value,
   onChange,
+  hint,
   errorMessage,
 }: ChoiceGroupProps<TValue>) {
   const labelId = useId();
+  const hintId = useId();
   const errorId = useId();
   const invalid = errorMessage !== undefined;
 
@@ -86,11 +108,18 @@ export function ChoiceGroup<TValue extends string>({
       <Text nativeID={labelId} style={styles.label}>
         {label}
       </Text>
+      {hint === undefined ? null : (
+        <Text nativeID={hintId} style={styles.hint}>
+          {hint}
+        </Text>
+      )}
 
       <View
         role="radiogroup"
         accessibilityLabel={label}
         aria-labelledby={labelId}
+        aria-describedby={hint === undefined ? undefined : hintId}
+        accessibilityHint={hint}
         aria-invalid={invalid}
         aria-errormessage={invalid ? errorId : undefined}
         style={styles.options}
@@ -114,6 +143,19 @@ export function ChoiceGroup<TValue extends string>({
                   {SELECTED_MARK}
                 </Text>
               ) : null}
+              {choice.swatchColor === undefined ? null : (
+                // `accessible={false}` and no label: a screen reader
+                // announces the text only, which is what keeps colour from
+                // being a second, unequal carrier of the same meaning.
+                // Bordered so a very pale swatch is still visible against
+                // the surface — a 1.4.11 concern for the shape, not the
+                // colour it contains.
+                <View
+                  accessible={false}
+                  importantForAccessibility="no"
+                  style={[styles.swatch, { backgroundColor: choice.swatchColor }]}
+                />
+              )}
               <Text style={[styles.optionLabel, selected ? styles.optionLabelSelected : undefined]}>
                 {choice.label}
               </Text>
@@ -138,10 +180,25 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: tokens.color.text,
   },
+  // Full body size, not a smaller "caption" — this population skews older
+  // and post-surgical (CLAUDE.md), and a hint nobody can read is not a hint.
+  // Matches `NumericField`'s.
+  hint: {
+    fontSize: tokens.typography.baseFontSizePx,
+    lineHeight: tokens.typography.baseFontSizePx * tokens.typography.lineHeight,
+    color: tokens.color.textMuted,
+  },
   // Wraps rather than forcing two options onto one line: at a large OS text
   // size two side-by-side labels truncate, and a truncated "Estimated"
   // is a clinical distinction the patient can no longer read.
   options: { flexDirection: 'row', flexWrap: 'wrap', gap: tokens.spacing.sm },
+  swatch: {
+    width: tokens.spacing.md,
+    height: tokens.spacing.md,
+    borderRadius: tokens.radius.sm,
+    borderWidth: 1,
+    borderColor: tokens.color.border,
+  },
   option: {
     flexDirection: 'row',
     gap: tokens.spacing.xs,

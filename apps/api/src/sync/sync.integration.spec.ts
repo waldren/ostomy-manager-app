@@ -93,6 +93,8 @@ const AUDIENCE = 'ostomy-patient-app';
 const SOFT_WARNING_ML = 2000;
 const CLOCK_SKEW_SECONDS = 300;
 const STOMA_OUTPUT_CODE = '79560-9';
+const FLUID_INTAKE_CODE = '9000-1';
+const VOIDED_URINE_CODE = '9187-6';
 
 interface SeededPatient {
   readonly patientId: string;
@@ -321,6 +323,116 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
    * tombstones, audit obligations and the delta cursor. A meal that resolved
    * conflicts differently would make §4 mean two things.
    */
+  /**
+   * §7.2's two app-native coded fields, round-tripped through push and
+   * delta against real PostgreSQL.
+   *
+   * This block exists because both were MISSING from BOTH ends of the sync
+   * path: the push never wrote them to the row, and the delta never put them
+   * on the wire. `fluidTypeCode` had been absent since P3.S1, so every intake
+   * entry a patient logged OFFLINE lost its categorisation while the same
+   * payload through `POST /api/v1/observations` kept it.
+   *
+   * Naming each payload field explicitly is the right discipline (see
+   * `sync-delta.service.ts`), and its cost is exactly this: both fields are
+   * optional on the payload type, so leaving one out typechecks cleanly and
+   * nothing failed. Two write paths for one contract need a test that
+   * compares them, which is what these are.
+   *
+   * For a colour-only urine entry the loss was total — the colour is the only
+   * clinical content on the row, so the push threw on the database CHECK and
+   * returned a 500, which §9 tells a client to re-push indefinitely.
+   */
+  describe('§7.2 — the coded fields survive a delta pull', () => {
+    // Its own patient, for the two reasons the Meal block below spells out:
+    // the push rate limit is keyed on the patient, and these assertions pull
+    // `since=0`, so a shared patient would have them reading every row other
+    // tests had written.
+    let codedPatient: SeededPatient;
+
+    beforeAll(async () => {
+      codedPatient = await seedPatient();
+    });
+
+    function deltaPayloadFor(
+      body: { changes: Array<{ entityId: string; payload?: unknown }> },
+      entityId: string,
+    ) {
+      return body.changes.find((candidate) => candidate.entityId === entityId)?.payload as
+        Record<string, unknown> | undefined;
+    }
+
+    /** AC 12.1 AC2 — the entry that carries nothing else. */
+    it('carries the urine colour, and no volume, for a colour-only entry', async () => {
+      const op = createOp();
+      const body = payload({ id: op.entityId, code: VOIDED_URINE_CODE, urineColorCode: 'amber' });
+      delete body.valueQuantity;
+      delete body.method;
+      expect((await push(codedPatient, [{ ...op, payload: body }])).status).toBe(200);
+
+      const response = await delta(codedPatient, { since: '0', limit: '500' });
+      const change = deltaPayloadFor(response.body, op.entityId as string);
+
+      expect(change?.urineColorCode).toBe('amber');
+      // Omitted, never `{ value: null }` and never `{ value: 0 }` — a
+      // consumer coercing one to the other produces a wrong daily total and
+      // raises nothing.
+      expect(change === undefined ? true : 'valueQuantity' in change).toBe(false);
+    });
+
+    it('carries both the volume and the colour when an entry has both', async () => {
+      const op = createOp();
+      const body = payload({
+        id: op.entityId,
+        code: VOIDED_URINE_CODE,
+        valueQuantity: { value: 275, unit: 'mL' },
+        method: '258104002',
+        urineColorCode: 'straw',
+      });
+      expect((await push(codedPatient, [{ ...op, payload: body }])).status).toBe(200);
+
+      const response = await delta(codedPatient, { since: '0', limit: '500' });
+
+      expect(deltaPayloadFor(response.body, op.entityId as string)).toMatchObject({
+        valueQuantity: { value: 275, unit: 'mL' },
+        urineColorCode: 'straw',
+      });
+    });
+
+    /** P3.S1 (AC 2.3 AC1). The field that had been silently dropped for two sprints. */
+    it('carries the fluid categorisation on an intake entry', async () => {
+      const op = createOp();
+      const body = payload({
+        id: op.entityId,
+        code: FLUID_INTAKE_CODE,
+        fluidTypeCode: 'water',
+      });
+      expect((await push(codedPatient, [{ ...op, payload: body }])).status).toBe(200);
+
+      const response = await delta(codedPatient, { since: '0', limit: '500' });
+
+      expect(deltaPayloadFor(response.body, op.entityId as string)?.fluidTypeCode).toBe('water');
+    });
+
+    /**
+     * The two follow OPPOSITE §7.2 conventions on purpose:
+     * `fluidTypeCode` is always present so a reader can tell "the patient
+     * did not categorise" from "this client does not implement the field",
+     * while `urineColorCode` is plain optional.
+     */
+    it('keeps fluidTypeCode present-and-null while omitting an absent urine colour', async () => {
+      const op = createOp();
+      expect((await push(codedPatient, [op])).status).toBe(200);
+
+      const response = await delta(codedPatient, { since: '0', limit: '500' });
+      const change = deltaPayloadFor(response.body, op.entityId as string);
+
+      expect(change === undefined ? false : 'fluidTypeCode' in change).toBe(true);
+      expect(change?.fluidTypeCode).toBeNull();
+      expect(change === undefined ? true : 'urineColorCode' in change).toBe(false);
+    });
+  });
+
   describe('§7.4 — Meal, the first app-native synced entity', () => {
     /**
      * Its OWN patient, for two reasons that both bit before it had one.

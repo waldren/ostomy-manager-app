@@ -26,17 +26,22 @@ import { useAuth } from '../src/auth/AuthContext';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { discardRejectedCreate, reenqueueCorrectedObservation } from '../src/db/offlineWrites';
 import { getObservationById } from '../src/db/repositories/observationsRepository';
+import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
 import { listRejectedOperations } from '../src/db/repositories/syncQueueRepository';
 import { readThresholds, type CachedThresholds } from '../src/db/repositories/thresholdsRepository';
 import type { LocalObservation, SyncQueueEntry } from '../src/db/types';
 import { validationErrorKeyFor } from '../src/entry/rejectionCopy';
+import { UrineColorChoice } from '../src/entry/UrineColorChoice';
 import {
   amountError,
   checkEntry,
   methodError,
+  methodFromStoredCode,
   toCanonicalValueString,
   type EntryCheck,
 } from '../src/entry/useStomaOutputEntry';
+import { useValueSetOptions } from '../src/entry/useValueSetOptions';
+import { checkUrineEntry } from '../src/entry/useVoidedUrineEntry';
 import {
   DEFAULT_MEASUREMENT_SYSTEM,
   unitsForMeasurementSystem,
@@ -67,6 +72,15 @@ import { Screen } from '../src/ui/Screen';
  * the rejected one in one transaction. See that function for why the
  * operation *type* is preserved.
  *
+ * ## An entry with no amount is edited as what it is
+ *
+ * A colour-only voided-urine entry (P3.S2, AC 12.1 AC2) has no amount and no
+ * Measured/Estimated answer, so the editor shows the colour scale instead of
+ * the amount field for it. Showing the amount field would ask the patient to
+ * fix a number they deliberately did not enter, and reading `null` as an
+ * empty string into that field would turn a correction into a blocked save on
+ * a rule the entry was never subject to.
+ *
  * ## What is never rendered
  *
  * The reason code itself. §6.4: Tier 1 codes resolve to the same
@@ -93,10 +107,12 @@ export default function Corrections(): React.JSX.Element {
   const [editing, setEditing] = useState<string | undefined>(undefined);
   const [amountText, setAmountText] = useState('');
   const [method, setMethod] = useState<MeasuredOrEstimated | undefined>(undefined);
+  const [urineColorCode, setUrineColorCode] = useState<string | undefined>(undefined);
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
 
   const measurementSystem = DEFAULT_MEASUREMENT_SYSTEM;
   const units = unitsForMeasurementSystem(measurementSystem);
+  const colors = useValueSetOptions(VALUE_SET_KEY.URINE_COLOR);
 
   const load = useCallback(async () => {
     if (database.status !== 'ready') return;
@@ -120,8 +136,16 @@ export default function Corrections(): React.JSX.Element {
 
   const beginEdit = useCallback((entry: RejectedEntry) => {
     setEditing(entry.operation.operationId);
-    setAmountText(entry.observation.valueQuantityValue);
-    setMethod(entry.observation.method === null ? 'measured' : 'estimated');
+    // Empty only when the row genuinely has no amount — a colour-only urine
+    // entry. Every other row has one, and the editor renders the field for it.
+    setAmountText(entry.observation.valueQuantityValue ?? '');
+    // Decoded from the stored qualifier, not inferred from whether it is null.
+    // This used to read `method === null ? 'measured' : 'estimated'`, which
+    // since ADR-0018's amendment relabels every MEASURED entry as Estimated
+    // the moment a patient opens it to fix something else — a silent change to
+    // a clinical claim about how the number was arrived at.
+    setMethod(methodFromStoredCode(entry.observation.method));
+    setUrineColorCode(entry.observation.urineColorCode ?? undefined);
     setCheck(undefined);
   }, []);
 
@@ -129,23 +153,39 @@ export default function Corrections(): React.JSX.Element {
     async (entry: RejectedEntry, confirmedWarning: boolean) => {
       if (database.status !== 'ready' || cached == null) return;
 
-      const outcome = checkEntry({
-        draft: {
-          amountText,
-          method,
-          effectiveDateTime: new Date(entry.observation.effectiveDatetime),
-        },
-        measurementSystem,
-        thresholds: cached.thresholds,
-        surgeryDate: null,
-        now: clockNow(),
-      });
+      const effectiveDateTime = new Date(entry.observation.effectiveDatetime);
+      // Which engine follows from what the ENTRY is, not from what the form
+      // currently holds: a colour-only urine entry stays colour-only through a
+      // correction, so it keeps the volume-less rule set. `checkUrineEntry`
+      // picks between the two the same way the Add Urine screen does, rather
+      // than this screen re-deriving which rules stop applying.
+      const volumeless = entry.observation.valueQuantityValue === null;
+      const outcome = volumeless
+        ? checkUrineEntry({
+            draft: { amountText: '', method, urineColorCode, effectiveDateTime },
+            measurementSystem,
+            thresholds: cached.thresholds,
+            surgeryDate: null,
+            now: clockNow(),
+          })
+        : checkEntry({
+            draft: { amountText, method, effectiveDateTime },
+            measurementSystem,
+            thresholds: cached.thresholds,
+            surgeryDate: null,
+            now: clockNow(),
+          });
       setCheck(outcome);
       if (outcome.kind === 'blocked' || outcome.kind === 'estimated-unavailable') return;
       if (outcome.kind === 'needs-confirmation' && !confirmedWarning) return;
 
-      const canonical = toCanonicalValueString(amountText, measurementSystem);
-      if (canonical === undefined || method === undefined) return;
+      // A colour-only entry still has to record something. Guarded here as
+      // well as in the render, because this is the branch that decides whether
+      // a row with no clinical value at all goes back on the queue.
+      if (volumeless && urineColorCode === undefined) return;
+
+      const canonical = volumeless ? null : toCanonicalValueString(amountText, measurementSystem);
+      if (!volumeless && (canonical === undefined || method === undefined)) return;
 
       await reenqueueCorrectedObservation(
         database.executor,
@@ -156,11 +196,18 @@ export default function Corrections(): React.JSX.Element {
           // create; see `reenqueueCorrectedObservation`.
           rejectedOperationType: entry.operation.operationType === 'update' ? 'update' : 'create',
           code: entry.observation.code,
-          valueQuantityValue: canonical,
-          valueQuantityUnit: entry.observation.valueQuantityUnit,
+          valueQuantityValue: canonical ?? null,
+          // The unit travels with the value in both directions — null when
+          // there is no amount, which the local
+          // `observations_volume_with_unit` CHECK also requires.
+          valueQuantityUnit: volumeless ? null : entry.observation.valueQuantityUnit,
           effectiveDatetime: entry.observation.effectiveDatetime,
-          measuredOrEstimated: method,
+          // `null` with no amount: nothing for Measured/Estimated to describe
+          // (ADR-0018 amended), and `validateVolumelessObservation` rejects a
+          // qualifier there.
+          measuredOrEstimated: volumeless ? null : (method ?? null),
           enteredMeasurementSystem: entry.observation.enteredMeasurementSystem,
+          urineColorCode: urineColorCode ?? null,
         },
         clockNow,
       );
@@ -169,7 +216,7 @@ export default function Corrections(): React.JSX.Element {
       requestSync();
       await load();
     },
-    [amountText, method, database, cached, measurementSystem, requestSync, load],
+    [amountText, method, urineColorCode, database, cached, measurementSystem, requestSync, load],
   );
 
   const discard = useCallback(
@@ -222,27 +269,43 @@ export default function Corrections(): React.JSX.Element {
 
                 {isEditing ? (
                   <>
-                    <NumericField
-                      label={t('common:entry.stomaOutputAmountLabel')}
-                      value={amountText}
-                      onChangeText={setAmountText}
-                      unitLabel={units.volumeUnit}
-                      errorMessage={
-                        amountRule === undefined ? undefined : t(`validationErrors:${amountRule}`)
-                      }
-                    />
-                    <ChoiceGroup<MeasuredOrEstimated>
-                      label={t('common:entry.methodLabel')}
-                      value={method}
-                      onChange={setMethod}
-                      choices={[
-                        { value: 'measured', label: t('common:method.measured') },
-                        { value: 'estimated', label: t('common:method.estimated') },
-                      ]}
-                      errorMessage={
-                        methodRule === undefined ? undefined : t(`validationErrors:${methodRule}`)
-                      }
-                    />
+                    {/* A colour-only urine entry has no amount and no toggle;
+                        it is corrected by changing the colour. */}
+                    {entry.observation.valueQuantityValue === null ? (
+                      <UrineColorChoice
+                        options={colors}
+                        value={urineColorCode}
+                        onChange={setUrineColorCode}
+                      />
+                    ) : (
+                      <>
+                        <NumericField
+                          label={t('common:entry.stomaOutputAmountLabel')}
+                          value={amountText}
+                          onChangeText={setAmountText}
+                          unitLabel={units.volumeUnit}
+                          errorMessage={
+                            amountRule === undefined
+                              ? undefined
+                              : t(`validationErrors:${amountRule}`)
+                          }
+                        />
+                        <ChoiceGroup<MeasuredOrEstimated>
+                          label={t('common:entry.methodLabel')}
+                          value={method}
+                          onChange={setMethod}
+                          choices={[
+                            { value: 'measured', label: t('common:method.measured') },
+                            { value: 'estimated', label: t('common:method.estimated') },
+                          ]}
+                          errorMessage={
+                            methodRule === undefined
+                              ? undefined
+                              : t(`validationErrors:${methodRule}`)
+                          }
+                        />
+                      </>
+                    )}
                     {check?.kind === 'estimated-unavailable' ? (
                       <BodyText tone="error">{t('common:entry.estimatedUnavailableBody')}</BodyText>
                     ) : null}
@@ -251,6 +314,13 @@ export default function Corrections(): React.JSX.Element {
                         check?.kind === 'needs-confirmation'
                           ? t('common:entry.warningConfirmButton')
                           : t('common:entry.saveButton')
+                      }
+                      // A colour-only entry with its colour cleared records
+                      // nothing, and the server refuses it. Same affordance as
+                      // the Add Urine screen, not a Tier 1 rule invented here.
+                      disabled={
+                        entry.observation.valueQuantityValue === null &&
+                        urineColorCode === undefined
                       }
                       onPress={() => {
                         void saveCorrection(entry, check?.kind === 'needs-confirmation');

@@ -395,6 +395,31 @@ function toObservationChange(row: Observation): SyncDeltaChange {
       method: resource.method,
       enteredMeasurementSystem: resource.enteredMeasurementSystem,
       enteredTimezone: resource.enteredTimezone,
+      // Both app-native coded fields, and both were MISSING here.
+      //
+      // Naming fields explicitly is the right discipline (see above) and its
+      // cost is exactly this: a field added to the payload type is optional,
+      // so leaving it out of this literal typechecks cleanly and ships a
+      // delta that silently drops it. `fluidTypeCode` had been absent since
+      // P3.S1, so a device rebuilding its store from a delta pull lost every
+      // intake categorisation it had. For a colour-only urine entry the loss
+      // is total: the colour is the only clinical content on the row.
+      //
+      // §7.2's own conventions, kept: `fluidTypeCode` is always present and
+      // `null` when there is none; `urineColorCode` is omitted when there is
+      // none, never `null`.
+      //
+      // The `?? null` and the null check are not defensive padding: the API's
+      // own resource schema types both fields as nullable AND optional (it has
+      // to parse what an older client sends), while `packages/core`'s payload
+      // types `fluidTypeCode` as always-present-possibly-null and
+      // `urineColorCode` as plain optional with no null. These two lines are
+      // where those two shapes are reconciled, and `toObservationResource`
+      // never actually produces `undefined` for either.
+      fluidTypeCode: resource.fluidTypeCode ?? null,
+      ...(resource.urineColorCode === undefined || resource.urineColorCode === null
+        ? {}
+        : { urineColorCode: resource.urineColorCode }),
     },
   });
 }

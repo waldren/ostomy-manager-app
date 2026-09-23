@@ -45,6 +45,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * no headroom when it has 6.56:1.
  */
 export const tokens = {
+  /**
+   * Swatches for the pale-to-dark urine colour scale (SRS §3.7, AC 12.1).
+   *
+   * **CONTENT colours, not UI colours.** They depict a real-world
+   * appearance rather than expressing state, so the contrast ratios
+   * documented on `color` below do not apply and are not claimed for them.
+   *
+   * They are always DECORATIVE. Every step of the scale carries a visible
+   * text label, and the swatch is hidden from assistive technology, so
+   * colour is never the sole carrier of meaning (AC 12.1 AC3, SRS §5.4).
+   * A patient who cannot distinguish these still reads the same scale.
+   *
+   * Keyed by `urine_color` value-set member code. A member an admin adds
+   * later has no swatch here and renders without one rather than with a
+   * wrong one.
+   */
+  urineColorSwatch: {
+    pale_straw: '#f8f4d2',
+    straw: '#f5eba8',
+    yellow: '#f2de6a',
+    dark_yellow: '#e8c63e',
+    amber: '#d79a2b',
+    brown: '#9c6318',
+  },
+
   color: {
     /** Primary interactive color (buttons, links). 8.70:1 on white, 8.03:1 on `surface`. */
     primary: '#0a4c8a',

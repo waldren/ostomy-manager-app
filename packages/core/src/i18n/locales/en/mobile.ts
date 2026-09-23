@@ -90,6 +90,10 @@ export const mobile = {
   'home.pendingCountNone': 'Everything is saved and sent.',
   'home.addOutputButton': 'Add a stoma entry',
   'home.addIntakeButton': 'Add a drink',
+  // Reads as an ACTION, not a body function: "Add a urine entry" is what the
+  // patient is doing, and it matches the screen's own heading so the button and
+  // the page they land on agree.
+  'home.addUrineButton': 'Add a urine entry',
   'home.addMealButton': 'Add a meal',
   'home.correctionsButton': 'Entries that need attention',
   'home.correctionsCount_one': '1 entry needs your attention.',

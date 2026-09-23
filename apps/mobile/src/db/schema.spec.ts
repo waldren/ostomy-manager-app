@@ -110,6 +110,7 @@ describe('local schema — applies and survives a close/reopen cycle', () => {
           enteredTimezone: 'America/Chicago',
           localDate: '2026-09-11',
           fluidTypeCode: null,
+          urineColorCode: null,
           clientUpdatedAt: '2026-09-11T22:04:11.412Z',
         },
         '2026-09-11T22:04:11.412Z',

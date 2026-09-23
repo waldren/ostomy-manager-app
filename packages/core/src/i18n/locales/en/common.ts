@@ -107,6 +107,36 @@ export const common = {
   'fluidType.soup_or_broth': 'Soup or broth',
   'fluidType.other': 'Something else',
 
+  // --- Voided urine (P3.S2, SRS §3.7, AC 12.1) --------------------------
+  'entry.urineHeading': 'Add a urine entry',
+  // AC 12.1 AC2 is the whole feature: a patient who cannot measure must
+  // still be able to record something. The label says the amount is optional
+  // BEFORE the field rather than after a rejected save, so nobody abandons
+  // the entry believing they cannot make one.
+  'entry.urineAmountLabel': 'How much did you pass? (optional)',
+  'entry.urineAmountHint':
+    'Leave this blank if you did not measure it. You can pick a colour instead.',
+  // AC 12.1 AC3. "Optional" again, for the same reason — with the amount
+  // also optional, a patient must be able to see that ONE of the two is
+  // enough, which the hint below says outright.
+  'entry.urineColorLabel': 'What colour was it? (optional)',
+  'entry.urineColorHint':
+    'Pick the closest match. Colour on its own is a useful entry, even with no amount.',
+  // The pale-to-dark urine colour scale (AC 12.1 AC3). Each step is named in
+  // words, because the swatch beside it is decorative and hidden from
+  // assistive technology — the words ARE the scale, and a screen-reader user
+  // gets exactly the distinctions a sighted one does.
+  'urineColor.pale_straw': 'Almost clear',
+  'urineColor.straw': 'Pale yellow',
+  'urineColor.yellow': 'Yellow',
+  'urineColor.dark_yellow': 'Dark yellow',
+  'urineColor.amber': 'Amber',
+  'urineColor.brown': 'Brown or darker',
+  // Shown in place of Save until the entry records something. States the
+  // condition rather than scolding: an entry with neither an amount nor a
+  // colour records nothing at all, and the server refuses it.
+  'entry.urineNothingToSave': 'Add an amount or pick a colour, and this entry can be saved.',
+
   // --- Meals (P3.S1, SRS AC 2.4) ----------------------------------------
   'entry.mealHeading': 'Add a meal',
   'entry.mealDescriptionLabel': 'What did you eat? (optional)',

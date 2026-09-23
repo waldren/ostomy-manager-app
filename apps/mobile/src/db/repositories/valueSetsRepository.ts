@@ -137,4 +137,5 @@ export const VALUE_SET_KEY = {
   FLUID_TYPE: 'fluid_type',
   CONTAINER_SIZE: 'container_size',
   MEAL_TAG: 'meal_tag',
+  URINE_COLOR: 'urine_color',
 } as const;

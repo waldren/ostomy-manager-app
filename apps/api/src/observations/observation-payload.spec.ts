@@ -30,7 +30,7 @@ import {
   toWarnings,
 } from './observation-payload';
 import { ObservationRejectedException } from './observation-rejection';
-import type { ObservationRequestParsed } from './observation-wire';
+import { observationResourceSchema, type ObservationRequestParsed } from './observation-wire';
 
 function payload(overrides: Partial<ObservationRequestParsed> = {}): ObservationRequestParsed {
   return {
@@ -393,6 +393,72 @@ describe('toObservationResource — a stored row, as §7.2 spells it', () => {
     expect(
       toObservationResource(storedRow({ status: ObservationStatus.ENTERED_IN_ERROR })).status,
     ).toBe('entered-in-error');
+  });
+});
+
+/**
+ * The builder against the published schema.
+ *
+ * `observation-wire.spec.ts` asserts that the SCHEMA declares exactly the
+ * fields §7.2 names, which is a different claim from "the builder emits
+ * them" — and the gap between the two is not hypothetical: `urineColorCode`
+ * was in the schema, in the parser, in the database and in the audit
+ * snapshot, and `toObservationResource` never wrote it. Every unit test
+ * passed, because `toEqual` ignores a key whose value is `undefined` and the
+ * fixture never set the column.
+ *
+ * So this compares key SETS, on a row where every optional column is
+ * populated. A field added to §7.2 and forgotten here now fails.
+ */
+describe('toObservationResource emits every field the published schema declares', () => {
+  it('matches the schema key for key on a fully populated row', () => {
+    const resource = toObservationResource(
+      storedRow({
+        code: '9187-6',
+        fluidTypeCode: 'water',
+        urineColorCode: 'amber',
+      } as unknown as Partial<Observation>),
+    );
+
+    expect(Object.keys(resource).sort()).toEqual(
+      Object.keys(observationResourceSchema.shape).sort(),
+    );
+  });
+
+  /**
+   * AC 12.1 AC2. On a colour-only entry the colour is the only clinical
+   * content the row carries, so a response that drops it describes an
+   * observation that recorded nothing.
+   */
+  it('publishes the urine colour, and omits the volume it does not have', () => {
+    const resource = toObservationResource(
+      storedRow({
+        code: '9187-6',
+        valueQuantityValue: null,
+        valueQuantityUnit: null,
+        urineColorCode: 'amber',
+      } as unknown as Partial<Observation>),
+    ) as Record<string, unknown>;
+
+    expect(resource.urineColorCode).toBe('amber');
+    expect('valueQuantity' in resource).toBe(false);
+  });
+
+  /**
+   * The two optional coded fields follow OPPOSITE §7.2 conventions, and the
+   * difference is deliberate rather than an inconsistency to tidy:
+   * `fluidTypeCode` is always present so a reader can tell "the patient did
+   * not categorise" from "this client does not implement the field", while
+   * `urineColorCode` is plain optional.
+   */
+  it('keeps fluidTypeCode present-and-null while omitting an absent urine colour', () => {
+    const resource = toObservationResource(
+      storedRow({ fluidTypeCode: null, urineColorCode: null } as unknown as Partial<Observation>),
+    ) as Record<string, unknown>;
+
+    expect('fluidTypeCode' in resource).toBe(true);
+    expect(resource.fluidTypeCode).toBeNull();
+    expect('urineColorCode' in resource).toBe(false);
   });
 });
 

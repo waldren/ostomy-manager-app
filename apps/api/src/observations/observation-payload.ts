@@ -421,6 +421,15 @@ export function toObservationResource(row: Observation): ObservationResource {
     // key and a null one would read the same to a human and differently to a
     // client, which is §7.2's own argument for `method`.
     fluidTypeCode: row.fluidTypeCode,
+    // Omitted when there is none, rather than sent as `null` — §7.2 defines
+    // this one as plain optional, where `fluidTypeCode` above is
+    // always-present-possibly-null, and `exactOptionalPropertyTypes` makes
+    // the difference a type error rather than a thing to remember.
+    //
+    // Publishing it is not cosmetic: on a colour-only entry it is the ONLY
+    // clinical content the row carries, so a response that drops it describes
+    // an observation that recorded nothing.
+    ...(row.urineColorCode === null ? {} : { urineColorCode: row.urineColorCode }),
     // `localDate` is deliberately absent: it is server-derived and not a
     // wire field (docs/sync-contract.md §7.2).
   };

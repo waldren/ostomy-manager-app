@@ -32,7 +32,11 @@ import {
   type SyncOperationResult,
   type SyncReasonCode,
 } from '@ostomy/core/sync';
-import { evaluateEntryTimestamp, evaluateTier1 } from '@ostomy/core/validation';
+import {
+  evaluateEntryTimestamp,
+  evaluateTier1,
+  validateVolumelessObservation,
+} from '@ostomy/core/validation';
 
 import { AuditService } from '../audit/audit.service';
 import type { PatientActor } from '../auth/patient-actor';
@@ -724,17 +728,48 @@ export class SyncPushService {
 
     const thresholds = await this.thresholds.getVolumetricThresholds();
 
-    const tier1 = evaluateTier1(
-      {
-        field: SYNC_FIELD_PATH.VALUE_QUANTITY_VALUE,
-        rawValueMl: input.rawValueMl,
-        method: toMeasuredOrEstimated(input.method),
-        effectiveDateTime: input.effectiveDateTime,
-        surgeryDate: context.surgeryDate,
-        now: new Date(),
-      },
-      thresholds,
-    );
+    // Which engine follows from whether the payload carried a volume, exactly
+    // as it does on the direct endpoint (`observations.service.ts`) — §6.3
+    // requires the two paths to reach the same verdict on the same payload,
+    // and a colour-only voided-urine entry (AC 12.1 AC2) is a payload only one
+    // of them used to accept.
+    //
+    // Before this branch existed, a queued colour-only entry reached
+    // `evaluateTier1` with no number, was blocked on a value rule it was never
+    // subject to, and landed in the patient's correction inbox naming a field
+    // their entry form left deliberately blank — §9.2's retry-unchanged loop,
+    // through a rule that does not apply.
+    //
+    // `hasVolume`, not `rawValueMl !== undefined`: `interpretObservationPayload`
+    // exists to tell an ABSENT `valueQuantity` apart from one present with a
+    // null value, and collapsing them here would re-introduce the defect that
+    // flag was added for — a stoma-output payload sending `value: null` routed
+    // to the volume-less engine, which has no value rules and accepts it.
+    const tier1 = !input.hasVolume
+      ? validateVolumelessObservation(
+          {
+            // Named on the colour: it is the only clinical content a
+            // volume-less entry carries, so it is the field the patient's
+            // correction inbox can act on.
+            field: SYNC_FIELD_PATH.URINE_COLOR_CODE,
+            method: toMeasuredOrEstimated(input.method),
+            effectiveDateTime: input.effectiveDateTime,
+            surgeryDate: context.surgeryDate,
+            now: new Date(),
+          },
+          thresholds,
+        ).tier1
+      : evaluateTier1(
+          {
+            field: SYNC_FIELD_PATH.VALUE_QUANTITY_VALUE,
+            rawValueMl: input.rawValueMl,
+            method: toMeasuredOrEstimated(input.method),
+            effectiveDateTime: input.effectiveDateTime,
+            surgeryDate: context.surgeryDate,
+            now: new Date(),
+          },
+          thresholds,
+        );
 
     if (tier1.outcome === 'blocked') {
       // §6.3: report the FIRST failure in §6.2's listed order, so two servers
@@ -770,7 +805,13 @@ export class SyncPushService {
       patientId: context.patientId,
       resourceType: 'Observation',
       code: input.code,
-      valueQuantityValue: new Prisma.Decimal(input.rawValueMl as number),
+      // `null` when the payload carried no volume, never a `Decimal(null)`
+      // and never zero. `new Prisma.Decimal(null as unknown as number)` is
+      // what stood here, and on a colour-only entry it threw inside the
+      // transaction — a 500, which `docs/sync-contract.md` §9 tells a client
+      // to re-push indefinitely, so the entry would retry forever instead of
+      // ever being stored.
+      valueQuantityValue: input.hasVolume ? new Prisma.Decimal(input.rawValueMl as number) : null,
       valueQuantityUnit: input.unit,
       effectiveDatetime: input.effectiveDateTime,
       method: toStoredMethod(input.method),
@@ -783,6 +824,21 @@ export class SyncPushService {
       // calendar date without a zone shifting it by a day.
       enteredTimezone: input.enteredTimezone,
       localDate: new Date(`${input.localDate}T00:00:00.000Z`),
+      // Both app-native coded fields, and both were MISSING from this write.
+      //
+      // The direct endpoint has persisted `fluidTypeCode` since P3.S1 and
+      // this one never did, so every intake entry a patient logged OFFLINE
+      // lost its categorisation on push — silently, because the field is
+      // optional on the payload type and nothing compared the two write
+      // paths. `urineColorCode` would have gone the same way, and for a
+      // colour-only entry the loss is total: the colour is the only clinical
+      // content the row carries, so the database CHECK would refuse the
+      // insert outright as a 500.
+      //
+      // Already narrowed by `interpretObservationPayload` — `null` unless the
+      // code accepts the field and the patient supplied it.
+      fluidTypeCode: input.fluidTypeCode,
+      urineColorCode: input.urineColorCode,
       clientUpdatedAt: operation.clientTimestamp,
       deletedAt: null,
     };
