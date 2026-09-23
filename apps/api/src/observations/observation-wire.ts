@@ -74,6 +74,9 @@ export const STOMA_OUTPUT_LOINC_CODE = '79560-9';
 /** LOINC 9000-1, "Fluid intake oral Measured" — accepted from P3.S1 (SRS AC 2.3). */
 export const FLUID_INTAKE_LOINC_CODE = '9000-1';
 
+/** LOINC 9187-6, "Urine output" — accepted from P3.S2 (SRS §3.7, AC 12.1). */
+export const VOIDED_URINE_LOINC_CODE = '9187-6';
+
 /** ADR-0004: volume is canonical mL on the wire and at rest, always. */
 export const STOMA_OUTPUT_CANONICAL_UNIT = 'mL';
 
@@ -105,11 +108,42 @@ export interface AcceptedObservationCode {
    * field whose value no read path would ever interpret.
    */
   readonly acceptsFluidType: boolean;
+  /**
+   * Whether `urineColorCode` is meaningful for this code, and — the part
+   * that matters more — whether this code may arrive with **no volume at
+   * all**.
+   *
+   * Only voided urine may (AC 12.1 AC2): a patient who cannot measure
+   * records a colour instead, and that entry is a valid hydration
+   * observation. Every other code without a volume records nothing, which
+   * is why this single flag governs both questions rather than two.
+   */
+  readonly acceptsUrineColor: boolean;
 }
 
 export const ACCEPTED_OBSERVATION_CODES: Readonly<Record<string, AcceptedObservationCode>> = {
-  [STOMA_OUTPUT_LOINC_CODE]: { canonicalUnit: 'mL', volumetric: true, acceptsFluidType: false },
-  [FLUID_INTAKE_LOINC_CODE]: { canonicalUnit: 'mL', volumetric: true, acceptsFluidType: true },
+  [STOMA_OUTPUT_LOINC_CODE]: {
+    canonicalUnit: 'mL',
+    volumetric: true,
+    acceptsFluidType: false,
+    acceptsUrineColor: false,
+  },
+  [FLUID_INTAKE_LOINC_CODE]: {
+    canonicalUnit: 'mL',
+    volumetric: true,
+    acceptsFluidType: true,
+    acceptsUrineColor: false,
+  },
+  // P3.S2 (SRS §3.7, AC 12.1). `volumetric: true` because a urine entry that
+  // DOES carry a volume needs the Measured/Estimated toggle on the same terms
+  // as any other volume (AC 12.1 AC1) — the toggle follows the value, and a
+  // colour-only entry has no value for it to describe.
+  [VOIDED_URINE_LOINC_CODE]: {
+    canonicalUnit: 'mL',
+    volumetric: true,
+    acceptsFluidType: false,
+    acceptsUrineColor: true,
+  },
 };
 
 export function acceptedCodeRules(code: string): AcceptedObservationCode | undefined {
@@ -180,7 +214,15 @@ export const observationResourceSchema = z
       description:
         'Bare LOINC code. This release accepts 79560-9 (stoma output) and 9000-1 (oral fluid intake); anything else is UNSUPPORTED_CODE.',
     }),
-    valueQuantity: valueQuantitySchema,
+    // OPTIONAL since P3.S2, and absent only on voided urine (9187-6) that
+    // carries a colour instead (AC 12.1 AC2). Which codes may omit it is
+    // NOT expressed here: that depends on the accepted-code table below,
+    // which grows, so the rule lives once in the payload validator and
+    // omitting it on any other code is PAYLOAD_FIELD_INVALID.
+    //
+    // Additive under §8 in the direction that matters: a client that always
+    // sends a volume keeps working unchanged.
+    valueQuantity: valueQuantitySchema.optional(),
     effectiveDateTime: z.iso.datetime({ precision: 3 }).meta({
       description:
         'The clinical moment the observation describes. RFC 3339, UTC, exactly three fractional digits.',
@@ -205,6 +247,11 @@ export const observationResourceSchema = z
       description:
         'Which kind of fluid this was, as a `fluid_type` value-set member code (SRS AC 2.3 AC1). Optional on an intake entry and meaningless on any other code — sending it with a non-intake code is PAYLOAD_FIELD_INVALID. A code, never a display label: the patient-facing text comes from the i18n catalog (ADR-0006).',
     }),
+    // Additive under §8, same shape and same reasoning as fluidTypeCode.
+    urineColorCode: z.string().min(1).max(64).nullable().optional().meta({
+      description:
+        'The chosen step of the pale-to-dark urine colour scale, as a `urine_color` value-set member code (SRS AC 12.1 AC2). Optional on a voided-urine entry and meaningless on any other code — sending it with a non-urine code is PAYLOAD_FIELD_INVALID. It is the ONLY field a colour-without-volume entry carries, so a urine entry with neither this nor valueQuantity records nothing and is refused. A code, never a display label: the patient-facing text comes from the i18n catalog (ADR-0006).',
+    }),
   })
   .meta({
     title: 'Observation',
@@ -224,12 +271,20 @@ export const observationRequestParseSchema = z.strictObject({
   id: z.uuid(),
   status: z.enum(OBSERVATION_WIRE_STATUSES),
   code: z.string(),
-  valueQuantity: z.strictObject({
-    // `unknown`, not `number`: a non-numeric value is Tier 1
-    // VALUE_NOT_NUMERIC (packages/core), never a transport type error.
-    value: z.unknown().optional(),
-    unit: z.string(),
-  }),
+  // `.optional()` at runtime as well as in the published schema: an absent
+  // `valueQuantity` is the colour-only voided-urine case (AC 12.1 AC2), and
+  // whether THIS code may omit it is a content question this release reports
+  // as PAYLOAD_FIELD_INVALID naming the field — not a transport shape error
+  // naming `payload`, which would tell the patient's correction inbox
+  // nothing it can show them.
+  valueQuantity: z
+    .strictObject({
+      // `unknown`, not `number`: a non-numeric value is Tier 1
+      // VALUE_NOT_NUMERIC (packages/core), never a transport type error.
+      value: z.unknown().optional(),
+      unit: z.string(),
+    })
+    .optional(),
   effectiveDateTime: z.iso.datetime({ precision: 3 }),
   // Optional at runtime, required in the published schema: an *absent*
   // `method` key is the "no Measured/Estimated selection was made" case,
@@ -248,6 +303,8 @@ export const observationRequestParseSchema = z.strictObject({
   // PAYLOAD_FIELD_INVALID naming the field, so the patient's correction inbox
   // shows them which field — not a transport shape error naming `payload`.
   fluidTypeCode: z.unknown().optional(),
+  // `unknown`, same reasoning as fluidTypeCode.
+  urineColorCode: z.unknown().optional(),
 });
 
 export type ObservationRequestParsed = z.infer<typeof observationRequestParseSchema>;
@@ -265,6 +322,7 @@ export const OBSERVATION_FIELD = {
   ENTERED_MEASUREMENT_SYSTEM: SYNC_FIELD_PATH.ENTERED_MEASUREMENT_SYSTEM,
   ENTERED_TIMEZONE: SYNC_FIELD_PATH.ENTERED_TIMEZONE,
   FLUID_TYPE_CODE: SYNC_FIELD_PATH.FLUID_TYPE_CODE,
+  URINE_COLOR_CODE: SYNC_FIELD_PATH.URINE_COLOR_CODE,
   PAYLOAD: SYNC_FIELD_PATH.PAYLOAD,
 } as const;
 

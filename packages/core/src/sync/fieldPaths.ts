@@ -65,6 +65,7 @@ export const SYNC_FIELD_PATH = {
   ENTERED_TIMEZONE: 'enteredTimezone',
   /** P3.S1 (SRS AC 2.3 AC1). A `fluid_type` value-set member code — optional on an intake entry, meaningless on any other. */
   FLUID_TYPE_CODE: 'fluidTypeCode',
+  URINE_COLOR_CODE: 'urineColorCode',
 
   // `Meal` payload fields (§7.4), added at P3.S1. `id` and
   // `effectiveDateTime` above are shared with `Observation` — the paths are

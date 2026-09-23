@@ -384,7 +384,13 @@ function toObservationChange(row: Observation): SyncDeltaChange {
       id: entityId,
       status: resource.status,
       code: resource.code,
-      valueQuantity: resource.valueQuantity,
+      // Spread-or-omit, never `valueQuantity: undefined`. Under
+      // `exactOptionalPropertyTypes` those are different types, and the
+      // distinction is the clinical one: a delta that carries the key with
+      // no value invites a consumer to read it as an empty measurement,
+      // where an absent key says the entry recorded a colour instead
+      // (AC 12.1 AC2).
+      ...(resource.valueQuantity === undefined ? {} : { valueQuantity: resource.valueQuantity }),
       effectiveDateTime: resource.effectiveDateTime,
       method: resource.method,
       enteredMeasurementSystem: resource.enteredMeasurementSystem,

@@ -62,7 +62,8 @@ export interface ObservationWriteInput {
   readonly id: string;
   readonly code: string;
   readonly rawValueMl: unknown;
-  readonly unit: string;
+  /** `null` only on a colour-only voided-urine entry, where there is no volume to carry a unit (AC 12.1 AC2). */
+  readonly unit: string | null;
   readonly effectiveDateTime: Date;
   readonly method: MethodWireInterpretation;
   readonly enteredMeasurementSystem: CoreMeasurementSystem;
@@ -72,6 +73,8 @@ export interface ObservationWriteInput {
   readonly localDate: string;
   /** A `fluid_type` member code on an intake entry (SRS AC 2.3 AC1); `null` everywhere else and whenever the patient did not categorise. */
   readonly fluidTypeCode: string | null;
+  /** A `urine_color` member code on a voided-urine entry (SRS AC 12.1 AC2); `null` everywhere else and whenever the patient chose no colour. */
+  readonly urineColorCode: string | null;
 }
 
 /**
@@ -102,7 +105,28 @@ export function interpretObservationPayload(
       reasonCode: SYNC_REASON_CODE.UNSUPPORTED_STATUS,
     });
   }
-  if (parsed.valueQuantity.unit !== codeRules.canonicalUnit) {
+  // A volume may be absent ONLY on voided urine, and only when a colour
+  // takes its place (AC 12.1 AC2). Checked before the unit, because "there
+  // is no volume" has to be settled before anything asks what unit it is in.
+  if (parsed.valueQuantity === undefined) {
+    if (!codeRules.acceptsUrineColor) {
+      // Every other code without a volume records nothing at all.
+      throw payloadMalformed({
+        field: OBSERVATION_FIELD.VALUE,
+        reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
+      });
+    }
+    if (typeof parsed.urineColorCode !== 'string' || parsed.urineColorCode.length === 0) {
+      // Urine with neither a volume nor a colour is an empty observation.
+      // Named on the COLOUR rather than the value: the patient who reaches
+      // this chose the colour-only path, so the colour is the field their
+      // correction inbox can act on.
+      throw payloadMalformed({
+        field: OBSERVATION_FIELD.URINE_COLOR_CODE,
+        reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
+      });
+    }
+  } else if (parsed.valueQuantity.unit !== codeRules.canonicalUnit) {
     // §7.2: the unit is determined by the code. A disagreement between the
     // two is the failure mode that is silent everywhere else — every daily
     // total and hydration computation reading the row would simply be wrong,
@@ -141,14 +165,22 @@ export function interpretObservationPayload(
   }
 
   const fluidTypeCode = interpretFluidTypeCode(parsed.fluidTypeCode, codeRules.acceptsFluidType);
+  const urineColorCode = interpretUrineColorCode(
+    parsed.urineColorCode,
+    codeRules.acceptsUrineColor,
+  );
 
   const effectiveDateTime = new Date(parsed.effectiveDateTime);
 
   return {
     id: parsed.id,
     code: parsed.code,
-    rawValueMl: parsed.valueQuantity.value,
-    unit: parsed.valueQuantity.unit,
+    // `null`, never 0, when the entry recorded a colour instead. The
+    // database CHECK refuses a row that has neither, and every read path
+    // that sums must skip this rather than coerce it.
+    rawValueMl: parsed.valueQuantity === undefined ? null : parsed.valueQuantity.value,
+    unit: parsed.valueQuantity === undefined ? null : parsed.valueQuantity.unit,
+    urineColorCode,
     // Safe to construct: the zod layer already pinned the lexical form to
     // RFC 3339 with exactly three fractional digits and a `Z` offset (§7.3),
     // so this cannot be an Invalid Date.
@@ -189,6 +221,27 @@ function interpretFluidTypeCode(raw: unknown, acceptsFluidType: boolean): string
   if (!acceptsFluidType || typeof raw !== 'string' || raw.length === 0 || raw.length > 64) {
     throw payloadMalformed({
       field: OBSERVATION_FIELD.FLUID_TYPE_CODE,
+      reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
+    });
+  }
+
+  return raw;
+}
+
+/**
+ * Mirrors `interpretFluidTypeCode` exactly, including the deliberate absence
+ * of any value-set membership check: members are retired-never-deleted and
+ * admin-managed, so validating against the live set would refuse a patient's
+ * entry the moment an admin retired a step a fielded app still offers. An
+ * unknown code renders as a generic label and is recoverable; a refused
+ * entry is not.
+ */
+function interpretUrineColorCode(raw: unknown, acceptsUrineColor: boolean): string | null {
+  if (raw === undefined || raw === null) return null;
+
+  if (!acceptsUrineColor || typeof raw !== 'string' || raw.length === 0 || raw.length > 64) {
+    throw payloadMalformed({
+      field: OBSERVATION_FIELD.URINE_COLOR_CODE,
       reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
     });
   }
@@ -320,13 +373,24 @@ export function toObservationResource(row: Observation): ObservationResource {
     id: row.id,
     status: STATUS_TO_WIRE[row.status],
     code: row.code,
-    valueQuantity: {
-      // `Decimal` -> `number`. DECIMAL(12,4) is nowhere near a double's
-      // exact-integer limit, and §7.3 keeps a clinical value a JSON number
-      // rather than a string.
-      value: row.valueQuantityValue.toNumber(),
-      unit: row.valueQuantityUnit as ObservationResource['valueQuantity']['unit'],
-    },
+    // OMITTED, never zero-filled, when the row has no volume — a
+    // colour-only voided-urine entry (AC 12.1 AC2). The wire says "this
+    // entry recorded no volume"; it must not say "this entry recorded 0 mL",
+    // which is a different clinical claim and would land in every daily
+    // total as a real void.
+    ...(row.valueQuantityValue === null || row.valueQuantityUnit === null
+      ? {}
+      : {
+          valueQuantity: {
+            // `Decimal` -> `number`. DECIMAL(12,4) is nowhere near a double's
+            // exact-integer limit, and §7.3 keeps a clinical value a JSON
+            // number rather than a string.
+            value: row.valueQuantityValue.toNumber(),
+            unit: row.valueQuantityUnit as NonNullable<
+              ObservationResource['valueQuantity']
+            >['unit'],
+          },
+        }),
     // `toISOString()` is RFC 3339, UTC, exactly three fractional digits —
     // the lexical form §7.3 pins.
     effectiveDateTime: row.effectiveDatetime.toISOString(),
@@ -358,7 +422,11 @@ export function toAuditSnapshot(row: Observation): Record<string, unknown> {
     patientId: row.patientId,
     resourceType: row.resourceType,
     code: row.code,
-    valueQuantityValue: row.valueQuantityValue.toNumber(),
+    // `null`, never 0, when the row carried no volume. This is an
+    // append-only audit record (ADR-0011): a snapshot claiming 0 mL for a
+    // colour-only entry would be a false clinical value that nothing can
+    // later correct.
+    valueQuantityValue: row.valueQuantityValue === null ? null : row.valueQuantityValue.toNumber(),
     valueQuantityUnit: row.valueQuantityUnit,
     effectiveDatetime: row.effectiveDatetime.toISOString(),
     method: row.method,

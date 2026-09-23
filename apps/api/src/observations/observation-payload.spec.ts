@@ -80,15 +80,88 @@ describe('interpretObservationPayload — release-scope acceptance', () => {
    * not landed. `ACCEPTED_OBSERVATION_CODES`'s own comment is the argument:
    * each needs its own canonical unit, hydration-signal handling and
    * validation path, and accepting one early writes rows no read path
-   * understands. `9187-6` lands at P3.S2, `29463-7` and `8867-4` later still.
+   * understands. `9187-6` was on this list until P3.S2 landed its sprint;
+   * `29463-7` and `8867-4` remain.
    */
   it.each([
     ['29463-7', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
-    ['9187-6', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
     ['8867-4', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
   ])('refuses code %s with %s', (code, reasonCode, field) => {
     const rejection = rejectionOf(() => interpretObservationPayload(payload({ code })));
     expect(rejection.details).toEqual([{ field, reasonCode }]);
+  });
+
+  describe('voided urine (SRS §3.7, AC 12.1)', () => {
+    it('accepts a urine entry that carries a volume, on the same terms as any other volume', () => {
+      const input = interpretObservationPayload(
+        payload({ code: '9187-6', valueQuantity: { value: 300, unit: 'mL' } }),
+      );
+
+      expect(input.rawValueMl).toBe(300);
+      expect(input.unit).toBe('mL');
+      expect(input.urineColorCode).toBeNull();
+    });
+
+    /**
+     * AC 12.1 AC2, and the reason the feature exists: the patients least able
+     * to measure a volume are the ones whose hydration signal matters most.
+     */
+    it('accepts a colour with NO volume, and records the absence as null rather than zero', () => {
+      const { valueQuantity: _omitted, ...withoutVolume } = payload({ code: '9187-6' });
+      const input = interpretObservationPayload({
+        ...withoutVolume,
+        urineColorCode: 'amber',
+      } as ObservationRequestParsed);
+
+      expect(input.urineColorCode).toBe('amber');
+      // Not 0. A missing volume is not a void of zero, and anything that
+      // sums these must skip it rather than coerce it.
+      expect(input.rawValueMl).toBeNull();
+      expect(input.unit).toBeNull();
+    });
+
+    it('refuses urine carrying neither a volume nor a colour, because it records nothing', () => {
+      const { valueQuantity: _omitted, ...withoutVolume } = payload({ code: '9187-6' });
+      const rejection = rejectionOf(() =>
+        interpretObservationPayload(withoutVolume as ObservationRequestParsed),
+      );
+
+      // Named on the colour: the patient who reaches this chose the
+      // colour-only path, so that is the field their correction inbox can act on.
+      expect(rejection.details).toEqual([
+        { field: 'urineColorCode', reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID },
+      ]);
+    });
+
+    it('refuses a MISSING volume on any other code, where absence records nothing', () => {
+      const { valueQuantity: _omitted, ...withoutVolume } = payload({ code: '79560-9' });
+      const rejection = rejectionOf(() =>
+        interpretObservationPayload(withoutVolume as ObservationRequestParsed),
+      );
+
+      expect(rejection.details).toEqual([
+        { field: 'valueQuantity.value', reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID },
+      ]);
+    });
+
+    /**
+     * Same reasoning as `fluidTypeCode` on a non-intake row: not a harmless
+     * extra, but a field no read path would ever interpret.
+     */
+    it('refuses a colour on a code that has no colour scale', () => {
+      const rejection = rejectionOf(() =>
+        interpretObservationPayload(
+          payload({
+            code: '79560-9',
+            urineColorCode: 'amber',
+          } as Partial<ObservationRequestParsed>),
+        ),
+      );
+
+      expect(rejection.details).toEqual([
+        { field: 'urineColorCode', reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID },
+      ]);
+    });
   });
 
   describe('fluidTypeCode (SRS AC 2.3 AC1)', () => {

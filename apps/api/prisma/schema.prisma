@@ -363,7 +363,20 @@ model Observation {
   code String @map("code")
 
   /// See the file-level "Numeric precision" note.
-  valueQuantityValue Decimal @map("value_quantity_value") @db.Decimal(12, 4)
+  /// NULLABLE since P3.S2, and only for voided urine.
+  ///
+  /// AC 12.1 AC2 lets a patient who cannot measure save a COLOUR ALONE, so
+  /// this column has to admit absence. Four CHECK constraints in that
+  /// migration keep the absence from spreading: a volume and its unit
+  /// travel together; only code 9187-6 may omit the volume, and only with
+  /// a colour; a colour appears on nothing else; and `method` cannot exist
+  /// without a value to qualify.
+  ///
+  /// **Read paths must not treat NULL as zero.** `SUM()` skips it and
+  /// application code that coerces it does not, and the two then disagree
+  /// about a clinical total forever. A urine row with no volume is not a
+  /// zero-volume void — it is an entry that recorded colour instead.
+  valueQuantityValue Decimal? @map("value_quantity_value") @db.Decimal(12, 4)
   /// Canonical unit string, always "mL" or "kg" for the codes this
   /// migration covers (ADR-0004) — persisted on every row despite being
   /// derivable from `code`, because FHIR `valueQuantity.unit` requires it
@@ -375,7 +388,7 @@ model Observation {
   /// computation reading this row is simply wrong, with no error raised at
   /// any layer, whereas a negative volume is already caught by Tier 1
   /// validation and the positivity CHECK before this one would ever matter.
-  valueQuantityUnit  String  @map("value_quantity_unit")
+  valueQuantityUnit  String?  @map("value_quantity_unit")
 
   /// FHIR `Observation.effectiveDateTime` — the clinical moment the
   /// observation describes, entered and editable by the patient. Distinct
@@ -386,6 +399,23 @@ model Observation {
   /// SNOMED CT "Estimation technique" code; NULL for measured/not-applicable.
   /// See the model doc comment above.
   method String? @map("method")
+
+  /// The chosen step of the pale-to-dark urine colour scale, or NULL.
+  ///
+  /// A code from the app-native `urine_color` value set (seeded by the
+  /// P3.S2 migration), never display text: the label a patient reads comes
+  /// from the i18n catalog in `packages/core`, so there is one localization
+  /// pipeline rather than two.
+  ///
+  /// App-native rather than a standard terminology because a pale-to-dark
+  /// hydration chart is a patient-facing proxy, not a standard lab
+  /// observation — the same reasoning that makes appliance changes and leak
+  /// events ordinary relational tables.
+  ///
+  /// No foreign key to `value_set_members`, matching `fluidTypeCode` and for
+  /// the same reason: members are retired and never deleted, so a stored
+  /// code always resolves when rendering history.
+  urineColorCode String? @map("urine_color_code")
 
   status ObservationStatus @default(FINAL) @map("status")
 
@@ -979,7 +1009,7 @@ model ValueSetMember {
   code   String               @map("code")
   status ValueSetMemberStatus @default(ACTIVE) @map("status")
 
-  sortOrder Int       @default(0) @map("sort_order")
+  sortOrder Int @default(0) @map("sort_order")
 
   /// An optional quantity carried BY the member itself, in `numericUnit`.
   ///
@@ -1001,9 +1031,9 @@ model ValueSetMember {
   /// threshold's `unit` applies here: an admin editing 250 mL to 250 with the
   /// unit left as something else is an administratively plausible mistake, and
   /// a value with no unit beside it is one a reader has to guess about.
-  numericValue Decimal? @map("numeric_value") @db.Decimal(12, 4)
-  numericUnit  String?  @map("numeric_unit")
-  retiredAt DateTime? @map("retired_at") @db.Timestamptz(3)
+  numericValue Decimal?  @map("numeric_value") @db.Decimal(12, 4)
+  numericUnit  String?   @map("numeric_unit")
+  retiredAt    DateTime? @map("retired_at") @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)

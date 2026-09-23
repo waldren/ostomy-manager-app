@@ -224,6 +224,13 @@ export class ObservationsService {
       // code accepts a categorisation and the patient gave one (SRS AC 2.3
       // AC1).
       fluidTypeCode: input.fluidTypeCode,
+      // Already narrowed by `interpretObservationPayload`: `null` unless this
+      // is voided urine and the patient chose a step (SRS AC 12.1 AC2). On a
+      // colour-only entry this is the ONLY clinical content the row carries,
+      // so dropping it here would persist an observation that records
+      // nothing — which the database CHECK then refuses outright rather than
+      // storing an empty row.
+      urineColorCode: input.urineColorCode,
       clientUpdatedAt: writtenAt,
     };
 

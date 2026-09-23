@@ -18,3 +18,4 @@ coverage/
 !.claude/skills/
 !.claude/settings.json
 
+.gstack/

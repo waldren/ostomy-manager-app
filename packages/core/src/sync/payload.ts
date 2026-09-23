@@ -133,14 +133,60 @@ export interface ObservationFhirFields {
    * `UNSUPPORTED_CODE` (§6.2).
    */
   readonly code: string;
-  readonly valueQuantity: ObservationValueQuantity;
+  /**
+   * OPTIONAL since P3.S2, and absent only on voided urine.
+   *
+   * AC 12.1 AC2 lets a patient who cannot measure save a COLOUR ALONE. That
+   * is the entry type the feature exists for — the patients least able to
+   * measure are the ones whose hydration signal matters most — so the wire
+   * has to be able to say "no volume" rather than encode a zero.
+   *
+   * **A missing volume is not a zero volume.** A urine row without this
+   * field recorded a colour instead; it did not record a void of 0 mL. Any
+   * consumer that coerces absence to zero produces a daily total that is
+   * wrong and raises nothing, which is why the database carries CHECK
+   * constraints for the same invariant rather than trusting read paths.
+   *
+   * Absent on no other code. `observations_value_or_urine_color` refuses a
+   * row that has neither a volume nor a colour, and refuses any non-urine
+   * code without a volume at all.
+   */
+  readonly valueQuantity?: ObservationValueQuantity;
   /** The clinical moment the observation describes — NOT the client timestamp that orders a batch (§1). */
   readonly effectiveDateTime: WireInstant;
   readonly method: ObservationMethodWireValue;
 }
 
-/** The half FHIR has no element for (§7.1). One field today. */
+/** The half FHIR has no element for (§7.1), or has no agreed coding for. */
 export interface ObservationAppNativeFields {
+  /**
+   * The chosen step of the pale-to-dark urine colour scale, or absent.
+   *
+   * A code from the app-native `urine_color` value set, seeded by
+   * migration. Never display text — the label a patient reads comes from
+   * the i18n catalog, so there is one localization pipeline rather than
+   * two (the same rule `fluidTypeCode` follows).
+   *
+   * ## Why this sits in the app-native half, when FHIR *does* have an
+   * ## element for it
+   *
+   * FHIR would express this as `Observation.component[]` with a
+   * `valueCodeableConcept`, so on structure alone it belongs in the FHIR
+   * half. It is classified app-native for a different reason: **there is no
+   * agreed code system URI for it.** A pale-to-dark hydration chart is a
+   * patient-facing proxy, not a standard lab scale, and no standard
+   * terminology was adopted for it (that decision is recorded with the
+   * P3.S2 migration).
+   *
+   * Putting it in the FHIR half would tell P5's export module it may emit
+   * this as a coded component — which it cannot do without inventing a
+   * system URI. Inventing a terminology value is the exact mistake D4
+   * spent sprints avoiding, and a wrong one is invisible until an EHR
+   * integration reads it. When a system URI is decided, this field moves
+   * halves and the export module gains it in the same change.
+   */
+  readonly urineColorCode?: string;
+
   /**
    * Which system the patient **entered** in, resolved from their profile
    * at entry time on the device and never re-derived server-side from the
