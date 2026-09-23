@@ -116,6 +116,9 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       port: 0,
       logLevel: 'silent',
       oidcClockToleranceSeconds: 30,
+      // Empty: these tests drive the API over supertest, not a browser, so
+      // no origin is allowed and none is needed.
+      corsAllowedOrigins: [],
       syncPushMaxOperations: 500,
       syncDeltaDefaultLimit: 200,
       syncDeltaMaxLimit: 1000,

@@ -133,10 +133,14 @@ _Obliges:_ ADR-0020; amendments to SRS §2 and §4.2; `app.json`'s `platforms`; 
 
 _Produces no new capability. Closes the gate that P3 walked past, and makes the scope claims true._
 
-**R.S1 — Gate B walkthrough (M) — `expo-mobile-developer` + main session**
+**R.S1 — Gate B walkthrough (M) — `expo-mobile-developer` + main session** · _done — **GATE B PASSES**, all six clauses, 2026-09-23_
 Merge `feat/web-net-fluid-balance` first. Bring up the Compose stack, `scripts/dev-reset.sh`, and the emulator harness. Run the Gate B script end to end and record it in `docs/gate-b-walkthrough.md`: airplane-mode entry with an instant local save confirmation; reconnect and sync; an audit row carrying before/after; a forced conflict leaving the loser in `audit_events`; an intentionally invalid queued operation reaching the correction inbox rather than vanishing; the web view rendering the entry with its Measured/Estimated badge.
 _Exit:_ every clause observed and recorded, or recorded as failed with a `bug` issue. The walkthrough doc is committed. **Recorded as "exercised on an emulator"** — it does not touch the hardware caveat.
 _Reviewers:_ `code-reviewer` on any fix; `hipaa-compliance-reviewer` if the audit or sync clauses fail.
+
+> **Outcome.** Four runs. The gate passed on run 4, and **every clause that blocked it was a defect the gate existed to find** — none were test-environment noise. In order: an illegal redirect URI whose unit tests asserted a fixture the app never produced; an AVD image with no Custom Tabs provider; a sub-less token from a mock-IdP misconfiguration this sprint itself introduced; and `apps/api` never enabling CORS, so `apps/web` had never once loaded data in a browser. The last of those had survived P2.S3 and P3.S1b with 130 passing tests, because those tests mock `fetch`.
+>
+> **The gating rule above is now satisfied and P3.S2 can be dispatched.** Two defects found on the way remain open and were not fixed by passing: #59 and #40. Nothing here closes any HW step — it was an emulator run.
 
 **R.S2 — Android-only v1 (S) — main session + `expo-mobile-developer`**
 ADR-0020 recording the cut and its reasoning; SRS amendments at §2 and §4.2 (the two sections that actually name iOS — §4.3 does not); `app.json` `platforms` narrowed; `docs/gate-b-hardware-verification.md` rescoped to HW-1, HW-2, HW-3, HW-6a, HW-7, HW-8 plus an Android background-termination step replacing HW-10; CLAUDE.md's platform and caveat lines.

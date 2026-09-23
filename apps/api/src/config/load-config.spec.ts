@@ -163,3 +163,47 @@ describe('loadConfig', () => {
     }
   });
 });
+
+/**
+ * CORS_ALLOWED_ORIGINS.
+ *
+ * These exist because Gate B clause 6 was blocked by this API having no
+ * CORS at all, and `apps/web`'s own 130 tests could not catch it: they mock
+ * `fetch`, so they assert against a stand-in for the thing that was broken.
+ * The value below is the one a browser actually compares against the
+ * `Origin` header, so the shape of it is worth pinning.
+ */
+describe('loadConfig — CORS_ALLOWED_ORIGINS', () => {
+  it('defaults to no origins, which means no cross-origin access at all', () => {
+    const config = loadConfig(validEnv());
+
+    expect(config.corsAllowedOrigins).toEqual([]);
+  });
+
+  it('parses a comma-separated list, trimming blanks and a trailing comma', () => {
+    const config = loadConfig({
+      ...validEnv(),
+      CORS_ALLOWED_ORIGINS: 'http://localhost:8088, https://app.example.com,',
+    });
+
+    expect(config.corsAllowedOrigins).toEqual(['http://localhost:8088', 'https://app.example.com']);
+  });
+
+  it('rejects a trailing slash, which a browser never sends and which would silently never match', () => {
+    expect(() =>
+      loadConfig({ ...validEnv(), CORS_ALLOWED_ORIGINS: 'http://localhost:8088/' }),
+    ).toThrow(ConfigValidationError);
+  });
+
+  it('rejects an entry carrying a path', () => {
+    expect(() =>
+      loadConfig({ ...validEnv(), CORS_ALLOWED_ORIGINS: 'http://localhost:8088/app' }),
+    ).toThrow(ConfigValidationError);
+  });
+
+  it('rejects a wildcard, because this API serves PHI and there is no way to ask for one', () => {
+    expect(() => loadConfig({ ...validEnv(), CORS_ALLOWED_ORIGINS: '*' })).toThrow(
+      ConfigValidationError,
+    );
+  });
+});

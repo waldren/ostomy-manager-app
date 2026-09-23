@@ -65,6 +65,43 @@ async function bootstrap(): Promise<void> {
 
     // Coupled to SYNC_PUSH_MAX_OPERATIONS — see `applyJsonBodyLimit`.
     applyJsonBodyLimit(app);
+
+    // CORS, from an explicit allowlist, and only when one is configured.
+    //
+    // `apps/web` is served from a different origin than this API in every
+    // environment — port 8088 vs 3000 in development, S3+CloudFront vs the
+    // load balancer in production — so without this the browser discards
+    // every response and the SPA shows a load failure while this API's
+    // access log shows 200. That is precisely what blocked Gate B clause 6:
+    // apps/web had NEVER loaded data from this API in a browser, because
+    // its own suite mocks `fetch` and so asserted against a stand-in for
+    // the broken thing.
+    //
+    // Three deliberate choices:
+    //
+    // 1. No wildcard, and no way to configure one (`env.schema.ts`). This
+    //    API serves PHI, and `Access-Control-Allow-Origin: *` would let any
+    //    page read a patient's clinical values given a token obtained by
+    //    any means.
+    // 2. `credentials: false`. Tokens travel in the `Authorization` header,
+    //    never in cookies, so nothing here needs credentialed requests.
+    //    Enabling it would attach ambient cookie authority to cross-origin
+    //    requests for no benefit this design uses.
+    // 3. Not enabled at all when the allowlist is empty, rather than
+    //    enabled-with-nothing-allowed. An API with no CORS headers is the
+    //    behaviour every non-browser client already expects, and it keeps
+    //    the default for a new deployment "no cross-origin access".
+    if (config.corsAllowedOrigins.length > 0) {
+      app.enableCors({
+        origin: config.corsAllowedOrigins,
+        methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Authorization', 'Content-Type'],
+        credentials: false,
+        // Cache the preflight so a history view does not pay an extra
+        // round trip per request. Ten minutes is Chrome's cap.
+        maxAge: 600,
+      });
+    }
     app.setGlobalPrefix(API_PREFIX);
 
     if (config.nodeEnv !== 'production') {

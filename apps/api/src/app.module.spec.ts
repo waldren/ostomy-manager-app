@@ -31,6 +31,8 @@ function testConfig(): AppConfig {
     port: 3000,
     logLevel: 'silent',
     oidcClockToleranceSeconds: 30,
+    // No browser origin: these tests drive the API directly, not through one.
+    corsAllowedOrigins: [],
     syncPushMaxOperations: 500,
     syncDeltaDefaultLimit: 200,
     syncDeltaMaxLimit: 1000,
