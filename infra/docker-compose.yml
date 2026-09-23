@@ -437,6 +437,21 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OIDC_CLOCK_TOLERANCE_SECONDS: ${OIDC_CLOCK_TOLERANCE_SECONDS:-30}
 
+      # Browser origins allowed to read responses from this API.
+      #
+      # apps/web is served from a DIFFERENT origin than this API — 8088 vs
+      # 3000 here, S3+CloudFront vs the load balancer in production — so
+      # without this the browser discards every response while this API's
+      # access log shows 200. That combination blocked Gate B clause 6 and
+      # is deliberately hard to read from either side alone.
+      #
+      # Both SPA origins are listed, and that does NOT collapse the
+      # admin/patient boundary: SRS_v2 §4.6 puts that boundary in the two
+      # disjoint identity pools and the structurally separate guards, so a
+      # patient token still cannot reach /api/v1/admin/... from either
+      # origin. There is no wildcard and no way to configure one.
+      CORS_ALLOWED_ORIGINS: http://${DEV_HOST_ADDRESS:?set in .env - see .env.example}:8088,http://${DEV_HOST_ADDRESS:?set in .env - see .env.example}:8081
+
       # The runtime DSN — connects as ${POSTGRES_RUNTIME_USER}, the role
       # `migrate`'s first migration creates (NOSUPERUSER/NOCREATEDB/
       # NOCREATEROLE/NOINHERIT/NOREPLICATION) and `db-roles` gives a

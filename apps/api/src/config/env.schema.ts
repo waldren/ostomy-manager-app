@@ -64,6 +64,58 @@ export type OidcConfig = z.infer<typeof oidcSchema>;
 
 const booleanFromString = z.enum(['true', 'false']).transform((value) => value === 'true');
 
+/**
+ * A browser **origin** — scheme + host + port, and nothing else.
+ *
+ * Validated with `new URL(value).origin === value`, which rejects the three
+ * mistakes that otherwise fail silently: a trailing slash
+ * (`http://localhost:8088/`), a path (`http://localhost:8088/app`), and a
+ * query or fragment. The `Origin` header a browser sends carries none of
+ * those, so any of them produces an allowlist entry that can never match
+ * and presents as "CORS is broken" with nothing naming the cause.
+ */
+function originString(fieldLabel: string) {
+  return z
+    .string()
+    .min(1, `${fieldLabel} is required`)
+    .refine(
+      (value) => {
+        try {
+          return new URL(value).origin === value;
+        } catch {
+          return false;
+        }
+      },
+      {
+        message: `${fieldLabel} must be a bare origin (scheme://host[:port]), with no trailing slash or path`,
+      },
+    );
+}
+
+/**
+ * The origins allowed to read responses from this API in a browser.
+ *
+ * **There is deliberately no wildcard, and no way to express one.** This API
+ * serves PHI; `Access-Control-Allow-Origin: *` would let any page on the
+ * internet read a patient's clinical values with a token it had obtained by
+ * any means. An unset or empty value means **no cross-origin access at
+ * all** — the safe direction, and the same default the API had before CORS
+ * existed here.
+ *
+ * Comma-separated, because that is what an environment variable can carry.
+ * Blank entries are dropped so a trailing comma is not an error.
+ */
+const corsAllowedOrigins = z
+  .string()
+  .default('')
+  .transform((value) =>
+    value
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0),
+  )
+  .pipe(z.array(originString('CORS_ALLOWED_ORIGINS entry')));
+
 export const rawEnvSchema = z.object({
   nodeEnv: z.enum(['development', 'test', 'production']).default('development'),
   port: z.coerce.number().int().positive().default(3000),
@@ -75,6 +127,18 @@ export const rawEnvSchema = z.object({
   // Not admin-managed configuration (unlike clinical thresholds) — this is
   // ordinary server tuning, not something a clinician needs to change.
   oidcClockToleranceSeconds: z.coerce.number().int().nonnegative().default(30),
+
+  // Browser origins allowed to read responses from this API. Empty by
+  // default, which means no cross-origin access — see `corsAllowedOrigins`.
+  //
+  // This is NOT the admin/patient boundary and must never be mistaken for
+  // it. That boundary is the two disjoint identity pools and the
+  // structurally separate guards (SRS_v2 §4.6): listing the admin console's
+  // origin here does not let a patient token reach `/api/v1/admin/...`,
+  // because `AdminJwtAuthGuard` rejects it on audience and issuer. Removing
+  // an origin from this list is a browser-access change, not a
+  // security-boundary change.
+  corsAllowedOrigins,
 
   oidc: oidcSchema,
   adminOidc: oidcSchema,

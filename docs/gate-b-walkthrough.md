@@ -254,3 +254,60 @@ This is left unfixed deliberately: `app.enableCors()` would silence it, and CORS
 
 - `adb root` restarts the device's adb daemon and **silently drops every `adb reverse` forward**. The app then fails OIDC discovery with `Failed to connect to localhost:8090`, and nothing syncs until the forwards are re-added.
 - Chrome's cookies survive `pm clear` on the *app*, so a second sign-in reuses the IdP session and skips the login form. With `interactiveLogin` off that produced the sub-less token above.
+
+---
+
+## Run 4 — 2026-09-23: CORS fixed, clause 6 closed, **GATE B PASSES**
+
+All six clauses pass. This is the first time the gate has been met.
+
+### What was fixed
+
+`apps/api` never enabled CORS (#60), so `apps/web` had never loaded data from the API in a browser — the API logged `200` for requests the browser discarded. Added as a **config-driven allowlist**, not `app.enableCors()`:
+
+- `CORS_ALLOWED_ORIGINS`, comma-separated, validated at startup as **bare origins** (`new URL(value).origin === value`). A trailing slash, a path, a query — all rejected, because a browser's `Origin` header carries none of them, so such an entry can never match and presents as "CORS is broken" with nothing naming the cause.
+- **No wildcard, and no way to express one.** This API serves PHI; `Access-Control-Allow-Origin: *` would let any page read a patient's clinical values given a token obtained by any means.
+- **Empty by default**, meaning no cross-origin access at all — and CORS is not enabled at all in that case, which is what every non-browser client already expects.
+- `credentials: false`. Tokens travel in the `Authorization` header, never cookies.
+
+**This is not the admin/patient boundary.** That boundary is the two disjoint identity pools and the structurally separate guards (SRS_v2 §4.6). Listing both SPA origins does not let a patient token reach `/api/v1/admin/...`; `AdminJwtAuthGuard` rejects it on issuer and audience. Removing an origin here is a browser-access change, not a security-boundary change — and the code says so, so nobody later mistakes the allowlist for the boundary.
+
+Verified directly before touching the browser:
+
+```
+Origin: http://localhost:8088    -> Access-Control-Allow-Origin: http://localhost:8088
+Origin: http://evil.example.com  -> (no Access-Control-Allow-Origin header)
+```
+
+### Clause 6
+
+Signed into `apps/web` in a real browser, at the day the device's entry belongs to:
+
+```
+1 entry loaded for September 20, 2026.
+Sep 20, 2026, 2:20 PM UTC | 450 mL | [Measured]
+Total stoma output for this day: 450 mL
+```
+
+The badge renders as an icon plus text, not colour alone (AC 2.2 AC2). The page also shows Daily Net Fluid Balance as `-450 mL` with its one-sided-day caveat ("No fluid intake was recorded for this day … not a complete balance") and the urine-exclusion note (SRS §3.7). No console errors.
+
+That entry is the same one created on the device in airplane mode for clause 1 — so clauses 1, 2, 3 and 6 are one continuous arc through the system, not six separate demonstrations.
+
+### Final clause status
+
+| # | Clause | Result |
+| - | ------ | ------ |
+| 1 | Airplane-mode entry, save confirms instantly | **PASS** |
+| 2 | Reconnecting syncs the entry | **PASS** |
+| 3 | An audit row carries before/after | **PASS** |
+| 4 | A forced conflict puts the loser in the audit log | **PASS** |
+| 5 | An invalid queued operation reaches the correction inbox | **PASS** |
+| 6 | The web view renders the entry with its Measured/Estimated badge | **PASS** |
+
+**Gate B is met.** Plan revision 2's rule holding P3 feature sprints behind an unblocked Gate B run is satisfied; P3.S2 can be dispatched.
+
+### What this still does not prove
+
+An emulator run, recorded as such. It closes **none** of HW-1..HW-10 in [`gate-b-hardware-verification.md`](gate-b-hardware-verification.md), and does not touch CLAUDE.md's "not verified on hardware" caveat. The AVD reports `hardware_keystore` but never `strongbox_keystore` — KeyMint in software.
+
+Two defects found during the runs remain open and were **not** fixed by passing the gate: #59 (the sync worker's first cycle after cold start still runs with no token, and clauses only passed because a manual foreground produced an authenticated one) and #40.
