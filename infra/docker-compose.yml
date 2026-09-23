@@ -288,17 +288,33 @@ services:
       # It also keeps the patient and admin audiences distinct, which
       # matching on "default" would have collapsed.
       #
-      # `requestMappings` matches on the client_id in the request, so each
-      # issuer only stamps the audience belonging to its own client.
+      # `interactiveLogin` is REQUIRED, not decorative. Supplying ANY
+      # JSON_CONFIG turns it off by default, and with it off the authorize
+      # endpoint skips the login form and mints a token with NO `sub`
+      # claim — which apps/api rejects as MISSING_SUBJECT_CLAIM: a 401 on a
+      # perfectly-signed token with the right issuer and audience. The
+      # first version of this config omitted it and blocked Gate B until
+      # R.S1 run 3 found it.
+      #
+      # The mapping matches `grant_type` with a wildcard, NOT `client_id`,
+      # because the patient issuer serves TWO clients — the mobile app
+      # (`ostomy-patient-app`) and the web SPA (`ostomy-web`) — and both
+      # must receive the audience apps/api checks, which is
+      # `ostomy-patient-app` for both (see the `web` service's
+      # VITE_OIDC_AUDIENCE). Matching on client_id stamps the mobile client
+      # only and leaves the web SPA holding `aud: "default"` and the same
+      # 401. Each issuer still stamps only its own audience: the callbacks
+      # are keyed per `issuerId`.
       JSON_CONFIG: >-
         {
+          "interactiveLogin": true,
           "tokenCallbacks": [
             {
               "issuerId": "patient-issuer",
               "requestMappings": [
                 {
-                  "requestParam": "client_id",
-                  "match": "ostomy-patient-app",
+                  "requestParam": "grant_type",
+                  "match": "*",
                   "claims": { "aud": ["ostomy-patient-app"] }
                 }
               ]
@@ -307,8 +323,8 @@ services:
               "issuerId": "admin-issuer",
               "requestMappings": [
                 {
-                  "requestParam": "client_id",
-                  "match": "ostomy-admin-console",
+                  "requestParam": "grant_type",
+                  "match": "*",
                   "claims": { "aud": ["ostomy-admin-console"] }
                 }
               ]

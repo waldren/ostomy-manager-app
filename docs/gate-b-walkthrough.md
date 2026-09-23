@@ -146,3 +146,111 @@ One contributing cause found and corrected, which was **not** sufficient on its 
 ### Next
 
 Resolve the 401. Verify the `aud` claim the device's token actually carries against `OIDC_AUDIENCE` — that is the one recorded assumption standing between this run and clause 1, and confirming or refuting it is a single observation, not an investigation.
+
+---
+
+## Run 3 — 2026-09-20, emulator
+
+**Result: still BLOCKED. Clause 1 reached, not completable. Clauses 2–6 not reached.**
+
+The `aud: "default"` fix (#58) is real and verified — a token minted by curl against this stack is accepted by the API and `/thresholds` returns its values. **It did not unblock the app**, which turns out to have a second, independent problem in the same area.
+
+### Confirmed: the sync worker fires before the token exists, and does not retry
+
+Instrumenting the worker's token accessor and correlating with the API's access log, on every cold start:
+
+```
+06:10:38  worker token segments=0 len=0     <- two calls, NO token
+06:10:42  refreshed aud="ostomy-patient-app"  <- token arrives, 4s later
+06:10:54  worker token segments=3 len=637   <- only after a manual foreground
+```
+
+So the app issues `/sync/delta`, `/thresholds` and `/value-sets` **unauthenticated** at startup, and **no further cycle runs on its own** — no retry was observed in 80 seconds of idling. `AuthContext.unlock()` sets `phase` to `authenticated` *before* the refresh completes, so `SyncProvider`'s "becoming authenticated" trigger fires against a state that has no token yet, and the token's later arrival is not itself a trigger.
+
+This is the same shape as #40: a phase that claims more than the session can back. Its consequence here is that a patient who was offline gets no thresholds, and the deliberately-unseeded cache correctly refuses to let them save.
+
+### Unresolved: the app's token is rejected where an equivalent one is accepted
+
+Even with a token present, all three endpoints still return 401. What is established:
+
+- the app's token is a well-formed JWT, 3 segments;
+- the refresh path's token carries `aud: "ostomy-patient-app"` and the correct `iss` — logged from the device;
+- a token minted by curl against the same issuer, **670 chars**, is accepted (200, with the thresholds payload) and is still accepted five minutes later, so neither expiry nor JWKS staleness explains it;
+- the app's token is consistently **637 chars** — a different claim set from anything this IdP produces for curl;
+- clocks on host, device, API container and IdP container agree exactly;
+- `kid` is `patient-issuer` on both sides, and the JWKS advertises exactly that key.
+
+**Tried and refuted:** widening the `requestMappings` match from `client_id` to a `grant_type` wildcard, on the theory that expo-auth-session's code exchange omits `client_id` as a form param. The app's token stayed 637 chars and still 401'd, so that was not the cause. The change was reverted rather than left in unverified.
+
+**What the next attempt needs** is the API's side of the story: the guard throws `UnauthorizedException({ code: mapVerificationError(error) })`, so the 401 body already names the reason — issuer, audience, expiry, signature or missing subject. Nothing logs it and the client discards it. Capturing that one code turns this from a search into a lookup, and is a better next step than any further guessing from the client side.
+
+### Clause status
+
+| # | Gate B clause | Status |
+| - | ------------- | ------ |
+| 1 | Airplane-mode entry, save confirms instantly | **Reached, not completable** — thresholds cache empty |
+| 2 | Reconnecting syncs the entry | Not reached |
+| 3 | An audit row carries before/after | Not reached |
+| 4 | A forced conflict puts the loser in the audit log | Not reached |
+| 5 | An invalid queued operation reaches the correction inbox | Not reached |
+| 6 | The web view renders the entry with its Measured/Estimated badge | Not reached |
+
+### Environment notes earned in this run
+
+- Chrome remembers the mock IdP session, so a second sign-in **skips the login form entirely** and goes straight to the OS biometric prompt. Blind tap sequences written for the first sign-in will land on that prompt and fail the sign-in. Check `dumpsys window | grep mCurrentFocus` between steps rather than assuming a screen.
+- A Metro process can survive its shell being killed, keep answering `packager-status:running`, and still fail to serve a bundle. Fetch an actual bundle before trusting it.
+
+---
+
+## Run 3, continued — 2026-09-20: unblocked, five of six clauses closed
+
+The 401 above was **my own regression**, introduced by the audience fix (#58).
+
+### What the 401 actually was
+
+Supplying **any** `JSON_CONFIG` to mock-oauth2-server turns `interactiveLogin` off by default. With it off, the authorize endpoint skips the login form and mints a token with **no `sub` claim**. `apps/api`'s guard verifies the signature, issuer and audience successfully, then rejects it with `MISSING_SUBJECT_CLAIM` — a 401 on an otherwise perfect token. That is why the app's token was 637 chars against curl's 670: the missing claim *was* the missing bytes.
+
+The measurement that settles it:
+
+```
+WITH login form: len=670  sub='gate-b-patient-1'  -> 200
+NO login form:   len=637  sub=None                -> 401
+```
+
+Adding `"interactiveLogin": true` restores the form and the claim.
+
+**A second defect in the same fix:** the mapping matched `client_id: ostomy-patient-app`, but the patient issuer serves **two** clients — the mobile app and the web SPA (`ostomy-web`). The web SPA would have hit the identical 401. The mapping now matches `grant_type` with a wildcard, so both clients get `aud: ostomy-patient-app`.
+
+### Clause results
+
+| # | Clause | Result | Evidence |
+| - | ------ | ------ | -------- |
+| 1 | Airplane-mode entry, save confirms instantly | **PASS** | Airplane mode on; 450 mL Measured; "Saved on this phone." and "1 entry has not been sent yet." with no network |
+| 2 | Reconnecting syncs the entry | **PASS** | Server row: LOINC `79560-9`, `450.0000`, `method 258104002`, one `sync/push` |
+| 3 | An audit row carries before/after | **PASS** | `CREATE`, `reason_code sync_applied`, `actor_id gate-b-patient-1`, full `after_value` incl. `enteredMeasurementSystem: METRIC` |
+| 4 | A forced conflict puts the loser in the audit log | **PASS** | Older-timestamped update returned `superseded`; audit row `UPDATE` / `sync_conflict_loser` with the losing 999 mL version in `before_value` and `after_value` null |
+| 5 | An invalid queued operation reaches the correction inbox | **PASS** | Clock skewed past ADR-0019's allowance; entry rejected server-side (absent from `observations`) and surfaced as "This entry could not be saved. Please check it." with Fix / Delete |
+| 6 | The web view renders the entry with its Measured/Estimated badge | **BLOCKED** | **Issue #60** — `apps/api` never enables CORS |
+
+### Clause 6's blocker
+
+Signed into `apps/web` in a real browser, the view renders its shell then shows "We could not load stoma output right now." The API logs `200` for the same request the browser reports as blocked:
+
+```
+Access to fetch at 'http://localhost:3000/api/v1/observations?...' from origin
+'http://localhost:8088' has been blocked by CORS policy
+```
+
+`grep -rn "enableCors" apps/api/src` returns nothing. **`apps/web` has never loaded data from the API in a browser** — its 130 tests all mock `fetch`, so the suite has only ever asserted against a stand-in for the thing that is broken. Same shape as #55.
+
+This is left unfixed deliberately: `app.enableCors()` would silence it, and CORS on a PHI API with two disjoint identity pools deserves a considered, config-driven allowlist rather than a one-line patch inside a walkthrough. See #60.
+
+### Two mistakes in this run, recorded because they nearly became false passes
+
+- **Clause 5 was asserted wrongly twice.** I checked whether my entries reached the server by volume (`275`, `312`) and got `count = 1` both times — but those were *seeded* rows that happened to share the values. Querying by `created_at` showed my entries were never stored, i.e. correctly rejected. Matching on a non-unique clinical value against a seeded database is not an assertion.
+- **A stray tap hit "Sign out"** after the home screen's layout shifted, and only ADR-0014's unsent-entry warning ("1 entry is still only on this phone. Signing out removes it for good.") stopped the test state being destroyed. The control earned its place.
+
+### Environment facts this run established
+
+- `adb root` restarts the device's adb daemon and **silently drops every `adb reverse` forward**. The app then fails OIDC discovery with `Failed to connect to localhost:8090`, and nothing syncs until the forwards are re-added.
+- Chrome's cookies survive `pm clear` on the *app*, so a second sign-in reuses the IdP session and skips the login form. With `interactiveLogin` off that produced the sub-less token above.
