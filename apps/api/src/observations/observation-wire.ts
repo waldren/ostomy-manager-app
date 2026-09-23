@@ -212,7 +212,7 @@ export const observationResourceSchema = z
     }),
     code: z.string().meta({
       description:
-        'Bare LOINC code. This release accepts 79560-9 (stoma output) and 9000-1 (oral fluid intake); anything else is UNSUPPORTED_CODE.',
+        'Bare LOINC code. This release accepts 79560-9 (stoma output), 9000-1 (oral fluid intake) and 9187-6 (voided urine); anything else is UNSUPPORTED_CODE.',
     }),
     // OPTIONAL since P3.S2, and absent only on voided urine (9187-6) that
     // carries a colour instead (AC 12.1 AC2). Which codes may omit it is

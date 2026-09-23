@@ -38,9 +38,9 @@ export type Observation = {
     | 'cancelled'
     | 'entered-in-error'
     | 'unknown';
-  /** Bare LOINC code. This release accepts 79560-9 (stoma output) and 9000-1 (oral fluid intake); anything else is UNSUPPORTED_CODE. */
+  /** Bare LOINC code. This release accepts 79560-9 (stoma output), 9000-1 (oral fluid intake) and 9187-6 (voided urine); anything else is UNSUPPORTED_CODE. */
   readonly code: string;
-  readonly valueQuantity: ObservationValueQuantity;
+  readonly valueQuantity?: ObservationValueQuantity;
   /** The clinical moment the observation describes. RFC 3339, UTC, exactly three fractional digits. */
   readonly effectiveDateTime: string;
   /** SNOMED CT estimation-technique code when estimated; null when measured. The code itself is unresolved (D4), so this release accepts null only. */
@@ -51,6 +51,8 @@ export type Observation = {
   readonly enteredTimezone: string;
   /** Which kind of fluid this was, as a `fluid_type` value-set member code (SRS AC 2.3 AC1). Optional on an intake entry and meaningless on any other code — sending it with a non-intake code is PAYLOAD_FIELD_INVALID. A code, never a display label: the patient-facing text comes from the i18n catalog (ADR-0006). */
   readonly fluidTypeCode?: string | null;
+  /** The chosen step of the pale-to-dark urine colour scale, as a `urine_color` value-set member code (SRS AC 12.1 AC2). Optional on a voided-urine entry and meaningless on any other code — sending it with a non-urine code is PAYLOAD_FIELD_INVALID. It is the ONLY field a colour-without-volume entry carries, so a urine entry with neither this nor valueQuantity records nothing and is refused. A code, never a display label: the patient-facing text comes from the i18n catalog (ADR-0006). */
+  readonly urineColorCode?: string | null;
 };
 
 export type ObservationCreateResponse = {
@@ -152,6 +154,7 @@ export type SyncOperationResult = {
     | 'VALUE_EXCEEDS_MAX_MAGNITUDE'
     | 'VALUE_EXCEEDS_MAX_PRECISION'
     | 'METHOD_REQUIRED'
+    | 'METHOD_NOT_APPLICABLE'
     | 'EFFECTIVE_DATE_TIME_IN_FUTURE'
     | 'EFFECTIVE_DATE_TIME_BEFORE_SURGERY'
     | 'CLIENT_TIMESTAMP_OUT_OF_RANGE'
@@ -180,6 +183,7 @@ export type SyncOperationResult = {
     | 'enteredMeasurementSystem'
     | 'enteredTimezone'
     | 'fluidTypeCode'
+    | 'urineColorCode'
     | 'description'
     | 'size'
     | 'tagCodes';

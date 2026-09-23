@@ -70,4 +70,7 @@ export {
  * places the patient never typed. See `./representableRange.js` for why
  * these are structural facts rather than injectable thresholds.
  */
+export { validateVolumelessObservation } from './volumeless.js';
+export type { VolumelessObservationInput } from './volumeless.js';
+
 export { MAX_REPRESENTABLE_VALUE_ML, MAX_VALUE_DECIMAL_PLACES } from './representableRange.js';

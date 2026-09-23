@@ -190,10 +190,10 @@ async function applyChange(
     await executor.runAsync(
       `INSERT INTO observations (
         id, resource_type, code, value_quantity_value, value_quantity_unit,
-        effective_datetime, method, status, entered_measurement_system,
-        entered_timezone, local_date, client_updated_at, server_sequence,
-        deleted_at, created_at, updated_at
-      ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?);`,
+        urine_color_code, effective_datetime, method, status,
+        entered_measurement_system, entered_timezone, local_date,
+        client_updated_at, server_sequence, deleted_at, created_at, updated_at
+      ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?);`,
       [
         payload.id,
         payload.code,
@@ -201,8 +201,14 @@ async function applyChange(
         // `String()` on a JSON-parsed number is its shortest round-tripping
         // form, which is the value itself for every DECIMAL(12,4) the
         // server can hold.
-        String(payload.valueQuantity.value),
-        payload.valueQuantity.unit,
+        //
+        // ABSENT stays absent: a colour-only voided-urine row (AC 12.1 AC2)
+        // carries no `valueQuantity`, and `String(undefined)` would persist
+        // the literal text "undefined" as a clinical value. NULL is what the
+        // column means by "this entry recorded no amount".
+        payload.valueQuantity === undefined ? null : String(payload.valueQuantity.value),
+        payload.valueQuantity?.unit ?? null,
+        payload.urineColorCode ?? null,
         payload.effectiveDateTime,
         payload.method,
         payload.status,
@@ -221,14 +227,17 @@ async function applyChange(
   await executor.runAsync(
     `UPDATE observations SET
       code = ?, value_quantity_value = ?, value_quantity_unit = ?,
+      urine_color_code = ?,
       effective_datetime = ?, method = ?, status = ?,
       entered_measurement_system = ?, entered_timezone = ?, local_date = ?,
       client_updated_at = ?, server_sequence = ?, deleted_at = NULL, updated_at = ?
      WHERE id = ?;`,
     [
       payload.code,
-      String(payload.valueQuantity.value),
-      payload.valueQuantity.unit,
+      // See the insert above: absent stays absent, never "undefined".
+      payload.valueQuantity === undefined ? null : String(payload.valueQuantity.value),
+      payload.valueQuantity?.unit ?? null,
+      payload.urineColorCode ?? null,
       payload.effectiveDateTime,
       payload.method,
       payload.status,

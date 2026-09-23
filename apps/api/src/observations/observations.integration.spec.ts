@@ -1476,7 +1476,11 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
       });
 
       expect(created.observation.id).toBe(id);
-      expect(created.observation.valueQuantity.value).toBe(275.25);
+      // `valueQuantity` is optional on the wire since P3.S2 (a colour-only
+      // voided-urine entry carries none), so this asserts the object is
+      // present as well as its value — on a stoma-output entry its absence
+      // would itself be the defect.
+      expect(created.observation.valueQuantity).toMatchObject({ value: 275.25 });
       expect(created.warnings).toEqual([]);
 
       const readBack = await client.observations.findOne(id);

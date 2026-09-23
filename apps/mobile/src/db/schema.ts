@@ -147,6 +147,96 @@ export interface SchemaMigration {
 }
 
 /**
+ * Migration 7: voided urine, and the first local row that may carry no
+ * volume.
+ *
+ * AC 12.1 AC2 lets a patient who cannot measure save a COLOUR ALONE, so
+ * `value_quantity_value` and `value_quantity_unit` stop being NOT NULL.
+ * SQLite cannot relax a NOT NULL in place, and cannot drop a column a CHECK
+ * references, so the table is recreated — the same approach migration 2
+ * took and for the same reason.
+ *
+ * ## What the recreation must not lose
+ *
+ * Every column and both indexes, copied explicitly rather than by
+ * `SELECT *`, so a future column added above this migration cannot be
+ * silently dropped by it. `id` is the sync entity id and `server_sequence`
+ * the delta cursor's anchor: regenerating or omitting either would make
+ * this device re-pull rows it already has, or worse, push rows the server
+ * would treat as new (`docs/sync-contract.md` §3.7).
+ *
+ * ## The CHECK constraints come too
+ *
+ * Mirroring the server's, as migration 1's comment explains: every write
+ * path here is expected to go through `@ostomy/core`, but a schema-level
+ * constraint fails loudly in a test rather than producing a row this app
+ * cannot later make sense of. The value/unit pairing and the
+ * urine-colour-only rule are both expressed, so a local row cannot reach a
+ * state the server would refuse.
+ */
+const MIGRATION_7_VOIDED_URINE = `
+CREATE TABLE observations_new (
+  id TEXT PRIMARY KEY NOT NULL,
+  resource_type TEXT NOT NULL DEFAULT 'Observation',
+  code TEXT NOT NULL,
+  -- Nullable since P3.S2. NULL means the entry recorded a colour instead of
+  -- an amount; it does NOT mean a void of zero, and anything summing these
+  -- must skip it rather than coerce it.
+  value_quantity_value TEXT,
+  value_quantity_unit TEXT CHECK (value_quantity_unit IS NULL OR value_quantity_unit IN ('mL', 'kg')),
+  -- The chosen step of the pale-to-dark scale, as a urine_color value-set
+  -- member code. Never display text: the label comes from the i18n catalog.
+  urine_color_code TEXT,
+  effective_datetime TEXT NOT NULL,
+  method TEXT,
+  status TEXT NOT NULL DEFAULT 'final',
+  entered_measurement_system TEXT NOT NULL CHECK (entered_measurement_system IN ('metric', 'imperial')),
+  entered_timezone TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  fluid_type_code TEXT,
+  client_updated_at TEXT NOT NULL,
+  server_sequence TEXT,
+  deleted_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  -- A volume and its unit travel together, both directions.
+  CHECK ((value_quantity_value IS NULL) = (value_quantity_unit IS NULL)),
+  -- Only voided urine may omit the volume, and only when a colour replaces
+  -- it. Anything else with no volume records nothing at all.
+  CHECK (value_quantity_value IS NOT NULL OR (code = '9187-6' AND urine_color_code IS NOT NULL)),
+  -- A colour belongs to nothing but voided urine.
+  CHECK (urine_color_code IS NULL OR code = '9187-6'),
+  -- No Measured/Estimated qualifier without a value to qualify (ADR-0018).
+  CHECK (method IS NULL OR value_quantity_value IS NOT NULL)
+);
+
+INSERT INTO observations_new (
+  id, resource_type, code, value_quantity_value, value_quantity_unit,
+  urine_color_code, effective_datetime, method, status,
+  entered_measurement_system, entered_timezone, local_date, fluid_type_code,
+  client_updated_at, server_sequence, deleted_at, created_at, updated_at
+)
+SELECT
+  id, resource_type, code, value_quantity_value, value_quantity_unit,
+  NULL, effective_datetime, method, status,
+  entered_measurement_system, entered_timezone, local_date, fluid_type_code,
+  client_updated_at, server_sequence, deleted_at, created_at, updated_at
+FROM observations;
+
+DROP TABLE observations;
+ALTER TABLE observations_new RENAME TO observations;
+
+CREATE INDEX IF NOT EXISTS idx_observations_code_effective
+  ON observations (code, effective_datetime);
+
+CREATE INDEX IF NOT EXISTS idx_observations_deleted_at
+  ON observations (deleted_at);
+
+CREATE INDEX IF NOT EXISTS idx_observations_local_date
+  ON observations (local_date);
+`;
+
+/**
  * Applied in ascending `version` order by `./migrations.ts`. Append a new
  * entry for a schema change; never edit an entry a shipped build may have
  * already applied — the same rule `apps/api/prisma/migrations` follows.
@@ -424,5 +514,10 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     version: 6,
     description: 'fluid intake (observations.fluid_type_code) and the local meals table',
     sql: () => MIGRATION_6_INTAKE_AND_MEALS,
+  },
+  {
+    version: 7,
+    description: 'voided urine: nullable volume, urine_color_code (SRS AC 12.1 AC2)',
+    sql: () => MIGRATION_7_VOIDED_URINE,
   },
 ];

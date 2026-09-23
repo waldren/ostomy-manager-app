@@ -133,6 +133,30 @@ describe('interpretObservationPayload — release-scope acceptance', () => {
       ]);
     });
 
+    /**
+     * ABSENT and NULL are different payloads and must stay different.
+     *
+     * An absent `valueQuantity` says the entry recorded no volume; a present
+     * one carrying `null` says the client supplied a malformed volume, which
+     * Tier 1 rejects as VALUE_NOT_NUMERIC. Collapsing them routes a
+     * stoma-output entry sending `value: null` into the volume-less
+     * validator — which has no value rules — and it would be ACCEPTED. An
+     * integration test caught exactly that regression during P3.S2.
+     */
+    it('treats a null-valued volume as supplied-but-malformed, not as absent', () => {
+      const input = interpretObservationPayload(
+        payload({
+          code: '79560-9',
+          valueQuantity: { value: null, unit: 'mL' },
+        } as Partial<ObservationRequestParsed>),
+      );
+
+      // Passed through for Tier 1 to reject, and flagged as supplied so the
+      // service does not mistake it for a colour-only entry.
+      expect(input.hasVolume).toBe(true);
+      expect(input.rawValueMl).toBeNull();
+    });
+
     it('refuses a MISSING volume on any other code, where absence records nothing', () => {
       const { valueQuantity: _omitted, ...withoutVolume } = payload({ code: '79560-9' });
       const rejection = rejectionOf(() =>

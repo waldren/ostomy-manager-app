@@ -64,6 +64,20 @@ export interface ObservationWriteInput {
   readonly rawValueMl: unknown;
   /** `null` only on a colour-only voided-urine entry, where there is no volume to carry a unit (AC 12.1 AC2). */
   readonly unit: string | null;
+  /**
+   * Whether the payload carried a `valueQuantity` AT ALL.
+   *
+   * Distinct from `rawValueMl === null`, and the distinction is load-bearing:
+   * an ABSENT `valueQuantity` means the entry recorded no volume (legal only
+   * for voided urine with a colour), while a PRESENT one carrying `null` is a
+   * malformed volume that Tier 1 must reject as `VALUE_NOT_NUMERIC`.
+   *
+   * Collapsing the two routes a stoma-output entry sending `value: null`
+   * into the volume-less validator, which has no value rules — so it would
+   * be accepted instead of rejected. An integration test caught exactly
+   * that.
+   */
+  readonly hasVolume: boolean;
   readonly effectiveDateTime: Date;
   readonly method: MethodWireInterpretation;
   readonly enteredMeasurementSystem: CoreMeasurementSystem;
@@ -175,11 +189,12 @@ export function interpretObservationPayload(
   return {
     id: parsed.id,
     code: parsed.code,
-    // `null`, never 0, when the entry recorded a colour instead. The
-    // database CHECK refuses a row that has neither, and every read path
-    // that sums must skip this rather than coerce it.
+    // Passed through UNCHANGED when present, including a `null` the client
+    // sent — that is a malformed volume for Tier 1 to reject, not an absent
+    // one. `null` here means absent only because `hasVolume` says so.
     rawValueMl: parsed.valueQuantity === undefined ? null : parsed.valueQuantity.value,
     unit: parsed.valueQuantity === undefined ? null : parsed.valueQuantity.unit,
+    hasVolume: parsed.valueQuantity !== undefined,
     urineColorCode,
     // Safe to construct: the zod layer already pinned the lexical form to
     // RFC 3339 with exactly three fractional digits and a `Z` offset (§7.3),
@@ -275,6 +290,11 @@ const TIER1_FIELD: Readonly<Record<Tier1ReasonCode, ObservationRejectionField>> 
   [TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_MAGNITUDE]: OBSERVATION_FIELD.VALUE,
   [TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_PRECISION]: OBSERVATION_FIELD.VALUE,
   [TIER1_RULE_CODE.METHOD_REQUIRED]: OBSERVATION_FIELD.METHOD,
+  // `method`, not the colour. The patient supplied a Measured/Estimated
+  // selection on an entry that records no amount; the actionable fix is to
+  // drop that selection, so that is the input a correction UI should
+  // highlight.
+  [TIER1_RULE_CODE.METHOD_NOT_APPLICABLE]: OBSERVATION_FIELD.METHOD,
   [TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_IN_FUTURE]: OBSERVATION_FIELD.EFFECTIVE_DATE_TIME,
   [TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_BEFORE_SURGERY]: OBSERVATION_FIELD.EFFECTIVE_DATE_TIME,
 };

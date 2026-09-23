@@ -46,7 +46,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 import { Inject, Injectable } from '@nestjs/common';
 import { SYNC_REASON_CODE } from '@ostomy/core/sync';
-import { validateVolumetricEntry, type VolumetricEntryInput } from '@ostomy/core/validation';
+import {
+  validateVolumelessObservation,
+  validateVolumetricEntry,
+  type VolumetricEntryInput,
+} from '@ostomy/core/validation';
 import type { Request } from 'express';
 
 import { AuditPersistenceError, AuditService } from '../audit/audit.service';
@@ -133,15 +137,41 @@ export class ObservationsService {
     const input = interpretObservationPayload(parsed);
 
     const thresholds = await this.thresholds.getVolumetricThresholds();
-    const validationInput: VolumetricEntryInput = {
-      field: OBSERVATION_FIELD.VALUE,
-      rawValueMl: input.rawValueMl,
-      method: toMeasuredOrEstimated(input.method),
-      effectiveDateTime: input.effectiveDateTime,
-      surgeryDate: patient.surgeryDate,
-      now: new Date(),
-    };
-    const validation = validateVolumetricEntry(validationInput, thresholds);
+    // Which engine, decided by what the patient actually entered rather than
+    // by a flag this service reasons about. `packages/core` owns "which rules
+    // apply to an entry with no amount" (AC 12.1 AC2) — duplicating that
+    // judgement here is exactly what CLAUDE.md's "defined once in
+    // packages/core" forbids.
+    // Branch on whether a volume was SUPPLIED, never on whether it is null.
+    // A client that sent `valueQuantity: { value: null }` supplied a
+    // malformed volume, which Tier 1 must reject as VALUE_NOT_NUMERIC —
+    // routing it to the volume-less engine would accept it, because that
+    // engine has no value rules at all.
+    const validation = !input.hasVolume
+      ? validateVolumelessObservation(
+          {
+            // Named on the colour: it is the only clinical content a
+            // volume-less entry carries, so it is the field the patient's
+            // correction inbox can act on.
+            field: OBSERVATION_FIELD.URINE_COLOR_CODE,
+            method: toMeasuredOrEstimated(input.method),
+            effectiveDateTime: input.effectiveDateTime,
+            surgeryDate: patient.surgeryDate,
+            now: new Date(),
+          },
+          thresholds,
+        )
+      : validateVolumetricEntry(
+          {
+            field: OBSERVATION_FIELD.VALUE,
+            rawValueMl: input.rawValueMl,
+            method: toMeasuredOrEstimated(input.method),
+            effectiveDateTime: input.effectiveDateTime,
+            surgeryDate: patient.surgeryDate,
+            now: new Date(),
+          } satisfies VolumetricEntryInput,
+          thresholds,
+        );
 
     // The discriminant rather than `packages/core`'s `isBlocked()` helper:
     // the helper returns a boolean and so does not narrow `tier1` to the
@@ -152,17 +182,31 @@ export class ObservationsService {
       throw validationBlocked(toRejectionDetails(validation.tier1.errors));
     }
 
-    const valueMl = input.rawValueMl;
-    if (typeof valueMl !== 'number' || !Number.isFinite(valueMl)) {
-      // Unreachable: Tier 1's VALUE_NOT_NUMERIC has already blocked anything
-      // that is not a finite number. Kept because the alternative to an
-      // explicit narrowing here is a cast, and a cast would hand a
-      // non-numeric value to Prisma — whose `PrismaClientValidationError`
-      // renders the offending `data` argument, i.e. the clinical value,
-      // into its own message (P1.S5 finding B3).
-      throw validationBlocked([
-        { field: OBSERVATION_FIELD.VALUE, reasonCode: SYNC_REASON_CODE.VALUE_NOT_NUMERIC },
-      ]);
+    // `null` passes straight through: a colour-only entry has no volume, and
+    // the column is nullable for exactly that case. NOT coerced to 0 — a
+    // missing volume is not a void of zero, and the database CHECK refuses a
+    // row carrying neither a volume nor a colour rather than storing an
+    // empty observation.
+    // `null` only when NO volume was supplied — a colour-only entry, whose
+    // column is nullable for exactly that case. Never coerced to 0: a
+    // missing volume is not a void of zero, and the database CHECK refuses a
+    // row carrying neither a volume nor a colour rather than storing an
+    // empty observation.
+    let valueMl: number | null = null;
+    if (input.hasVolume) {
+      const raw = input.rawValueMl;
+      if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+        // Unreachable: Tier 1's VALUE_NOT_NUMERIC has already blocked
+        // anything that is not a finite number. Kept because the alternative
+        // to an explicit narrowing here is a cast, and a cast would hand a
+        // non-numeric value to Prisma — whose `PrismaClientValidationError`
+        // renders the offending `data` argument, i.e. the clinical value,
+        // into its own message (P1.S5 finding B3).
+        throw validationBlocked([
+          { field: OBSERVATION_FIELD.VALUE, reasonCode: SYNC_REASON_CODE.VALUE_NOT_NUMERIC },
+        ]);
+      }
+      valueMl = raw;
     }
 
     // Scoped by `(patient, id)`, never by id alone. A row of this patient's
