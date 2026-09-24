@@ -7,9 +7,10 @@
   "description": "Patient-facing web SPA (React + Vite). Online-only by explicit decision (SRS_v2 §4.2/§4.3) — no local persistence layer, no offline queue.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b --noEmit && vite build",
+    "build": "tsc -b --noEmit --force && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit",
+    "//typecheck": "`--force` is load-bearing, not belt-and-braces. This is the only workspace using `tsc -b`, and its project has NO reference to packages/core or packages/ui — it resolves them through node_modules. So `tsc -b`'s up-to-date check compares only this project's own sources against tsconfig.app.tsbuildinfo, and a rebuild of packages/core that changes a published type leaves the cache looking current. P3.S2 hit it: `Observation.valueQuantity` became optional, three call sites in formatObservationsForDisplay.ts stopped compiling, and `pnpm verify` reported GREEN until the tsbuildinfo was deleted by hand. A verify step that can pass on code which does not compile is worse than no step. Deleting the cache would work too; forcing is the version that cannot be undone by someone re-adding an incremental flag.",
+    "typecheck": "tsc -b --noEmit --force",
     "lint": "eslint .",
     "test": "vitest run",
     "test:unit": "vitest run"

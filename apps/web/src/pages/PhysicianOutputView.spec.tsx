@@ -230,6 +230,166 @@ describe('PhysicianOutputView — a day bigger than one page', () => {
   });
 });
 
+/**
+ * Voided urine on the page (SRS §3.7, AC 12.1) — the whole read path, from
+ * the API response the page actually receives to what a reader sees.
+ *
+ * The exclusion has unit tests in `packages/core` and in
+ * `formatObservationsForDisplay.spec.ts`. This block is the one that would
+ * catch it being lost anywhere BETWEEN them and the screen: a filter dropped
+ * from the page, an urine entry routed into the output timeline, or the
+ * balance being handed a pre-filtered list so that core's exclusion stops
+ * being what enforces it.
+ */
+describe('PhysicianOutputView — voided urine (SRS §3.7)', () => {
+  function urine(overrides: Partial<Observation> = {}): Observation {
+    return observation({
+      id: `urine-${String(Math.random()).slice(2, 10)}`,
+      code: '9187-6',
+      valueQuantity: { value: 400, unit: 'mL' },
+      ...overrides,
+    });
+  }
+
+  /** A colour-only entry: `valueQuantity` OMITTED, exactly as §7.2 has the server send it. */
+  function colourOnlyUrine(colorCode: string): Observation {
+    const { valueQuantity: _omitted, ...rest } = urine({ urineColorCode: colorCode });
+    return rest as Observation;
+  }
+
+  /**
+   * AC 4. The figure must be identical with and without the urine, and the
+   * two renders are compared directly rather than against a hand-computed
+   * expectation — a wrong expectation is exactly how a test like this passes
+   * while the behaviour it describes is broken.
+   *
+   * Clinically: counted as intake, urine flatters the balance; counted as
+   * output, it exaggerates the deficit. Either way a physician reads a
+   * hydration conclusion off a number answering a different question, which
+   * is what keeping the two signals separate exists to prevent.
+   */
+  it('does not move the daily net fluid balance', async () => {
+    const intake = observation({ code: '9000-1', valueQuantity: { value: 2000, unit: 'mL' } });
+    const output = observation({ code: '79560-9', valueQuantity: { value: 1400, unit: 'mL' } });
+
+    listMock.mockResolvedValueOnce({ observations: [intake, output] });
+    const withoutUrine = render(<PhysicianOutputView />);
+    const balanceRegion = await withoutUrine.findByText(/minus stoma output/i);
+    const balanceText = balanceRegion.parentElement?.textContent ?? '';
+    expect(balanceText).toMatch(/600/);
+    withoutUrine.unmount();
+
+    listMock.mockResolvedValueOnce({
+      observations: [
+        intake,
+        output,
+        urine({ valueQuantity: { value: 1800, unit: 'mL' } }),
+        colourOnlyUrine('amber'),
+      ],
+    });
+    const withUrine = render(<PhysicianOutputView />);
+    const withUrineRegion = await withUrine.findByText(/minus stoma output/i);
+
+    expect(withUrineRegion.parentElement?.textContent ?? '').toBe(balanceText);
+  });
+
+  /**
+   * The chart and table are a timeline OF STOMA OUTPUT and say so in their
+   * headings. A urine entry appearing there would present an emptying and a
+   * void as the same kind of event, under a label that claims they are not.
+   */
+  it('keeps urine out of the stoma output timeline and its total', async () => {
+    listMock.mockResolvedValueOnce({
+      observations: [
+        observation({ code: '79560-9', valueQuantity: { value: 350, unit: 'mL' } }),
+        urine({ valueQuantity: { value: 900, unit: 'mL' } }),
+      ],
+    });
+
+    render(<PhysicianOutputView />);
+
+    const table = await screen.findByRole('table');
+    expect(table.textContent).toMatch(/350/);
+    expect(table.textContent).not.toMatch(/900/);
+    // Not 1,250 — the total row is stoma output alone.
+    expect(table.textContent).not.toMatch(/1,?250/);
+  });
+
+  /**
+   * Scoped to the notice's own title element, not the page text: the page's
+   * intro paragraph names urine output too, so a bare text query matches it
+   * and the assertion stops being about the region at all.
+   */
+  function urineNoticeTitle(): HTMLElement | null {
+    return screen.queryByText(
+      (_content, element) =>
+        element?.classList.contains('ostomyInlineNotice__title') === true &&
+        /^urine output$/i.test(element.textContent ?? ''),
+    );
+  }
+
+  it('shows the urine signal in its own region, beside the balance', async () => {
+    listMock.mockResolvedValueOnce({
+      observations: [
+        observation({ code: '9000-1', valueQuantity: { value: 1500, unit: 'mL' } }),
+        urine({ valueQuantity: { value: 400, unit: 'mL' } }),
+      ],
+    });
+
+    render(<PhysicianOutputView />);
+
+    await screen.findByRole('table');
+    expect(urineNoticeTitle()).toBeInTheDocument();
+    expect(screen.getByText(/400/)).toBeInTheDocument();
+    expect(screen.getByText(/not part of the daily net fluid balance/i)).toBeInTheDocument();
+  });
+
+  /**
+   * AC 12.1 AC2, end to end: the patient who cannot measure. The colour has
+   * to survive from the wire to the screen as WORDS, and the page must not
+   * invent a zero for the amount they did not give.
+   */
+  it('renders a day recorded only by colour, without inventing a volume', async () => {
+    listMock.mockResolvedValueOnce({
+      observations: [colourOnlyUrine('amber'), colourOnlyUrine('brown')],
+    });
+
+    render(<PhysicianOutputView />);
+
+    await screen.findByText('Amber');
+    expect(urineNoticeTitle()).toBeInTheDocument();
+    expect(screen.getByText('Brown or darker')).toBeInTheDocument();
+    expect(screen.queryByText(/measured total/i)).not.toBeInTheDocument();
+  });
+
+  /**
+   * A urine-only day has nothing the balance is computed from. It must say
+   * so — "no intake or output was recorded" — rather than rendering a
+   * zero-balance, which would assert that intake and output cancelled out.
+   */
+  it('reports no balance at all for a day holding only urine', async () => {
+    listMock.mockResolvedValueOnce({ observations: [urine()] });
+
+    render(<PhysicianOutputView />);
+
+    expect(
+      await screen.findByText(/no fluid intake or stoma output was recorded/i),
+    ).toBeInTheDocument();
+  });
+
+  /** No urine that day is not a state worth a region — see the component's own comment. */
+  it('renders no urine region for a day without any', async () => {
+    listMock.mockResolvedValueOnce({
+      observations: [observation({ code: '79560-9', valueQuantity: { value: 350, unit: 'mL' } })],
+    });
+
+    render(<PhysicianOutputView />);
+
+    await screen.findByRole('table');
+    expect(urineNoticeTitle()).not.toBeInTheDocument();
+  });
+});
+
 describe('PhysicianOutputView — keyboard order', () => {
   /**
    * Sign-out was the first control inside `<main>`, so every keyboard and

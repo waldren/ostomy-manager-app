@@ -29,6 +29,7 @@ import { DateNav } from '../components/DateNav.js';
 import { OutputChart } from '../components/OutputChart.js';
 import { OutputTable } from '../components/OutputTable.js';
 import { UnitToggle } from '../components/UnitToggle.js';
+import { UrineSignalNotice } from '../components/UrineSignalNotice.js';
 import {
   toDisplayDailyTotal,
   toDisplayOutputEntries,
@@ -36,6 +37,7 @@ import {
   isFluidBalanceIntake,
   isFluidBalanceOutput,
   toDisplayNetFluidBalance,
+  toUrineDaySummary,
   hasFluidBalanceInputs,
 } from '../format/formatObservationsForDisplay.js';
 
@@ -238,6 +240,16 @@ export function PhysicianOutputView() {
     [observations, targetSystem],
   );
 
+  // The second hydration signal, kept beside the balance and out of it
+  // (SRS §3.7). `toDisplayNetFluidBalance` is handed the SAME undifferentiated
+  // `observations` and excludes urine by LOINC code in `packages/core`, so the
+  // separation is one rule in one place rather than a filter each caller has
+  // to remember.
+  const urine = useMemo(
+    () => toUrineDaySummary(observations, targetSystem),
+    [observations, targetSystem],
+  );
+
   return (
     <>
       {/*
@@ -269,6 +281,8 @@ export function PhysicianOutputView() {
           hasIntake={observations.some(isFluidBalanceIntake)}
           hasOutput={observations.some(isFluidBalanceOutput)}
         />
+
+        <UrineSignalNotice summary={urine} />
 
         {/*
           ONE region, mounted for every state (WCAG 4.1.3).

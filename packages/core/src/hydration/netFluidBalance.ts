@@ -77,6 +77,33 @@ export const EXCLUDED_FROM_DAILY_NET_FLUID_BALANCE_LOINC_CODES: ReadonlySet<stri
   RESTING_HEART_RATE_LOINC_CODE,
 ]);
 
+/**
+ * Voided urine, as its own hydration signal.
+ *
+ * The set above says what urine is NOT part of. This says what it IS: one of
+ * the four hydration signals in its own right (CLAUDE.md, SRS §3.7), and the
+ * one a reader is most likely to assume the balance already covers.
+ *
+ * A UI showing urine separately needs to pick those observations out, and
+ * without this it would need the raw LOINC code — which this module
+ * deliberately withholds, so that it does not become a second terminology
+ * entry point ahead of `packages/core/src/fhir` (ADR-0007). A named set is
+ * the behaviour half of the same fact the exclusion set states negatively,
+ * and keeping both here means a code that stops being excluded and a code
+ * that stops being the urine signal cannot drift apart.
+ *
+ * A set rather than a single code because that is the shape every other
+ * classification here takes, and because `EXCLUDED_...` already anticipates
+ * this one growing — a urostomy would be a second urine code, and v1
+ * deliberately does not cover urostomy (SRS Phase 4 Appendix A).
+ */
+export const URINE_OUTPUT_LOINC_CODES: ReadonlySet<string> = new Set([VOIDED_URINE_LOINC_CODE]);
+
+/** Whether this observation is the urine-output hydration signal (SRS §3.7). */
+export function isUrineOutputSignal(loincCode: string): boolean {
+  return URINE_OUTPUT_LOINC_CODES.has(loincCode);
+}
+
 export function countsTowardDailyNetFluidBalance(loincCode: string): boolean {
   return DAILY_NET_FLUID_BALANCE_LOINC_CODES.has(loincCode);
 }

@@ -106,8 +106,15 @@ export const web = {
   // halves of that framing asserted something the data is not. Claiming a
   // selected patient is the same class of defect as showing one day's
   // figures under another day's heading.
-  'physicianView.heading': 'Stoma output',
-  'physicianView.intro': 'One day of stoma output, listed and charted by time of day.',
+  // Names the DAY, not one of the things on it. The page carried the heading
+  // "Stoma output" while rendering a net fluid balance above the chart and,
+  // since P3.S2, urine output beside it — so its own h1 described a third of
+  // its content, and a reader could reasonably stop at the chart believing
+  // they had seen the page. The chart and table keep their own "Stoma output"
+  // headings, which is where that label is true.
+  'physicianView.heading': 'One day of fluid records',
+  'physicianView.intro':
+    'Fluid balance, urine output, and every stoma entry for the day, listed and charted by time of day.',
   'physicianView.loading': 'Loading stoma output…',
   'physicianView.loadError':
     'We could not load stoma output right now. Please try again in a moment.',
@@ -166,6 +173,45 @@ export const web = {
     'No fluid intake was recorded for this day. This figure is stoma output alone, and is not a complete balance.',
   'physicianView.netBalance.outputMissing':
     'No stoma output was recorded for this day. This figure is fluid intake alone, and is not a complete balance.',
+
+  // --- Urine output, the second hydration signal (SRS §3.7, AC 12.1) -----
+  //
+  // Its own block on the page, immediately after the balance and never inside
+  // it. The two are adjacent because a reader comparing them is the point,
+  // and separate because combining them is the one thing CLAUDE.md names
+  // outright about this data: net balance measures stoma losses, urine output
+  // independently signals renal perfusion, and a normal-looking balance can
+  // hide a dangerously low urine output.
+  //
+  // This is a physician's view, so it reports and does not interpret. No
+  // threshold, no verdict, no colour-coded status — SRS §5.4 reserves the
+  // urgent voice for the red-flag prompt, and the four signals stay separate
+  // and uncombined here.
+  'physicianView.urine.heading': 'Urine output',
+  'physicianView.urine.total': 'Measured total: {{amount}}',
+  // Says how much of the day the total actually covers. AC 12.1 AC2 makes the
+  // amount optional, so a day can hold four entries and one measured volume —
+  // and a bare total would describe that day as though the other three had
+  // not happened.
+  'physicianView.urine.measuredOf_one': 'From 1 of {{total}} entries recorded this day.',
+  'physicianView.urine.measuredOf_other': 'From {{count}} of {{total}} entries recorded this day.',
+  // The whole day was recorded by colour. Not an error and not a gap in the
+  // data: it is the entry AC 12.1 AC2 exists for, made by a patient who
+  // cannot measure, and it carries a real hydration signal.
+  'physicianView.urine.noneMeasured_one': '1 entry was recorded this day, with no amount measured.',
+  'physicianView.urine.noneMeasured_other':
+    '{{count}} entries were recorded this day, with no amount measured.',
+  'physicianView.urine.colorsHeading': 'Colours recorded',
+  // Named for what it is worth: colour is a proxy a patient can report when
+  // they cannot measure, and darker means more concentrated. Stated without a
+  // threshold, because reading it against this patient is the clinician's job.
+  'physicianView.urine.colorsExplanation':
+    'Darker urine is more concentrated. These are the shades the patient recorded, not a measurement.',
+  // The mirror of `netBalance.excludesUrine`, said from this side too. A
+  // reader arriving at this block first should not have to find the other one
+  // to learn the two figures are separate.
+  'physicianView.urine.separateFromBalance':
+    'This is tracked on its own and is not part of the daily net fluid balance above.',
 
   // ADR-0016: an entry is filed under the patient's local day, derived from
   // the zone captured at entry. An entry whose zone this runtime cannot
