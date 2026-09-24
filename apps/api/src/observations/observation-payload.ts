@@ -36,7 +36,11 @@ import type { MeasurementSystem as CoreMeasurementSystem } from '@ostomy/core/un
 
 import type { Observation } from '../generated/prisma/client';
 import { MeasurementSystem, ObservationStatus } from '../generated/prisma/enums';
-import { interpretMethodWireValue, type MethodWireInterpretation } from './estimation-method';
+import {
+  interpretMethodWireValue,
+  resolveMethodForEntry,
+  type MethodWireInterpretation,
+} from './estimation-method';
 import {
   OBSERVATION_FIELD,
   ACCEPTED_OBSERVATION_STATUS,
@@ -151,13 +155,20 @@ export function interpretObservationPayload(
     });
   }
 
-  const method = interpretMethodWireValue(parsed.method);
-  if (method.kind === 'unrecognized') {
+  const rawMethod = interpretMethodWireValue(parsed.method);
+  if (rawMethod.kind === 'unrecognized') {
     throw payloadMalformed({
       field: OBSERVATION_FIELD.METHOD,
       reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
     });
   }
+
+  // Settled against the volume, because wire `null` means "measured" on an
+  // entry that has one and "no toggle applies" on one that does not — and
+  // §7.2 gives a client no other way to say the latter. See
+  // `resolveMethodForEntry`.
+  const hasVolume = parsed.valueQuantity !== undefined;
+  const method = resolveMethodForEntry(rawMethod, hasVolume, parsed.method === null);
 
   const enteredMeasurementSystem = toCoreMeasurementSystem(parsed.enteredMeasurementSystem);
   if (enteredMeasurementSystem === undefined) {
@@ -194,7 +205,7 @@ export function interpretObservationPayload(
     // one. `null` here means absent only because `hasVolume` says so.
     rawValueMl: parsed.valueQuantity === undefined ? null : parsed.valueQuantity.value,
     unit: parsed.valueQuantity === undefined ? null : parsed.valueQuantity.unit,
-    hasVolume: parsed.valueQuantity !== undefined,
+    hasVolume,
     urineColorCode,
     // Safe to construct: the zod layer already pinned the lexical form to
     // RFC 3339 with exactly three fractional digits and a `Z` offset (§7.3),
@@ -461,6 +472,23 @@ export function toAuditSnapshot(row: Observation): Record<string, unknown> {
     method: row.method,
     status: row.status,
     enteredMeasurementSystem: row.enteredMeasurementSystem,
+    // The three coded/contextual columns this snapshot used to omit.
+    //
+    // `urineColorCode` is the load-bearing one and its absence was a real
+    // failure of CLAUDE.md's audit obligation, not an untidiness: on a
+    // colour-only entry it is the ONLY clinical content the row carries, so
+    // the snapshot recorded `valueQuantityValue: null`, `valueQuantityUnit:
+    // null` and nothing else — an audit trail structurally present and
+    // substantively empty. ADR-0017 makes this row the last surviving copy of
+    // a deleted entry, and it was preserving nothing.
+    //
+    // `enteredTimezone` and `localDate` travel with it because the audit row
+    // must say which DAY the entry was filed under (ADR-0016). The instant
+    // alone does not: it does not say where the patient was.
+    urineColorCode: row.urineColorCode,
+    fluidTypeCode: row.fluidTypeCode,
+    enteredTimezone: row.enteredTimezone,
+    localDate: row.localDate.toISOString().slice(0, 10),
     clientUpdatedAt: row.clientUpdatedAt.toISOString(),
     serverSequence: row.serverSequence.toString(),
     deletedAt: row.deletedAt === null ? null : row.deletedAt.toISOString(),

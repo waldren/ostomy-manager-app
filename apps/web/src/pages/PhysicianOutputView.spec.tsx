@@ -338,10 +338,9 @@ describe('PhysicianOutputView — voided urine (SRS §3.7)', () => {
 
     render(<PhysicianOutputView />);
 
-    await screen.findByRole('table');
+    expect(await screen.findByText(/not part of the daily net fluid balance/i)).toBeInTheDocument();
     expect(urineNoticeTitle()).toBeInTheDocument();
     expect(screen.getByText(/400/)).toBeInTheDocument();
-    expect(screen.getByText(/not part of the daily net fluid balance/i)).toBeInTheDocument();
   });
 
   /**
@@ -356,9 +355,9 @@ describe('PhysicianOutputView — voided urine (SRS §3.7)', () => {
 
     render(<PhysicianOutputView />);
 
-    await screen.findByText('Amber');
+    await screen.findByText('Orange-brown');
     expect(urineNoticeTitle()).toBeInTheDocument();
-    expect(screen.getByText('Brown or darker')).toBeInTheDocument();
+    expect(screen.getByText('Brown — darkest')).toBeInTheDocument();
     expect(screen.queryByText(/measured total/i)).not.toBeInTheDocument();
   });
 
@@ -375,6 +374,27 @@ describe('PhysicianOutputView — voided urine (SRS §3.7)', () => {
     expect(
       await screen.findByText(/no fluid intake or stoma output was recorded/i),
     ).toBeInTheDocument();
+  });
+
+  /**
+   * A urine-only day. It has entries, so it does NOT hit the day-empty state —
+   * and before this was gated on the output rows it rendered an empty chart, an
+   * empty table, and `toDisplayDailyTotal([])`'s well-formed **0 mL** as the
+   * day's stoma output. A clinical claim nobody made, and the mirror of the
+   * defect `volumeMlOf` exists to prevent.
+   */
+  it('never renders a zero stoma-output total for a day holding only urine', async () => {
+    listMock.mockResolvedValueOnce({ observations: [urine(), colourOnlyUrine('amber')] });
+
+    render(<PhysicianOutputView />);
+
+    expect(
+      await screen.findByText(/no stoma output was recorded for this day/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^0 mL$/)).not.toBeInTheDocument();
+    // The urine block is still there: the day has data, just not of that kind.
+    expect(urineNoticeTitle()).toBeInTheDocument();
   });
 
   /** No urine that day is not a state worth a region — see the component's own comment. */

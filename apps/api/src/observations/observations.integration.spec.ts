@@ -39,6 +39,7 @@ import { Module, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { createApiClient, ApiError } from '@ostomy/core/api-client';
+import { URINE_COLOR_CODES_PALE_TO_DARK } from '@ostomy/core/hydration';
 import { Logger as PinoNestLogger, LoggerModule as PinoLoggerModule } from 'nestjs-pino';
 import { Client as PgClient } from 'pg';
 import request from 'supertest';
@@ -719,6 +720,78 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
     });
 
     /**
+     * **The payload `apps/mobile` actually builds**, and the case every other
+     * test in this block missed.
+     *
+     * `ObservationFhirFields.method` is REQUIRED by §7.2, so the client cannot
+     * omit the key — `pushOperations.ts` emits `method: observation.method`,
+     * which is `null` for a colour-only row. Every colour-only test here and
+     * in `sync.integration.spec.ts` did `delete body.method` instead, so the
+     * shape the shipping client sends was never exercised, and the server
+     * rejected all of it with `METHOD_NOT_APPLICABLE` into a correction inbox
+     * that shows no toggle to fix.
+     *
+     * Wire `null` means "measured" on an entry that has a volume (§8
+     * back-compat) and "no toggle applies" on one that does not. The volume is
+     * what disambiguates it; see `resolveMethodForEntry`.
+     */
+    it('accepts the colour-only payload the mobile client builds: method null, no valueQuantity', async () => {
+      const body = urinePayload({ urineColorCode: 'amber', method: null });
+      delete body.valueQuantity;
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(201);
+      const rows = await observationRows(body.id as string);
+      // NULL at rest, not the |Measured| code: ADR-0018 (amended) reserves
+      // NULL for "this observation has no toggle", and
+      // `observations_method_needs_a_value` would refuse anything else.
+      expect(rows[0]!.method).toBeNull();
+      expect(rows[0]!.urine_color_code).toBe('amber');
+    });
+
+    /** The same `null`, with a volume, still means measured — §8 back-compat is untouched. */
+    it('still reads method null as measured when the entry HAS a volume', async () => {
+      const body = urinePayload({
+        valueQuantity: { value: 275, unit: 'mL' },
+        method: null,
+        urineColorCode: 'straw',
+      });
+
+      expect((await post(patientA, body)).status).toBe(201);
+      const rows = await observationRows(body.id as string);
+      expect(rows[0]!.method).toBe('258104002');
+    });
+
+    /**
+     * The audit obligation, asserted on CONTENT rather than on existence.
+     *
+     * The earlier test counted the audit row and never looked inside it, which
+     * is how `toAuditSnapshot` shipped without `urineColorCode`: on a
+     * colour-only entry that is the row's entire clinical content, so the
+     * snapshot recorded two nulls and nothing else — an audit trail
+     * structurally present and substantively empty. ADR-0017 makes this row the
+     * last surviving copy once the purge job lands.
+     */
+    it('records the colour in the audit snapshot, not just two nulls', async () => {
+      const body = urinePayload({ urineColorCode: 'amber', method: null });
+      delete body.valueQuantity;
+
+      expect((await post(patientA, body)).status).toBe(201);
+
+      const audit = await auditRows(body.id as string);
+      expect(audit).toHaveLength(1);
+      const after = audit[0]!.after_value as Record<string, unknown>;
+      expect(after.urineColorCode).toBe('amber');
+      expect(after.valueQuantityValue).toBeNull();
+      // The day the entry was filed under (ADR-0016). The instant alone does
+      // not say where the patient was, so an audit row without the zone
+      // cannot reconstruct which day this belonged to.
+      expect(after.enteredTimezone).toBe('America/Chicago');
+      expect(after.localDate).toBe('2026-09-07');
+    });
+
+    /**
      * ADR-0012 is unchanged by the absence of a volume: it is the client's
      * assertion about the ENTRY, not a property of the number, and the column
      * is NOT NULL with no default.
@@ -830,6 +903,29 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
         'brown',
       ]);
       expect(result.rows.every((row) => row.status === 'ACTIVE')).toBe(true);
+    });
+
+    /**
+     * The drift guard for a deliberate duplication.
+     *
+     * `apps/web` has no value-set fetch, so it cannot learn the scale's order
+     * from this table the way `apps/mobile` does — and the order IS the
+     * clinical content of a pale-to-dark scale. `packages/core` therefore
+     * carries a second copy, `URINE_COLOR_CODES_PALE_TO_DARK`, and this is what
+     * keeps it honest: adding a step to the migration without adding it there
+     * fails here, against real PostgreSQL, rather than showing a clinician a
+     * list in the wrong order.
+     */
+    it('keeps packages/core’s pale-to-dark order equal to the seeded sort_order', async () => {
+      const result = await db.query(
+        `SELECT m.code
+         FROM value_set_members m
+         JOIN value_sets vs ON vs.id = m.value_set_id
+         WHERE vs.key = 'urine_color'
+         ORDER BY m.sort_order`,
+      );
+
+      expect(result.rows.map((row) => row.code)).toEqual([...URINE_COLOR_CODES_PALE_TO_DARK]);
     });
 
     /**

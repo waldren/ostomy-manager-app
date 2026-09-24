@@ -99,6 +99,56 @@ export const EXCLUDED_FROM_DAILY_NET_FLUID_BALANCE_LOINC_CODES: ReadonlySet<stri
  */
 export const URINE_OUTPUT_LOINC_CODES: ReadonlySet<string> = new Set([VOIDED_URINE_LOINC_CODE]);
 
+/**
+ * The `urine_color` value set's member codes, **pale to dark**.
+ *
+ * The order is the clinical content of this scale — darker means more
+ * concentrated — so any surface listing recorded colours has to know it, or it
+ * renders a sequence that carries no information above copy inviting the
+ * reader to read darkness off it.
+ *
+ * ## Why this duplicates the database, and what stops it drifting
+ *
+ * The authoritative order is `value_set_members.sort_order`, seeded by the
+ * P3.S2 migration. `apps/mobile` reads it from the device's value-set cache
+ * and needs nothing here. `apps/web` has no value-set fetch at all, and
+ * inventing a second ordering inside that app would be strictly worse than one
+ * shared list — both clients must agree, and this is the only package both
+ * depend on.
+ *
+ * So it is a deliberate second copy, and the drift is closed by a test rather
+ * than by hope: `observations.integration.spec.ts` asserts this list equals
+ * the migration's seeded `sort_order` against real PostgreSQL. Adding a step to
+ * the migration without adding it here fails there.
+ *
+ * Codes only, never labels — the words come from the i18n catalog (ADR-0006),
+ * and a member an admin adds later renders through the shared fallback.
+ */
+export const URINE_COLOR_CODES_PALE_TO_DARK: readonly string[] = [
+  'pale_straw',
+  'straw',
+  'yellow',
+  'dark_yellow',
+  'amber',
+  'brown',
+];
+
+/**
+ * Sorts recorded colour codes pale to dark.
+ *
+ * A code this release does not know — a member added after it shipped — sorts
+ * last rather than being dropped: it is a real observation, and the scale only
+ * ever grows darker at the end in practice. Stable within the unknowns, so the
+ * output is deterministic.
+ */
+export function sortUrineColorCodes(codes: readonly string[]): readonly string[] {
+  const rank = (code: string) => {
+    const index = URINE_COLOR_CODES_PALE_TO_DARK.indexOf(code);
+    return index === -1 ? URINE_COLOR_CODES_PALE_TO_DARK.length : index;
+  };
+  return [...codes].sort((a, b) => rank(a) - rank(b));
+}
+
 /** Whether this observation is the urine-output hydration signal (SRS §3.7). */
 export function isUrineOutputSignal(loincCode: string): boolean {
   return URINE_OUTPUT_LOINC_CODES.has(loincCode);

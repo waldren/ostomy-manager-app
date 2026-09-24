@@ -310,7 +310,7 @@ export function createApiClient(options: ApiClientOptions) {
        */
       get: (): Promise<{
         readonly valueSets: ReadonlyArray<{
-          /** The set this release publishes: fluid_type, container_size or meal_tag. */
+          /** The set this release publishes: fluid_type, container_size, meal_tag or urine_color. */
           readonly key: string;
           /** ACTIVE members only, in sortOrder. A retired member is omitted here and still resolves in stored history — which is exactly why a client reads this rather than holding a hardcoded list. */
           readonly members: ReadonlyArray<{
@@ -327,7 +327,7 @@ export function createApiClient(options: ApiClientOptions) {
       }> =>
         request<{
           readonly valueSets: ReadonlyArray<{
-            /** The set this release publishes: fluid_type, container_size or meal_tag. */
+            /** The set this release publishes: fluid_type, container_size, meal_tag or urine_color. */
             readonly key: string;
             /** ACTIVE members only, in sortOrder. A retired member is omitted here and still resolves in stored history — which is exactly why a client reads this rather than holding a hardcoded list. */
             readonly members: ReadonlyArray<{

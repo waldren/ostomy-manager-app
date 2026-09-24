@@ -237,6 +237,13 @@ export default function AddUrine(): React.JSX.Element {
   const blocked = check?.kind === 'blocked' ? check.errors : [];
   const amountRuleCode = amountError(blocked)?.ruleCode;
   const methodRuleCode = methodError(blocked)?.ruleCode;
+  // A blocked error whose field surface is not on screen. See the catch-all in
+  // the render for why this is not defensive padding.
+  const unsurfacedBlocked = blocked.find(
+    (error) =>
+      (error.ruleCode === methodRuleCode && !recordingAnAmount) ||
+      (error.ruleCode !== methodRuleCode && error.ruleCode !== amountRuleCode),
+  );
 
   return (
     <Screen>
@@ -283,7 +290,9 @@ export default function AddUrine(): React.JSX.Element {
       ) : null}
 
       {check?.kind === 'estimated-unavailable' ? (
-        <BodyText tone="error">{t('common:entry.estimatedUnavailableBody')}</BodyText>
+        <BodyText tone="error" live="assertive">
+          {t('common:entry.estimatedUnavailableBody')}
+        </BodyText>
       ) : null}
 
       {/* AC 12.1 AC3 — the colour scale. */}
@@ -298,7 +307,9 @@ export default function AddUrine(): React.JSX.Element {
 
       {check?.kind === 'needs-confirmation' ? (
         <View>
-          <BodyText tone="error">{t('common:entry.warningHeading')}</BodyText>
+          <BodyText tone="warning" live="polite">
+            {t('common:entry.warningHeading')}
+          </BodyText>
           {check.warnings.map((warning) => (
             <BodyText key={warning.ruleCode}>
               {t(`validationWarnings:${warning.ruleCode}`)}
@@ -319,25 +330,73 @@ export default function AddUrine(): React.JSX.Element {
             }}
           />
         </View>
-      ) : somethingToRecord ? (
-        <Button
-          label={t('common:entry.saveButton')}
-          busy={saving}
-          disabled={cached === null}
-          onPress={() => {
-            void save(false);
-          }}
-        />
       ) : (
-        // No Save button at all until the entry records something, plus a line
-        // saying what is missing. An entry with neither an amount nor a colour
-        // records nothing and the server refuses it — see
-        // `useVoidedUrineEntry` for why that is a UX affordance here rather
-        // than a Tier 1 rule invented in a screen.
-        <BodyText tone="muted">{t('common:entry.urineNothingToSave')}</BodyText>
+        <>
+          {/*
+            Save is always PRESENT, and disabled until the entry records
+            something.
+
+            It used to be absent in that state. An absent control is
+            undiscoverable: a screen-reader user builds their model of a form
+            from what is in it, so a missing Save reads as "this form has no way
+            to finish" rather than "I have one more thing to do". Its appearance
+            and disappearance was also an unannounced change to the control set
+            (WCAG 4.1.3) — typing an amount conjured a button silently, and
+            clearing it removed the control that might hold focus.
+
+            A disabled button needs a reason, which is the other half of what
+            was wrong: the correction inbox already disabled Save for this same
+            condition and rendered no explanation anywhere. The reason is both a
+            hint on the control and a visible live-announced line, because a
+            hint alone can be switched off in TalkBack.
+
+            The condition itself is a UX affordance, not a rule — the server
+            refuses an entry recording nothing, and `useVoidedUrineEntry`
+            explains why duplicating that here as Tier 1 would be inventing a
+            clinical rule in a screen.
+          */}
+          <Button
+            label={t('common:entry.saveButton')}
+            busy={saving}
+            disabled={!somethingToRecord || cached === null}
+            hint={somethingToRecord ? undefined : t('common:entry.urineNothingToSave')}
+            onPress={() => {
+              void save(false);
+            }}
+          />
+          {!somethingToRecord ? (
+            <BodyText tone="muted" live="polite">
+              {t('common:entry.urineNothingToSave')}
+            </BodyText>
+          ) : null}
+        </>
       )}
 
-      {saveFailed ? <BodyText tone="error">{t('common:entry.saveFailedBody')}</BodyText> : null}
+      {/*
+        A Tier 1 rejection no field on this screen claimed.
+
+        `METHOD_NOT_APPLICABLE` is the live case: it routes to `methodError`,
+        and the only control rendering that is the Measured/Estimated group —
+        which is mounted ONLY when an amount was entered, the exact inverse of
+        the condition under which the rule fires. So a blocked save could
+        change nothing on screen: no message, no announcement, focus unmoved.
+
+        It looks unreachable today, because `changeAmount` clears `method`. But
+        "unreachable" there is a property of two pieces of this screen agreeing
+        with each other, and a Tier 1 rule's whole job is to fire when they stop
+        agreeing.
+      */}
+      {unsurfacedBlocked !== undefined ? (
+        <BodyText tone="error" live="assertive">
+          {t(`validationErrors:${unsurfacedBlocked.ruleCode}`)}
+        </BodyText>
+      ) : null}
+
+      {saveFailed ? (
+        <BodyText tone="error" live="assertive">
+          {t('common:entry.saveFailedBody')}
+        </BodyText>
+      ) : null}
     </Screen>
   );
 }

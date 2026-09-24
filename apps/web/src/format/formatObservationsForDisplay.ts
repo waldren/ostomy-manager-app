@@ -29,6 +29,7 @@ import type { Observation } from '@ostomy/core/api-client';
 import {
   countsTowardDailyNetFluidBalance,
   isUrineOutputSignal,
+  sortUrineColorCodes,
   netDailyFluidBalanceMl,
   NET_FLUID_BALANCE_INTAKE_LOINC_CODES,
   NET_FLUID_BALANCE_OUTPUT_LOINC_CODES,
@@ -162,10 +163,10 @@ export function toDisplayDailyTotal(
   // Entries with no amount contribute nothing and are dropped before the sum
   // — never summed as 0. See `volumeMlOf`.
   const withVolume = observations.filter((entry) => volumeMlOf(entry) !== undefined);
-  const canonicalEntries: CanonicalVolume[] = withVolume.map((entry) => ({
-    value: volumeMlOf(entry) as number,
-    unit: 'mL',
-  }));
+  const canonicalEntries: CanonicalVolume[] = observations.flatMap((entry) => {
+    const value = volumeMlOf(entry);
+    return value === undefined ? [] : [{ value, unit: 'mL' } as CanonicalVolume];
+  });
 
   // Resolved over the entries that actually contribute: a day whose only
   // volume-less entry was entered in the other system is not a mixed-system
@@ -395,14 +396,20 @@ export interface UrineDaySummary {
   /** How many entries contributed to that total. */
   readonly measuredCount: number;
   /**
-   * The distinct colour codes recorded that day, in the order first seen.
+   * The distinct colour codes recorded that day, **pale to dark**.
+   *
+   * Ordered by the scale, not by arrival. It used to be "the order first
+   * seen", which came from the API's list order — neither chronological nor
+   * the scale — so it was rendered as a list above the sentence "darker urine
+   * is more concentrated" while carrying no ordering at all. A clinician
+   * scanning "how dark did it get" read a sequence that meant nothing.
    *
    * Codes, never labels: the words come from the i18n catalog (ADR-0006), and
    * a member an admin adds after this release ships has no copy and renders
    * through the shared "Another option" fallback rather than as a raw code.
    *
    * Deduplicated because this is a day summary, not a log — four entries all
-   * recorded "Amber" is one fact about the day, and repeating it four times
+   * recorded amber is one fact about the day, and repeating it four times
    * would read as a trend where there is a single observation repeated.
    */
   readonly colorCodes: readonly string[];
@@ -425,7 +432,10 @@ export function toUrineDaySummary(
     measured.length === 0
       ? undefined
       : formatDailyVolumeTotalForDisplay(
-          measured.map((entry) => ({ value: volumeMlOf(entry) as number, unit: 'mL' })),
+          measured.flatMap((entry) => {
+            const value = volumeMlOf(entry);
+            return value === undefined ? [] : [{ value, unit: 'mL' } as CanonicalVolume];
+          }),
           uniformEntrySystem ?? targetSystem,
           targetSystem,
         );
@@ -440,6 +450,6 @@ export function toUrineDaySummary(
     entryCount: urine.length,
     measuredTotal,
     measuredCount: measured.length,
-    colorCodes,
+    colorCodes: sortUrineColorCodes(colorCodes),
   };
 }

@@ -31,7 +31,7 @@ export interface ButtonProps {
    * Extra context a label alone cannot carry — "this also removes your
    * diary from this phone". Read after the label by both screen readers.
    */
-  readonly hint?: string;
+  readonly hint?: string | undefined;
 }
 
 /**

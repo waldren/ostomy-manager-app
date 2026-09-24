@@ -346,12 +346,30 @@ export function PhysicianOutputView() {
                 <p>{t('physicianView.truncated.body', { limit: DAILY_PAGE_SIZE })}</p>
               </InlineNotice>
             ) : null}
-            <OutputChart entries={entries} />
+            {/*
+              Gated on the OUTPUT rows, not on the day's rows.
+
+              A day holding only urine entries passes the
+              `observations.length === 0` empty state above, and then rendered
+              an empty chart, an empty table, and — because
+              `toDisplayDailyTotal([])` returns a well-formed zero — **0 mL as
+              the day's stoma output**. That is a clinical claim nobody made,
+              and it is the same defect `volumeMlOf` exists to prevent,
+              mirrored: this sprint is what made a urine-only day an ordinary
+              case rather than a curiosity.
+            */}
             <h2>{t('physicianView.table.heading')}</h2>
-            <OutputTable
-              entries={entries}
-              total={toDisplayDailyTotal(outputObservations, targetSystem)}
-            />
+            {entries.length === 0 ? (
+              <p>{t('physicianView.table.noOutput')}</p>
+            ) : (
+              <>
+                <OutputChart entries={entries} />
+                <OutputTable
+                  entries={entries}
+                  total={toDisplayDailyTotal(outputObservations, targetSystem)}
+                />
+              </>
+            )}
           </>
         ) : null}
       </main>

@@ -190,10 +190,10 @@ async function applyChange(
     await executor.runAsync(
       `INSERT INTO observations (
         id, resource_type, code, value_quantity_value, value_quantity_unit,
-        urine_color_code, effective_datetime, method, status,
+        urine_color_code, fluid_type_code, effective_datetime, method, status,
         entered_measurement_system, entered_timezone, local_date,
         client_updated_at, server_sequence, deleted_at, created_at, updated_at
-      ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?);`,
+      ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?);`,
       [
         payload.id,
         payload.code,
@@ -209,6 +209,13 @@ async function applyChange(
         payload.valueQuantity === undefined ? null : String(payload.valueQuantity.value),
         payload.valueQuantity?.unit ?? null,
         payload.urineColorCode ?? null,
+        // MISSING from this statement since P3.S1, which meant a device
+        // rebuilding its store from a delta — a fresh install, or the ADR-0014
+        // wipe after a different subject signs in — dropped the fluid
+        // categorisation off every intake entry it pulled (AC 2.3 AC1).
+        // Silently, and irrecoverably for that device short of another
+        // rebuild. The server was emitting it; this threw it away.
+        payload.fluidTypeCode ?? null,
         payload.effectiveDateTime,
         payload.method,
         payload.status,
@@ -227,7 +234,7 @@ async function applyChange(
   await executor.runAsync(
     `UPDATE observations SET
       code = ?, value_quantity_value = ?, value_quantity_unit = ?,
-      urine_color_code = ?,
+      urine_color_code = ?, fluid_type_code = ?,
       effective_datetime = ?, method = ?, status = ?,
       entered_measurement_system = ?, entered_timezone = ?, local_date = ?,
       client_updated_at = ?, server_sequence = ?, deleted_at = NULL, updated_at = ?
@@ -238,6 +245,10 @@ async function applyChange(
       payload.valueQuantity === undefined ? null : String(payload.valueQuantity.value),
       payload.valueQuantity?.unit ?? null,
       payload.urineColorCode ?? null,
+      // Named here too: a §4 update is a full replacement, so a column left
+      // out of the SET list keeps its old value while everything around it is
+      // replaced — a row blended from two versions.
+      payload.fluidTypeCode ?? null,
       payload.effectiveDateTime,
       payload.method,
       payload.status,

@@ -234,6 +234,14 @@ CREATE INDEX IF NOT EXISTS idx_observations_deleted_at
 
 CREATE INDEX IF NOT EXISTS idx_observations_local_date
   ON observations (local_date);
+
+-- Migration 3's index, which the DROP above removes and nothing else
+-- recreates -- including on a fresh install, where 3 runs before this
+-- migration. This migration's own comment claimed "both indexes"; there were
+-- three. A daily view queries (code, local_date) together, which is what this
+-- composite serves and the single-column one above does not.
+CREATE INDEX IF NOT EXISTS idx_observations_code_local_date
+  ON observations (code, local_date);
 `;
 
 /**

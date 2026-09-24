@@ -950,7 +950,7 @@ enum ValueSetMemberStatus {
 
 /// A named category of admin-managed codes (e.g. 'output_consistency',
 /// 'fluid_type', 'meal_quick_tag', 'leak_suspected_cause',
-/// 'peristomal_skin_severity', 'appliance_type', 'urine_color_scale',
+/// 'peristomal_skin_severity', 'appliance_type', 'urine_color',
 /// 'heart_rate_measurement_source' — SRS §3.11). Only the two members this
 /// sprint's slice can plausibly need are seeded by anything (nothing —
 /// seeding is P2.S4); this migration creates the table shape only.
@@ -958,7 +958,7 @@ model ValueSet {
   id String @id @default(uuid()) @map("id") @db.Uuid
 
   /// The stable slug admin tooling and application code both address this
-  /// set by (e.g. "urine_color_scale"). Distinct from `ValueSetMember.code`
+  /// set by (e.g. "urine_color"). Distinct from `ValueSetMember.code`
   /// below — this is the set's own key, not a member's.
   key         String  @unique @map("key")
   /// Admin-tool label only. Patient-facing copy/terminology display labels

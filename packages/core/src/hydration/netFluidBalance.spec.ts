@@ -33,6 +33,7 @@ import {
   DAILY_NET_FLUID_BALANCE_LOINC_CODES,
   isUrineOutputSignal,
   netDailyFluidBalanceMl,
+  sortUrineColorCodes,
   URINE_OUTPUT_LOINC_CODES,
 } from './index.js';
 
@@ -125,6 +126,41 @@ describe('urine output as its own hydration signal', () => {
     for (const code of URINE_OUTPUT_LOINC_CODES) {
       expect(countsTowardDailyNetFluidBalance(code)).toBe(false);
     }
+  });
+
+  /**
+   * The scale's ORDER, which is its clinical content: darker is more
+   * concentrated. A surface listing recorded colours has to know it or it
+   * renders a sequence that means nothing.
+   */
+  describe('the pale-to-dark colour order', () => {
+    it('sorts recorded codes by the scale, not by arrival', () => {
+      expect(sortUrineColorCodes(['brown', 'pale_straw', 'amber', 'yellow'])).toEqual([
+        'pale_straw',
+        'yellow',
+        'amber',
+        'brown',
+      ]);
+    });
+
+    /**
+     * A member an admin added after this release shipped. It is a real
+     * observation, so it is kept rather than dropped, and placed at the dark
+     * end — the scale only ever grows darker at its end in practice, and
+     * guessing a position inside it would misrepresent the step.
+     */
+    it('keeps a code this release does not know, at the end', () => {
+      expect(sortUrineColorCodes(['very_dark_brown', 'straw'])).toEqual([
+        'straw',
+        'very_dark_brown',
+      ]);
+    });
+
+    it('does not mutate its input', () => {
+      const input = ['brown', 'straw'];
+      sortUrineColorCodes(input);
+      expect(input).toEqual(['brown', 'straw']);
+    });
   });
 
   it('contributes nothing to the balance, in either direction, at any volume', () => {

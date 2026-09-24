@@ -54,7 +54,17 @@ export const web = {
   'physicianView.truncated.heading': 'This day may have more entries than are shown',
   'physicianView.truncated.body':
     'Only the {{limit}} most recent entries for this day were loaded, so the earliest ones are not shown and the total below may be lower than the true total. Check the full record before using this number.',
-  'physicianView.table.heading': 'All entries for this day',
+  // "All entries for this day" was FALSE from the moment the response carried
+  // more than stoma output, and P3.S2 made that routine: the table is fed
+  // `outputObservations` only, so a day's urine entries are not in it. A
+  // clinician who reads the urine block and then reads "all entries" above a
+  // table without them reads the omission as absent data.
+  'physicianView.table.heading': 'Stoma output entries for this day',
+  // The day holds entries, just none of this kind. Distinct from
+  // `emptyState.*`, which is a day with nothing at all, and it points upward
+  // rather than leaving a reader to conclude the load failed.
+  'physicianView.table.noOutput':
+    'No stoma output was recorded for this day. Other kinds of entry may still be shown above.',
   'app.title': 'Ostomy Care',
   // WCAG 2.4.2: the title names the page, not just the product. In an SPA it
   // is also how a screen-reader user learns a route changed.
@@ -115,9 +125,12 @@ export const web = {
   'physicianView.heading': 'One day of fluid records',
   'physicianView.intro':
     'Fluid balance, urine output, and every stoma entry for the day, listed and charted by time of day.',
-  'physicianView.loading': 'Loading stoma output…',
+  // Not "stoma output" — the request fetches every code this release returns,
+  // and the page renders three signals from it. Left unchanged, these two told
+  // a reader the page was loading a third of what it loads.
+  'physicianView.loading': 'Loading this day’s records…',
   'physicianView.loadError':
-    'We could not load stoma output right now. Please try again in a moment.',
+    'We could not load this day’s records right now. Please try again in a moment.',
   'physicianView.retryButton': 'Try again',
   'physicianView.previousDay': 'Show the previous day',
   'physicianView.nextDay': 'Show the next day',
@@ -193,15 +206,29 @@ export const web = {
   // amount optional, so a day can hold four entries and one measured volume —
   // and a bare total would describe that day as though the other three had
   // not happened.
-  'physicianView.urine.measuredOf_one': 'From 1 of {{total}} entries recorded this day.',
-  'physicianView.urine.measuredOf_other': 'From {{count}} of {{total}} entries recorded this day.',
+  // A sentence with a subject. "From 1 of 4 entries recorded this day." is a
+  // fragment opening on a preposition, which a screen-reader user stepping
+  // paragraph by paragraph meets with nothing to attach it to.
+  'physicianView.urine.measuredOf_one':
+    'This total comes from 1 of {{total}} urine entries recorded that day.',
+  'physicianView.urine.measuredOf_other':
+    'This total comes from {{count}} of {{total}} urine entries recorded that day.',
   // The whole day was recorded by colour. Not an error and not a gap in the
   // data: it is the entry AC 12.1 AC2 exists for, made by a patient who
   // cannot measure, and it carries a real hydration signal.
-  'physicianView.urine.noneMeasured_one': '1 entry was recorded this day, with no amount measured.',
+  // Leads with the FINDING, not the count, and says "urine" in its own words
+  // rather than leaning on the block's title. It also states outright that
+  // there is no number, because this is the one branch of the block that
+  // contains none — and a block with no figure in it reads as missing data
+  // unless it says otherwise.
+  'physicianView.urine.noneMeasured_one':
+    'No measured volume for this day. 1 urine entry was recorded, by colour only.',
   'physicianView.urine.noneMeasured_other':
-    '{{count}} entries were recorded this day, with no amount measured.',
-  'physicianView.urine.colorsHeading': 'Colours recorded',
+    'No measured volume for this day. {{count}} urine entries were recorded, by colour only.',
+  // Names the ORDER the list is in. Rendered unordered above the sentence
+  // "darker urine is more concentrated", it invited a clinician to read
+  // darkness off a sequence that carried none.
+  'physicianView.urine.colorsHeading': 'Colours recorded, lightest to darkest',
   // Named for what it is worth: colour is a proxy a patient can report when
   // they cannot measure, and darker means more concentrated. Stated without a
   // threshold, because reading it against this patient is the clinician's job.

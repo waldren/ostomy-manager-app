@@ -474,13 +474,30 @@ describe('voided urine', () => {
       expect(summary?.entryCount).toBe(2);
     });
 
-    it('lists each distinct colour once, in the order first recorded', () => {
+    it('lists each distinct colour once', () => {
       const summary = toUrineDaySummary(
         [colourOnlyUrine('straw'), colourOnlyUrine('amber'), colourOnlyUrine('straw')],
         metric,
       );
 
       expect(summary?.colorCodes).toEqual(['straw', 'amber']);
+    });
+
+    /**
+     * Pale to dark, not the order the API happened to return them in. This
+     * list is rendered above "darker urine is more concentrated", so an
+     * arbitrary sequence invites a clinician to read darkness off it.
+     *
+     * The previous version of this test fed codes that were already in scale
+     * order, which is exactly why it could not catch the absent sorting.
+     */
+    it('orders the colours pale to dark, whatever order they arrived in', () => {
+      const summary = toUrineDaySummary(
+        [colourOnlyUrine('brown'), colourOnlyUrine('pale_straw'), colourOnlyUrine('amber')],
+        metric,
+      );
+
+      expect(summary?.colorCodes).toEqual(['pale_straw', 'amber', 'brown']);
     });
 
     it('carries no colours when every entry was measured without one', () => {

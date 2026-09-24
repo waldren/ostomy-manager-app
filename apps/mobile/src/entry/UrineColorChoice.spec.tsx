@@ -53,15 +53,42 @@ describe('UrineColorChoice', () => {
     );
 
     for (const label of [
-      'Almost clear',
+      'Almost clear — lightest',
       'Pale yellow',
       'Yellow',
-      'Dark yellow',
-      'Amber',
-      'Brown or darker',
+      'Darker yellow',
+      'Orange-brown',
+      'Brown — darkest',
     ]) {
       expect(view.getByText(label)).toBeTruthy();
     }
+  });
+
+  /**
+   * AC 12.1 AC3's real requirement, which "distinguishable" alone does not
+   * reach: this is a pale-to-dark SCALE, and its direction is the clinical
+   * content. Six unique names leave a screen-reader user unable to tell which
+   * end is which — nothing in the words placed "Amber" against "Dark yellow",
+   * and React Native reports no position-in-set for this control.
+   *
+   * Four channels carry the ordering now, because a TalkBack user can switch
+   * hints off: the two end labels name themselves as ends, the group hint
+   * states the direction, and each option announces its step number.
+   */
+  it('conveys the direction of the scale without relying on the swatches', async () => {
+    const view = await render(
+      <UrineColorChoice options={SCALE} value={undefined} onChange={jest.fn()} />,
+    );
+
+    expect(view.getByText(/lightest to darkest/)).toBeTruthy();
+    expect(view.getByText(/lightest$/)).toBeTruthy();
+    expect(view.getByText(/darkest$/)).toBeTruthy();
+
+    const steps = view
+      .getAllByRole('radio')
+      .map((option: { props: { accessibilityHint?: string } }) => option.props.accessibilityHint);
+    expect(steps[0]).toBe('Step 1 of 6, lightest to darkest.');
+    expect(steps[5]).toBe('Step 6 of 6, lightest to darkest.');
   });
 
   /**
@@ -138,7 +165,11 @@ describe('UrineColorChoice', () => {
     );
 
     expect(view.queryAllByRole('radio')).toHaveLength(0);
-    expect(view.getByText(/could not load the choices/)).toBeTruthy();
+    // The screen's OWN string, not the shared one. `entry.optionsUnavailable`
+    // ends "You can still save your entry without them" — false here, because
+    // with no scale the colour-without-volume route is gone and a patient who
+    // cannot measure can save nothing at all.
+    expect(view.getByText(/you will need to enter an amount/i)).toBeTruthy();
   });
 
   it('renders nothing at all while the cache is still being read', async () => {

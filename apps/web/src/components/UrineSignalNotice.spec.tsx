@@ -42,7 +42,7 @@ describe('UrineSignalNotice', () => {
     expect(screen.getByText(/550/)).toBeInTheDocument();
     // The coverage line is the point: a bare "550 mL" would describe a
     // three-entry day as though the unmeasured one had not happened.
-    expect(screen.getByText(/2 of 3 entries/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 of 3 urine entries/i)).toBeInTheDocument();
   });
 
   /**
@@ -65,8 +65,10 @@ describe('UrineSignalNotice', () => {
       />,
     );
 
+    // Leads with the finding, not the count, and says "urine" in its own
+    // words rather than leaning on a title that is only visually a heading.
     expect(
-      screen.getByText(/2 entries were recorded this day, with no amount measured/i),
+      screen.getByText(/no measured volume for this day\. 2 urine entries were recorded/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/\b0\s*mL\b/)).not.toBeInTheDocument();
     expect(screen.queryByText(/measured total/i)).not.toBeInTheDocument();
@@ -84,8 +86,32 @@ describe('UrineSignalNotice', () => {
       />,
     );
 
+    // The two ends name themselves as ends, and every step uses one
+    // comparative vocabulary — the labels have to be ORDERABLE, not merely
+    // distinguishable, because the scale's direction is the clinical content.
     const items = screen.getAllByRole('listitem').map((item) => item.textContent);
-    expect(items).toEqual(['Almost clear', 'Amber', 'Brown or darker']);
+    expect(items).toEqual(['Almost clear — lightest', 'Orange-brown', 'Brown — darkest']);
+  });
+
+  /**
+   * Heading navigation is how a clinician skims a data page, and a bold
+   * paragraph is invisible to it. This region was unreachable that way, and so
+   * was the daily net fluid balance above it — the physician view's whole
+   * outline was `h1` then one `h2` for the table.
+   */
+  it('names the region with a real heading, not a bold paragraph', () => {
+    render(
+      <UrineSignalNotice
+        summary={{
+          entryCount: 1,
+          measuredTotal: { value: 300, unit: 'mL' },
+          measuredCount: 1,
+          colorCodes: [],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('heading', { name: /urine output/i })).toBeInTheDocument();
   });
 
   /**

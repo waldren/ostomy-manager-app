@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { tokens } from '@ostomy/ui/tokens';
 import { useId } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { PixelRatio, Pressable, StyleSheet, Text, View } from 'react-native';
 
 /**
  * The selected-option glyph.
@@ -173,6 +173,13 @@ export function ChoiceGroup<TValue extends string>({
   );
 }
 
+/**
+ * Computed once at module load, like every other token-derived measure here.
+ * `PixelRatio.getFontScale()` is the user's OS text-size setting; the `max`
+ * keeps it from shrinking below the base when that setting is below 1.
+ */
+const SWATCH_SIZE = Math.max(tokens.spacing.xl, tokens.spacing.xl * PixelRatio.getFontScale());
+
 const styles = StyleSheet.create({
   container: { gap: tokens.spacing.xs },
   label: {
@@ -193,8 +200,20 @@ const styles = StyleSheet.create({
   // is a clinical distinction the patient can no longer read.
   options: { flexDirection: 'row', flexWrap: 'wrap', gap: tokens.spacing.sm },
   swatch: {
-    width: tokens.spacing.md,
-    height: tokens.spacing.md,
+    // Scales with the OS text size, and starts from `xl` rather than `md`.
+    //
+    // At a fixed 12dp the four palest steps of the urine scale are
+    // indistinguishable to anyone — adjacent-pair contrast runs 1.09:1 to
+    // 1.47:1 — and this population's age-related lens yellowing degrades
+    // exactly the blue/yellow axis the scale lives on. Meanwhile at Android's
+    // largest font scale the label reached ~32px beside a 12px square.
+    //
+    // The swatch is the MATCHING affordance: the patient looks at what they
+    // passed and matches it. No success criterion sets a minimum size for a
+    // decorative graphic, but SRS §5.4's scalable-text and this-population
+    // clauses both bear on it.
+    width: SWATCH_SIZE,
+    height: SWATCH_SIZE,
     borderRadius: tokens.radius.sm,
     borderWidth: 1,
     borderColor: tokens.color.border,

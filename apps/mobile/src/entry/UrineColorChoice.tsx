@@ -28,12 +28,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * "Each colour step has a visible text label and is announced
  * distinguishably by a screen reader." Both halves are load-bearing here:
  *
- * - The **words** are the scale. Every step carries a catalog label
- *   ("Almost clear", "Pale yellow", ...) that differs from every other, so
- *   a screen reader announces six distinguishable options, and a
- *   colour-blind or low-vision patient reads the same six distinctions a
- *   sighted one sees. This satisfies WCAG 1.4.1 (Use of Color) outright:
- *   colour is never the sole carrier of the information.
+ * - The **words** are the scale. Every step carries a catalog label that
+ *   differs from every other, so a screen reader announces six
+ *   distinguishable options, and a colour-blind or low-vision patient reads
+ *   the same six distinctions a sighted one sees. This satisfies WCAG 1.4.1
+ *   (Use of Color) outright: colour is never the sole carrier.
+ * - The words also have to be **orderable**, which the first version got
+ *   wrong. This is a pale-to-dark scale and its DIRECTION is the clinical
+ *   content — darker means more concentrated. Six unique names satisfy
+ *   "announced distinguishably" while leaving a screen-reader user unable to
+ *   tell which end is which: nothing placed "Amber" against "Dark yellow",
+ *   and React Native reports no position-in-set for this control. So the two
+ *   ends name themselves as ends, the middle shares one comparative
+ *   vocabulary, the group hint states the direction, and each option carries
+ *   its step number. Four channels, because a TalkBack user can switch hints
+ *   off and the labels must still carry it (WCAG 1.3.1).
  * - The **swatch** is decorative and says so to assistive technology
  *   (`ChoiceGroup` marks it `accessible={false}` and
  *   `importantForAccessibility="no"`). It adds nothing a screen reader
@@ -77,18 +86,29 @@ export function UrineColorChoice({
 
   if (options.status === 'loading') return null;
   if (options.status === 'unavailable') {
-    // Says what is true instead of rendering an empty scale. The amount
-    // field is still there, so the entry is not blocked — only the
-    // colour-without-volume route is, and a patient who cannot use it needs
-    // to know that rather than tap at nothing.
-    return <BodyText tone="muted">{t('common:entry.optionsUnavailable')}</BodyText>;
+    // Its OWN string, not the shared `entry.optionsUnavailable` the intake and
+    // meal screens use. That one ends "You can still save your entry without
+    // them" — true where the picker is genuinely optional, and false here in
+    // the one way that matters: with no scale, the colour-without-volume route
+    // is gone and a patient who cannot measure can save nothing at all. This
+    // comment said as much while the string said the opposite.
+    return <BodyText tone="muted">{t('common:entry.urineColorUnavailable')}</BodyText>;
   }
 
-  const choices: readonly Choice<string>[] = options.members.map((member) => {
+  const total = options.members.length;
+  const choices: readonly Choice<string>[] = options.members.map((member, index) => {
     const key = labelKeyFor(URINE_COLOR_LABEL_NAMESPACE, member.code);
     return {
       value: member.code,
       label: key === undefined ? t('common:entry.unknownOptionLabel') : t(key),
+      // Position in the scale, announced per option. React Native sets no
+      // collection info on a `ChoiceGroup`, so there is no reliable "3 of 6"
+      // from the platform — and without it a screen-reader user picking a
+      // point on a scale cannot tell how far along it they are.
+      //
+      // `members` arrives ordered by the value set's `sort_order`
+      // (`valueSetsRepository`), which IS the clinical ordering, pale to dark.
+      hint: t('common:entry.urineColorStepHint', { step: index + 1, total }),
       swatchColor: SWATCHES[member.code],
     };
   });

@@ -1084,6 +1084,19 @@ function incomingSnapshot(operation: SyncPushOperationParsed): Record<string, un
     method: payload.method,
     status: payload.status,
     enteredMeasurementSystem: payload.enteredMeasurementSystem,
+    // The fields this snapshot omitted, and why it mattered more here than
+    // anywhere else: §4.1 requires the LOSING version of a conflict to be
+    // preserved rather than discarded, and that requirement is the only reason
+    // last-write-wins is acceptable for clinical data at all.
+    //
+    // For a colour-only voided-urine entry the omission was total. The colour
+    // is the entry's whole clinical content, so `valueQuantityValue` and
+    // `valueQuantityUnit` resolved to `undefined`, JSON dropped both keys, and
+    // the audit row recorded a losing version with no values in it. The loser
+    // WAS discarded — tripwire 7 in its documented form.
+    urineColorCode: payload.urineColorCode ?? null,
+    fluidTypeCode: payload.fluidTypeCode ?? null,
+    enteredTimezone: payload.enteredTimezone,
     clientUpdatedAt: operation.clientTimestamp.toISOString(),
   };
 }

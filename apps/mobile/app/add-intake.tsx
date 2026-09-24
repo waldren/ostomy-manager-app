@@ -255,7 +255,9 @@ export default function AddIntake(): React.JSX.Element {
       />
 
       {check?.kind === 'estimated-unavailable' ? (
-        <BodyText tone="error">{t('common:entry.estimatedUnavailableBody')}</BodyText>
+        <BodyText tone="error" live="assertive">
+          {t('common:entry.estimatedUnavailableBody')}
+        </BodyText>
       ) : null}
 
       {/* AC 2.3 AC1 — the optional categorisation. */}
@@ -288,7 +290,9 @@ export default function AddIntake(): React.JSX.Element {
 
       {check?.kind === 'needs-confirmation' ? (
         <View>
-          <BodyText tone="error">{t('common:entry.warningHeading')}</BodyText>
+          <BodyText tone="warning" live="polite">
+            {t('common:entry.warningHeading')}
+          </BodyText>
           {check.warnings.map((warning) => (
             <BodyText key={warning.ruleCode}>
               {t(`validationWarnings:${warning.ruleCode}`)}
@@ -320,7 +324,11 @@ export default function AddIntake(): React.JSX.Element {
         />
       )}
 
-      {saveFailed ? <BodyText tone="error">{t('common:entry.saveFailedBody')}</BodyText> : null}
+      {saveFailed ? (
+        <BodyText tone="error" live="assertive">
+          {t('common:entry.saveFailedBody')}
+        </BodyText>
+      ) : null}
     </Screen>
   );
 }

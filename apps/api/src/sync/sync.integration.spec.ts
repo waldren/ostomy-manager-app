@@ -362,6 +362,80 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
         Record<string, unknown> | undefined;
     }
 
+    /**
+     * **The operation `apps/mobile`'s sync worker actually builds.**
+     *
+     * `toObservationPayload` emits `method: observation.method`, which is
+     * `null` for a colour-only row, because §7.2 makes `method` required and
+     * the client has no other way to say "no toggle applies". Every other
+     * colour-only test in this file deletes the key instead, so the shape that
+     * ships was never pushed — and the server rejected all of it with
+     * `METHOD_NOT_APPLICABLE`, into a correction inbox that renders no toggle
+     * to correct it. §9.2's retry-unchanged loop.
+     *
+     * This closes the gap the P3.S2 review named: nothing compared the
+     * client's payload builder against the server's acceptance.
+     */
+    it('accepts the colour-only operation the client builds: method null, no valueQuantity', async () => {
+      const op = createOp();
+      const body = payload({
+        id: op.entityId,
+        code: VOIDED_URINE_CODE,
+        urineColorCode: 'amber',
+        method: null,
+      });
+      delete body.valueQuantity;
+
+      const response = await push(codedPatient, [{ ...op, payload: body }]);
+
+      expect(response.status).toBe(200);
+      expect(response.body.results[0]).toMatchObject({ status: 'accepted' });
+
+      const rows = await observationRows(op.entityId as string);
+      expect(rows[0]!.method).toBeNull();
+      expect(rows[0]!.urine_color_code).toBe('amber');
+      expect(rows[0]!.value_quantity_value).toBeNull();
+    });
+
+    /**
+     * §4.1: the LOSING version of a conflict is written to the audit log
+     * rather than discarded, and that requirement is the only reason
+     * last-write-wins is acceptable for clinical data at all.
+     *
+     * For a colour-only entry the snapshot was total loss —
+     * `valueQuantityValue` and `valueQuantityUnit` resolved to `undefined`,
+     * JSON dropped both keys, and no colour was named anywhere. The loser WAS
+     * discarded.
+     */
+    it('audits the losing colour of a superseded colour-only entry', async () => {
+      const entityId = randomUUID();
+      const newer = createOp({ entityId, clientTimestamp: '2026-09-08T10:00:00.000Z' });
+      const newerBody = payload({
+        id: entityId,
+        code: VOIDED_URINE_CODE,
+        urineColorCode: 'amber',
+        method: null,
+      });
+      delete newerBody.valueQuantity;
+      expect((await push(codedPatient, [{ ...newer, payload: newerBody }])).status).toBe(200);
+
+      const stale = createOp({ entityId, clientTimestamp: '2026-09-08T09:00:00.000Z' });
+      const staleBody = payload({
+        id: entityId,
+        code: VOIDED_URINE_CODE,
+        urineColorCode: 'brown',
+        method: null,
+      });
+      delete staleBody.valueQuantity;
+      const response = await push(codedPatient, [{ ...stale, payload: staleBody }]);
+
+      expect(response.body.results[0]).toMatchObject({ status: 'superseded' });
+
+      const audits = await auditRows(entityId);
+      const loser = audits.find((row) => row.reason_code === 'sync_conflict_loser');
+      expect((loser?.before_value as Record<string, unknown>).urineColorCode).toBe('brown');
+    });
+
     /** AC 12.1 AC2 — the entry that carries nothing else. */
     it('carries the urine colour, and no volume, for a colour-only entry', async () => {
       const op = createOp();

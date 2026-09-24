@@ -182,11 +182,6 @@ export class ObservationsService {
       throw validationBlocked(toRejectionDetails(validation.tier1.errors));
     }
 
-    // `null` passes straight through: a colour-only entry has no volume, and
-    // the column is nullable for exactly that case. NOT coerced to 0 — a
-    // missing volume is not a void of zero, and the database CHECK refuses a
-    // row carrying neither a volume nor a colour rather than storing an
-    // empty observation.
     // `null` only when NO volume was supplied — a colour-only entry, whose
     // column is nullable for exactly that case. Never coerced to 0: a
     // missing volume is not a void of zero, and the database CHECK refuses a

@@ -89,7 +89,7 @@ export function UrineSignalNotice({ summary }: UrineSignalNoticeProps) {
   const { entryCount, measuredTotal, measuredCount, colorCodes } = summary;
 
   return (
-    <InlineNotice variant="info" title={t('physicianView.urine.heading')}>
+    <InlineNotice variant="info" titleAs="h2" title={t('physicianView.urine.heading')}>
       {measuredTotal === undefined ? (
         <p>{t('physicianView.urine.noneMeasured', { count: entryCount })}</p>
       ) : (

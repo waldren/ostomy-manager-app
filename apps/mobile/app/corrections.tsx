@@ -208,6 +208,12 @@ export default function Corrections(): React.JSX.Element {
           measuredOrEstimated: volumeless ? null : (method ?? null),
           enteredMeasurementSystem: entry.observation.enteredMeasurementSystem,
           urineColorCode: urineColorCode ?? null,
+          // Carried through from the stored row, because a correction is a
+          // full replacement (§4) and this screen offers no control for it.
+          // Omitted, `reenqueueCorrectedObservation` writes `null` — so
+          // correcting a rejected INTAKE entry's amount silently erased the
+          // fluid category the patient chose, locally and then on the server.
+          fluidTypeCode: entry.observation.fluidTypeCode,
         },
         clockNow,
       );
@@ -251,6 +257,8 @@ export default function Corrections(): React.JSX.Element {
             const blocked = isEditing && check?.kind === 'blocked' ? check.errors : [];
             const amountRule = amountError(blocked)?.ruleCode;
             const methodRule = methodError(blocked)?.ruleCode;
+            const nothingToRecord =
+              entry.observation.valueQuantityValue === null && urineColorCode === undefined;
 
             return (
               <View key={entry.operation.operationId} style={{ gap: 8 }}>
@@ -307,7 +315,9 @@ export default function Corrections(): React.JSX.Element {
                       </>
                     )}
                     {check?.kind === 'estimated-unavailable' ? (
-                      <BodyText tone="error">{t('common:entry.estimatedUnavailableBody')}</BodyText>
+                      <BodyText tone="error" live="assertive">
+                        {t('common:entry.estimatedUnavailableBody')}
+                      </BodyText>
                     ) : null}
                     <Button
                       label={
@@ -318,14 +328,22 @@ export default function Corrections(): React.JSX.Element {
                       // A colour-only entry with its colour cleared records
                       // nothing, and the server refuses it. Same affordance as
                       // the Add Urine screen, not a Tier 1 rule invented here.
-                      disabled={
-                        entry.observation.valueQuantityValue === null &&
-                        urineColorCode === undefined
-                      }
+                      disabled={nothingToRecord}
+                      // A disabled button with no stated reason is a dead
+                      // control: this screen disabled Save and rendered no
+                      // explanation anywhere, so a patient who cleared the
+                      // colour got silence. Hint AND visible text, because a
+                      // TalkBack user can switch hints off.
+                      hint={nothingToRecord ? t('common:entry.urineNothingToSave') : undefined}
                       onPress={() => {
                         void saveCorrection(entry, check?.kind === 'needs-confirmation');
                       }}
                     />
+                    {nothingToRecord ? (
+                      <BodyText tone="muted" live="polite">
+                        {t('common:entry.urineNothingToSave')}
+                      </BodyText>
+                    ) : null}
                   </>
                 ) : (
                   <>
