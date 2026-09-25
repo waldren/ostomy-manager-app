@@ -419,3 +419,112 @@ opened on a device for the first time — but not done.
   loading, with an error naming neither the file nor the reason. Every other
   mobile spec already lives under `src/`; the redirect route's spec is now
   `src/auth/redirectRoute.spec.tsx`.
+
+---
+
+## Run 6 — Add Urine with TalkBack (#65), 2026-09-25
+
+Not a Gate B run. The accessibility walkthrough #65 asked for, on the AVD, with
+TalkBack enabled and driving.
+
+**Method matters here.** With touch exploration on, a single tap moves
+accessibility focus and does **not** activate; every action below was performed
+with the TalkBack gesture — focus, then double-tap. So the screen was driven the
+way a blind patient drives it, not merely inspected.
+
+### The leading question: does the radiogroup collapse its options? — NO
+
+This was #65's first check, because a "yes" would have meant AC 12.1 AC3's fix was
+unreachable rather than imperfect: on Android a `ViewGroup` carrying a
+`contentDescription` can become a single accessibility-focus target that hides its
+children, and `getAllByRole('radio')` is a JS-tree query that cannot see it either
+way.
+
+`uiautomator dump` — the tree an accessibility service navigates — shows **six
+independent `RadioButton` nodes**, each `focusable`, `clickable`, and carrying its
+own accessible name:
+
+```
+RadioButton desc='Almost clear — lightest'  [focusable clickable checked=false]
+RadioButton desc='Pale yellow'              [focusable clickable checked=false]
+RadioButton desc='Yellow'                   [focusable clickable checked=false]
+RadioButton desc='Darker yellow'            [focusable clickable checked=false]
+RadioButton desc='Orange-brown'             [focusable clickable checked=false]
+RadioButton desc='Brown — darkest'          [focusable clickable checked=false]
+```
+
+Six reachable stops, six distinct names, no collapse. Removing the group's
+redundant `accessibilityLabel` (P3.S2 re-review) was the right call and this is the
+evidence for it.
+
+### AC 12.1 AC2, performed entirely through TalkBack
+
+| step | observed |
+| ---- | -------- |
+| Open Add Urine | the screen renders with the scale |
+| Focus + double-tap "Orange-brown" | that node becomes `checked=true`; the other five stay `checked=false`, and the node gains a third child — the check mark `ChoiceGroup` uses as its non-colour signal |
+| Focus + double-tap Save | **"Saved on this phone."** |
+
+A colour-only voided-urine entry, created by a screen-reader user, with no amount.
+That is the entry the whole feature exists for.
+
+### Fixes from the P3.S2 review, confirmed on the device
+
+- **Save is present-and-disabled with its reason stated.** Before a colour is
+  picked: `Button desc='Save entry' [DISABLED]`, with "Add an amount or pick a
+  colour. Then you can save this entry." An absent button was the original
+  behaviour and read as "this form has no way to finish".
+- **The amount label names its noun** — "How much urine did you pass? (optional)".
+- **The hint warns the toggle is coming** — "…If you do enter an amount, you will
+  say next whether you measured it."
+- **The direction of the scale is a visible `Text` node**, not only a hint: "The
+  list goes from lightest to darkest." It therefore survives a TalkBack user
+  having hints switched off, which was the reviewer's specific point.
+- **`entry.urineColorUnavailable` renders and is honest.** Seen for real while the
+  cache was empty: "We could not load the colour choices yet. For now, you will
+  need to enter an amount to save this entry." The shared string it replaced ended
+  "You can still save your entry without them", which would have been false.
+
+### What this run did NOT establish
+
+**Verbatim speech.** The plan was to capture TalkBack's utterances from
+`SpeechControllerImpl` at VERBOSE. TalkBack is genuinely running and speaking —
+it is bound with `FEEDBACK_SPOKEN`, `touchExplorationEnabled=true`, and
+`MediaFocusControl` records it taking audio focus through
+`SpeechControllerImpl` — but the release build does not log utterance text, and
+`setprop log.tag.SpeechControllerImpl VERBOSE` does not change that. So the
+**names, order and reachability** of the six steps are established; the exact
+spoken string for each is not.
+
+Three questions therefore remain open on #65 and cannot be closed from here:
+
+1. **Whether the em-dashes in the two end labels are spoken usefully.** "Almost
+   clear — dash — lightest" would be worse than a comma. Device- and
+   engine-dependent.
+2. **Whether the per-option "Step N of 6" hints are announced at all**, and at
+   tolerable length. `accessibilityHint` is not exposed in `uiautomator dump`, so
+   their presence on the node is not observable this way either.
+3. **Whether the ordering is actually perceivable** from labels plus group hint
+   plus step numbers. That is a judgement about how people hear words and belongs
+   in SRS §5.4's pre-launch usability review (#67), not to any log.
+
+**And this is an emulator.** It closes none of HW-1..HW-10 and does not touch
+CLAUDE.md's "not verified on hardware" caveat.
+
+### Two defects this run found, neither in the app's accessibility
+
+- **#76 — the dev host was three merges stale.** `Deploy dev` has never run: zero
+  self-hosted runners are registered. Add Urine first rendered "We could not load
+  the colour choices yet" because the deployed API predated P3.S2 and had neither
+  the migration nor the `urine_color` value set. The client was behaving correctly
+  and saying so; the server had nothing to give it. I rebuilt the API container by
+  hand to proceed.
+- **#77 — both sync endpoints return 403**, on the same token that succeeds
+  against `/value-sets` and `/thresholds`. The entry above confirmed locally and
+  never reached the server: `observations` holds no `9187-6` row. **Gate B clause
+  2 would fail today**, having passed in run 4.
+
+Also worth noting for the next person: the value-set cache only populated after a
+background/foreground cycle, which is #59's known shape — the first sync cycle
+after a cold start runs unauthenticated and never retries. The screen reads its
+cache once on mount, so Add Urine had to be re-entered after the cache filled.
