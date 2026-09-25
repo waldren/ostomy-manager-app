@@ -414,6 +414,108 @@ describe('runSyncCycle', () => {
     });
   });
 
+  /**
+   * #80. A token with no patient record is not an authentication failure, and
+   * the two must not be handled the same way.
+   *
+   * Before this, the server collapsed the condition into `UNAUTHENTICATED` and
+   * this worker took the auth branch: re-authenticate, succeed, sync, be
+   * refused, repeat. The patient's entries queued locally while every screen
+   * truthfully reported them saved.
+   */
+  describe('PATIENT_NOT_PROVISIONED (§6.1, #80)', () => {
+    it('stops with its own reason, not unauthenticated', async () => {
+      await writeEntry('350', '2026-09-15T11:00:00.000Z');
+      client.pushResponses.push(protocolError(403, 'PATIENT_NOT_PROVISIONED'));
+
+      const result = await runSyncCycle(deps());
+
+      expect(result.stoppedBecause).toEqual({ kind: 'not-provisioned' });
+    });
+
+    /**
+     * The queue is correct and must be left alone. Quarantining here would put
+     * a correction prompt in front of a patient for entries that are perfectly
+     * valid and that nothing rejected — and §9.1's never-drop rule offers no
+     * help, because there was no rejection to retain.
+     */
+    it('leaves the queue exactly as it was, quarantining nothing', async () => {
+      await writeEntry('350', '2026-09-15T11:00:00.000Z');
+      await writeEntry('275', '2026-09-15T11:30:00.000Z');
+      client.pushResponses.push(protocolError(403, 'PATIENT_NOT_PROVISIONED'));
+
+      await runSyncCycle(deps());
+
+      expect(await listQueuedOperations(executor)).toHaveLength(2);
+      expect(await listRejectedOperations(executor)).toHaveLength(0);
+    });
+
+    /** It must not be isolated one-at-a-time either: nothing here is a bad operation. */
+    it('does not isolate operations looking for a culprit', async () => {
+      await writeEntry('350', '2026-09-15T11:00:00.000Z');
+      await writeEntry('275', '2026-09-15T11:30:00.000Z');
+      client.pushResponses.push(protocolError(403, 'PATIENT_NOT_PROVISIONED'));
+
+      await runSyncCycle(deps());
+
+      // One attempt, not one per operation.
+      expect(client.pushes).toHaveLength(1);
+    });
+  });
+
+  /**
+   * §8 and #80: a code this build does not know is RETRIED before it is
+   * isolated.
+   *
+   * §6.1's set is closed, so adding a code is a client-first release — and a
+   * server that adds one anyway would otherwise make every older client treat
+   * correct entries as malformed and move them toward the correction inbox. A
+   * bound keeps that from becoming the opposite failure: a genuine client bug
+   * still reaches the inbox, just later.
+   */
+  describe('an unrecognised protocol code', () => {
+    it('is retried rather than quarantined on first sight', async () => {
+      await writeEntry('350', '2026-09-15T11:00:00.000Z');
+      client.pushResponses.push(protocolError(400, 'SOME_CODE_FROM_THE_FUTURE'));
+
+      const result = await runSyncCycle(deps());
+
+      // `unavailable` is the worker's "unknown fate, try again" state (§9.3).
+      expect(result.stoppedBecause).toEqual({ kind: 'unavailable' });
+      expect(await listQueuedOperations(executor)).toHaveLength(1);
+      expect(await listRejectedOperations(executor)).toHaveLength(0);
+    });
+
+    /**
+     * And it does not retry forever. Left unbounded this would be a silent
+     * stall: entries accumulating, nothing surfaced, no correction prompt —
+     * which is the failure shape this session found twice over.
+     */
+    it('is isolated once it has been retried enough to be a real client bug', async () => {
+      await writeEntry('350', '2026-09-15T11:00:00.000Z');
+      for (let cycle = 0; cycle <= 3; cycle += 1) {
+        client.pushResponses.push(protocolError(400, 'SOME_CODE_FROM_THE_FUTURE'));
+        await runSyncCycle(deps());
+      }
+
+      // By now `attempt_count` has passed the bound, so the batch is isolated
+      // and reaches the correction inbox rather than retrying indefinitely.
+      expect(await listRejectedOperations(executor)).toHaveLength(1);
+      expect(await listQueuedOperations(executor)).toHaveLength(0);
+    });
+
+    /** A code §6.1 DOES define keeps its existing immediate handling. */
+    it('does not soften a known protocol error', async () => {
+      await writeEntry('350', '2026-09-15T11:00:00.000Z');
+      client.pushResponses.push(protocolError(400, 'ENTITY_ID_MISMATCH'));
+
+      const result = await runSyncCycle(deps());
+
+      expect(result.stoppedBecause).not.toEqual({ kind: 'unavailable' });
+      expect(await listRejectedOperations(executor)).toHaveLength(1);
+    });
+  });
+
   describe('protocol errors (§6.1)', () => {
     /**
      * §3.3's own prescribed recovery. A smaller request is a CHANGED

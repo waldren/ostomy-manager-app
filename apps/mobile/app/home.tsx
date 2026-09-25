@@ -160,6 +160,22 @@ export default function Home(): React.JSX.Element {
         and never say why. It sits above the entry buttons because it affects
         what the rest of this screen is showing.
       */}
+      {/*
+        No patient record on the server (#80). Above the entry buttons for the
+        same reason the stale-cursor notice is: it changes what everything below
+        it means. Nothing is offered to tap, because there is nothing the
+        patient can do from here — and offering a "try again" for a condition
+        that does not resolve by trying is what the old `UNAUTHENTICATED`
+        mapping effectively did.
+      */}
+      {lastStop?.kind === 'not-provisioned' ? (
+        <View accessibilityLiveRegion="polite">
+          <Heading level={2}>{t('common:notProvisioned.heading')}</Heading>
+          <BodyText>{t('common:notProvisioned.body')}</BodyText>
+          <BodyText tone="muted">{t('common:notProvisioned.contact')}</BodyText>
+        </View>
+      ) : null}
+
       {lastStop?.kind === 'cursor-too-old' ? (
         <View accessibilityLiveRegion="polite">
           <Heading level={2}>{t('common:staleSync.heading')}</Heading>

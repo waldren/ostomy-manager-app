@@ -69,6 +69,23 @@ import {
  * `applyPushResults` may record one.
  */
 
+/**
+ * How many pushes an unrecognised §6.1 code survives before the batch is
+ * isolated.
+ *
+ * Not a threshold anyone tuned — it is the smallest number that makes the two
+ * failure modes distinguishable. A server that has added a code this build does
+ * not know needs the client to wait for an update, not to reject the patient's
+ * entries; a genuine client bug needs to reach the correction inbox rather than
+ * retry forever (§9.2). Three cycles separates them without leaving a real bug
+ * unaddressed for long.
+ *
+ * Not a validation threshold, so not admin-managed configuration: this bounds
+ * transport retries, the same reasoning that keeps `SYNC_PUSH_MAX_OPERATIONS`
+ * out of `validation_thresholds`.
+ */
+const UNKNOWN_PROTOCOL_CODE_RETRY_LIMIT = 3;
+
 /** Why a cycle stopped. Counts and codes only — never an operation's content (§6.3). */
 export type SyncStopReason =
   /** Queue drained and the delta pull reached `hasMore: false`. */
@@ -84,6 +101,20 @@ export type SyncStopReason =
    * deliberately does NOT do on its own; see `runSyncCycle`.
    */
   | { readonly kind: 'cursor-too-old' }
+  /**
+   * The token is valid and this patient has no record on the server yet
+   * (§6.1 `PATIENT_NOT_PROVISIONED`, #80).
+   *
+   * Distinct from `unauthenticated`, and the distinction is the entire point.
+   * Re-authenticating succeeds and changes nothing, so treating this as an auth
+   * failure produced a loop: sign in, sync, be refused, sign in. Distinct from
+   * `unavailable` too — nothing is retried, because time does not fix it.
+   *
+   * The queue is deliberately left exactly as it is. Nothing is wrong with the
+   * operations in it and nothing is quarantined: they are correct entries
+   * waiting for a record to attach to, and they push normally once it exists.
+   */
+  | { readonly kind: 'not-provisioned' }
   /** A protocol error (§6.1) that survived isolation down to a single operation. */
   | { readonly kind: 'protocol-error'; readonly code: SyncProtocolErrorCode };
 
@@ -372,6 +403,13 @@ async function pushOneBatch(
     if (code === 'UNAUTHENTICATED' || error.status === 401) {
       return terminal({ kind: 'unauthenticated' }, built.unbuildable);
     }
+    // Before the status check below: a 403 carrying this code is NOT an auth
+    // failure, and routing it to `unauthenticated` is the loop #80 describes.
+    // Nothing is quarantined and nothing is retried — the queue is fine and
+    // waiting for a patient record to exist.
+    if (code === 'PATIENT_NOT_PROVISIONED') {
+      return terminal({ kind: 'not-provisioned' }, built.unbuildable);
+    }
     if (code === 'BATCH_TOO_LARGE' || error.status === 413) {
       // §3.3's own prescribed recovery: split and re-push, preserving order.
       // A smaller request is a CHANGED request, so this is not §6.1's
@@ -382,6 +420,32 @@ async function pushOneBatch(
         return quarantineSingle(deps, built.sent[0]!, code ?? 'MALFORMED_REQUEST');
       }
       return pushSplitInHalf(deps, built.sent, isolating, built.unbuildable);
+    }
+
+    // A code this build does not recognise gets RETRIED first, and is only
+    // isolated once it has been seen enough times to be a real client bug
+    // (§8, #80).
+    //
+    // Isolating immediately was wrong in one specific and reachable way: §6.1's
+    // code set is closed, so a server adding a code — which §8 now records is
+    // not safely additive — would make every older client treat correct entries
+    // as malformed and move them toward the correction inbox. A patient would
+    // be asked to fix entries that were never wrong, which §9.1's
+    // never-drop-a-rejection rule cannot help with because nothing was
+    // rejected.
+    //
+    // Retrying instead degrades that into a delay. The bound is what keeps it
+    // from becoming a silent stall: a genuine client bug still reaches the
+    // correction inbox, just later. `attempt_count` is already tracked per
+    // operation, so this costs no new state.
+    const rawCode = rawProtocolErrorCode(error);
+    if (rawCode !== undefined && !isSyncProtocolErrorCode(rawCode)) {
+      const everyOperationHasBeenRetriedEnough = built.sent.every(
+        (entry) => entry.attemptCount >= UNKNOWN_PROTOCOL_CODE_RETRY_LIMIT,
+      );
+      if (!everyOperationHasBeenRetriedEnough) {
+        return terminal({ kind: 'unavailable' }, built.unbuildable);
+      }
     }
 
     // Every remaining protocol error is a client bug with no defined
@@ -533,6 +597,25 @@ async function quarantineSingle(
  * makes new protocol errors additive, so an old build must degrade rather
  * than crash.
  */
+/**
+ * The `error.code` string the server sent, whatever it was.
+ *
+ * Separate from `protocolErrorCode` because that one narrows to §6.1's set and
+ * so answers `undefined` for **two different situations**: a body carrying no
+ * code at all, and a body carrying a code this build has never heard of. Those
+ * need opposite handling — the first is a malformed response, the second is a
+ * newer server — and collapsing them is why the retry-before-isolate rule could
+ * not be expressed against `protocolErrorCode` alone (#80).
+ */
+function rawProtocolErrorCode(error: ApiError): string | undefined {
+  const body = error.rejectionForCorrectionQueue();
+  if (typeof body !== 'object' || body === null) return undefined;
+  const wrapper = (body as { error?: unknown }).error;
+  if (typeof wrapper !== 'object' || wrapper === null) return undefined;
+  const code = (wrapper as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
 function protocolErrorCode(error: ApiError): SyncProtocolErrorCode | undefined {
   const body = error.rejectionForCorrectionQueue();
   if (typeof body !== 'object' || body === null) return undefined;

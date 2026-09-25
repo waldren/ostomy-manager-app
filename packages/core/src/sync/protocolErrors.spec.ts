@@ -25,13 +25,27 @@ import {
 import { SYNC_REASON_CODE } from './reasonCodes.js';
 
 describe('SYNC_PROTOCOL_ERROR_CODE — docs/sync-contract.md §6.1', () => {
-  it('names exactly the seven conditions §6.1 tabulates', () => {
+  /**
+   * An exact list, not a `toContain`, and it is meant to be inconvenient.
+   *
+   * §6.1's set is closed, and §8 records that adding to it is **not** safely
+   * additive: a client meeting a code it does not know has no defined recovery,
+   * so a server-first addition would make older clients treat correct entries as
+   * malformed. This assertion is what makes that a deliberate edit with a
+   * reviewer attached rather than a one-line convenience — it failed when
+   * `PATIENT_NOT_PROVISIONED` was added (#80), which is exactly its job.
+   */
+  it('names exactly the eight conditions §6.1 tabulates', () => {
     expect(Object.keys(SYNC_PROTOCOL_ERROR_CODE).sort()).toEqual([
       'BATCH_OUT_OF_ORDER',
       'BATCH_TOO_LARGE',
       'CURSOR_TOO_OLD',
       'ENTITY_ID_MISMATCH',
       'MALFORMED_REQUEST',
+      // Added at #80: a valid token whose subject has no `patients` row. NOT an
+      // authentication failure, and the client behaviour is the opposite —
+      // nothing retried, nothing quarantined, no re-authentication.
+      'PATIENT_NOT_PROVISIONED',
       'PAYLOAD_PRESENCE_INVALID',
       'UNAUTHENTICATED',
     ]);

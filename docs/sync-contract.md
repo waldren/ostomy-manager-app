@@ -334,6 +334,7 @@ Conflating them is how "a batch never fails as a unit" turns into "a malformed b
 | `payload` present on a delete, or absent on a create/update | `PAYLOAD_PRESENCE_INVALID` | `400` |
 | `payload.id` does not equal the operation's `entityId` (§7.2) | `ENTITY_ID_MISMATCH` | `400` |
 | Missing, expired, or invalid token | `UNAUTHENTICATED` | `401` |
+| Token valid, but its subject has no `patients` row | `PATIENT_NOT_PROVISIONED` | `403` |
 | More than `SYNC_PUSH_MAX_OPERATIONS` operations | `BATCH_TOO_LARGE` | `413` |
 | `since` older than the tombstone purge horizon (§5.4) | `CURSOR_TOO_OLD` | `409` |
 
@@ -351,7 +352,11 @@ A protocol error applies **no** operations. The client retains the whole batch a
 
 **This shape is not what a framework produces by default, and that is the harder half of the requirement.** A NestJS `ValidationPipe` emits `{"statusCode":400,"message":[...],"error":"Bad Request"}`, and with the `forbidNonWhitelisted` §2 requires, those messages read `property patientId should not exist` — echoing a client-supplied key straight back, which §6.2 forbids. Express's body-size limit produces its own `PayloadTooLargeError` body. And the patient guard already shipped in P1.S1 throws `{"code":"AUTH_MISSING_TOKEN"}` — a different envelope *and* a different vocabulary from `UNAUTHENTICATED`. None of these pass through the type that makes this shape safe.
 
-**P2.S1b therefore owes a sync-scoped exception filter** that maps every `4xx` leaving `/api/v1/sync/**` into this body and discards any framework-supplied `message`, plus a test asserting each of the seven conditions returns a body whose only keys are `error` → `code`. It also owes a decision, in that sprint, on whether `UNAUTHENTICATED` subsumes the guard's `AUTH_*` codes or the guard's codes are what this surface returns — today the two artifacts disagree and `UNAUTHENTICATED` is a code nothing emits.
+**P2.S1b therefore owes a sync-scoped exception filter** that maps every `4xx` leaving `/api/v1/sync/**` into this body and discards any framework-supplied `message`, plus a test asserting each condition returns a body whose only keys are `error` → `code`. It also owes a decision, in that sprint, on whether `UNAUTHENTICATED` subsumes the guard's `AUTH_*` codes or the guard's codes are what this surface returns — today the two artifacts disagree and `UNAUTHENTICATED` is a code nothing emits.
+
+**`PATIENT_NOT_PROVISIONED` is the part of that deferred decision now taken (#80).** The filter mapped by **status**, so every `403` became `UNAUTHENTICATED` — and `/api/v1/observations` had been returning `PATIENT_NOT_PROVISIONED` for the same condition since P2.S1a. One condition answered two ways. It now maps the rejection's own code where the code is one §6.1 defines, and falls back to status only for everything else; a filter that reads a status cannot tell "no token" from "no patient record", and those need opposite client behaviour.
+
+A token with no patient row is **not** an authentication failure. Telling a client otherwise sends it to re-authenticate, which succeeds, after which nothing has changed — the loop in §9's terms, driven by the server describing the wrong condition.
 
 ### 6.2 Data errors — one operation rejected
 
@@ -470,6 +475,10 @@ All timestamps are RFC 3339 with a `Z` offset and **exactly three** fractional d
 The contract is versioned with the API surface it lives on: `/api/v1/sync/...`. A change that an old client cannot survive requires `/api/v2`, run alongside `v1` until fielded clients have moved.
 
 **Additive without a version bump:** a new `entityType`; a new optional payload field on an existing entity; a new `reasonCode`; a new result field a client can ignore. Clients MUST tolerate all four — specifically, an unknown `reasonCode` degrades to the generic message (§6.4), and an unknown field in a *response* is ignored rather than treated as an error.
+
+**A new §6.1 protocol `code` is NOT on that list, and the reason is specific.** §6.2's `reasonCode` set is open by design and a client degrades an unknown one to a generic message. §6.1's is closed, and a client that meets a code it does not know has no defined recovery — `apps/mobile`'s worker isolated the batch and moved it toward the correction inbox, so a code added server-first would have surfaced a **false correction prompt against entries that were never wrong**. Adding one is therefore a coordinated release: **client first, server second.** `CURSOR_TOO_OLD` already records this in its own comment in `packages/core/src/sync`.
+
+`PATIENT_NOT_PROVISIONED` was added under exactly that rule (#80), before any client is fielded, and in the same change the client's unknown-code fallback was made **retry-then-isolate** rather than isolate-immediately — so the next addition degrades into a delay rather than into a bogus rejection. That softens the constraint; it does not remove it.
 
 **Requires a version bump:** removing or renaming a field; changing a field's type or units; changing the meaning of a status; making an optional field required; tightening validation such that a payload an old client can construct is now rejected.
 

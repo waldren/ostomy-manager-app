@@ -199,6 +199,7 @@ export type SyncProtocolErrorResponse = {
       | 'PAYLOAD_PRESENCE_INVALID'
       | 'ENTITY_ID_MISMATCH'
       | 'UNAUTHENTICATED'
+      | 'PATIENT_NOT_PROVISIONED'
       | 'CURSOR_TOO_OLD'
       | 'BATCH_TOO_LARGE';
   };
