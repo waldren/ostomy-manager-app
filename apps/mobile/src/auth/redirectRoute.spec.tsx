@@ -80,6 +80,14 @@ jest.mock('./pendingAuthRequest', () => ({
   clearPendingAuthRequest: () => mockClearPending(),
 }));
 
+/**
+ * `null` is the state that broke this route on a device: `useAutoDiscovery` is an
+ * async fetch, so the first render always sees `null`, and the route used to
+ * unmount before it resolved. Made switchable here so the bounded wait has
+ * coverage.
+ */
+let mockDiscovery: object | null = { tokenEndpoint: 'http://localhost:8090/patient-issuer/token' };
+
 jest.mock('./oidcSession', () => {
   const actual = jest.requireActual('./oidcSession');
   return {
@@ -87,9 +95,7 @@ jest.mock('./oidcSession', () => {
     // idea of it.
     readAuthorizationCallback: actual.readAuthorizationCallback,
     exchangeAuthorizationCode: (...args: unknown[]) => mockExchange(...args),
-    // Resolved discovery, so the effect runs. `null` means "still loading" and
-    // the route deliberately does nothing then.
-    useAutoDiscovery: () => ({ tokenEndpoint: 'http://localhost:8090/patient-issuer/token' }),
+    useAutoDiscovery: () => mockDiscovery,
   };
 });
 
@@ -103,13 +109,28 @@ const PENDING = {
 
 const TOKENS = { accessToken: 'at', refreshToken: 'rt', idToken: 'it' };
 
+/**
+ * Fake timers, because the route schedules a **20-second** real timer on every
+ * mount to bound its wait for the discovery document.
+ *
+ * With real timers this suite left ten of those pending and the first test
+ * exceeded jest's 5s limit on CI while passing locally — a test that is green
+ * only on the faster machine is not a guard. Fake timers also make the timeout
+ * branch testable at all, rather than only observable by waiting.
+ */
 beforeEach(() => {
+  jest.useFakeTimers();
   jest.clearAllMocks();
+  mockDiscovery = { tokenEndpoint: 'http://localhost:8090/patient-issuer/token' };
   mockParams = {};
   mockGetPending.mockResolvedValue(PENDING);
   mockClearPending.mockResolvedValue(undefined);
   mockExchange.mockResolvedValue(TOKENS);
   mockCompleteLogin.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 describe('the OIDC redirect route', () => {
@@ -224,6 +245,45 @@ describe('the OIDC redirect route', () => {
     await view.rerender(<OidcRedirect />);
 
     expect(mockExchange).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The bug the device found, which every mocked test had been blind to: the
+   * route must NOT navigate away before discovery resolves.
+   *
+   * Here discovery is `null` at mount — as it is on every real run — and the
+   * route must still exchange once it arrives, rather than having unmounted.
+   */
+  it('still exchanges when discovery resolves after the first render', async () => {
+    mockParams = { code: 'the-code', state: 'state-xyz' };
+    mockDiscovery = null;
+
+    const view = await render(<OidcRedirect />);
+    expect(mockExchange).not.toHaveBeenCalled();
+
+    mockDiscovery = { tokenEndpoint: 'http://localhost:8090/patient-issuer/token' };
+    await view.rerender(<OidcRedirect />);
+
+    await waitFor(() => expect(mockCompleteLogin).toHaveBeenCalledWith(TOKENS));
+  });
+
+  /**
+   * The bound on that wait. Without it a patient whose network dropped between
+   * authorizing and returning would sit on "Finishing sign in" forever — the
+   * dismissal signal that covers a closed browser lives on the login screen,
+   * which is unmounted by the time this route runs.
+   */
+  it('reports a failure when discovery never resolves', async () => {
+    mockParams = { code: 'the-code', state: 'state-xyz' };
+    mockDiscovery = null;
+
+    await render(<OidcRedirect />);
+    expect(mockReportSignInFailure).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(20_000);
+
+    await waitFor(() => expect(mockReportSignInFailure).toHaveBeenCalled());
+    expect(mockExchange).not.toHaveBeenCalled();
   });
 
   /**
