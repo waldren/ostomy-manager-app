@@ -25,6 +25,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import {
+  isSyncProtocolErrorCode,
   SYNC_PROTOCOL_ERROR_CODE,
   type SyncProtocolErrorCode,
   type SyncProtocolErrorResponse,
@@ -120,7 +121,15 @@ export class SyncExceptionFilter implements ExceptionFilter {
       return;
     }
 
-    const body: SyncProtocolErrorResponse = { error: { code: protocolCodeForStatus(status) } };
+    // The rejection's OWN code first, status only as a fallback.
+    //
+    // Mapping by status alone is what made every 403 `UNAUTHENTICATED` (#80),
+    // including `PATIENT_NOT_PROVISIONED` — a condition that is not an
+    // authentication failure and needs the opposite client behaviour. A status
+    // cannot tell "no token" from "no patient record", so it must not be the
+    // only thing consulted.
+    const code = protocolCodeOf(exception) ?? protocolCodeForStatus(status);
+    const body: SyncProtocolErrorResponse = { error: { code } };
     response.status(status).json(body);
   }
 
@@ -171,6 +180,32 @@ function statusOf(exception: unknown): number {
  * Only 4xx reaches this function — `catch` handles 5xx before calling it,
  * for the reason given there.
  */
+/**
+ * The §6.1 code an exception names for itself, when it names one.
+ *
+ * Reads the code off an `ObservationRejectedException`-shaped error and keeps
+ * it **only if §6.1 defines it**, via `isSyncProtocolErrorCode`. That guard is
+ * the point rather than a formality: `observation-rejection.ts` carries codes
+ * this surface has never promised a client (`UNSUPPORTED_CODE`,
+ * `ENTITY_ID_CONFLICT`), and §6.1's set is closed precisely so that two client
+ * implementations log the same value for the same server condition. Letting an
+ * unvetted string through would put a code on the wire no client was told to
+ * expect — which §8 notes is not a safely additive change.
+ *
+ * Deliberately structural rather than an `instanceof`: the sync module does not
+ * import the observations module's exception class, and a shape check keeps
+ * that boundary while still reading the one field that matters.
+ */
+function protocolCodeOf(exception: unknown): SyncProtocolErrorCode | undefined {
+  if (!(exception instanceof HttpException)) return undefined;
+  const body = exception.getResponse();
+  if (typeof body !== 'object' || body === null) return undefined;
+  const error = (body as { error?: unknown }).error;
+  if (typeof error !== 'object' || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && isSyncProtocolErrorCode(code) ? code : undefined;
+}
+
 function protocolCodeForStatus(status: number): SyncProtocolErrorCode {
   if (status === HttpStatus.UNAUTHORIZED || status === HttpStatus.FORBIDDEN) {
     return SYNC_PROTOCOL_ERROR_CODE.UNAUTHENTICATED;

@@ -226,6 +226,29 @@ export const common = {
   'entry.optionsUnavailable':
     'We could not load the choices for this yet. You can still save your entry without them.',
 
+  // --- No patient record on the server yet (#80, §6.1) -------------------
+  //
+  // The token is valid; the account simply has no clinical record attached, so
+  // nothing can sync until it does. Shown rather than left silent because the
+  // alternative is the failure this code was added to end: entries queue
+  // forever while every screen truthfully reports them saved, and nothing says
+  // why.
+  //
+  // Two things this copy must NOT do. It must not tell the patient to sign in
+  // again — that is what the old `UNAUTHENTICATED` mapping caused, it succeeds,
+  // and it changes nothing. And it must not read as data loss: the entries are
+  // safe on the phone and will send themselves, which is the first thing
+  // someone in this state needs to know.
+  //
+  // It also does not name onboarding, because onboarding does not exist yet
+  // (P4). When it does, this becomes a route rather than a sentence, and the
+  // heading can stay.
+  'notProvisioned.heading': 'Your account is not set up yet',
+  'notProvisioned.body':
+    'Your entries are saved on this phone and will send on their own once your account is ready. You do not need to sign in again.',
+  'notProvisioned.contact':
+    'If this does not clear up, contact your care team — they can finish setting up your account.',
+
   'corrections.heading': 'Entries that need your attention',
   'corrections.empty': 'Nothing needs fixing.',
   'corrections.intro':

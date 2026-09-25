@@ -42,6 +42,25 @@ export const SYNC_PROTOCOL_ERROR_CODE = {
   /** Missing, expired or invalid token. */
   UNAUTHENTICATED: 'UNAUTHENTICATED',
   /**
+   * The token is valid and its subject has **no `patients` row** (§6.1).
+   *
+   * Not an authentication failure, and the distinction is the whole reason
+   * this code exists rather than reusing `UNAUTHENTICATED`. The caller is
+   * authenticated; onboarding has not created their record yet. A client told
+   * `UNAUTHENTICATED` re-authenticates, succeeds, syncs, is told the same
+   * thing, and loops — while the patient's entries queue locally and every
+   * screen truthfully reports them saved.
+   *
+   * `/api/v1/observations` has returned `PATIENT_NOT_PROVISIONED` for this
+   * condition since P2.S1a; the sync surface collapsed every 403 into
+   * `UNAUTHENTICATED` and so answered differently to the same question
+   * (#80). One condition, one code, both surfaces.
+   *
+   * Nothing retries on this and nothing is quarantined: the queue is fine
+   * and the server is fine. It resolves when the patient's record exists.
+   */
+  PATIENT_NOT_PROVISIONED: 'PATIENT_NOT_PROVISIONED',
+  /**
    * A `since` older than the tombstone purge horizon (§5.4). The client
    * wipes local entity state and re-syncs from `since=0`.
    *

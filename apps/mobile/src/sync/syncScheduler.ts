@@ -104,10 +104,19 @@ export function nextSchedulerState(state: SchedulerState, result: SyncCycleResul
  * and retrying on a timer against a missing token produces nothing but
  * failed requests on a metered connection. The next cycle comes from the
  * sign-in completing, which `SyncProvider` observes.
+ *
+ * `not-provisioned` is the same shape for a different reason (#80): the
+ * server has no record for this patient, and no amount of waiting makes one
+ * appear. Backing off against it would spend battery and metered data on a
+ * request whose answer cannot change. Recovery is still reachable without a
+ * timer — `SyncProvider`'s connectivity and foreground triggers both start a
+ * fresh cycle — so a patient whose record is created mid-session discovers it
+ * the next time they open the app rather than never.
  */
 export function nextDelayMs(state: SchedulerState, lastStop: SyncStopReason): number | undefined {
   if (state.haltedForCursorRecovery) return undefined;
   if (lastStop.kind === 'unauthenticated') return undefined;
+  if (lastStop.kind === 'not-provisioned') return undefined;
   if (state.consecutiveFailures === 0) return undefined;
 
   const exponent = state.consecutiveFailures - 1;

@@ -343,6 +343,108 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
    * clinical content on the row, so the push threw on the database CHECK and
    * returned a 500, which §9 tells a client to re-push indefinitely.
    */
+  /**
+   * #80. One condition, one code, on both surfaces.
+   *
+   * `/api/v1/observations` has returned `PATIENT_NOT_PROVISIONED` for a valid
+   * token with no `patients` row since P2.S1a. The sync filter mapped by HTTP
+   * status, so every 403 became `UNAUTHENTICATED` — and `apps/mobile`'s worker
+   * treats that as a bad token, re-authenticates, succeeds, syncs, is told the
+   * same thing, and loops. The patient's entries queue locally while every
+   * screen truthfully reports them saved.
+   *
+   * Not reachable while every token that resolves has a row, which is why
+   * nothing caught it. Live at P4: onboarding means a patient legitimately
+   * holds a valid token BEFORE their record exists, which is the case
+   * `patientNotProvisioned()` was written for.
+   */
+  describe('§6.1 — a token with no patient record is not an authentication failure', () => {
+    /** A valid token for a subject this database has never seen. */
+    async function tokenForUnprovisionedSubject(): Promise<string> {
+      return issuer.sign({
+        issuer: ISSUER,
+        audience: AUDIENCE,
+        subject: `unprovisioned-${randomUUID()}`,
+      });
+    }
+
+    it('answers /sync/delta with PATIENT_NOT_PROVISIONED, not UNAUTHENTICATED', async () => {
+      const token = await tokenForUnprovisionedSubject();
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/sync/delta')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ since: '0', limit: 10 });
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: { code: 'PATIENT_NOT_PROVISIONED' } });
+    });
+
+    it('answers /sync/push the same way', async () => {
+      const token = await tokenForUnprovisionedSubject();
+
+      const response = await request(app.getHttpServer())
+        .post('/api/v1/sync/push')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ operations: [] });
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: { code: 'PATIENT_NOT_PROVISIONED' } });
+    });
+
+    /**
+     * The assertion that pins the actual bug: the two surfaces must not answer
+     * the same question differently. Compared rather than asserted separately,
+     * because the defect was the DIFFERENCE and either one alone looks fine.
+     */
+    it('matches what /api/v1/observations says for the same condition', async () => {
+      const token = await tokenForUnprovisionedSubject();
+
+      const direct = await request(app.getHttpServer())
+        .get('/api/v1/observations')
+        .set('Authorization', `Bearer ${token}`);
+      const viaSync = await request(app.getHttpServer())
+        .get('/api/v1/sync/delta')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ since: '0', limit: 10 });
+
+      expect(direct.status).toBe(viaSync.status);
+      expect(viaSync.body.error.code).toBe(direct.body.error.code);
+    });
+
+    /**
+     * A real authentication failure must still be `UNAUTHENTICATED` — the fix
+     * is a new distinction, not a rename, and mapping every 403 to the new code
+     * would be the same defect mirrored.
+     */
+    it('still reports UNAUTHENTICATED for a request with no token at all', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/sync/delta')
+        .query({ since: '0', limit: 10 });
+
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({ error: { code: 'UNAUTHENTICATED' } });
+    });
+
+    /**
+     * §6.1's body is minimal and fixed, and that rule binds the new code too:
+     * `PATIENT_NOT_PROVISIONED` reaches the wire from an exception whose
+     * observation-side shape carries an `errors` array, and §6.3 forbids
+     * anything beyond the code on this surface.
+     */
+    it('carries no key beyond error.code', async () => {
+      const token = await tokenForUnprovisionedSubject();
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/sync/delta')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ since: '0', limit: 10 });
+
+      expect(Object.keys(response.body)).toEqual(['error']);
+      expect(Object.keys(response.body.error)).toEqual(['code']);
+    });
+  });
+
   describe('§7.2 — the coded fields survive a delta pull', () => {
     // Its own patient, for the two reasons the Meal block below spells out:
     // the push rate limit is keyed on the patient, and these assertions pull
