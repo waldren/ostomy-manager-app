@@ -46,6 +46,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { render, waitFor } from '@testing-library/react-native';
 
+/**
+ * Above jest's 5s default, for the failure mode this file hit in CI and never
+ * locally: the first test in it exceeded the limit on the runner while eleven
+ * siblings using the same machinery passed, and the whole file runs in under a
+ * second here.
+ *
+ * Raised rather than diagnosed further because the two candidate causes — a
+ * cold first React Native render competing for CPU against parallel workers,
+ * and a fake-timer microtask race (removed above) — are both about scheduling
+ * rather than about what the route does. A ceiling that only the slowest
+ * environment ever approaches is the right shape for that; a test that hangs
+ * still fails, just later.
+ */
+jest.setTimeout(20_000);
+
 const mockCompleteLogin = jest.fn();
 const mockReportSignInFailure = jest.fn();
 const mockGetPending = jest.fn();
@@ -110,16 +125,21 @@ const PENDING = {
 const TOKENS = { accessToken: 'at', refreshToken: 'rt', idToken: 'it' };
 
 /**
- * Fake timers, because the route schedules a **20-second** real timer on every
- * mount to bound its wait for the discovery document.
+ * **Real** timers here, deliberately, with fake ones switched on only inside the
+ * test that has to skip the route's 20-second discovery bound.
  *
- * With real timers this suite left ten of those pending and the first test
- * exceeded jest's 5s limit on CI while passing locally — a test that is green
- * only on the faster machine is not a guard. Fake timers also make the timeout
- * branch testable at all, rather than only observable by waiting.
+ * Fake timers for the whole file made this suite fail in CI while passing
+ * locally, on the first test only. Jest's modern fake timers can also patch
+ * `queueMicrotask`, and every assertion in this file waits on a promise chain
+ * (SecureStore mock -> callback read -> exchange -> completeLogin) rather than
+ * on a timer. Under fake timers that chain's progress depends on `waitFor`
+ * advancing them, which makes a microtask race decide the outcome — the kind of
+ * test that is green on whichever machine happens to win it.
+ *
+ * The 20s timers this leaves pending are harmless: jest tears the environment
+ * down per file, and nothing asserts on them.
  */
 beforeEach(() => {
-  jest.useFakeTimers();
   jest.clearAllMocks();
   mockDiscovery = { tokenEndpoint: 'http://localhost:8090/patient-issuer/token' };
   mockParams = {};
@@ -130,6 +150,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Unconditional, so the one test that opts into fake timers cannot leak them
+  // into whatever runs next.
   jest.useRealTimers();
 });
 
@@ -274,15 +296,23 @@ describe('the OIDC redirect route', () => {
    * which is unmounted by the time this route runs.
    */
   it('reports a failure when discovery never resolves', async () => {
+    // Installed BEFORE the render, because the route schedules its bound during
+    // mount — fake timers adopted afterwards cannot advance a timer that was
+    // created against the real clock. `afterEach` restores real timers, so this
+    // cannot leak into the next test.
+    jest.useFakeTimers();
     mockParams = { code: 'the-code', state: 'state-xyz' };
     mockDiscovery = null;
 
     await render(<OidcRedirect />);
     expect(mockReportSignInFailure).not.toHaveBeenCalled();
 
-    jest.advanceTimersByTime(20_000);
+    // `...Async` rather than `advanceTimersByTime`: it flushes the microtasks
+    // the callback queues (`clearPendingAuthRequest` is a promise), which the
+    // synchronous form leaves pending.
+    await jest.advanceTimersByTimeAsync(20_000);
 
-    await waitFor(() => expect(mockReportSignInFailure).toHaveBeenCalled());
+    expect(mockReportSignInFailure).toHaveBeenCalled();
     expect(mockExchange).not.toHaveBeenCalled();
   });
 
