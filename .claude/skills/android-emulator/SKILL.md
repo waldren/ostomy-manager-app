@@ -128,19 +128,71 @@ surface the real topology denies it.
 
 `infra/docker-compose.yml` publishes host `8081` for `admin`, which is also
 Metro's default port. Expo then silently picks another port and the device
-cannot find the bundler. `wire` detects this and prints the fix:
+cannot find the bundler.
+
+**The reliable fix is to give Metro host 8081, which means stopping the admin
+container.** It works whichever hostname the client asks for:
 
 ```bash
-pnpm --filter @ostomy/mobile start --port 8082
-adb -s emulator-5554 reverse tcp:8081 tcp:8082
+docker stop ostomy-dev-admin
+pnpm --filter @ostomy/mobile start --port 8081
+# put it back afterwards
+docker start ostomy-dev-admin
 ```
 
-**Note the ports do not match, and that is the point.** An already-built
-development build has `localhost:8081` baked in as its bundler URL and will ask
-for 8081 no matter where Metro is listening. Reversing `8082 -> 8082` leaves it
-asking 8081, reaching the admin SPA, and dying with "Unable to load script".
-Mapping the device's 8081 to the host's 8082 puts Metro where the app already
-looks, and leaves the admin container alone. (Found in R.S1.)
+`wire` prints this. It used to print a port-mapping trick instead, and that
+trick works only in one of the two cases below — which is why this section now
+leads with the version that always works.
+
+#### The two cases, because the client does not always ask the same thing
+
+The bundler URL a dev build requests is **not fixed by this repo**, and the
+difference decides whether `adb reverse` can help at all:
+
+| The client asks | Can `adb reverse` intercept it? |
+| --- | --- |
+| `localhost:8081` | **Yes.** `reverse tcp:8081 tcp:8082` puts Metro where the app looks. |
+| `10.0.2.2:8081` | **No.** Nothing you forward changes where it lands. |
+
+`adb reverse` installs a listener on the **device**, so it only catches traffic
+the app addresses to `localhost` — which is exactly why the API (3000) and
+mock-oidc (8090) forwards work, and why keeping those on `localhost` is
+load-bearing for the `iss` check above.
+
+`10.0.2.2` is different in kind: it is the QEMU alias for the host's loopback,
+resolved by the emulator's own network stack with adb nowhere in the path. React
+Native's `AndroidInfoHelpers.getServerHost()` returns it on an emulator, so a
+client that has no stored dev-server URL asks for it and reaches host 8081
+whatever you forward.
+
+R.S1 observed `localhost:8081` from an already-built dev build and concluded the
+mapping trick was the fix. P3.S2's hardware work observed `10.0.2.2:8081` from a
+**freshly built** one — logcat:
+`A connection to http://10.0.2.2:8081/ was leaked` — and the bundle only loaded
+once Metro held host 8081. Both observations stand; they are different states of
+the dev client, not a contradiction. Stopping the admin container covers both,
+so prefer it and do not spend time working out which case you are in.
+
+**The failure is quiet in the worst way.** The admin SPA answers `200` with HTML,
+so a client pointed at it reports a bundle-load error rather than a refused
+connection — and the obvious reading is "Metro is broken".
+
+### Two Git Bash traps when driving the device from a script
+
+Neither is Android's fault and both are silent.
+
+**`adb shell uiautomator dump /sdcard/x.xml` writes somewhere else.** MSYS
+rewrites the leading `/sdcard/...` into a Windows path before adb sees it, and
+the dump lands at something like `/Files/Git/sdcard/x.xml`. Prefix
+`MSYS_NO_PATHCONV=1`, and pull to a **Windows-native** destination — an
+`adb pull` to an MSYS `/tmp/...` path resolves against the Git install root, so
+the file appears to vanish.
+
+**`cmd > log 2>&1; echo "EXIT: $?"` reports the `echo`'s status.** A Gradle build
+that failed looked like exit 0 and cost a full diagnosis cycle. Capture the real
+code with nothing between, or grep the log for `BUILD SUCCESSFUL` as well. This
+is the same class of mistake as `pnpm verify | grep | tail`, which this repo has
+now made three times.
 
 ## Before you conclude anything from a run
 
