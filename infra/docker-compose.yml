@@ -437,6 +437,18 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OIDC_CLOCK_TOLERANCE_SECONDS: ${OIDC_CLOCK_TOLERANCE_SECONDS:-30}
 
+      # Which commit this container is running, reported by `/api/v1/health`.
+      #
+      # Passed at RUNTIME as well as baked at build time so a stack brought up
+      # from an already-built image still reports honestly — `docker compose up`
+      # without `--build` reuses `dev-latest`, and a value baked into an older
+      # image would then claim a commit that is not what the checkout holds.
+      # The runtime value wins, and `scripts/dev-stack-status.sh` compares it
+      # against `git rev-parse`.
+      #
+      # Empty when unset, which the config schema reads as absent (#76).
+      BUILD_COMMIT: ${BUILD_COMMIT:-}
+
       # Browser origins allowed to read responses from this API.
       #
       # apps/web is served from a DIFFERENT origin than this API — 8088 vs

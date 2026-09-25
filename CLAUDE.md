@@ -129,7 +129,11 @@ These come from the spec and apply to every feature, not just "compliance work":
 
 ## Development environment
 
-Development does **not** run on AWS. It is a single shared Docker Compose stack on an on-premise Ubuntu LTS server: API, PostgreSQL, MinIO in place of S3, a mock OIDC provider in place of Cognito, both SPAs as static builds. LAN-only, plain HTTP, synthetic data only. Deployed by a self-hosted GitHub Actions runner (outbound-only, so no inbound firewall rule). Database persists across deploys; migrations run automatically; `dev-reset` wipes and reseeds. Full methodology in `docs/deployment-development.md`.
+Development does **not** run on AWS. It is a Docker Compose stack — API, PostgreSQL, MinIO in place of S3, a mock OIDC provider in place of Cognito, both SPAs as static builds — with synthetic data only. `docs/deployment-development.md` is the full methodology.
+
+**Two things that document describes do not exist, and assuming they do has already cost a session (#76).** There is no on-premise shared host: the stack runs on each developer's own machine. And there is **no self-hosted runner**, so `deploy-dev.yml` has never executed — **merging to `main` does not deploy anything.** Three merges landed against a stack serving pre-merge code, and the symptom was a client correctly reporting that a value set was unavailable against a server that had never been given it, which reads as a client bug.
+
+So: **deploy by hand** (`docs/deployment-development.md` "Deploying by hand" — and `BUILD_COMMIT` is load-bearing there, not bookkeeping), and **run `scripts/dev-stack-status.sh`** before concluding anything from the behaviour of a running stack. It compares the running commit, applied migrations and published value sets against your checkout. `UNVERIFIED` is not `CURRENT` — it means a check could not run.
 
 Two rules this imposes on application code:
 

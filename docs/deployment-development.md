@@ -1,10 +1,52 @@
 # Development Deployment
 
-How the shared development environment is built, deployed, and reset.
+How the development environment is built, deployed, and reset.
 
 This describes **development only**. Staging and production run on AWS per SRS §4.6–4.7 and share almost nothing with this setup beyond the application images themselves. That divergence is deliberate and its consequences are listed under [What this environment deliberately does not do](#what-this-environment-deliberately-does-not-do).
 
+> ## ⚠️ What exists today, and what this document describes
+>
+> **Everything below the "Shape" heading describes a SHARED, ON-PREMISE host that has never been built** (#76). Read it as the design, not as a description of anything running.
+>
+> **What actually exists** is a Docker Compose stack each developer runs on their own machine — Docker Desktop on Windows, at the time of writing — brought up and torn down by hand. There is:
+>
+> - no on-premise Ubuntu server,
+> - **no self-hosted runner** (`gh api .../actions/runners` returns `total_count: 0`), so
+> - **`deploy-dev.yml` has never executed.** Merging to `main` queues a job that waits forever. See [Deploying by hand](#deploying-by-hand) for what to do instead.
+>
+> This mattered concretely: the stack sat three merges behind `main` while a client correctly reported "We could not load the colour choices yet" against a server that had never been given them — and the obvious reading of that is "the client is broken". `scripts/dev-stack-status.sh` exists so nobody spends an hour on that again.
+>
+> The on-premise design is **deferred, not abandoned**. When it is built, delete this banner rather than editing around it.
+
+## Deploying by hand
+
+This is the current procedure. It does the same four things `deploy-dev.yml` would, in the same order, and the order is what matters — `migrate` must complete before `api` starts.
+
+```bash
+# From the repo root, with a .env present (see Secrets below).
+export BUILD_COMMIT="$(git rev-parse --short HEAD)"
+
+docker compose --env-file .env -f infra/docker-compose.yml build
+docker compose --env-file .env -f infra/docker-compose.yml run --rm migrate
+docker compose --env-file .env -f infra/docker-compose.yml up -d
+curl --fail --silent http://localhost:3000/api/v1/health && echo ' api is healthy'
+```
+
+**`BUILD_COMMIT` is not optional bookkeeping.** It is what `/api/v1/health` reports and what makes staleness detectable at all; omit it and the stack cannot say which commit it is running. (Reported in development only — see `apps/api/src/health/health.controller.ts` for why it is withheld elsewhere.)
+
+Then confirm it took:
+
+```bash
+scripts/dev-stack-status.sh
+```
+
+That compares the running commit, the applied migrations and the published value sets against this checkout, and exits non-zero if they disagree. **`UNVERIFIED` is not `CURRENT`:** it means a check could not run, which is not evidence that anything is up to date.
+
+`docker compose ... up -d --build api` alone is tempting and wrong — it skips the migrate step and the health check, which is how a schema change ends up half-applied.
+
 ## Shape
+
+> The rest of this document is the on-premise design. See the banner above.
 
 A single shared environment, fully self-contained, running under Docker Compose on an on-premise Ubuntu 26.04 LTS server. No AWS dependency of any kind. LAN access only, plain HTTP, synthetic data only.
 
@@ -93,6 +135,8 @@ This retags `ostomy/api`, the runtime image, only. It does **not** also retag `o
 This retags a previously-built image as `dev-latest` and redeploys it — it does **not** roll back the database. There is no down-migration story here (P1.S3 onward): a schema change that shipped with the bad deploy stays applied. If the failure was schema-related, the safe recovery is forward (fix and redeploy), not backward: `dev-reset.sh` is the only way to get to a clean database, and it is destructive (wipes `pgdata`/`miniodata` — see "No backups" below), which is the tradeoff of not maintaining down-migrations in a synthetic-data-only environment.
 
 ## Deployment pipeline
+
+**Not currently in service** — there is no runner, so this workflow has never run (#76). `deploy-dev.yml` is retained and disabled rather than deleted, because the sequence it encodes is correct and is what [Deploying by hand](#deploying-by-hand) reproduces.
 
 A GitHub Actions workflow targeting the self-hosted runner (labels: `self-hosted`, `linux`, `x64`, `ostomy-dev`).
 

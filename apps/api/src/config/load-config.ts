@@ -35,6 +35,7 @@ import { ConfigValidationError } from './config-validation.error';
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const raw = {
     nodeEnv: env.NODE_ENV,
+    buildCommit: env.BUILD_COMMIT,
     port: env.PORT,
     logLevel: env.LOG_LEVEL,
     oidcClockToleranceSeconds: env.OIDC_CLOCK_TOLERANCE_SECONDS,

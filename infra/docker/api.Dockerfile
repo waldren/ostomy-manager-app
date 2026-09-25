@@ -200,6 +200,20 @@ COPY --from=prod-deps --chown=app:app /out ./
 
 USER app
 ENV NODE_ENV=production
+
+# The commit this image was built from, surfaced by `/api/v1/health` in
+# development only (see apps/api/src/health/health.controller.ts for why it is
+# withheld elsewhere).
+#
+# Declared in the LAST stage that produces the runtime image, deliberately:
+# putting it earlier would invalidate every dependency-install layer on every
+# commit and turn a cached rebuild into a full one.
+#
+# Empty by default, which the config schema treats as absent. A build that does
+# not pass it gets `null` rather than a stale or invented value.
+ARG BUILD_COMMIT=""
+ENV BUILD_COMMIT=${BUILD_COMMIT}
+
 EXPOSE 3000
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \

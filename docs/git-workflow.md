@@ -19,11 +19,15 @@ For work outside a planned sprint, use a descriptive prefix instead: `fix/`, `do
 
 Branches are short-lived by design. If a branch has been open long enough to need a rebase onto a moved `main`, the sprint was too large — see the sizing rule below.
 
-## `main` is deployed on every merge
+## `main` is NOT deployed on every merge (it was supposed to be)
 
-`docs/deployment-development.md` triggers the development deploy on **push to `main`**. A squash merge is a push. So:
+This section used to state, as fact, that merging redeploys the development host and runs migrations. **It does not.** There is no self-hosted runner registered, so `deploy-dev.yml` has never executed and a merge queues a job that waits forever (#76). Three merges landed while the stack served pre-merge code, and nothing surfaced it.
 
-> **Merging a PR redeploys the development host and runs migrations against the persistent database.**
+The design below is what should happen and what will happen once a runner exists. Until then:
+
+> **Merging changes nothing about what is running. Deploy by hand — `docs/deployment-development.md` "Deploying by hand" — and confirm with `scripts/dev-stack-status.sh`.**
+
+The rule that follows from the intended design is still worth keeping, because it will bind again the moment a runner appears:
 
 There is no staging buffer until P9. That is acceptable — the dev host is LAN-only and holds synthetic data only — but it means "accept this diff" and "deploy it" are one action. Do not merge a PR you are not willing to have running five minutes later.
 
