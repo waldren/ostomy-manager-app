@@ -170,24 +170,41 @@ export async function buildPushRequest(
  * detects. This is the same rule `packages/core/src/sync`'s constructors
  * enforce server-side, for the same reason (§6.3).
  */
-function toObservationPayload(observation: LocalObservation): ObservationSyncPayload {
+export function toObservationPayload(observation: LocalObservation): ObservationSyncPayload {
   return {
     resourceType: 'Observation',
     id: toEntityId(observation.id),
     status: 'final',
     code: observation.code,
-    valueQuantity: {
-      // §7.3: a JSON number on the wire, an exact decimal string at rest.
-      // This is the one place that conversion is allowed to happen — see
-      // `db/schema.ts`'s migration-1 numeric-precision comment.
-      value: Number(observation.valueQuantityValue),
-      unit: observation.valueQuantityUnit,
-    },
+    // §7.2: `valueQuantity` is CONDITIONAL — omitted entirely on a
+    // voided-urine entry recording a colour instead of an amount (AC 12.1
+    // AC2). Omitted, never `null` and never `{ value: null }`: the server
+    // tells an absent amount apart from a present one by the key's absence,
+    // and `Number(null)` is `0`, which would ship a fabricated zero-volume
+    // reading that every daily total then believes.
+    ...(observation.valueQuantityValue === null || observation.valueQuantityUnit === null
+      ? {}
+      : {
+          valueQuantity: {
+            // §7.3: a JSON number on the wire, an exact decimal string at
+            // rest. This is the one place that conversion is allowed to
+            // happen — see `db/schema.ts`'s migration-1 numeric-precision
+            // comment.
+            value: Number(observation.valueQuantityValue),
+            unit: observation.valueQuantityUnit,
+          },
+        }),
     effectiveDateTime: observation.effectiveDatetime,
     method: observation.method,
     enteredMeasurementSystem: observation.enteredMeasurementSystem,
     enteredTimezone: observation.enteredTimezone,
     fluidTypeCode: observation.fluidTypeCode,
+    // Omitted when there is no colour, rather than sent as `null`.
+    // `fluidTypeCode` above does the opposite because §7.2 defines it as
+    // always-present-possibly-null; this field is defined as plain optional,
+    // and `exactOptionalPropertyTypes` makes that distinction a type error
+    // rather than a thing to remember.
+    ...(observation.urineColorCode === null ? {} : { urineColorCode: observation.urineColorCode }),
   };
 }
 

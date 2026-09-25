@@ -50,6 +50,18 @@ export const TIER1_RULE_CODE = {
   VALUE_EXCEEDS_MAX_MAGNITUDE: 'VALUE_EXCEEDS_MAX_MAGNITUDE',
   VALUE_EXCEEDS_MAX_PRECISION: 'VALUE_EXCEEDS_MAX_PRECISION',
   METHOD_REQUIRED: 'METHOD_REQUIRED',
+  /**
+   * The mirror of `METHOD_REQUIRED`, for an observation with NO volume.
+   *
+   * Measured/Estimated describes how a number was arrived at, so on an
+   * entry that records no number there is nothing for it to describe — a
+   * colour-only voided-urine entry (SRS AC 12.1 AC2). Without this rule the
+   * contradiction is caught only by the database CHECK, which surfaces as a
+   * 500; `docs/sync-contract.md` §9 then tells a client to re-push a
+   * payload that can never succeed, so the entry retries forever instead of
+   * reaching the patient's correction inbox.
+   */
+  METHOD_NOT_APPLICABLE: 'METHOD_NOT_APPLICABLE',
   EFFECTIVE_DATE_TIME_IN_FUTURE: 'EFFECTIVE_DATE_TIME_IN_FUTURE',
   EFFECTIVE_DATE_TIME_BEFORE_SURGERY: 'EFFECTIVE_DATE_TIME_BEFORE_SURGERY',
 } as const;

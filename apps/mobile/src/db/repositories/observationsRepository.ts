@@ -22,8 +22,9 @@ import { decodeObservationRow, type LocalObservation, type ObservationRawRow } f
 export interface NewLocalObservation {
   readonly id: string;
   readonly code: string;
-  readonly valueQuantityValue: string;
-  readonly valueQuantityUnit: LocalObservation['valueQuantityUnit'];
+  /** `null` only on a colour-only voided-urine entry (AC 12.1 AC2). NOT "0" — a missing amount is not a void of zero, and the schema CHECK refuses a row carrying neither an amount nor a colour. */
+  readonly valueQuantityValue: string | null;
+  readonly valueQuantityUnit: LocalObservation['valueQuantityUnit'] | null;
   readonly effectiveDatetime: string;
   readonly method: string | null;
   readonly status: string;
@@ -34,6 +35,8 @@ export interface NewLocalObservation {
   readonly localDate: string;
   /** The optional fluid categorisation (SRS AC 2.3 AC1). `null` on any code that has no use for one — the server rejects a categorisation sent with such a code. */
   readonly fluidTypeCode: string | null;
+  /** A `urine_color` member code on a voided-urine entry (AC 12.1 AC2); `null` on every other code, which the server rejects a colour for. */
+  readonly urineColorCode: string | null;
   readonly clientUpdatedAt: string;
 }
 
@@ -52,15 +55,16 @@ export async function insertObservation(
   await executor.runAsync(
     `INSERT INTO observations (
       id, resource_type, code, value_quantity_value, value_quantity_unit,
-      effective_datetime, method, status, entered_measurement_system,
-      entered_timezone, local_date, fluid_type_code,
+      urine_color_code, effective_datetime, method, status,
+      entered_measurement_system, entered_timezone, local_date, fluid_type_code,
       client_updated_at, server_sequence, deleted_at, created_at, updated_at
-    ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?);`,
+    ) VALUES (?, 'Observation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?);`,
     [
       fields.id,
       fields.code,
       fields.valueQuantityValue,
       fields.valueQuantityUnit,
+      fields.urineColorCode,
       fields.effectiveDatetime,
       fields.method,
       fields.status,
@@ -91,7 +95,8 @@ export async function replaceObservation(
     `UPDATE observations SET
       code = ?, value_quantity_value = ?, value_quantity_unit = ?,
       effective_datetime = ?, method = ?, status = ?,
-      entered_measurement_system = ?, fluid_type_code = ?,
+      entered_measurement_system = ?, entered_timezone = ?, local_date = ?,
+      fluid_type_code = ?, urine_color_code = ?,
       client_updated_at = ?, updated_at = ?
     WHERE id = ?;`,
     [
@@ -102,7 +107,26 @@ export async function replaceObservation(
       fields.method,
       fields.status,
       fields.enteredMeasurementSystem,
+      // Both were computed by every caller, passed in, and DISCARDED — the SET
+      // list named neither. `reenqueueCorrectedObservation` re-reads the zone
+      // with a comment explaining why ("a patient who has since flown home is
+      // correcting it from where they are"), and that did not happen.
+      //
+      // Latent rather than live today, because no edit path can change
+      // `effectiveDatetime` yet. It becomes real the moment one can: ADR-0016
+      // calls this column permanent and unrecoverable per row, and a
+      // `local_date` left disagreeing with a changed instant puts the entry in
+      // the wrong day for every daily figure, silently. Code that documents a
+      // behaviour it does not have is the worse half of the defect.
+      fields.enteredTimezone,
+      fields.localDate,
       fields.fluidTypeCode,
+      // A full replacement writes EVERY clinical column, including this one.
+      // Left out of the SET list, a correction to a voided-urine entry would
+      // keep the old colour while replacing everything around it — a row
+      // that is a blend of two versions, which §4's "an update is a full
+      // replacement, not a patch" exists to make impossible.
+      fields.urineColorCode,
       fields.clientUpdatedAt,
       now,
       fields.id,

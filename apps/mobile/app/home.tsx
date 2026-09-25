@@ -208,6 +208,13 @@ export default function Home(): React.JSX.Element {
       />
 
       <Button
+        label={t('mobile:home.addUrineButton')}
+        onPress={() => {
+          router.push('/add-urine');
+        }}
+      />
+
+      <Button
         label={t('mobile:home.addMealButton')}
         onPress={() => {
           router.push('/add-meal');

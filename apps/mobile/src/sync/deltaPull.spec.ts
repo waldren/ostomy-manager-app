@@ -48,6 +48,9 @@ function upsertPage(options: {
   cursor: string;
   effectiveDateTime?: string;
   enteredTimezone?: string;
+  code?: string;
+  fluidTypeCode?: string | null;
+  urineColorCode?: string;
 }): SyncDeltaResponse {
   return {
     changes: [
@@ -61,12 +64,18 @@ function upsertPage(options: {
           resourceType: 'Observation',
           id: options.entityId,
           status: 'final',
-          code: STOMA_OUTPUT_CODE,
+          code: options.code ?? STOMA_OUTPUT_CODE,
           valueQuantity: { value: options.value, unit: 'mL' },
           effectiveDateTime: options.effectiveDateTime ?? '2026-09-15T11:00:00.000Z',
           method: null,
           enteredMeasurementSystem: 'metric',
           enteredTimezone: options.enteredTimezone ?? 'America/Chicago',
+          // §7.2: always present and possibly null. `urineColorCode` is plain
+          // optional and omitted when absent, which is why it is spread.
+          fluidTypeCode: options.fluidTypeCode ?? null,
+          ...(options.urineColorCode === undefined
+            ? {}
+            : { urineColorCode: options.urineColorCode }),
         },
       },
     ],
@@ -126,6 +135,106 @@ describe('applyDeltaPage', () => {
     const stored = await getObservationById(executor, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
     expect(stored?.valueQuantityValue).toBe('350');
     expect(stored?.serverSequence).toBe('100');
+  });
+
+  /**
+   * The coded fields, written to the local row.
+   *
+   * §7.2 emits them and this module has to store them, and **this was the one
+   * of the six observation field-lists with no test at all** — which is why
+   * `fluid_type_code` was missing from both statements here from P3.S1 until
+   * P3.S2's review found it. A device rebuilding its store from a delta (a
+   * fresh install, or the ADR-0014 wipe when a different subject signs in)
+   * dropped the fluid categorisation off every intake entry it pulled, and
+   * irrecoverably for that device short of another rebuild.
+   *
+   * The server side is covered by `sync.integration.spec.ts`'s "the coded
+   * fields survive a delta pull"; this is the other half, and neither proves
+   * anything about the other.
+   */
+  describe('§7.2 coded fields reach the local row', () => {
+    it('writes both on an insert', async () => {
+      const raw = upsertPage({
+        entityId: 'cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        serverSequence: '210',
+        clientUpdatedAt: '2026-09-15T11:00:00.000Z',
+        value: 275,
+        cursor: '210',
+        code: '9187-6',
+        urineColorCode: 'amber',
+      });
+
+      await applyDeltaPage(executor, page(raw), APPLIED_AT);
+
+      const stored = await getObservationById(executor, 'cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+      expect(stored?.urineColorCode).toBe('amber');
+    });
+
+    it('writes the fluid categorisation on an insert', async () => {
+      const raw = upsertPage({
+        entityId: 'dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        serverSequence: '220',
+        clientUpdatedAt: '2026-09-15T11:00:00.000Z',
+        value: 250,
+        cursor: '220',
+        code: '9000-1',
+        fluidTypeCode: 'water',
+      });
+
+      await applyDeltaPage(executor, page(raw), APPLIED_AT);
+
+      const stored = await getObservationById(executor, 'dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+      expect(stored?.fluidTypeCode).toBe('water');
+    });
+
+    /**
+     * The UPDATE statement is the separate risk: a §4 update is a full
+     * replacement, so a column left out of the SET list keeps its old value
+     * while everything around it is replaced — a row blended from two versions,
+     * which is worse than one that never had the value.
+     */
+    it('replaces both on an update, rather than leaving the old values', async () => {
+      const entityId = 'eeeeeeee-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+      await applyDeltaPage(
+        executor,
+        page(
+          upsertPage({
+            entityId,
+            serverSequence: '230',
+            clientUpdatedAt: '2026-09-15T11:00:00.000Z',
+            value: 100,
+            cursor: '230',
+            code: '9187-6',
+            fluidTypeCode: 'water',
+            urineColorCode: 'straw',
+          }),
+        ),
+        APPLIED_AT,
+      );
+
+      await applyDeltaPage(
+        executor,
+        page(
+          upsertPage({
+            entityId,
+            serverSequence: '231',
+            clientUpdatedAt: '2026-09-15T11:30:00.000Z',
+            value: 100,
+            cursor: '231',
+            code: '9187-6',
+            fluidTypeCode: null,
+            urineColorCode: 'brown',
+          }),
+        ),
+        APPLIED_AT,
+      );
+
+      const stored = await getObservationById(executor, entityId);
+      expect(stored?.urineColorCode).toBe('brown');
+      // Cleared, not retained. `null` in the payload is a value, not an
+      // omission.
+      expect(stored?.fluidTypeCode).toBeNull();
+    });
   });
 
   /**

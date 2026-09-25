@@ -30,7 +30,7 @@ import {
   toWarnings,
 } from './observation-payload';
 import { ObservationRejectedException } from './observation-rejection';
-import type { ObservationRequestParsed } from './observation-wire';
+import { observationResourceSchema, type ObservationRequestParsed } from './observation-wire';
 
 function payload(overrides: Partial<ObservationRequestParsed> = {}): ObservationRequestParsed {
   return {
@@ -80,15 +80,112 @@ describe('interpretObservationPayload — release-scope acceptance', () => {
    * not landed. `ACCEPTED_OBSERVATION_CODES`'s own comment is the argument:
    * each needs its own canonical unit, hydration-signal handling and
    * validation path, and accepting one early writes rows no read path
-   * understands. `9187-6` lands at P3.S2, `29463-7` and `8867-4` later still.
+   * understands. `9187-6` was on this list until P3.S2 landed its sprint;
+   * `29463-7` and `8867-4` remain.
    */
   it.each([
     ['29463-7', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
-    ['9187-6', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
     ['8867-4', SYNC_REASON_CODE.UNSUPPORTED_CODE, 'code'],
   ])('refuses code %s with %s', (code, reasonCode, field) => {
     const rejection = rejectionOf(() => interpretObservationPayload(payload({ code })));
     expect(rejection.details).toEqual([{ field, reasonCode }]);
+  });
+
+  describe('voided urine (SRS §3.7, AC 12.1)', () => {
+    it('accepts a urine entry that carries a volume, on the same terms as any other volume', () => {
+      const input = interpretObservationPayload(
+        payload({ code: '9187-6', valueQuantity: { value: 300, unit: 'mL' } }),
+      );
+
+      expect(input.rawValueMl).toBe(300);
+      expect(input.unit).toBe('mL');
+      expect(input.urineColorCode).toBeNull();
+    });
+
+    /**
+     * AC 12.1 AC2, and the reason the feature exists: the patients least able
+     * to measure a volume are the ones whose hydration signal matters most.
+     */
+    it('accepts a colour with NO volume, and records the absence as null rather than zero', () => {
+      const { valueQuantity: _omitted, ...withoutVolume } = payload({ code: '9187-6' });
+      const input = interpretObservationPayload({
+        ...withoutVolume,
+        urineColorCode: 'amber',
+      } as ObservationRequestParsed);
+
+      expect(input.urineColorCode).toBe('amber');
+      // Not 0. A missing volume is not a void of zero, and anything that
+      // sums these must skip it rather than coerce it.
+      expect(input.rawValueMl).toBeNull();
+      expect(input.unit).toBeNull();
+    });
+
+    it('refuses urine carrying neither a volume nor a colour, because it records nothing', () => {
+      const { valueQuantity: _omitted, ...withoutVolume } = payload({ code: '9187-6' });
+      const rejection = rejectionOf(() =>
+        interpretObservationPayload(withoutVolume as ObservationRequestParsed),
+      );
+
+      // Named on the colour: the patient who reaches this chose the
+      // colour-only path, so that is the field their correction inbox can act on.
+      expect(rejection.details).toEqual([
+        { field: 'urineColorCode', reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID },
+      ]);
+    });
+
+    /**
+     * ABSENT and NULL are different payloads and must stay different.
+     *
+     * An absent `valueQuantity` says the entry recorded no volume; a present
+     * one carrying `null` says the client supplied a malformed volume, which
+     * Tier 1 rejects as VALUE_NOT_NUMERIC. Collapsing them routes a
+     * stoma-output entry sending `value: null` into the volume-less
+     * validator — which has no value rules — and it would be ACCEPTED. An
+     * integration test caught exactly that regression during P3.S2.
+     */
+    it('treats a null-valued volume as supplied-but-malformed, not as absent', () => {
+      const input = interpretObservationPayload(
+        payload({
+          code: '79560-9',
+          valueQuantity: { value: null, unit: 'mL' },
+        } as Partial<ObservationRequestParsed>),
+      );
+
+      // Passed through for Tier 1 to reject, and flagged as supplied so the
+      // service does not mistake it for a colour-only entry.
+      expect(input.hasVolume).toBe(true);
+      expect(input.rawValueMl).toBeNull();
+    });
+
+    it('refuses a MISSING volume on any other code, where absence records nothing', () => {
+      const { valueQuantity: _omitted, ...withoutVolume } = payload({ code: '79560-9' });
+      const rejection = rejectionOf(() =>
+        interpretObservationPayload(withoutVolume as ObservationRequestParsed),
+      );
+
+      expect(rejection.details).toEqual([
+        { field: 'valueQuantity.value', reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID },
+      ]);
+    });
+
+    /**
+     * Same reasoning as `fluidTypeCode` on a non-intake row: not a harmless
+     * extra, but a field no read path would ever interpret.
+     */
+    it('refuses a colour on a code that has no colour scale', () => {
+      const rejection = rejectionOf(() =>
+        interpretObservationPayload(
+          payload({
+            code: '79560-9',
+            urineColorCode: 'amber',
+          } as Partial<ObservationRequestParsed>),
+        ),
+      );
+
+      expect(rejection.details).toEqual([
+        { field: 'urineColorCode', reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID },
+      ]);
+    });
   });
 
   describe('fluidTypeCode (SRS AC 2.3 AC1)', () => {
@@ -296,6 +393,72 @@ describe('toObservationResource — a stored row, as §7.2 spells it', () => {
     expect(
       toObservationResource(storedRow({ status: ObservationStatus.ENTERED_IN_ERROR })).status,
     ).toBe('entered-in-error');
+  });
+});
+
+/**
+ * The builder against the published schema.
+ *
+ * `observation-wire.spec.ts` asserts that the SCHEMA declares exactly the
+ * fields §7.2 names, which is a different claim from "the builder emits
+ * them" — and the gap between the two is not hypothetical: `urineColorCode`
+ * was in the schema, in the parser, in the database and in the audit
+ * snapshot, and `toObservationResource` never wrote it. Every unit test
+ * passed, because `toEqual` ignores a key whose value is `undefined` and the
+ * fixture never set the column.
+ *
+ * So this compares key SETS, on a row where every optional column is
+ * populated. A field added to §7.2 and forgotten here now fails.
+ */
+describe('toObservationResource emits every field the published schema declares', () => {
+  it('matches the schema key for key on a fully populated row', () => {
+    const resource = toObservationResource(
+      storedRow({
+        code: '9187-6',
+        fluidTypeCode: 'water',
+        urineColorCode: 'amber',
+      } as unknown as Partial<Observation>),
+    );
+
+    expect(Object.keys(resource).sort()).toEqual(
+      Object.keys(observationResourceSchema.shape).sort(),
+    );
+  });
+
+  /**
+   * AC 12.1 AC2. On a colour-only entry the colour is the only clinical
+   * content the row carries, so a response that drops it describes an
+   * observation that recorded nothing.
+   */
+  it('publishes the urine colour, and omits the volume it does not have', () => {
+    const resource = toObservationResource(
+      storedRow({
+        code: '9187-6',
+        valueQuantityValue: null,
+        valueQuantityUnit: null,
+        urineColorCode: 'amber',
+      } as unknown as Partial<Observation>),
+    ) as Record<string, unknown>;
+
+    expect(resource.urineColorCode).toBe('amber');
+    expect('valueQuantity' in resource).toBe(false);
+  });
+
+  /**
+   * The two optional coded fields follow OPPOSITE §7.2 conventions, and the
+   * difference is deliberate rather than an inconsistency to tidy:
+   * `fluidTypeCode` is always present so a reader can tell "the patient did
+   * not categorise" from "this client does not implement the field", while
+   * `urineColorCode` is plain optional.
+   */
+  it('keeps fluidTypeCode present-and-null while omitting an absent urine colour', () => {
+    const resource = toObservationResource(
+      storedRow({ fluidTypeCode: null, urineColorCode: null } as unknown as Partial<Observation>),
+    ) as Record<string, unknown>;
+
+    expect('fluidTypeCode' in resource).toBe(true);
+    expect(resource.fluidTypeCode).toBeNull();
+    expect('urineColorCode' in resource).toBe(false);
   });
 });
 

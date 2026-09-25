@@ -44,6 +44,7 @@ export const validationErrors = {
   VALUE_EXCEEDS_MAX_MAGNITUDE: 'Enter a smaller amount.',
   VALUE_EXCEEDS_MAX_PRECISION: 'Use no more than 4 numbers after the decimal point.',
   METHOD_REQUIRED: 'Tell us if you measured this amount or estimated it.',
+  METHOD_NOT_APPLICABLE: 'This entry has no amount, so there is nothing to measure or estimate.',
   // S8: simplified from "Choose a date and time that has already happened."
   EFFECTIVE_DATE_TIME_IN_FUTURE: 'Choose a date and time in the past.',
   EFFECTIVE_DATE_TIME_BEFORE_SURGERY: 'Choose a date on or after your surgery date.',

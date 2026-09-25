@@ -65,6 +65,14 @@ export const SYNC_FIELD_PATH = {
   ENTERED_TIMEZONE: 'enteredTimezone',
   /** P3.S1 (SRS AC 2.3 AC1). A `fluid_type` value-set member code — optional on an intake entry, meaningless on any other. */
   FLUID_TYPE_CODE: 'fluidTypeCode',
+  /**
+   * The colour a volume-less voided-urine entry carries (P3.S2, AC 12.1 AC2).
+   *
+   * The field a rejection names when that entry is refused: it is the only
+   * input the patient can act on, so naming `valueQuantity.value` would point
+   * them at a box they deliberately left blank.
+   */
+  URINE_COLOR_CODE: 'urineColorCode',
 
   // `Meal` payload fields (§7.4), added at P3.S1. `id` and
   // `effectiveDateTime` above are shared with `Observation` — the paths are

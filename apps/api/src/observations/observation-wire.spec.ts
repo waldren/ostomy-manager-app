@@ -61,6 +61,9 @@ const EXPECTED_KEYS = [
   // P3.S1 (SRS AC 2.3 AC1). Optional, which is what makes it additive under
   // §8 — an older client that never sends it keeps working unchanged.
   'fluidTypeCode',
+  // P3.S2 (SRS AC 12.1 AC2). Optional on the same §8 terms as fluidTypeCode,
+  // and the only field a colour-without-volume urine entry carries.
+  'urineColorCode',
 ];
 
 describe('observation wire shape', () => {

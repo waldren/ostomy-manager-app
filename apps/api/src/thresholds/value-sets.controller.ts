@@ -74,12 +74,26 @@ import { ThresholdsService } from './thresholds.service';
  * The sets this release publishes.
  *
  * A fixed list rather than "every set in the table", deliberately. The table
- * also holds sets whose features have not shipped — a urine-colour scale, for
- * instance — and publishing those would let a client build a picker for an
+ * also holds sets whose features have not shipped — an appliance-type list,
+ * for instance — and publishing those would let a client build a picker for an
  * entry type the server would reject on write. A set appears here in the
  * sprint that can use it.
+ *
+ * **And it must appear in that sprint.** `urine_color` was seeded by the P3.S2
+ * migration and left off this list, which made the feature dead on arrival on
+ * the only client that can enter data: the device's cache never held the set,
+ * the colour scale rendered its "options unavailable" state permanently, and a
+ * patient who cannot measure had nothing to record at all (AC 12.1 AC2) and no
+ * scale for AC 12.1 AC3 to label. Nothing failed — the screen degrades
+ * honestly in copy, which is what hid it. Seeding a set and publishing it are
+ * two changes, and the sprint that needs the set owes both.
  */
-const PUBLISHED_VALUE_SET_KEYS = ['fluid_type', 'container_size', 'meal_tag'] as const;
+const PUBLISHED_VALUE_SET_KEYS = [
+  'fluid_type',
+  'container_size',
+  'meal_tag',
+  'urine_color',
+] as const;
 
 @ApiTags('value-sets')
 @ApiBearerAuth('patient-oidc')

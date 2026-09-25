@@ -7,9 +7,9 @@
   "description": "Patient-facing web SPA (React + Vite). Online-only by explicit decision (SRS_v2 §4.2/§4.3) — no local persistence layer, no offline queue.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b --noEmit && vite build",
+    "build": "tsc -b --noEmit --force && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit",
+    "typecheck": "tsc -b --noEmit --force",
     "lint": "eslint .",
     "test": "vitest run",
     "test:unit": "vitest run"

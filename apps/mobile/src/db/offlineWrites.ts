@@ -95,6 +95,30 @@ interface VolumetricFields {
    * would ever read it.
    */
   readonly fluidTypeCode?: string | null;
+  /**
+   * The chosen colour step, on a VOIDED-URINE entry only (SRS §3.7, AC 12.1).
+   * A urine entry may carry an amount, a colour, or both — this is the "both"
+   * case; the colour-alone case is `enqueueVolumelessUrineCreate` below.
+   */
+  readonly urineColorCode?: string | null;
+}
+
+/**
+ * A voided-urine entry recording a COLOUR and no amount (AC 12.1 AC2).
+ *
+ * Its own field type rather than `VolumetricFields` with everything
+ * optional: there is no volume, no unit and no Measured/Estimated choice to
+ * make, and a shared type carrying all three as optional would let a stoma
+ * output entry omit its volume by forgetting a field. The rule set follows
+ * from which function the caller picks, the same way it does in
+ * `@ostomy/core/validation`'s `validateVolumelessObservation`.
+ */
+interface VolumelessUrineFields {
+  readonly code: string;
+  readonly effectiveDatetime: string;
+  readonly enteredMeasurementSystem: MeasurementSystem;
+  /** Required here — it is the only thing the entry records. */
+  readonly urineColorCode: string;
 }
 
 interface WeightOrHeartRateFields {
@@ -105,72 +129,6 @@ interface WeightOrHeartRateFields {
   readonly enteredMeasurementSystem: MeasurementSystem;
 }
 
-/**
- * Builds the `ObservationSyncPayload`-shaped JSON this entity's queued
- * operation carries. Named field-by-field, never by spreading a row into
- * a literal — the same discipline `packages/core/src/sync`'s own
- * constructors enforce server-side, for the same reason (`docs/sync-contract.md`
- * §6.3): a spread typechecks even when the source object carries a field
- * that does not belong on the wire.
- */
-/**
- * Builds the wire object for one observation.
- *
- * Called at PUSH time, not at enqueue. It used to run when the entry was
- * written and its output was frozen into `sync_queue.payload`, which made
- * every queued operation immune to a change in `docs/sync-contract.md` —
- * and that document is normative and does change. ADR-0016 is the live
- * case: it adds a required timezone field, and a frozen payload would go up
- * without it, be rejected Tier 1, and put a correction-inbox entry in front
- * of the patient naming a field no entry form contains.
- *
- * The sync worker calls this with values read from the `observations` row,
- * which is the single source of truth it always should have been.
- *
- * Every field is named explicitly rather than spread, mirroring the
- * server-side rule in `packages/core/src/sync`: TypeScript's
- * excess-property check does not apply to spread properties, so a spread
- * typechecks cleanly and ships fields the wire contract does not define.
- */
-export function buildObservationPayload(fields: {
-  id: string;
-  code: string;
-  valueQuantityValue: string;
-  valueQuantityUnit: CanonicalWireUnit;
-  effectiveDatetime: string;
-  method: string | null;
-  enteredMeasurementSystem: MeasurementSystem;
-  /** IANA zone captured at entry (ADR-0016). */
-  enteredTimezone: string;
-  /** The optional fluid categorisation, on an intake entry only (SRS AC 2.3 AC1). */
-  fluidTypeCode: string | null;
-}): string {
-  return JSON.stringify({
-    resourceType: 'Observation',
-    id: fields.id,
-    status: 'final',
-    code: fields.code,
-    valueQuantity: {
-      // §7.3: valueQuantity.value is a JSON number on the wire. The local
-      // column keeps the exact decimal string (../schema.ts); Number()
-      // here is safe for the DECIMAL(12,4) values this app ever writes —
-      // well under a double's exact-integer precision — and this is the
-      // one place that conversion is allowed to happen, at the wire
-      // boundary, never at rest.
-      value: Number(fields.valueQuantityValue),
-      unit: fields.valueQuantityUnit,
-    },
-    effectiveDateTime: fields.effectiveDatetime,
-    method: fields.method,
-    enteredMeasurementSystem: fields.enteredMeasurementSystem,
-    enteredTimezone: fields.enteredTimezone,
-    // Always present, `null` when there is none. §7.2 spells the same rule for
-    // `method`: an absent key cannot be told apart from a client that does not
-    // implement the field.
-    fluidTypeCode: fields.fluidTypeCode,
-  });
-}
-
 /** Creates a new volumetric observation (stoma output, fluid intake, or voided urine) and queues it for sync, atomically. */
 export async function enqueueVolumetricObservationCreate(
   executor: SqliteExecutor,
@@ -179,6 +137,43 @@ export async function enqueueVolumetricObservationCreate(
 ): Promise<{ id: string; operationId: string }> {
   const method = resolveMethod(fields.measuredOrEstimated);
   return enqueueObservationCreate(executor, { ...fields, method }, now);
+}
+
+/**
+ * Creates a voided-urine observation carrying a colour and NO amount, and
+ * queues it for sync, atomically (SRS §3.7, AC 12.1 AC2).
+ *
+ * `method` is `null` by construction, and no caller can pass one: ADR-0018
+ * (amended) fixed `method: null` at rest to mean "this observation has no
+ * toggle", and an entry with no number has nothing for Measured/Estimated to
+ * describe. The local schema's `observations_method_needs_a_value` CHECK
+ * refuses the contradiction as well, but a CHECK violation surfaces as a
+ * thrown save rather than as a field a patient can correct — so the type is
+ * the primary guard and the constraint is the backstop.
+ *
+ * `enteredMeasurementSystem` is still required, even with no volume to
+ * express. ADR-0012 makes it NOT NULL with no default, and it is the
+ * client's assertion about the entry rather than a property of the number:
+ * it stays true, and permanent per row, whether or not an amount was typed.
+ */
+export async function enqueueVolumelessUrineCreate(
+  executor: SqliteExecutor,
+  fields: VolumelessUrineFields,
+  now: () => Date,
+): Promise<{ id: string; operationId: string }> {
+  return enqueueObservationCreate(
+    executor,
+    {
+      code: fields.code,
+      valueQuantityValue: null,
+      valueQuantityUnit: null,
+      effectiveDatetime: fields.effectiveDatetime,
+      method: null,
+      enteredMeasurementSystem: fields.enteredMeasurementSystem,
+      urineColorCode: fields.urineColorCode,
+    },
+    now,
+  );
 }
 
 /** Creates a new weight or heart-rate observation and queues it for sync, atomically. Never accepts a Measured/Estimated choice — `method` is always `null` (CLAUDE.md: the toggle is volumetric-entry-only). */
@@ -194,12 +189,18 @@ async function enqueueObservationCreate(
   executor: SqliteExecutor,
   fields: {
     code: string;
-    valueQuantityValue: string;
-    valueQuantityUnit: CanonicalWireUnit;
+    /**
+     * `null` together with the unit, and only on a colour-only voided-urine
+     * entry. The pair is all-or-nothing — `observations_volume_with_unit`
+     * in `../schema.ts` makes one without the other unwritable.
+     */
+    valueQuantityValue: string | null;
+    valueQuantityUnit: CanonicalWireUnit | null;
     effectiveDatetime: string;
     method: string | null;
     enteredMeasurementSystem: MeasurementSystem;
     fluidTypeCode?: string | null;
+    urineColorCode?: string | null;
   },
   now: () => Date,
 ): Promise<{ id: string; operationId: string }> {
@@ -230,6 +231,7 @@ async function enqueueObservationCreate(
         enteredTimezone,
         localDate,
         fluidTypeCode: fields.fluidTypeCode ?? null,
+        urineColorCode: fields.urineColorCode ?? null,
         clientUpdatedAt: nowIso,
       },
       nowIso,
@@ -268,6 +270,7 @@ export async function enqueueObservationUpdate(
     method: string | null;
     enteredMeasurementSystem: MeasurementSystem;
     fluidTypeCode?: string | null;
+    urineColorCode?: string | null;
   },
   now: () => Date,
 ): Promise<{ operationId: string }> {
@@ -294,6 +297,7 @@ export async function enqueueObservationUpdate(
         enteredTimezone,
         localDate,
         fluidTypeCode: fields.fluidTypeCode ?? null,
+        urineColorCode: fields.urineColorCode ?? null,
         clientUpdatedAt: nowIso,
       },
       nowIso,
@@ -382,16 +386,25 @@ export async function reenqueueCorrectedObservation(
     rejectedOperationId: string;
     rejectedOperationType: 'create' | 'update';
     code: string;
-    valueQuantityValue: string;
-    valueQuantityUnit: CanonicalWireUnit;
+    /**
+     * `null` together with the unit and `measuredOrEstimated`, and only when
+     * the rejected entry was a colour-only voided-urine record (AC 12.1 AC2).
+     * A correction is a full replacement (§4), so the three travel together
+     * here exactly as they do on a create.
+     */
+    valueQuantityValue: string | null;
+    valueQuantityUnit: CanonicalWireUnit | null;
     effectiveDatetime: string;
-    measuredOrEstimated: MeasuredOrEstimated;
+    /** `null` only when there is no amount for it to qualify (ADR-0018 amended). */
+    measuredOrEstimated: MeasuredOrEstimated | null;
     enteredMeasurementSystem: MeasurementSystem;
     fluidTypeCode?: string | null;
+    urineColorCode?: string | null;
   },
   now: () => Date,
 ): Promise<{ operationId: string }> {
-  const method = resolveMethod(fields.measuredOrEstimated);
+  const method =
+    fields.measuredOrEstimated === null ? null : resolveMethod(fields.measuredOrEstimated);
   const operationId = generateUuid();
   const nowIso = toWireInstant(now());
   // Read HERE, not taken from the caller, and read AGAIN rather than carried
@@ -416,6 +429,7 @@ export async function reenqueueCorrectedObservation(
         enteredTimezone,
         localDate,
         fluidTypeCode: fields.fluidTypeCode ?? null,
+        urineColorCode: fields.urineColorCode ?? null,
         clientUpdatedAt: nowIso,
       },
       nowIso,

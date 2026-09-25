@@ -36,5 +36,9 @@ export {
   NET_FLUID_BALANCE_INTAKE_LOINC_CODES,
   NET_FLUID_BALANCE_OUTPUT_LOINC_CODES,
   netDailyFluidBalanceMl,
+  isUrineOutputSignal,
+  sortUrineColorCodes,
+  URINE_COLOR_CODES_PALE_TO_DARK,
+  URINE_OUTPUT_LOINC_CODES,
   type FluidBalanceObservation,
 } from './netFluidBalance.js';

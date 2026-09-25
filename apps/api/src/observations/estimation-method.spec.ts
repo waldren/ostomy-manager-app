@@ -15,11 +15,12 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 import { describe, expect, it } from 'vitest';
 
 import {
   interpretMethodWireValue,
+  resolveMethodForEntry,
   toMeasuredOrEstimated,
   toStoredMethod,
 } from './estimation-method';
@@ -72,6 +73,66 @@ describe('Measured/Estimated toggle (AC 2.2, AC 2.5 AC 2)', () => {
       expect(interpretMethodWireValue(value)).toEqual({ kind: 'unrecognized' });
     },
   );
+});
+
+/**
+ * Wire `null` is AMBIGUOUS, and the volume is what disambiguates it.
+ *
+ * §7.2 requires `method` on every payload, so a client recording a colour with
+ * no amount (AC 12.1 AC2) has no way to say "not applicable" except by sending
+ * `null`. Reading that as "measured" — correct for a volumetric entry, and what
+ * this module did — made every colour-only entry from the mobile app fail
+ * `METHOD_NOT_APPLICABLE`, in a correction inbox that shows no toggle for the
+ * rule that rejected it. §9.2's retry-unchanged loop, forever.
+ */
+describe('resolveMethodForEntry — the volume settles what wire null meant', () => {
+  it('keeps the measured reading when the entry HAS a volume (§8 back-compat)', () => {
+    const resolved = resolveMethodForEntry({ kind: 'measured' }, true, true);
+
+    expect(resolved).toEqual({ kind: 'measured' });
+    expect(toMeasuredOrEstimated(resolved)).toBe('measured');
+    expect(toStoredMethod(resolved)).toBe(
+      MEASURED_METHOD_CODE.resolved ? MEASURED_METHOD_CODE.code : null,
+    );
+  });
+
+  it('reads it as no-toggle when the entry has NO volume', () => {
+    const resolved = resolveMethodForEntry({ kind: 'measured' }, false, true);
+
+    expect(resolved).toEqual({ kind: 'no-toggle' });
+    // `null` to the validator, so `validateVolumelessObservation` passes
+    // rather than reporting a contradiction the client could not avoid.
+    expect(toMeasuredOrEstimated(resolved)).toBeNull();
+    // SQL NULL, which is what ADR-0018 (amended) reserves for "this
+    // observation has no toggle" — and what
+    // `observations_method_needs_a_value` requires.
+    expect(toStoredMethod(resolved)).toBeNull();
+  });
+
+  /**
+   * The rule `METHOD_NOT_APPLICABLE` is actually for: a client asserting a
+   * measurement technique for a number it did not supply. That is a
+   * contradiction worth reporting, and it stays reported.
+   */
+  it('leaves an EXPLICIT qualifier alone on a volume-less entry, so it is still rejected', () => {
+    const explicitMeasured = resolveMethodForEntry({ kind: 'measured' }, false, false);
+    expect(explicitMeasured).toEqual({ kind: 'measured' });
+    expect(toMeasuredOrEstimated(explicitMeasured)).toBe('measured');
+
+    const estimated = resolveMethodForEntry(
+      { kind: 'estimated', methodCode: '414135002' },
+      false,
+      false,
+    );
+    expect(toMeasuredOrEstimated(estimated)).toBe('estimated');
+  });
+
+  it('leaves an absent key alone — a volume-less entry may simply omit it', () => {
+    expect(resolveMethodForEntry({ kind: 'not-selected' }, false, false)).toEqual({
+      kind: 'not-selected',
+    });
+    expect(toMeasuredOrEstimated({ kind: 'not-selected' })).toBeNull();
+  });
 });
 
 describe('D4 — the estimation-technique code, now resolved', () => {

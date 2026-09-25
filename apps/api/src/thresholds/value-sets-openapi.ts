@@ -59,7 +59,9 @@ const valueSetSchema = z
   .object({
     key: z
       .string()
-      .describe('The set this release publishes: fluid_type, container_size or meal_tag.'),
+      .describe(
+        'The set this release publishes: fluid_type, container_size, meal_tag or urine_color.',
+      ),
     members: z
       .array(valueSetMemberSchema)
       .describe(

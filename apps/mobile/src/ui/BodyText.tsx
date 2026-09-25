@@ -21,7 +21,35 @@ import { StyleSheet, Text } from 'react-native';
 
 export interface BodyTextProps {
   readonly children: ReactNode;
-  readonly tone?: 'normal' | 'error' | 'muted';
+  /**
+   * `warning` exists so a Tier 2 soft warning stops wearing the destructive
+   * voice.
+   *
+   * The entry screens rendered `entry.warningHeading` — "Does this look
+   * right?" — in `error`, i.e. bold `color.error`. The copy is right: it asks
+   * rather than scolds, and the confirm button is an ordinary action. The
+   * PRESENTATION put an overridable data-quality prompt in the red that
+   * CLAUDE.md and SRS §5.4 reserve for the red-flag heart-rate prompt. That
+   * prompt does not exist yet, so there would have been nothing louder left to
+   * escalate to when it ships — which is the precise mechanism by which a real
+   * red flag becomes ignorable.
+   *
+   * Keep `error` for actual failures (a save that did not happen, a store that
+   * would not open).
+   */
+  readonly tone?: 'normal' | 'error' | 'warning' | 'muted';
+  /**
+   * Announce this text when it appears, for content that only exists after the
+   * user acted — a validation outcome, a save failure, a confirmation prompt.
+   *
+   * Without it a screen-reader user presses Save, the screen changes, and they
+   * hear nothing with focus still on the button. `NumericField` and
+   * `ChoiceGroup` already do this for their own error text; standalone
+   * paragraphs had no way to.
+   *
+   * `assertive` interrupts; reserve it for something that blocked the action.
+   */
+  readonly live?: 'polite' | 'assertive';
 }
 
 /**
@@ -37,13 +65,25 @@ export interface BodyTextProps {
  * `maxFontSizeMultiplier` is set: the text must scale with the OS setting
  * without limit, which is what `Screen`'s scroll container makes safe.
  */
-export function BodyText({ children, tone = 'normal' }: BodyTextProps) {
-  return <Text style={[styles.base, TONE_STYLE[tone]]}>{children}</Text>;
+export function BodyText({ children, tone = 'normal', live }: BodyTextProps) {
+  return (
+    <Text
+      style={[styles.base, TONE_STYLE[tone]]}
+      accessibilityLiveRegion={live}
+      // `alert` only when the message interrupts. A polite region is ordinary
+      // content that happens to be new.
+      role={live === 'assertive' ? 'alert' : undefined}
+    >
+      {children}
+    </Text>
+  );
 }
 
 const TONE_STYLE = StyleSheet.create({
   normal: { color: tokens.color.text },
   error: { color: tokens.color.error, fontWeight: '600' },
+  // 7.41:1 on white, computed rather than claimed (`packages/ui`'s tokens).
+  warning: { color: tokens.color.warning, fontWeight: '600' },
   muted: { color: tokens.color.textMuted },
 });
 

@@ -21,6 +21,7 @@ import {
   ESTIMATION_METHOD_CODE,
   isBlocked,
   MAX_VALUE_DECIMAL_PLACES,
+  MEASURED_METHOD_CODE,
   validateVolumetricEntry,
   type MeasuredOrEstimated,
   type VolumetricValidationThresholds,
@@ -204,6 +205,30 @@ export function toCanonicalValueString(
 }
 
 /**
+ * Decodes a STORED `method` back into the toggle's two answers, for a screen
+ * that has to re-open a saved entry for editing.
+ *
+ * The inverse of `offlineWrites.ts`'s `resolveMethod`, and it reads the same
+ * `@ostomy/core/validation` constants rather than comparing against literal
+ * SNOMED strings — ADR-0018 records that changing either code is a data
+ * migration, and a literal here would be a second place that migration has to
+ * find.
+ *
+ * `null` in, `undefined` out: since ADR-0018's amendment, `method: null` at
+ * rest means exactly "this observation has no toggle" (weight, resting heart
+ * rate, or a colour-only urine entry), so there is no answer to restore. An
+ * unrecognised code also yields `undefined` — a row written by a build that
+ * used a different qualifier must not be silently relabelled as the other
+ * answer, which is a clinical claim about how a number was arrived at.
+ */
+export function methodFromStoredCode(method: string | null): MeasuredOrEstimated | undefined {
+  if (method === null) return undefined;
+  if (MEASURED_METHOD_CODE.resolved && method === MEASURED_METHOD_CODE.code) return 'measured';
+  if (ESTIMATION_METHOD_CODE.resolved && method === ESTIMATION_METHOD_CODE.code) return 'estimated';
+  return undefined;
+}
+
+/**
  * Rule codes that belong beside the Measured/Estimated control rather than
  * beside the amount field.
  *
@@ -213,7 +238,14 @@ export function toCanonicalValueString(
  * or estimated it" under the amount box, next to a number that is perfectly
  * fine. Routing is therefore by rule code, and this constant is the split.
  */
-const METHOD_RULE_CODES: ReadonlySet<string> = new Set(['METHOD_REQUIRED']);
+// `METHOD_NOT_APPLICABLE` is the volume-less mirror of `METHOD_REQUIRED`
+// (P3.S2) and belongs in the same place on screen: it says the toggle should
+// not have been answered, so putting it under the amount field would point a
+// patient at a box they left deliberately blank.
+const METHOD_RULE_CODES: ReadonlySet<string> = new Set([
+  'METHOD_REQUIRED',
+  'METHOD_NOT_APPLICABLE',
+]);
 
 /** The Tier 1 error to show beside the Measured/Estimated control, if any. */
 export function methodError(errors: readonly ValidationError[]): ValidationError | undefined {

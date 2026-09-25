@@ -37,6 +37,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   --ostomy-color-warning: #7a4b00;
   --ostomy-color-success: #1e6b30;
 
+  /*
+   * The pale-to-dark urine colour scale (SRS 3.7, AC 12.1 AC3).
+   *
+   * CONTENT colours, not palette colours: each one depicts the shade a
+   * patient is being asked to recognise, so none of them is a UI colour and
+   * no contrast ratio applies to them. They are decorative in the strict
+   * accessibility sense -- every step carries a text label that is the whole
+   * distinction, so the swatch adds nothing a screen reader could announce
+   * and is hidden from assistive technology. Never use one as a background
+   * behind text, and never as the only carrier of a step's identity.
+   */
+  --ostomy-urine-pale-straw: #f8f4d2;
+  --ostomy-urine-straw: #f5eba8;
+  --ostomy-urine-yellow: #f2de6a;
+  --ostomy-urine-dark-yellow: #e8c63e;
+  --ostomy-urine-amber: #d79a2b;
+  --ostomy-urine-brown: #9c6318;
+
   --ostomy-space-xs: 4px;
   --ostomy-space-sm: 8px;
   --ostomy-space-md: 12px;

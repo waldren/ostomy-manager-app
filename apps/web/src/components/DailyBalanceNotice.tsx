@@ -67,14 +67,14 @@ export function DailyBalanceNotice({ balance, hasIntake, hasOutput }: DailyBalan
 
   if (balance === undefined) {
     return (
-      <InlineNotice variant="info" title={t('physicianView.netBalance.heading')}>
+      <InlineNotice variant="info" titleAs="h2" title={t('physicianView.netBalance.heading')}>
         <p>{t('physicianView.netBalance.noInputs')}</p>
       </InlineNotice>
     );
   }
 
   return (
-    <InlineNotice variant="info" title={t('physicianView.netBalance.heading')}>
+    <InlineNotice variant="info" titleAs="h2" title={t('physicianView.netBalance.heading')}>
       {/*
         The figure is a `<p>`, not a heading or a bare string, and carries the
         formatted sign from `Intl` rather than a hand-assembled "-" — a

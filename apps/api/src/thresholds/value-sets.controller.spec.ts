@@ -39,17 +39,21 @@ function controllerReturning(bySet: Record<string, readonly Partial<ActiveValueS
 const CATEGORY = { sortOrder: 0, numericValue: null, numericUnit: null };
 
 describe('ValueSetsController', () => {
-  it('publishes the three sets P3.S1 needs, in one response', async () => {
+  it('publishes every shipped set in one response', async () => {
     const { controller, calls } = controllerReturning({});
 
     const response = await controller.get();
 
+    // The three P3.S1 needs, plus `urine_color` for P3.S2's colour-only
+    // voided-urine entry (AC 12.1 AC2). Asserted as an exact list rather than
+    // a `toContain`, so adding a set is a deliberate edit here.
     expect(response.valueSets.map((set) => set.key)).toEqual([
       'fluid_type',
       'container_size',
       'meal_tag',
+      'urine_color',
     ]);
-    expect(calls.sort()).toEqual(['container_size', 'fluid_type', 'meal_tag']);
+    expect(calls.sort()).toEqual(['container_size', 'fluid_type', 'meal_tag', 'urine_color']);
   });
 
   it('carries a container size with its canonical quantity (AC 2.3 AC2)', async () => {
@@ -102,19 +106,44 @@ describe('ValueSetsController', () => {
 
   /**
    * The published set is a fixed list rather than "every set in the table".
-   * The table also holds sets whose features have not shipped — a urine-colour
-   * scale — and publishing one would let a client build a picker for an entry
-   * type the server rejects on write.
+   * The table also holds sets whose features have not shipped, and publishing
+   * one would let a client build a picker for an entry type the server rejects
+   * on write.
+   *
+   * The unshipped key here is `appliance_type` (P5). It used to be
+   * `urine_color_scale` — **a key no migration ever created**, so this test
+   * asserted the exclusion of nothing and stayed green either way. When P3.S2
+   * seeded the real set as `urine_color` and forgot to publish it, that was
+   * the test that should have failed and could not.
    */
-  it('publishes no set beyond the three, even if the table holds more', async () => {
+  it('publishes no set beyond the allowlist, even if the table holds more', async () => {
     const { controller, calls } = controllerReturning({
-      urine_color_scale: [{ code: 'pale', ...CATEGORY }],
+      appliance_type: [{ code: 'one_piece', ...CATEGORY }],
     });
 
     const response = await controller.get();
 
-    expect(response.valueSets.map((set) => set.key)).not.toContain('urine_color_scale');
-    expect(calls).not.toContain('urine_color_scale');
+    expect(response.valueSets.map((set) => set.key)).not.toContain('appliance_type');
+    expect(calls).not.toContain('appliance_type');
+  });
+
+  /**
+   * The other direction, which is the one that was missing: a set the
+   * migration seeded for a SHIPPED feature must actually be published.
+   *
+   * `urine_color` is the whole content of a colour-only voided-urine entry
+   * (AC 12.1 AC2), and the codes come from this endpoint's cache — so
+   * withholding it does not degrade the feature, it removes it.
+   */
+  it('publishes urine_color, which AC 12.1 needs on the device', async () => {
+    const { controller, calls } = controllerReturning({
+      urine_color: [{ code: 'amber', ...CATEGORY }],
+    });
+
+    const response = await controller.get();
+
+    expect(response.valueSets.map((set) => set.key)).toContain('urine_color');
+    expect(calls).toContain('urine_color');
   });
 
   /**

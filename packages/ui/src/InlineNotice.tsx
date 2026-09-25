@@ -22,6 +22,23 @@ export type InlineNoticeVariant = 'info' | 'warning' | 'error' | 'success';
 export interface InlineNoticeProps {
   readonly variant?: InlineNoticeVariant;
   readonly title?: ReactNode;
+  /**
+   * What element the `title` renders as. `'p'` by default, so no existing
+   * call site changes.
+   *
+   * Pass a heading level when the notice is a SECTION of the page rather than
+   * a transient status — a named region a reader would expect to find in the
+   * document outline. Heading navigation is how a screen-reader user skims a
+   * data page, and a bold paragraph is invisible to it (WCAG 1.3.1, 2.4.6):
+   * `apps/web`'s physician view carried two whole data regions — the daily
+   * net fluid balance and urine output — that a clinician could not reach or
+   * enumerate that way.
+   *
+   * Styling does not change with it; `ostomyInlineNotice__title` still
+   * carries the weight and size, so a heading here does not inherit the
+   * page's `h2` scale.
+   */
+  readonly titleAs?: 'h2' | 'h3' | 'p';
   readonly icon?: ReactNode;
   readonly children: ReactNode;
   /**
@@ -38,7 +55,14 @@ export interface InlineNoticeProps {
  * The border colour is never the only signal of the notice's severity —
  * pair `variant` with a `title` or body text that says so in words.
  */
-export function InlineNotice({ variant = 'info', title, icon, children, live }: InlineNoticeProps) {
+export function InlineNotice({
+  variant = 'info',
+  title,
+  titleAs: TitleTag = 'p',
+  icon,
+  children,
+  live,
+}: InlineNoticeProps) {
   return (
     <div
       className={`ostomyInlineNotice ostomyInlineNotice--${variant}`}
@@ -59,7 +83,7 @@ export function InlineNotice({ variant = 'info', title, icon, children, live }: 
     >
       {icon ? <span className="ostomyInlineNotice__icon">{icon}</span> : null}
       <div className="ostomyInlineNotice__body">
-        {title ? <p className="ostomyInlineNotice__title">{title}</p> : null}
+        {title ? <TitleTag className="ostomyInlineNotice__title">{title}</TitleTag> : null}
         {children}
       </div>
     </div>

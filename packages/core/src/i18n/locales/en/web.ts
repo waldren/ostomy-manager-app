@@ -54,7 +54,17 @@ export const web = {
   'physicianView.truncated.heading': 'This day may have more entries than are shown',
   'physicianView.truncated.body':
     'Only the {{limit}} most recent entries for this day were loaded, so the earliest ones are not shown and the total below may be lower than the true total. Check the full record before using this number.',
-  'physicianView.table.heading': 'All entries for this day',
+  // "All entries for this day" was FALSE from the moment the response carried
+  // more than stoma output, and P3.S2 made that routine: the table is fed
+  // `outputObservations` only, so a day's urine entries are not in it. A
+  // clinician who reads the urine block and then reads "all entries" above a
+  // table without them reads the omission as absent data.
+  'physicianView.table.heading': 'Stoma output entries for this day',
+  // The day holds entries, just none of this kind. Distinct from
+  // `emptyState.*`, which is a day with nothing at all, and it points upward
+  // rather than leaving a reader to conclude the load failed.
+  'physicianView.table.noOutput':
+    'No stoma output was recorded for this day. The other entries for this day are shown above.',
   'app.title': 'Ostomy Care',
   // WCAG 2.4.2: the title names the page, not just the product. In an SPA it
   // is also how a screen-reader user learns a route changed.
@@ -106,11 +116,21 @@ export const web = {
   // halves of that framing asserted something the data is not. Claiming a
   // selected patient is the same class of defect as showing one day's
   // figures under another day's heading.
-  'physicianView.heading': 'Stoma output',
-  'physicianView.intro': 'One day of stoma output, listed and charted by time of day.',
-  'physicianView.loading': 'Loading stoma output…',
+  // Names the DAY, not one of the things on it. The page carried the heading
+  // "Stoma output" while rendering a net fluid balance above the chart and,
+  // since P3.S2, urine output beside it — so its own h1 described a third of
+  // its content, and a reader could reasonably stop at the chart believing
+  // they had seen the page. The chart and table keep their own "Stoma output"
+  // headings, which is where that label is true.
+  'physicianView.heading': 'One day of fluid records',
+  'physicianView.intro':
+    'Fluid balance, urine output, and every stoma entry for the day, listed and charted by time of day.',
+  // Not "stoma output" — the request fetches every code this release returns,
+  // and the page renders three signals from it. Left unchanged, these two told
+  // a reader the page was loading a third of what it loads.
+  'physicianView.loading': 'Loading this day’s records…',
   'physicianView.loadError':
-    'We could not load stoma output right now. Please try again in a moment.',
+    'We could not load this day’s records right now. Please try again in a moment.',
   'physicianView.retryButton': 'Try again',
   'physicianView.previousDay': 'Show the previous day',
   'physicianView.nextDay': 'Show the next day',
@@ -131,7 +151,12 @@ export const web = {
   'physicianView.unitsMetric': 'Milliliters (mL)',
   'physicianView.unitsImperial': 'Fluid ounces (oz)',
 
-  'physicianView.emptyState.heading': 'No stoma output logged for this day',
+  // Not "no stoma output" — this fires on `observations.length === 0`, a day
+  // with nothing of ANY kind. Since P3.S2 there are two adjacent empty states
+  // and this is the broader one; claiming a fact about stoma output where the
+  // truth is broader sent a reader looking for the other kinds of entry that
+  // were also absent.
+  'physicianView.emptyState.heading': 'Nothing logged for this day',
   'physicianView.emptyState.body':
     'No entries were recorded for this day. That does not always mean there was no output — it may not have been logged.',
 
@@ -166,6 +191,59 @@ export const web = {
     'No fluid intake was recorded for this day. This figure is stoma output alone, and is not a complete balance.',
   'physicianView.netBalance.outputMissing':
     'No stoma output was recorded for this day. This figure is fluid intake alone, and is not a complete balance.',
+
+  // --- Urine output, the second hydration signal (SRS §3.7, AC 12.1) -----
+  //
+  // Its own block on the page, immediately after the balance and never inside
+  // it. The two are adjacent because a reader comparing them is the point,
+  // and separate because combining them is the one thing CLAUDE.md names
+  // outright about this data: net balance measures stoma losses, urine output
+  // independently signals renal perfusion, and a normal-looking balance can
+  // hide a dangerously low urine output.
+  //
+  // This is a physician's view, so it reports and does not interpret. No
+  // threshold, no verdict, no colour-coded status — SRS §5.4 reserves the
+  // urgent voice for the red-flag prompt, and the four signals stay separate
+  // and uncombined here.
+  'physicianView.urine.heading': 'Urine output',
+  'physicianView.urine.total': 'Measured total: {{amount}}',
+  // Says how much of the day the total actually covers. AC 12.1 AC2 makes the
+  // amount optional, so a day can hold four entries and one measured volume —
+  // and a bare total would describe that day as though the other three had
+  // not happened.
+  // A sentence with a subject. "From 1 of 4 entries recorded this day." is a
+  // fragment opening on a preposition, which a screen-reader user stepping
+  // paragraph by paragraph meets with nothing to attach it to.
+  'physicianView.urine.measuredOf_one':
+    'This total comes from 1 of {{total}} urine entries recorded that day.',
+  'physicianView.urine.measuredOf_other':
+    'This total comes from {{count}} of {{total}} urine entries recorded that day.',
+  // The whole day was recorded by colour. Not an error and not a gap in the
+  // data: it is the entry AC 12.1 AC2 exists for, made by a patient who
+  // cannot measure, and it carries a real hydration signal.
+  // Leads with the FINDING, not the count, and says "urine" in its own words
+  // rather than leaning on the block's title. It also states outright that
+  // there is no number, because this is the one branch of the block that
+  // contains none — and a block with no figure in it reads as missing data
+  // unless it says otherwise.
+  'physicianView.urine.noneMeasured_one':
+    'No measured volume for this day. 1 urine entry was recorded, by colour only.',
+  'physicianView.urine.noneMeasured_other':
+    'No measured volume for this day. {{count}} urine entries were recorded, by colour only.',
+  // Names the ORDER the list is in. Rendered unordered above the sentence
+  // "darker urine is more concentrated", it invited a clinician to read
+  // darkness off a sequence that carried none.
+  'physicianView.urine.colorsHeading': 'Colours recorded, lightest to darkest',
+  // Named for what it is worth: colour is a proxy a patient can report when
+  // they cannot measure, and darker means more concentrated. Stated without a
+  // threshold, because reading it against this patient is the clinician's job.
+  'physicianView.urine.colorsExplanation':
+    'Darker urine is more concentrated. These are the shades the patient recorded, not a measurement.',
+  // The mirror of `netBalance.excludesUrine`, said from this side too. A
+  // reader arriving at this block first should not have to find the other one
+  // to learn the two figures are separate.
+  'physicianView.urine.separateFromBalance':
+    'This is tracked on its own and is not part of the daily net fluid balance above.',
 
   // ADR-0016: an entry is filed under the patient's local day, derived from
   // the zone captured at entry. An entry whose zone this runtime cannot

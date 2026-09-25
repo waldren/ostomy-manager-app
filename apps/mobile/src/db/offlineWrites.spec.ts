@@ -24,14 +24,15 @@ import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
 import type { SqliteExecutor } from './executor';
 import { runMigrations } from './migrations';
 import {
-  buildObservationPayload,
   enqueueObservationDelete,
   enqueueObservationUpdate,
+  enqueueVolumelessUrineCreate,
   enqueueVolumetricObservationCreate,
   enqueueWeightOrHeartRateObservationCreate,
 } from './offlineWrites';
 import { getObservationById } from './repositories/observationsRepository';
 import { listQueuedOperations } from './repositories/syncQueueRepository';
+import { toObservationPayload } from '../sync/pushOperations';
 import { createNodeSqliteExecutor } from '../test-support/nodeSqliteExecutor';
 
 const FIXED_NOW = () => new Date('2026-09-11T22:04:11.412Z');
@@ -99,27 +100,21 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
       // never collide, or a later edit looks like a replay of the create.
       expect(operationId).not.toEqual(id);
 
-      // Built from the STORED ROW, the way the sync worker will build it.
+      // Built from the STORED ROW by the SYNC WORKER'S OWN builder.
       //
       // This used to read `queued[0].payload` — a wire object frozen into
       // the queue at enqueue time. That froze the contract too: an
       // amendment to docs/sync-contract.md could never reach an operation
-      // already queued. Asserting against the builder is both the same
-      // coverage and the shape that survives ADR-0016 adding a field.
+      // already queued.
+      //
+      // Its replacement was a second builder living next to the enqueue
+      // functions, which drifted the moment §7.2 made `valueQuantity`
+      // conditional: this assertion stayed green while the code that
+      // actually pushes changed underneath it. `toObservationPayload` is
+      // the one the worker calls, so a contract change that breaks the push
+      // path now breaks this test too.
       const stored = await getObservationById(executor, id);
-      const payload = JSON.parse(
-        buildObservationPayload({
-          id,
-          code: stored!.code,
-          valueQuantityValue: stored!.valueQuantityValue,
-          valueQuantityUnit: stored!.valueQuantityUnit,
-          effectiveDatetime: stored!.effectiveDatetime,
-          method: stored!.method,
-          enteredMeasurementSystem: stored!.enteredMeasurementSystem,
-          enteredTimezone: stored!.enteredTimezone,
-          fluidTypeCode: stored!.fluidTypeCode,
-        }),
-      );
+      const payload = toObservationPayload(stored!);
       expect(payload).toEqual({
         resourceType: 'Observation',
         id,
@@ -136,6 +131,129 @@ describe('offlineWrites — the local write-then-enqueue transaction', () => {
         // null one read the same to a human and differently to a client.
         fluidTypeCode: null,
       });
+    });
+
+    /**
+     * AC 12.1 AC2 — a voided-urine entry recording a COLOUR and no amount.
+     *
+     * The case the feature exists for: a patient who cannot measure still
+     * produces a hydration signal, and that population is the one whose
+     * hydration matters most.
+     */
+    it('creates a colour-only voided-urine observation with no volume at all', async () => {
+      const { id, operationId } = await enqueueVolumelessUrineCreate(
+        executor,
+        {
+          code: '9187-6',
+          effectiveDatetime: '2026-09-23T09:30:00.000Z',
+          enteredMeasurementSystem: 'metric',
+          urineColorCode: 'amber',
+        },
+        FIXED_NOW,
+      );
+
+      const observation = await getObservationById(executor, id);
+      expect(observation).toMatchObject({
+        id,
+        code: '9187-6',
+        urineColorCode: 'amber',
+        // NULL, not '0' and not ''. A missing amount is not a void of zero,
+        // and the two disagree in every daily total forever afterwards.
+        valueQuantityValue: null,
+        // The pair travels together — `observations_volume_with_unit`.
+        valueQuantityUnit: null,
+        // ADR-0018 (amended): with no number, there is nothing for
+        // Measured/Estimated to describe, and NULL is what says so.
+        method: null,
+      });
+
+      // ADR-0012 still applies with no volume to express: it is the client's
+      // assertion about the entry, not a property of the number.
+      expect(observation?.enteredMeasurementSystem).toBe('metric');
+
+      const queued = await listQueuedOperations(executor);
+      expect(queued).toHaveLength(1);
+      expect(queued[0]).toMatchObject({ operationId, entityId: id, operationType: 'create' });
+    });
+
+    /**
+     * §7.2: `valueQuantity` is **omitted** on a colour-only urine entry, never
+     * sent as `null` and never as `{ value: 0 }`.
+     *
+     * This is the assertion that would have caught the bug this write path
+     * shipped with: `Number(null)` is `0`, so a payload builder that named the
+     * field unconditionally sent a fabricated zero-volume reading that the
+     * server accepts and every daily total then believes.
+     */
+    it('omits valueQuantity from the wire payload of a colour-only urine entry', async () => {
+      const { id } = await enqueueVolumelessUrineCreate(
+        executor,
+        {
+          code: '9187-6',
+          effectiveDatetime: '2026-09-23T09:30:00.000Z',
+          enteredMeasurementSystem: 'metric',
+          urineColorCode: 'pale_straw',
+        },
+        FIXED_NOW,
+      );
+
+      const stored = await getObservationById(executor, id);
+      const payload = toObservationPayload(stored!);
+
+      expect('valueQuantity' in payload).toBe(false);
+      expect(payload).toMatchObject({
+        resourceType: 'Observation',
+        code: '9187-6',
+        urineColorCode: 'pale_straw',
+        method: null,
+      });
+    });
+
+    /** A urine entry may carry BOTH, and then nothing is omitted. */
+    it('keeps both the volume and the colour on a measured urine entry', async () => {
+      const { id } = await enqueueVolumetricObservationCreate(
+        executor,
+        {
+          code: '9187-6',
+          valueQuantityValue: '275.0000',
+          valueQuantityUnit: 'mL',
+          effectiveDatetime: '2026-09-23T09:30:00.000Z',
+          measuredOrEstimated: 'measured',
+          enteredMeasurementSystem: 'metric',
+          urineColorCode: 'straw',
+        },
+        FIXED_NOW,
+      );
+
+      const stored = await getObservationById(executor, id);
+      expect(toObservationPayload(stored!)).toMatchObject({
+        valueQuantity: { value: 275, unit: 'mL' },
+        urineColorCode: 'straw',
+        method: '258104002',
+      });
+    });
+
+    /**
+     * The colour is absent from the payload rather than `null` when there is
+     * none: §7.2 defines `urineColorCode` as plain optional, unlike
+     * `fluidTypeCode`, which it defines as always-present-possibly-null.
+     */
+    it('omits urineColorCode entirely on an entry that has no colour', async () => {
+      const { id } = await enqueueVolumetricObservationCreate(
+        executor,
+        {
+          code: '79560-9',
+          valueQuantityValue: '350.0000',
+          valueQuantityUnit: 'mL',
+          effectiveDatetime: '2026-09-11T14:00:00.000Z',
+          measuredOrEstimated: 'measured',
+          enteredMeasurementSystem: 'metric',
+        },
+        FIXED_NOW,
+      );
+
+      const stored = await getObservationById(executor, id);
+      expect('urineColorCode' in toObservationPayload(stored!)).toBe(false);
     });
 
     /**

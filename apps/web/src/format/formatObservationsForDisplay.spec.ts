@@ -21,10 +21,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   hasFluidBalanceInputs,
+  isFluidBalanceOutput,
+  isUrineOutput,
   observationsOnLocalDate,
   toDisplayDailyTotal,
   toDisplayNetFluidBalance,
   toDisplayOutputEntries,
+  toUrineDaySummary,
 } from './formatObservationsForDisplay.js';
 
 function observation(overrides: Partial<Observation>): Observation {
@@ -297,6 +300,228 @@ describe('toDisplayNetFluidBalance (SRS §3.5)', () => {
     expect(
       toDisplayNetFluidBalance([entry('9000-1', 800), entry('79560-9', 800)], metric).value,
     ).toBe(0);
+  });
+});
+
+/**
+ * Voided urine on the read side (SRS §3.7, AC 12.1) — the second hydration
+ * signal, and the one entry type that may carry no amount.
+ */
+describe('voided urine', () => {
+  const metric = unitsForMeasurementSystem('metric');
+
+  function urine(overrides: Partial<Observation> = {}): Observation {
+    return observation({
+      id: `urine-${String(Math.random()).slice(2, 8)}`,
+      code: '9187-6',
+      valueQuantity: { value: 300, unit: 'mL' },
+      ...overrides,
+    });
+  }
+
+  /** A colour-only entry: `valueQuantity` OMITTED, exactly as §7.2 has the server send it. */
+  function colourOnlyUrine(colorCode: string): Observation {
+    const { valueQuantity: _omitted, ...rest } = urine({ urineColorCode: colorCode });
+    return rest as Observation;
+  }
+
+  describe('AC 4 — excluded from Daily Net Fluid Balance', () => {
+    /**
+     * The exclusion, asserted on the read path rather than trusted from
+     * `packages/core`'s own unit tests. This page hands the balance every
+     * observation of the day undifferentiated, so if the exclusion were ever
+     * lost, nothing between the LOINC classification and the rendered figure
+     * would catch it.
+     *
+     * Why it matters clinically: net balance measures stoma losses while
+     * urine output independently signals renal perfusion. Counted as intake,
+     * urine flatters the balance; counted as output, it exaggerates the
+     * deficit. Either way a reader draws a conclusion about hydration from a
+     * number that answers a different question.
+     */
+    it('leaves the balance unchanged, whatever volume of urine the day holds', () => {
+      const day = [observation({ code: '9000-1', valueQuantity: { value: 2000, unit: 'mL' } })];
+      const withoutUrine = toDisplayNetFluidBalance(
+        [...day, observation({ code: '79560-9', valueQuantity: { value: 1400, unit: 'mL' } })],
+        metric,
+      );
+      const withUrine = toDisplayNetFluidBalance(
+        [
+          ...day,
+          observation({ code: '79560-9', valueQuantity: { value: 1400, unit: 'mL' } }),
+          urine({ valueQuantity: { value: 1800, unit: 'mL' } }),
+        ],
+        metric,
+      );
+
+      expect(withoutUrine).toEqual({ value: 600, unit: 'mL' });
+      expect(withUrine).toEqual(withoutUrine);
+    });
+
+    /** Not "subtracted then added back" — it never enters the arithmetic at all. */
+    it('does not make a urine-only day look like a balance', () => {
+      expect(hasFluidBalanceInputs([urine(), colourOnlyUrine('amber')])).toBe(false);
+    });
+
+    /**
+     * `toDisplayDailyTotal` sums whatever it is handed — the page narrows to
+     * stoma output first, with this predicate. So the exclusion from the
+     * "Total stoma output for this day" row lives here, and asserting it on
+     * the total itself would be asserting a filter that function does not
+     * own.
+     */
+    it('is not a stoma output, so the page never feeds it to the output total', () => {
+      expect(isFluidBalanceOutput(urine())).toBe(false);
+      expect(isFluidBalanceOutput(observation({ code: '79560-9' }))).toBe(true);
+    });
+
+    it('classifies urine as its own signal, not as an output', () => {
+      expect(isUrineOutput(urine())).toBe(true);
+      expect(isUrineOutput(observation({ code: '79560-9' }))).toBe(false);
+    });
+  });
+
+  /**
+   * A missing amount is NOT a void of zero. This is the defect the whole
+   * nullable-volume design exists to prevent, and the one-line version of it
+   * (`?? 0`) is the easiest thing in the world to write.
+   */
+  describe('an entry with no amount never counts as zero', () => {
+    it('leaves it out of the daily total rather than averaging a zero into it', () => {
+      const day = [
+        observation({ code: '79560-9', valueQuantity: { value: 400, unit: 'mL' } }),
+        colourOnlyUrine('amber'),
+      ];
+
+      expect(toDisplayDailyTotal(day, metric)).toEqual({ value: 400, unit: 'mL' });
+    });
+
+    it('leaves it out of the balance rather than treating it as a 0 mL reading', () => {
+      const withColourOnly = toDisplayNetFluidBalance(
+        [
+          observation({ code: '9000-1', valueQuantity: { value: 1500, unit: 'mL' } }),
+          colourOnlyUrine('straw'),
+        ],
+        metric,
+      );
+
+      expect(withColourOnly).toEqual({ value: 1500, unit: 'mL' });
+    });
+
+    it('gives it no row in the volume timeline, rather than a NaN one', () => {
+      const entries = toDisplayOutputEntries([colourOnlyUrine('amber')], metric);
+
+      expect(entries).toEqual([]);
+    });
+
+    /**
+     * ADR-0005 AC 2.1 AC4: a day entered wholly in the display system is a
+     * readback and is not rounded. A volume-less entry carries an
+     * `enteredMeasurementSystem` like any other row, and letting it vote on
+     * "is this a mixed-system day" would round a total it contributed nothing
+     * to.
+     */
+    it('does not make a same-system day look mixed', () => {
+      const day = [
+        observation({
+          code: '79560-9',
+          valueQuantity: { value: 350.5, unit: 'mL' },
+          enteredMeasurementSystem: 'metric',
+        }),
+        { ...colourOnlyUrine('amber'), enteredMeasurementSystem: 'imperial' } as Observation,
+      ];
+
+      expect(toDisplayDailyTotal(day, metric)).toEqual({ value: 350.5, unit: 'mL' });
+    });
+  });
+
+  describe('toUrineDaySummary', () => {
+    it('is undefined for a day with no urine entries', () => {
+      expect(toUrineDaySummary([observation({ code: '79560-9' })], metric)).toBeUndefined();
+    });
+
+    it('totals the measured entries and says how much of the day they cover', () => {
+      const summary = toUrineDaySummary(
+        [
+          urine({ valueQuantity: { value: 300, unit: 'mL' } }),
+          urine({ valueQuantity: { value: 250, unit: 'mL' } }),
+          colourOnlyUrine('amber'),
+        ],
+        metric,
+      );
+
+      expect(summary).toMatchObject({
+        entryCount: 3,
+        measuredCount: 2,
+        measuredTotal: { value: 550, unit: 'mL' },
+      });
+    });
+
+    /**
+     * AC 12.1 AC2's whole day. `undefined`, not `{ value: 0 }` — a day
+     * recorded entirely by colour carries a real hydration signal, and
+     * reporting it as "0 mL" would be a clinical claim nobody made, in the
+     * most alarming possible direction for this particular signal.
+     */
+    it('reports no measured total at all when nothing was measured', () => {
+      const summary = toUrineDaySummary(
+        [colourOnlyUrine('amber'), colourOnlyUrine('brown')],
+        metric,
+      );
+
+      expect(summary?.measuredTotal).toBeUndefined();
+      expect(summary?.measuredCount).toBe(0);
+      expect(summary?.entryCount).toBe(2);
+    });
+
+    it('lists each distinct colour once', () => {
+      const summary = toUrineDaySummary(
+        [colourOnlyUrine('straw'), colourOnlyUrine('amber'), colourOnlyUrine('straw')],
+        metric,
+      );
+
+      expect(summary?.colorCodes).toEqual(['straw', 'amber']);
+    });
+
+    /**
+     * Pale to dark, not the order the API happened to return them in. This
+     * list is rendered above "darker urine is more concentrated", so an
+     * arbitrary sequence invites a clinician to read darkness off it.
+     *
+     * The previous version of this test fed codes that were already in scale
+     * order, which is exactly why it could not catch the absent sorting.
+     */
+    it('orders the colours pale to dark, whatever order they arrived in', () => {
+      const summary = toUrineDaySummary(
+        [colourOnlyUrine('brown'), colourOnlyUrine('pale_straw'), colourOnlyUrine('amber')],
+        metric,
+      );
+
+      expect(summary?.colorCodes).toEqual(['pale_straw', 'amber', 'brown']);
+    });
+
+    it('carries no colours when every entry was measured without one', () => {
+      const summary = toUrineDaySummary([urine(), urine()], metric);
+
+      expect(summary?.colorCodes).toEqual([]);
+    });
+
+    /** ADR-0005: summed from canonical mL and converted ONCE, never from rounded per-entry figures. */
+    it('converts the total once rather than summing converted entries', () => {
+      const imperial = unitsForMeasurementSystem('imperial');
+      const summary = toUrineDaySummary(
+        [
+          urine({ valueQuantity: { value: 100, unit: 'mL' } }),
+          urine({ valueQuantity: { value: 100, unit: 'mL' } }),
+          urine({ valueQuantity: { value: 100, unit: 'mL' } }),
+        ],
+        imperial,
+      );
+
+      // 300 mL is 10.144 oz, rounded once to 10. Converting each 100 mL
+      // first gives 3.38 -> 3 apiece, and 9.
+      expect(summary?.measuredTotal).toEqual({ value: 10, unit: 'oz' });
+    });
   });
 });
 

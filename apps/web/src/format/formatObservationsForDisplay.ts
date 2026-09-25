@@ -28,6 +28,8 @@ import {
 import type { Observation } from '@ostomy/core/api-client';
 import {
   countsTowardDailyNetFluidBalance,
+  isUrineOutputSignal,
+  sortUrineColorCodes,
   netDailyFluidBalanceMl,
   NET_FLUID_BALANCE_INTAKE_LOINC_CODES,
   NET_FLUID_BALANCE_OUTPUT_LOINC_CODES,
@@ -35,6 +37,26 @@ import {
 import { MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 
 export type EntryMethod = 'measured' | 'estimated';
+
+/**
+ * The canonical mL this observation records, or `undefined` when it records
+ * none.
+ *
+ * `valueQuantity` became conditional at P3.S2: a voided-urine entry may carry
+ * a colour instead of an amount (SRS §3.7, AC 12.1 AC2), and §7.2 has the
+ * server OMIT the key rather than send `null` or `0` for it.
+ *
+ * **Never `?? 0`.** That is the one-line version of the defect the whole
+ * nullable-volume design exists to prevent: a missing amount is not a void of
+ * zero, and every figure on this page — the daily total, the balance, the
+ * chart's scale — would absorb the fabricated reading and show a confidently
+ * wrong number with nothing on screen to suggest it. `undefined` forces each
+ * caller to say what it does with an entry that has no amount, which for all
+ * three of them is "leave it out of the arithmetic".
+ */
+function volumeMlOf(observation: Observation): number | undefined {
+  return observation.valueQuantity?.value;
+}
 
 export interface DisplayOutputEntry {
   readonly id: string;
@@ -82,16 +104,29 @@ export function toDisplayOutputEntries(
   targetSystem: MeasurementSystemUnits,
 ): readonly DisplayOutputEntry[] {
   return observations
-    .map((observation) => ({
-      id: observation.id,
-      effectiveDateTime: new Date(observation.effectiveDateTime),
-      display: convertVolumeForDisplay(
-        observation.valueQuantity.value,
-        unitsForMeasurementSystem(observation.enteredMeasurementSystem),
-        targetSystem,
-      ),
-      method: toEntryMethod(observation.method),
-    }))
+    .flatMap((observation) => {
+      const valueMl = volumeMlOf(observation);
+      // An observation with no amount has no row here: this list is a
+      // timeline OF VOLUMES, and there is nothing to plot or tabulate. It
+      // cannot happen for the stoma output this function is called with —
+      // only voided urine may omit the amount — but the type permits it, and
+      // the alternative to handling it is a `!` that renders `NaN` in a
+      // clinical table. Urine is shown by `UrineSignalNotice`, which is
+      // built for entries that may have a colour and no number.
+      if (valueMl === undefined) return [];
+      return [
+        {
+          id: observation.id,
+          effectiveDateTime: new Date(observation.effectiveDateTime),
+          display: convertVolumeForDisplay(
+            valueMl,
+            unitsForMeasurementSystem(observation.enteredMeasurementSystem),
+            targetSystem,
+          ),
+          method: toEntryMethod(observation.method),
+        },
+      ];
+    })
     .sort((a, b) => a.effectiveDateTime.getTime() - b.effectiveDateTime.getTime());
 }
 
@@ -125,12 +160,19 @@ export function toDisplayDailyTotal(
   observations: readonly Observation[],
   targetSystem: MeasurementSystemUnits,
 ): DisplayVolume {
-  const canonicalEntries: CanonicalVolume[] = observations.map((entry) => ({
-    value: entry.valueQuantity.value,
-    unit: 'mL',
-  }));
+  // Entries with no amount contribute nothing and are dropped before the sum
+  // — never summed as 0. See `volumeMlOf`.
+  const withVolume = observations.filter((entry) => volumeMlOf(entry) !== undefined);
+  const canonicalEntries: CanonicalVolume[] = observations.flatMap((entry) => {
+    const value = volumeMlOf(entry);
+    return value === undefined ? [] : [{ value, unit: 'mL' } as CanonicalVolume];
+  });
 
-  const uniformEntrySystem = resolveUniformEntrySystem(observations);
+  // Resolved over the entries that actually contribute: a day whose only
+  // volume-less entry was entered in the other system is not a mixed-system
+  // day for the purpose of this total, and treating it as one would round a
+  // same-system readback that ADR-0005 AC 2.1 AC4 exempts.
+  const uniformEntrySystem = resolveUniformEntrySystem(withVolume);
   if (uniformEntrySystem) {
     // The ordinary case, deferred wholesale to core so ADR-0005's
     // round-once rule has exactly one implementation.
@@ -272,17 +314,24 @@ export function toDisplayNetFluidBalance(
   targetSystem: MeasurementSystemUnits,
 ): DisplayVolume {
   const netMl = netDailyFluidBalanceMl(
-    observations.map((observation) => ({
-      loincCode: observation.code,
-      valueMl: observation.valueQuantity.value,
-    })),
+    observations.flatMap((observation) => {
+      const valueMl = volumeMlOf(observation);
+      // No amount, no contribution — in either direction, and never as a
+      // zero-mL reading the balance then treats as a real measurement. The
+      // only observations this can be are voided urine, which the balance
+      // excludes by code anyway; the guard is here so that stays true if the
+      // include-set ever grows to a code that may omit its volume.
+      if (valueMl === undefined) return [];
+      return [{ loincCode: observation.code, valueMl }];
+    }),
   );
 
   // Only the observations that actually contribute decide the entry system.
   // A day whose sole imperial entry is a weight would otherwise be treated as
   // mixed-system and have its balance rounded for no reason.
-  const contributing = observations.filter((observation) =>
-    countsTowardDailyNetFluidBalance(observation.code),
+  const contributing = observations.filter(
+    (observation) =>
+      countsTowardDailyNetFluidBalance(observation.code) && volumeMlOf(observation) !== undefined,
   );
   const uniformEntrySystem = resolveUniformEntrySystem(contributing);
 
@@ -315,4 +364,92 @@ export function isFluidBalanceOutput(observation: Observation): boolean {
 /** Whether this observation is one the balance adds. */
 export function isFluidBalanceIntake(observation: Observation): boolean {
   return NET_FLUID_BALANCE_INTAKE_LOINC_CODES.has(observation.code);
+}
+
+/**
+ * Whether this observation is the urine-output hydration signal (SRS §3.7).
+ *
+ * The complement of `isFluidBalanceOutput`, and deliberately not a variant of
+ * it: urine is a SEPARATE signal, not a kind of output. Merging them is the
+ * one thing CLAUDE.md names outright about this data — net balance measures
+ * stoma losses, urine output independently signals renal perfusion, and
+ * summing them lets a normal-looking balance hide a dangerously low urine
+ * output.
+ */
+export function isUrineOutput(observation: Observation): boolean {
+  return isUrineOutputSignal(observation.code);
+}
+
+/**
+ * The day's voided urine, summarised for display (SRS §3.7, AC 12.1).
+ *
+ * Reported as a shape rather than a single number because a urine day is not
+ * reducible to one: AC 12.1 AC2 makes the amount OPTIONAL, so a day can hold
+ * three entries and one measured volume, and a bare "450 mL" would describe
+ * that day as though the other two had not happened.
+ */
+export interface UrineDaySummary {
+  /** Every voided-urine entry of the day, measured or not. */
+  readonly entryCount: number;
+  /** The measured total, or `undefined` when no entry of the day carried an amount. */
+  readonly measuredTotal: DisplayVolume | undefined;
+  /** How many entries contributed to that total. */
+  readonly measuredCount: number;
+  /**
+   * The distinct colour codes recorded that day, **pale to dark**.
+   *
+   * Ordered by the scale, not by arrival. It used to be "the order first
+   * seen", which came from the API's list order — neither chronological nor
+   * the scale — so it was rendered as a list above the sentence "darker urine
+   * is more concentrated" while carrying no ordering at all. A clinician
+   * scanning "how dark did it get" read a sequence that meant nothing.
+   *
+   * Codes, never labels: the words come from the i18n catalog (ADR-0006), and
+   * a member an admin adds after this release ships has no copy and renders
+   * through the shared "Another option" fallback rather than as a raw code.
+   *
+   * Deduplicated because this is a day summary, not a log — four entries all
+   * recorded amber is one fact about the day, and repeating it four times
+   * would read as a trend where there is a single observation repeated.
+   */
+  readonly colorCodes: readonly string[];
+}
+
+export function toUrineDaySummary(
+  observations: readonly Observation[],
+  targetSystem: MeasurementSystemUnits,
+): UrineDaySummary | undefined {
+  const urine = observations.filter(isUrineOutput);
+  if (urine.length === 0) return undefined;
+
+  const measured = urine.filter((entry) => volumeMlOf(entry) !== undefined);
+
+  // Same round-once rule as every other daily figure (ADR-0005): summed from
+  // canonical mL and converted once, never accumulated from rounded per-entry
+  // display values.
+  const uniformEntrySystem = resolveUniformEntrySystem(measured);
+  const measuredTotal =
+    measured.length === 0
+      ? undefined
+      : formatDailyVolumeTotalForDisplay(
+          measured.flatMap((entry) => {
+            const value = volumeMlOf(entry);
+            return value === undefined ? [] : [{ value, unit: 'mL' } as CanonicalVolume];
+          }),
+          uniformEntrySystem ?? targetSystem,
+          targetSystem,
+        );
+
+  const colorCodes: string[] = [];
+  for (const entry of urine) {
+    const code = entry.urineColorCode;
+    if (code != null && !colorCodes.includes(code)) colorCodes.push(code);
+  }
+
+  return {
+    entryCount: urine.length,
+    measuredTotal,
+    measuredCount: measured.length,
+    colorCodes: sortUrineColorCodes(colorCodes),
+  };
 }

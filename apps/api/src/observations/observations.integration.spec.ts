@@ -39,6 +39,7 @@ import { Module, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { createApiClient, ApiError } from '@ostomy/core/api-client';
+import { URINE_COLOR_CODES_PALE_TO_DARK } from '@ostomy/core/hydration';
 import { Logger as PinoNestLogger, LoggerModule as PinoLoggerModule } from 'nestjs-pino';
 import { Client as PgClient } from 'pg';
 import request from 'supertest';
@@ -51,6 +52,7 @@ import { LoggingModule } from '../logging/logging.module';
 import { CREDENTIAL_REDACTION_PATHS, PHI_SHAPED_REDACTION_PATHS } from '../logging/redaction';
 import { errSerializer, reqSerializer, resSerializer } from '../logging/serializers';
 import { createTestOidcIssuer, type TestOidcIssuer } from '../test-support/oidc-test-tokens';
+import { OBSERVATION_ENTITY_TYPE } from './observations.service';
 import { THRESHOLD_KEY } from '../thresholds/thresholds.service';
 
 const API_ROOT = path.resolve(__dirname, '..', '..');
@@ -635,6 +637,313 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
       expect(response.status).toBe(201);
       const rows = await observationRows(body.id as string);
       expect(rows[0]!.method).toBe('258104002');
+    });
+  });
+
+  /**
+   * AC 12.1 — voided urine, the first entry type that may record NO AMOUNT.
+   *
+   * Everything about this feature lives in places a unit test cannot reach:
+   * four CHECK constraints in the P3.S2 migration, a nullable clinical column,
+   * and a service that picks between two validation engines. The unit tests
+   * prove the parse and the rule choice; only this proves that a colour-only
+   * entry actually lands in PostgreSQL and that the combinations the
+   * constraints forbid are refused as CORRECTABLE rejections rather than as
+   * constraint-violation 500s — which `docs/sync-contract.md` §9 tells a
+   * client to re-push indefinitely, so a bad entry would retry forever
+   * instead of reaching the patient's correction inbox.
+   */
+  describe('AC 12.1 — voided urine, including an entry with no volume', () => {
+    function urinePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return validPayload({ code: '9187-6', ...overrides });
+    }
+
+    /** AC 12.1 AC1 — with an amount, identical treatment to any other volumetric entry. */
+    it('accepts a measured urine entry with a volume and a colour', async () => {
+      const body = urinePayload({
+        valueQuantity: { value: 275, unit: 'mL' },
+        method: '258104002',
+        urineColorCode: 'straw',
+      });
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(201);
+      expect(response.body.observation.valueQuantity).toEqual({ value: 275, unit: 'mL' });
+      expect(response.body.observation.urineColorCode).toBe('straw');
+
+      const rows = await observationRows(body.id as string);
+      expect(rows[0]).toMatchObject({
+        code: '9187-6',
+        value_quantity_unit: 'mL',
+        urine_color_code: 'straw',
+        method: '258104002',
+      });
+    });
+
+    /**
+     * AC 12.1 AC2, and the entry this whole sprint exists for: a patient who
+     * cannot measure records a colour alone, and it is retained as a valid
+     * hydration observation.
+     */
+    it('accepts a colour with no volume at all, and stores NULL rather than zero', async () => {
+      const body = urinePayload({ urineColorCode: 'amber' });
+      delete body.valueQuantity;
+      delete body.method;
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(201);
+      const rows = await observationRows(body.id as string);
+      expect(rows).toHaveLength(1);
+      // NULL, never 0. `SUM()` skips NULL; application code that reads a
+      // missing value as 0 does not, and the two disagree in every daily total
+      // forever afterwards.
+      expect(rows[0]!.value_quantity_value).toBeNull();
+      // The pair travels together — `observations_volume_with_unit`.
+      expect(rows[0]!.value_quantity_unit).toBeNull();
+      expect(rows[0]!.urine_color_code).toBe('amber');
+      // ADR-0018 (amended): with no number, NULL is what says "no toggle".
+      expect(rows[0]!.method).toBeNull();
+    });
+
+    /** §7.2: `valueQuantity` is omitted from the response too, never sent as null. */
+    it('omits valueQuantity from the published resource when there is none', async () => {
+      const body = urinePayload({ urineColorCode: 'pale_straw' });
+      delete body.valueQuantity;
+      delete body.method;
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(201);
+      expect('valueQuantity' in response.body.observation).toBe(false);
+    });
+
+    /**
+     * **The payload `apps/mobile` actually builds**, and the case every other
+     * test in this block missed.
+     *
+     * `ObservationFhirFields.method` is REQUIRED by §7.2, so the client cannot
+     * omit the key — `pushOperations.ts` emits `method: observation.method`,
+     * which is `null` for a colour-only row. Every colour-only test here and
+     * in `sync.integration.spec.ts` did `delete body.method` instead, so the
+     * shape the shipping client sends was never exercised, and the server
+     * rejected all of it with `METHOD_NOT_APPLICABLE` into a correction inbox
+     * that shows no toggle to fix.
+     *
+     * Wire `null` means "measured" on an entry that has a volume (§8
+     * back-compat) and "no toggle applies" on one that does not. The volume is
+     * what disambiguates it; see `resolveMethodForEntry`.
+     */
+    it('accepts the colour-only payload the mobile client builds: method null, no valueQuantity', async () => {
+      const body = urinePayload({ urineColorCode: 'amber', method: null });
+      delete body.valueQuantity;
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(201);
+      const rows = await observationRows(body.id as string);
+      // NULL at rest, not the |Measured| code: ADR-0018 (amended) reserves
+      // NULL for "this observation has no toggle", and
+      // `observations_method_needs_a_value` would refuse anything else.
+      expect(rows[0]!.method).toBeNull();
+      expect(rows[0]!.urine_color_code).toBe('amber');
+    });
+
+    /** The same `null`, with a volume, still means measured — §8 back-compat is untouched. */
+    it('still reads method null as measured when the entry HAS a volume', async () => {
+      const body = urinePayload({
+        valueQuantity: { value: 275, unit: 'mL' },
+        method: null,
+        urineColorCode: 'straw',
+      });
+
+      expect((await post(patientA, body)).status).toBe(201);
+      const rows = await observationRows(body.id as string);
+      expect(rows[0]!.method).toBe('258104002');
+    });
+
+    /**
+     * The audit obligation, asserted on CONTENT rather than on existence.
+     *
+     * The earlier test counted the audit row and never looked inside it, which
+     * is how `toAuditSnapshot` shipped without `urineColorCode`: on a
+     * colour-only entry that is the row's entire clinical content, so the
+     * snapshot recorded two nulls and nothing else — an audit trail
+     * structurally present and substantively empty. ADR-0017 makes this row the
+     * last surviving copy once the purge job lands.
+     */
+    it('records the colour in the audit snapshot, not just two nulls', async () => {
+      const body = urinePayload({ urineColorCode: 'amber', method: null });
+      delete body.valueQuantity;
+
+      expect((await post(patientA, body)).status).toBe(201);
+
+      const audit = await auditRows(body.id as string);
+      expect(audit).toHaveLength(1);
+      const after = audit[0]!.after_value as Record<string, unknown>;
+      expect(after.urineColorCode).toBe('amber');
+      expect(after.valueQuantityValue).toBeNull();
+      // The day the entry was filed under (ADR-0016). The instant alone does
+      // not say where the patient was, so an audit row without the zone
+      // cannot reconstruct which day this belonged to.
+      expect(after.enteredTimezone).toBe('America/Chicago');
+      expect(after.localDate).toBe('2026-09-07');
+    });
+
+    /**
+     * ADR-0012 is unchanged by the absence of a volume: it is the client's
+     * assertion about the ENTRY, not a property of the number, and the column
+     * is NOT NULL with no default.
+     */
+    it('still requires the entered measurement system on a colour-only entry', async () => {
+      const body = urinePayload({ urineColorCode: 'amber' });
+      delete body.valueQuantity;
+      delete body.method;
+      delete body.enteredMeasurementSystem;
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(400);
+      expect(await observationRows(body.id as string)).toHaveLength(0);
+    });
+
+    it('refuses a urine entry carrying neither a volume nor a colour', async () => {
+      const body = urinePayload();
+      delete body.valueQuantity;
+      delete body.method;
+
+      const response = await post(patientA, body);
+
+      // It would record nothing at all. Refused by the application, so the
+      // patient gets a field to act on — `observations_value_or_urine_color`
+      // would refuse it too, as a 500 nothing can correct.
+      expect(response.status).toBe(400);
+      expect(await observationRows(body.id as string)).toHaveLength(0);
+    });
+
+    it('refuses a Measured/Estimated qualifier on an entry with no volume', async () => {
+      const body = urinePayload({ urineColorCode: 'amber', method: '258104002' });
+      delete body.valueQuantity;
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(422);
+      expect(response.body.error.errors).toContainEqual({
+        field: 'method',
+        reasonCode: 'METHOD_NOT_APPLICABLE',
+      });
+      expect(await observationRows(body.id as string)).toHaveLength(0);
+    });
+
+    /**
+     * Only voided urine may omit the volume. A stoma output row with no
+     * volume is the defect the whole nullable-column change risks
+     * introducing, and this is the assertion that it stays unwritable.
+     */
+    it('refuses a stoma output entry with no volume', async () => {
+      const body = validPayload();
+      delete body.valueQuantity;
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(400);
+      expect(await observationRows(body.id as string)).toHaveLength(0);
+    });
+
+    /**
+     * A colour on a stoma output row would render as a hydration signal for
+     * the wrong observation. `observations_urine_color_only_on_urine` forbids
+     * it in the database as well; this proves the application refuses it
+     * first, with a field the patient can act on.
+     */
+    it('refuses a colour on any code other than voided urine', async () => {
+      const body = validPayload({ urineColorCode: 'amber' });
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(400);
+      expect(await observationRows(body.id as string)).toHaveLength(0);
+    });
+
+    /**
+     * The server does NOT check value-set membership, deliberately and for the
+     * reason `fluidTypeCode` records: an unknown code renders as a generic
+     * label and is recoverable; a refused entry is not. A member an admin adds
+     * after this release ships is a real case, not a hypothetical.
+     */
+    it('accepts a colour code this build has never heard of', async () => {
+      const body = urinePayload({ urineColorCode: 'very_dark_brown' });
+      delete body.valueQuantity;
+      delete body.method;
+
+      const response = await post(patientA, body);
+
+      expect(response.status).toBe(201);
+      const rows = await observationRows(body.id as string);
+      expect(rows[0]!.urine_color_code).toBe('very_dark_brown');
+    });
+
+    /** The value set the screen reads its codes from is seeded by the migration, not by packages/seed. */
+    it('seeds the urine_color value set with its six steps, pale to dark', async () => {
+      const result = await db.query(
+        `SELECT m.code, m.sort_order, m.status
+         FROM value_set_members m
+         JOIN value_sets vs ON vs.id = m.value_set_id
+         WHERE vs.key = 'urine_color'
+         ORDER BY m.sort_order`,
+      );
+
+      expect(result.rows.map((row) => row.code)).toEqual([
+        'pale_straw',
+        'straw',
+        'yellow',
+        'dark_yellow',
+        'amber',
+        'brown',
+      ]);
+      expect(result.rows.every((row) => row.status === 'ACTIVE')).toBe(true);
+    });
+
+    /**
+     * The drift guard for a deliberate duplication.
+     *
+     * `apps/web` has no value-set fetch, so it cannot learn the scale's order
+     * from this table the way `apps/mobile` does — and the order IS the
+     * clinical content of a pale-to-dark scale. `packages/core` therefore
+     * carries a second copy, `URINE_COLOR_CODES_PALE_TO_DARK`, and this is what
+     * keeps it honest: adding a step to the migration without adding it there
+     * fails here, against real PostgreSQL, rather than showing a clinician a
+     * list in the wrong order.
+     */
+    it('keeps packages/core’s pale-to-dark order equal to the seeded sort_order', async () => {
+      const result = await db.query(
+        `SELECT m.code
+         FROM value_set_members m
+         JOIN value_sets vs ON vs.id = m.value_set_id
+         WHERE vs.key = 'urine_color'
+         ORDER BY m.sort_order`,
+      );
+
+      expect(result.rows.map((row) => row.code)).toEqual([...URINE_COLOR_CODES_PALE_TO_DARK]);
+    });
+
+    /**
+     * A colour-only entry is PHI like any other, so it audits like any other.
+     * Worth asserting separately: the write takes a different branch of the
+     * service, and an audit row written inside the volumetric branch only
+     * would leave this entry type silently unaudited.
+     */
+    it('writes exactly one audit row for a colour-only entry', async () => {
+      const body = urinePayload({ urineColorCode: 'amber' });
+      delete body.valueQuantity;
+      delete body.method;
+
+      expect((await post(patientA, body)).status).toBe(201);
+
+      const audit = await auditRows(body.id as string);
+      expect(audit).toHaveLength(1);
+      expect(audit[0]).toMatchObject({ action: 'CREATE', entity_type: OBSERVATION_ENTITY_TYPE });
     });
   });
 
@@ -1476,7 +1785,11 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
       });
 
       expect(created.observation.id).toBe(id);
-      expect(created.observation.valueQuantity.value).toBe(275.25);
+      // `valueQuantity` is optional on the wire since P3.S2 (a colour-only
+      // voided-urine entry carries none), so this asserts the object is
+      // present as well as its value — on a stoma-output entry its absence
+      // would itself be the defect.
+      expect(created.observation.valueQuantity).toMatchObject({ value: 275.25 });
       expect(created.warnings).toEqual([]);
 
       const readBack = await client.observations.findOne(id);

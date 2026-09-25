@@ -30,8 +30,8 @@ export interface ObservationRawRow {
   id: string;
   resource_type: string;
   code: string;
-  value_quantity_value: string;
-  value_quantity_unit: string;
+  value_quantity_value: string | null;
+  value_quantity_unit: string | null;
   effective_datetime: string;
   method: string | null;
   status: string;
@@ -39,6 +39,7 @@ export interface ObservationRawRow {
   entered_timezone: string;
   local_date: string;
   fluid_type_code: string | null;
+  urine_color_code: string | null;
   client_updated_at: string;
   server_sequence: string | null;
   deleted_at: string | null;
@@ -54,13 +55,21 @@ export interface ObservationRawRow {
  * `valueQuantityValue` stays a decimal **string** here — see
  * `./schema.ts`'s migration-1 comment for why — and is parsed to a `number`
  * only at the wire boundary (P2.S2b's job), never at rest.
+ *
+ * It is `null` only on a voided-urine entry recording a colour instead of an
+ * amount (P3.S2, SRS §3.7, AC 12.1 AC2). The pair is all-or-nothing: the
+ * local schema's `observations_volume_with_unit` CHECK makes a value without
+ * its unit, or a unit without its value, unwritable. Every read path must
+ * treat a `null` value as "this entry has no amount" and never as zero — a
+ * missing amount that totals as 0 mL is a clinical-accuracy defect, and the
+ * two readings disagree forever afterwards.
  */
 export interface LocalObservation {
   readonly id: string;
   readonly resourceType: 'Observation';
   readonly code: string;
-  readonly valueQuantityValue: string;
-  readonly valueQuantityUnit: CanonicalWireUnit;
+  readonly valueQuantityValue: string | null;
+  readonly valueQuantityUnit: CanonicalWireUnit | null;
   readonly effectiveDatetime: string;
   readonly method: string | null;
   readonly status: string;
@@ -71,6 +80,12 @@ export interface LocalObservation {
   readonly localDate: string;
   /** The optional fluid categorisation (SRS AC 2.3 AC1), on an intake entry only. */
   readonly fluidTypeCode: string | null;
+  /**
+   * The chosen step of the pale-to-dark urine colour scale, on a voided-urine
+   * entry only (SRS §3.7, AC 12.1). A `urine_color` member code, never a
+   * label — the words a patient reads come from the i18n catalog (ADR-0006).
+   */
+  readonly urineColorCode: string | null;
   readonly clientUpdatedAt: string;
   /** `null` until this device has seen a push receipt or delta row naming this entity's server sequence (P2.S2b). */
   readonly serverSequence: string | null;
@@ -86,7 +101,7 @@ export function decodeObservationRow(row: ObservationRawRow): LocalObservation {
     resourceType: 'Observation',
     code: row.code,
     valueQuantityValue: row.value_quantity_value,
-    valueQuantityUnit: row.value_quantity_unit as CanonicalWireUnit,
+    valueQuantityUnit: row.value_quantity_unit as CanonicalWireUnit | null,
     effectiveDatetime: row.effective_datetime,
     method: row.method,
     status: row.status,
@@ -94,6 +109,7 @@ export function decodeObservationRow(row: ObservationRawRow): LocalObservation {
     enteredTimezone: requireText(row.entered_timezone, 'entered_timezone'),
     localDate: requireText(row.local_date, 'local_date'),
     fluidTypeCode: row.fluid_type_code,
+    urineColorCode: row.urine_color_code,
     clientUpdatedAt: row.client_updated_at,
     serverSequence: row.server_sequence,
     deletedAt: row.deleted_at,

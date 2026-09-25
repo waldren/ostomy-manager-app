@@ -29,6 +29,7 @@ import { DateNav } from '../components/DateNav.js';
 import { OutputChart } from '../components/OutputChart.js';
 import { OutputTable } from '../components/OutputTable.js';
 import { UnitToggle } from '../components/UnitToggle.js';
+import { UrineSignalNotice } from '../components/UrineSignalNotice.js';
 import {
   toDisplayDailyTotal,
   toDisplayOutputEntries,
@@ -36,6 +37,7 @@ import {
   isFluidBalanceIntake,
   isFluidBalanceOutput,
   toDisplayNetFluidBalance,
+  toUrineDaySummary,
   hasFluidBalanceInputs,
 } from '../format/formatObservationsForDisplay.js';
 
@@ -238,6 +240,16 @@ export function PhysicianOutputView() {
     [observations, targetSystem],
   );
 
+  // The second hydration signal, kept beside the balance and out of it
+  // (SRS §3.7). `toDisplayNetFluidBalance` is handed the SAME undifferentiated
+  // `observations` and excludes urine by LOINC code in `packages/core`, so the
+  // separation is one rule in one place rather than a filter each caller has
+  // to remember.
+  const urine = useMemo(
+    () => toUrineDaySummary(observations, targetSystem),
+    [observations, targetSystem],
+  );
+
   return (
     <>
       {/*
@@ -269,6 +281,8 @@ export function PhysicianOutputView() {
           hasIntake={observations.some(isFluidBalanceIntake)}
           hasOutput={observations.some(isFluidBalanceOutput)}
         />
+
+        <UrineSignalNotice summary={urine} />
 
         {/*
           ONE region, mounted for every state (WCAG 4.1.3).
@@ -332,12 +346,45 @@ export function PhysicianOutputView() {
                 <p>{t('physicianView.truncated.body', { limit: DAILY_PAGE_SIZE })}</p>
               </InlineNotice>
             ) : null}
-            <OutputChart entries={entries} />
-            <h2>{t('physicianView.table.heading')}</h2>
-            <OutputTable
-              entries={entries}
-              total={toDisplayDailyTotal(outputObservations, targetSystem)}
-            />
+            {/*
+              Gated on the OUTPUT rows, not on the day's rows.
+
+              A day holding only urine entries passes the
+              `observations.length === 0` empty state above, and then rendered
+              an empty chart, an empty table, and — because
+              `toDisplayDailyTotal([])` returns a well-formed zero — **0 mL as
+              the day's stoma output**. That is a clinical claim nobody made,
+              and it is the same defect `volumeMlOf` exists to prevent,
+              mirrored: this sprint is what made a urine-only day an ordinary
+              case rather than a curiosity.
+            */}
+            {entries.length === 0 ? (
+              <>
+                <h2>{t('physicianView.table.heading')}</h2>
+                <p>{t('physicianView.table.noOutput')}</p>
+              </>
+            ) : (
+              <>
+                {/*
+                  The heading stays BETWEEN the chart and the table.
+
+                  Hoisting it above the chart to cover the empty message put it
+                  immediately before `OutputChart`'s own `h2` — two sibling
+                  headings about stoma output, the first promising "entries" and
+                  landing a reader on a chart, with the table it names two
+                  headings further down. Heading navigation is how a clinician
+                  skims this page; un-associating a heading from its content is
+                  the same defect as having no heading at all, which is what the
+                  urine and balance regions were fixed for in this same change.
+                */}
+                <OutputChart entries={entries} />
+                <h2>{t('physicianView.table.heading')}</h2>
+                <OutputTable
+                  entries={entries}
+                  total={toDisplayDailyTotal(outputObservations, targetSystem)}
+                />
+              </>
+            )}
           </>
         ) : null}
       </main>

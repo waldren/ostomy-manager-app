@@ -61,8 +61,28 @@ import {
 } from '@ostomy/core/validation';
 
 export type MethodWireInterpretation =
-  /** `method: null` — the entry was measured. Stored as SQL NULL. */
+  /** An explicit |Measured| qualifier, or an implicit `null` on an entry that HAS a volume. */
   | { readonly kind: 'measured' }
+  /**
+   * `method: null` on an entry with NO volume: there is nothing for
+   * Measured/Estimated to describe, so no selection was made or implied.
+   *
+   * This arm exists because wire `null` is ambiguous and the volume is what
+   * disambiguates it. §7.2 requires `method` to be present on every payload,
+   * so a client recording a colour without an amount (AC 12.1 AC2) has no way
+   * to say "not applicable" except by sending `null`. Collapsing that into
+   * `measured` — which is correct for a volumetric entry, and what this
+   * module did — made **every colour-only entry from the mobile app** fail
+   * `METHOD_NOT_APPLICABLE`, in a correction inbox that shows no toggle for
+   * the rule that rejected it. §9.2's retry-unchanged loop, forever.
+   *
+   * Only `interpretObservationPayload` can produce this arm, because only it
+   * knows whether a volume was supplied. An EXPLICIT qualifier on a
+   * volume-less entry is still `measured`/`estimated` and is still rejected —
+   * that rule is about a client asserting something untrue, not about a
+   * client with no way to stay silent.
+   */
+  | { readonly kind: 'no-toggle' }
   /**
    * `method: '<the resolved SNOMED code>'` — the entry was estimated.
    * Unreachable until D4 resolves; the code it carries can only ever be the
@@ -78,11 +98,17 @@ export function interpretMethodWireValue(raw: unknown): MethodWireInterpretation
   if (raw === undefined) {
     return { kind: 'not-selected' };
   }
-  // `null` is still accepted and still means measured, and it must stay that
-  // way for the life of v1. A client built before ADR-0018's amendment sends
-  // it, and §8 requires the server to keep understanding an older client —
-  // refusing `null` would reject a correct entry from an app the patient has
-  // simply not updated, and §9 tells that client to re-push it forever.
+  // `null` is still accepted and still means measured **on an entry that has a
+  // volume**, and it must stay that way for the life of v1. A client built
+  // before ADR-0018's amendment sends it, and §8 requires the server to keep
+  // understanding an older client — refusing `null` would reject a correct
+  // entry from an app the patient has simply not updated, and §9 tells that
+  // client to re-push it forever.
+  //
+  // On an entry with NO volume it means the opposite: no toggle applies. This
+  // function cannot tell the two apart, so it reports the provisional reading
+  // and `resolveMethodForEntry` settles it once the volume is known. See the
+  // `no-toggle` arm.
   //
   // What changes is what gets STORED: `toStoredMethod` writes the explicit
   // code either way, so a row never records the ambiguity even when the wire
@@ -100,9 +126,55 @@ export function interpretMethodWireValue(raw: unknown): MethodWireInterpretation
 }
 
 /**
+ * Settles wire `null` against the volume, which is the only thing that
+ * disambiguates it.
+ *
+ * Called once, by `interpretObservationPayload`, immediately after both facts
+ * are known — so every consumer downstream reads an already-resolved
+ * interpretation and neither `toMeasuredOrEstimated` nor `toStoredMethod` has
+ * to take a second argument it might be passed wrongly.
+ *
+ * Only the implicit `measured` reading moves. An explicit qualifier is left
+ * exactly as sent, so `METHOD_NOT_APPLICABLE` still fires on a client that
+ * asserts a measurement technique for a number it did not supply.
+ *
+ * ## `toggleApplies`, not `hasVolume`
+ *
+ * The two are equivalent for every code this release accepts, and they stop
+ * being equivalent at P6. Body weight (`29463-7`) carries a `valueQuantity` in
+ * kg and no toggle — CLAUDE.md: the toggle "applies to volumetric entries
+ * only, since a weight is read off a scale" — and `apps/mobile`'s
+ * `enqueueWeightOrHeartRateObservationCreate` already sends exactly that shape
+ * today: a value, and `method: null`.
+ *
+ * Keyed on `hasVolume`, that payload would resolve to `measured` and store
+ * `258104002` on a weight row. CHECK 4 is satisfied (a value is present),
+ * nothing raises, and both CLAUDE.md's "`method` left unpopulated" and
+ * ADR-0018's single meaning for `null` at rest become quietly false — visible
+ * only in a FHIR export, long after the rows are written and with no way to
+ * tell a wrongly-defaulted row from a deliberate answer.
+ *
+ * So the caller passes `AcceptedObservationCode.volumetric && hasVolume`. That
+ * flag's own doc comment already says it "is what decides whether the
+ * Measured/Estimated toggle applies", and until now nothing in `apps/api` read
+ * it.
+ */
+export function resolveMethodForEntry(
+  interpretation: MethodWireInterpretation,
+  toggleApplies: boolean,
+  wireValueWasNull: boolean,
+): MethodWireInterpretation {
+  if (toggleApplies) return interpretation;
+  if (interpretation.kind === 'measured' && wireValueWasNull) {
+    return { kind: 'no-toggle' };
+  }
+  return interpretation;
+}
+
+/**
  * What `packages/core`'s Tier 1 rules need: the selection, or `null` when
- * none was made. `unrecognized` never reaches here — it is refused at the
- * payload layer before validation runs.
+ * none was made or none applies. `unrecognized` never reaches here — it is
+ * refused at the payload layer before validation runs.
  */
 export function toMeasuredOrEstimated(
   interpretation: MethodWireInterpretation,
@@ -113,6 +185,7 @@ export function toMeasuredOrEstimated(
     case 'estimated':
       return 'estimated';
     case 'not-selected':
+    case 'no-toggle':
     case 'unrecognized':
       return null;
   }
@@ -144,7 +217,12 @@ export function toStoredMethod(interpretation: MethodWireInterpretation): string
         );
       }
       return MEASURED_METHOD_CODE.code;
+    // SQL NULL. For `no-toggle` that is exactly what ADR-0018 (amended)
+    // reserves it for — "this observation has no toggle" — and a volume-less
+    // urine entry joins weight and resting heart rate in that set, which the
+    // `observations_method_needs_a_value` CHECK requires.
     case 'not-selected':
+    case 'no-toggle':
     case 'unrecognized':
       return null;
   }

@@ -31,7 +31,10 @@ import {
 import {
   countsTowardDailyNetFluidBalance,
   DAILY_NET_FLUID_BALANCE_LOINC_CODES,
+  isUrineOutputSignal,
   netDailyFluidBalanceMl,
+  sortUrineColorCodes,
+  URINE_OUTPUT_LOINC_CODES,
 } from './index.js';
 
 describe('Daily Net Fluid Balance classification (SRS §3.7)', () => {
@@ -88,6 +91,91 @@ describe('Daily Net Fluid Balance classification (SRS §3.7)', () => {
     const balance = netDailyFluidBalanceMl([{ loincCode: STOMA_OUTPUT_LOINC_CODE, valueMl: 400 }]);
 
     expect(balance).toBe(-400);
+  });
+});
+
+/**
+ * Urine as a signal in its own right, which is the other half of excluding
+ * it from the balance (SRS §3.7, CLAUDE.md's four hydration signals).
+ *
+ * A UI that shows urine separately has to pick those observations out, and
+ * without a named predicate here it would reach for the raw LOINC code —
+ * making some screen a second terminology entry point ahead of
+ * `packages/core/src/fhir` (ADR-0007).
+ */
+describe('urine output as its own hydration signal', () => {
+  it('recognises voided urine and nothing else', () => {
+    expect(isUrineOutputSignal(VOIDED_URINE_LOINC_CODE)).toBe(true);
+    for (const other of [
+      STOMA_OUTPUT_LOINC_CODE,
+      FLUID_INTAKE_LOINC_CODE,
+      BODY_WEIGHT_LOINC_CODE,
+      RESTING_HEART_RATE_LOINC_CODE,
+    ]) {
+      expect(isUrineOutputSignal(other)).toBe(false);
+    }
+  });
+
+  /**
+   * The two facts must not drift: a code that is the urine signal is a code
+   * the balance excludes. Asserted as a relationship rather than as two
+   * literal lists, so adding a urine code to one set and forgetting the
+   * other fails here.
+   */
+  it('is disjoint from everything the balance counts', () => {
+    for (const code of URINE_OUTPUT_LOINC_CODES) {
+      expect(countsTowardDailyNetFluidBalance(code)).toBe(false);
+    }
+  });
+
+  /**
+   * The scale's ORDER, which is its clinical content: darker is more
+   * concentrated. A surface listing recorded colours has to know it or it
+   * renders a sequence that means nothing.
+   */
+  describe('the pale-to-dark colour order', () => {
+    it('sorts recorded codes by the scale, not by arrival', () => {
+      expect(sortUrineColorCodes(['brown', 'pale_straw', 'amber', 'yellow'])).toEqual([
+        'pale_straw',
+        'yellow',
+        'amber',
+        'brown',
+      ]);
+    });
+
+    /**
+     * A member an admin added after this release shipped. It is a real
+     * observation, so it is kept rather than dropped, and placed at the dark
+     * end — the scale only ever grows darker at its end in practice, and
+     * guessing a position inside it would misrepresent the step.
+     */
+    it('keeps a code this release does not know, at the end', () => {
+      expect(sortUrineColorCodes(['very_dark_brown', 'straw'])).toEqual([
+        'straw',
+        'very_dark_brown',
+      ]);
+    });
+
+    it('does not mutate its input', () => {
+      const input = ['brown', 'straw'];
+      sortUrineColorCodes(input);
+      expect(input).toEqual(['brown', 'straw']);
+    });
+  });
+
+  it('contributes nothing to the balance, in either direction, at any volume', () => {
+    const base = netDailyFluidBalanceMl([
+      { loincCode: FLUID_INTAKE_LOINC_CODE, valueMl: 2000 },
+      { loincCode: STOMA_OUTPUT_LOINC_CODE, valueMl: 1400 },
+    ]);
+    const withUrine = netDailyFluidBalanceMl([
+      { loincCode: FLUID_INTAKE_LOINC_CODE, valueMl: 2000 },
+      { loincCode: STOMA_OUTPUT_LOINC_CODE, valueMl: 1400 },
+      { loincCode: VOIDED_URINE_LOINC_CODE, valueMl: 1800 },
+    ]);
+
+    expect(base).toBe(600);
+    expect(withUrine).toBe(base);
   });
 });
 

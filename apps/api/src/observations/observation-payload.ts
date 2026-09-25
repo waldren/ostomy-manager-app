@@ -36,7 +36,11 @@ import type { MeasurementSystem as CoreMeasurementSystem } from '@ostomy/core/un
 
 import type { Observation } from '../generated/prisma/client';
 import { MeasurementSystem, ObservationStatus } from '../generated/prisma/enums';
-import { interpretMethodWireValue, type MethodWireInterpretation } from './estimation-method';
+import {
+  interpretMethodWireValue,
+  resolveMethodForEntry,
+  type MethodWireInterpretation,
+} from './estimation-method';
 import {
   OBSERVATION_FIELD,
   ACCEPTED_OBSERVATION_STATUS,
@@ -62,7 +66,22 @@ export interface ObservationWriteInput {
   readonly id: string;
   readonly code: string;
   readonly rawValueMl: unknown;
-  readonly unit: string;
+  /** `null` only on a colour-only voided-urine entry, where there is no volume to carry a unit (AC 12.1 AC2). */
+  readonly unit: string | null;
+  /**
+   * Whether the payload carried a `valueQuantity` AT ALL.
+   *
+   * Distinct from `rawValueMl === null`, and the distinction is load-bearing:
+   * an ABSENT `valueQuantity` means the entry recorded no volume (legal only
+   * for voided urine with a colour), while a PRESENT one carrying `null` is a
+   * malformed volume that Tier 1 must reject as `VALUE_NOT_NUMERIC`.
+   *
+   * Collapsing the two routes a stoma-output entry sending `value: null`
+   * into the volume-less validator, which has no value rules — so it would
+   * be accepted instead of rejected. An integration test caught exactly
+   * that.
+   */
+  readonly hasVolume: boolean;
   readonly effectiveDateTime: Date;
   readonly method: MethodWireInterpretation;
   readonly enteredMeasurementSystem: CoreMeasurementSystem;
@@ -72,6 +91,8 @@ export interface ObservationWriteInput {
   readonly localDate: string;
   /** A `fluid_type` member code on an intake entry (SRS AC 2.3 AC1); `null` everywhere else and whenever the patient did not categorise. */
   readonly fluidTypeCode: string | null;
+  /** A `urine_color` member code on a voided-urine entry (SRS AC 12.1 AC2); `null` everywhere else and whenever the patient chose no colour. */
+  readonly urineColorCode: string | null;
 }
 
 /**
@@ -102,7 +123,28 @@ export function interpretObservationPayload(
       reasonCode: SYNC_REASON_CODE.UNSUPPORTED_STATUS,
     });
   }
-  if (parsed.valueQuantity.unit !== codeRules.canonicalUnit) {
+  // A volume may be absent ONLY on voided urine, and only when a colour
+  // takes its place (AC 12.1 AC2). Checked before the unit, because "there
+  // is no volume" has to be settled before anything asks what unit it is in.
+  if (parsed.valueQuantity === undefined) {
+    if (!codeRules.acceptsUrineColor) {
+      // Every other code without a volume records nothing at all.
+      throw payloadMalformed({
+        field: OBSERVATION_FIELD.VALUE,
+        reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
+      });
+    }
+    if (typeof parsed.urineColorCode !== 'string' || parsed.urineColorCode.length === 0) {
+      // Urine with neither a volume nor a colour is an empty observation.
+      // Named on the COLOUR rather than the value: the patient who reaches
+      // this chose the colour-only path, so the colour is the field their
+      // correction inbox can act on.
+      throw payloadMalformed({
+        field: OBSERVATION_FIELD.URINE_COLOR_CODE,
+        reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
+      });
+    }
+  } else if (parsed.valueQuantity.unit !== codeRules.canonicalUnit) {
     // §7.2: the unit is determined by the code. A disagreement between the
     // two is the failure mode that is silent everywhere else — every daily
     // total and hydration computation reading the row would simply be wrong,
@@ -113,13 +155,29 @@ export function interpretObservationPayload(
     });
   }
 
-  const method = interpretMethodWireValue(parsed.method);
-  if (method.kind === 'unrecognized') {
+  const rawMethod = interpretMethodWireValue(parsed.method);
+  if (rawMethod.kind === 'unrecognized') {
     throw payloadMalformed({
       field: OBSERVATION_FIELD.METHOD,
       reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
     });
   }
+
+  // Settled against whether the toggle APPLIES, because wire `null` means
+  // "measured" where it does and "no toggle applies" where it does not — and
+  // §7.2 gives a client no other way to say the latter.
+  //
+  // Two conditions, not one. `codeRules.volumetric` is whether this KIND of
+  // observation has a toggle at all (a weight does not), and `hasVolume` is
+  // whether this particular payload supplied a number. They are equivalent for
+  // every code this release accepts and diverge at P6 — see
+  // `resolveMethodForEntry` for the row a weight would otherwise write.
+  const hasVolume = parsed.valueQuantity !== undefined;
+  const method = resolveMethodForEntry(
+    rawMethod,
+    codeRules.volumetric && hasVolume,
+    parsed.method === null,
+  );
 
   const enteredMeasurementSystem = toCoreMeasurementSystem(parsed.enteredMeasurementSystem);
   if (enteredMeasurementSystem === undefined) {
@@ -141,14 +199,23 @@ export function interpretObservationPayload(
   }
 
   const fluidTypeCode = interpretFluidTypeCode(parsed.fluidTypeCode, codeRules.acceptsFluidType);
+  const urineColorCode = interpretUrineColorCode(
+    parsed.urineColorCode,
+    codeRules.acceptsUrineColor,
+  );
 
   const effectiveDateTime = new Date(parsed.effectiveDateTime);
 
   return {
     id: parsed.id,
     code: parsed.code,
-    rawValueMl: parsed.valueQuantity.value,
-    unit: parsed.valueQuantity.unit,
+    // Passed through UNCHANGED when present, including a `null` the client
+    // sent — that is a malformed volume for Tier 1 to reject, not an absent
+    // one. `null` here means absent only because `hasVolume` says so.
+    rawValueMl: parsed.valueQuantity === undefined ? null : parsed.valueQuantity.value,
+    unit: parsed.valueQuantity === undefined ? null : parsed.valueQuantity.unit,
+    hasVolume,
+    urineColorCode,
     // Safe to construct: the zod layer already pinned the lexical form to
     // RFC 3339 with exactly three fractional digits and a `Z` offset (§7.3),
     // so this cannot be an Invalid Date.
@@ -196,6 +263,27 @@ function interpretFluidTypeCode(raw: unknown, acceptsFluidType: boolean): string
   return raw;
 }
 
+/**
+ * Mirrors `interpretFluidTypeCode` exactly, including the deliberate absence
+ * of any value-set membership check: members are retired-never-deleted and
+ * admin-managed, so validating against the live set would refuse a patient's
+ * entry the moment an admin retired a step a fielded app still offers. An
+ * unknown code renders as a generic label and is recoverable; a refused
+ * entry is not.
+ */
+function interpretUrineColorCode(raw: unknown, acceptsUrineColor: boolean): string | null {
+  if (raw === undefined || raw === null) return null;
+
+  if (!acceptsUrineColor || typeof raw !== 'string' || raw.length === 0 || raw.length > 64) {
+    throw payloadMalformed({
+      field: OBSERVATION_FIELD.URINE_COLOR_CODE,
+      reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
+    });
+  }
+
+  return raw;
+}
+
 function toCoreMeasurementSystem(raw: string): CoreMeasurementSystem | undefined {
   return (MEASUREMENT_SYSTEMS as readonly string[]).includes(raw)
     ? (raw as CoreMeasurementSystem)
@@ -222,6 +310,11 @@ const TIER1_FIELD: Readonly<Record<Tier1ReasonCode, ObservationRejectionField>> 
   [TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_MAGNITUDE]: OBSERVATION_FIELD.VALUE,
   [TIER1_RULE_CODE.VALUE_EXCEEDS_MAX_PRECISION]: OBSERVATION_FIELD.VALUE,
   [TIER1_RULE_CODE.METHOD_REQUIRED]: OBSERVATION_FIELD.METHOD,
+  // `method`, not the colour. The patient supplied a Measured/Estimated
+  // selection on an entry that records no amount; the actionable fix is to
+  // drop that selection, so that is the input a correction UI should
+  // highlight.
+  [TIER1_RULE_CODE.METHOD_NOT_APPLICABLE]: OBSERVATION_FIELD.METHOD,
   [TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_IN_FUTURE]: OBSERVATION_FIELD.EFFECTIVE_DATE_TIME,
   [TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_BEFORE_SURGERY]: OBSERVATION_FIELD.EFFECTIVE_DATE_TIME,
 };
@@ -320,13 +413,24 @@ export function toObservationResource(row: Observation): ObservationResource {
     id: row.id,
     status: STATUS_TO_WIRE[row.status],
     code: row.code,
-    valueQuantity: {
-      // `Decimal` -> `number`. DECIMAL(12,4) is nowhere near a double's
-      // exact-integer limit, and §7.3 keeps a clinical value a JSON number
-      // rather than a string.
-      value: row.valueQuantityValue.toNumber(),
-      unit: row.valueQuantityUnit as ObservationResource['valueQuantity']['unit'],
-    },
+    // OMITTED, never zero-filled, when the row has no volume — a
+    // colour-only voided-urine entry (AC 12.1 AC2). The wire says "this
+    // entry recorded no volume"; it must not say "this entry recorded 0 mL",
+    // which is a different clinical claim and would land in every daily
+    // total as a real void.
+    ...(row.valueQuantityValue === null || row.valueQuantityUnit === null
+      ? {}
+      : {
+          valueQuantity: {
+            // `Decimal` -> `number`. DECIMAL(12,4) is nowhere near a double's
+            // exact-integer limit, and §7.3 keeps a clinical value a JSON
+            // number rather than a string.
+            value: row.valueQuantityValue.toNumber(),
+            unit: row.valueQuantityUnit as NonNullable<
+              ObservationResource['valueQuantity']
+            >['unit'],
+          },
+        }),
     // `toISOString()` is RFC 3339, UTC, exactly three fractional digits —
     // the lexical form §7.3 pins.
     effectiveDateTime: row.effectiveDatetime.toISOString(),
@@ -337,6 +441,15 @@ export function toObservationResource(row: Observation): ObservationResource {
     // key and a null one would read the same to a human and differently to a
     // client, which is §7.2's own argument for `method`.
     fluidTypeCode: row.fluidTypeCode,
+    // Omitted when there is none, rather than sent as `null` — §7.2 defines
+    // this one as plain optional, where `fluidTypeCode` above is
+    // always-present-possibly-null, and `exactOptionalPropertyTypes` makes
+    // the difference a type error rather than a thing to remember.
+    //
+    // Publishing it is not cosmetic: on a colour-only entry it is the ONLY
+    // clinical content the row carries, so a response that drops it describes
+    // an observation that recorded nothing.
+    ...(row.urineColorCode === null ? {} : { urineColorCode: row.urineColorCode }),
     // `localDate` is deliberately absent: it is server-derived and not a
     // wire field (docs/sync-contract.md §7.2).
   };
@@ -358,12 +471,33 @@ export function toAuditSnapshot(row: Observation): Record<string, unknown> {
     patientId: row.patientId,
     resourceType: row.resourceType,
     code: row.code,
-    valueQuantityValue: row.valueQuantityValue.toNumber(),
+    // `null`, never 0, when the row carried no volume. This is an
+    // append-only audit record (ADR-0011): a snapshot claiming 0 mL for a
+    // colour-only entry would be a false clinical value that nothing can
+    // later correct.
+    valueQuantityValue: row.valueQuantityValue === null ? null : row.valueQuantityValue.toNumber(),
     valueQuantityUnit: row.valueQuantityUnit,
     effectiveDatetime: row.effectiveDatetime.toISOString(),
     method: row.method,
     status: row.status,
     enteredMeasurementSystem: row.enteredMeasurementSystem,
+    // The three coded/contextual columns this snapshot used to omit.
+    //
+    // `urineColorCode` is the load-bearing one and its absence was a real
+    // failure of CLAUDE.md's audit obligation, not an untidiness: on a
+    // colour-only entry it is the ONLY clinical content the row carries, so
+    // the snapshot recorded `valueQuantityValue: null`, `valueQuantityUnit:
+    // null` and nothing else — an audit trail structurally present and
+    // substantively empty. ADR-0017 makes this row the last surviving copy of
+    // a deleted entry, and it was preserving nothing.
+    //
+    // `enteredTimezone` and `localDate` travel with it because the audit row
+    // must say which DAY the entry was filed under (ADR-0016). The instant
+    // alone does not: it does not say where the patient was.
+    urineColorCode: row.urineColorCode,
+    fluidTypeCode: row.fluidTypeCode,
+    enteredTimezone: row.enteredTimezone,
+    localDate: row.localDate.toISOString().slice(0, 10),
     clientUpdatedAt: row.clientUpdatedAt.toISOString(),
     serverSequence: row.serverSequence.toString(),
     deletedAt: row.deletedAt === null ? null : row.deletedAt.toISOString(),

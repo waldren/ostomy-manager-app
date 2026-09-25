@@ -69,6 +69,15 @@ const CSS_PROPERTY_BY_TOKEN_PATH = {
   'color.error': 'color-error',
   'color.warning': 'color-warning',
   'color.success': 'color-success',
+  // Content colours rather than palette colours, and deliberately NOT in the
+  // contrast block below: a swatch depicting a urine shade is decoration
+  // beside a text label, so no ratio applies to it. See `tokens.ts`.
+  'urineColorSwatch.pale_straw': 'urine-pale-straw',
+  'urineColorSwatch.straw': 'urine-straw',
+  'urineColorSwatch.yellow': 'urine-yellow',
+  'urineColorSwatch.dark_yellow': 'urine-dark-yellow',
+  'urineColorSwatch.amber': 'urine-amber',
+  'urineColorSwatch.brown': 'urine-brown',
   'spacing.xs': 'space-xs',
   'spacing.sm': 'space-sm',
   'spacing.md': 'space-md',

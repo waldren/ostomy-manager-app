@@ -107,6 +107,79 @@ export const common = {
   'fluidType.soup_or_broth': 'Soup or broth',
   'fluidType.other': 'Something else',
 
+  // --- Voided urine (P3.S2, SRS §3.7, AC 12.1) --------------------------
+  'entry.urineHeading': 'Add a urine entry',
+  // AC 12.1 AC2 is the whole feature: a patient who cannot measure must
+  // still be able to record something. The label says the amount is optional
+  // BEFORE the field rather than after a rejected save, so nobody abandons
+  // the entry believing they cannot make one.
+  // Names the noun. "How much did you pass?" is ambiguous on exactly this
+  // screen: for an ostomy patient "pass" is what stool does, the verb appeared
+  // with no object, and the only thing disambiguating it was a heading two
+  // lines up — which a screen-reader user hearing the label alone does not
+  // have.
+  'entry.urineAmountLabel': 'How much urine did you pass? (optional)',
+  // Says the toggle is coming BEFORE it appears. It is inserted mid-form when
+  // an amount is typed, so without this a screen-reader user meets a required
+  // control that materialised behind them, after they have already read the
+  // form. `entry.stomaOutputAmountHint` does the same thing for the same
+  // reason.
+  'entry.urineAmountHint':
+    'Leave this blank if you did not measure it, and pick a colour below instead. If you do enter an amount, you will say next whether you measured it.',
+  // AC 12.1 AC3. "Optional" again, for the same reason — with the amount
+  // also optional, a patient must be able to see that ONE of the two is
+  // enough, which the hint below says outright.
+  'entry.urineColorLabel': 'What colour was your urine? (optional)',
+  // States the DIRECTION of the scale, which is the clinical content and was
+  // previously carried by the gradient alone. A sighted patient reads
+  // pale-to-dark off the swatches in one glance; a screen-reader user hears
+  // six names, and nothing in the words said which end was which.
+  'entry.urineColorHint':
+    'The list goes from lightest to darkest. Pick the closest match. Colour on its own is a useful entry, even with no amount.',
+  // POSITION only. The direction is already established twice before a user
+  // reaches option 1 — once in the label's own hint, once by the two ends
+  // naming themselves — so repeating "lightest to darkest" here spoke that
+  // phrase seven times in one control. Verbosity in a screen-reader flow is not
+  // neutral: it is what trains someone to swipe past a control before it
+  // finishes speaking, and this is the control they must not swipe past.
+  //
+  // React Native reports no position-in-set for a `ChoiceGroup`, which is why
+  // this channel exists at all.
+  'entry.urineColorStepHint': 'Step {{step}} of {{total}}.',
+  // The pale-to-dark urine colour scale (AC 12.1 AC3). Each step is named in
+  // words, because the swatch beside it is decorative and hidden from
+  // assistive technology — the words ARE the scale.
+  //
+  // The labels must also be ORDERABLE, not merely distinguishable, which is
+  // what the first version got wrong. This is a scale, and its direction is
+  // the clinical content ("darker is more concentrated"). Six unique names
+  // satisfy "announced distinguishably" while leaving a screen-reader user
+  // unable to tell which end is which — nothing in the words placed "Amber"
+  // against "Dark yellow". So the two ends say which ends they are, and the
+  // middle uses one comparative vocabulary throughout.
+  //
+  // "Amber" became "Orange-brown" for a reason that is not reading level: it
+  // scores fine and is a common word. It is the one name here a substantial
+  // share of adults cannot map to a shade without being shown one — which
+  // defeats the point of a name-based scale, whose whole job is to let someone
+  // who cannot see the swatch still choose.
+  'urineColor.pale_straw': 'Almost clear — lightest',
+  'urineColor.straw': 'Pale yellow',
+  'urineColor.yellow': 'Yellow',
+  // "Darker yellow", not "Dark yellow": at TalkBack's default rate the pair
+  // "Yellow" / "Dark yellow" is the one most at risk of being heard as the
+  // same option twice, and the comparative carries the ordering as well.
+  'urineColor.dark_yellow': 'Darker yellow',
+  'urineColor.amber': 'Orange-brown',
+  'urineColor.brown': 'Brown — darkest',
+  // Shown in place of Save until the entry records something. States the
+  // condition rather than scolding: an entry with neither an amount nor a
+  // colour records nothing at all, and the server refuses it.
+  // Action first, active voice, two short sentences. The previous version was
+  // one twelve-word sentence ending in the passive "can be saved", which is
+  // where a skimming reader drops off.
+  'entry.urineNothingToSave': 'Add an amount or pick a colour. Then you can save this entry.',
+
   // --- Meals (P3.S1, SRS AC 2.4) ----------------------------------------
   'entry.mealHeading': 'Add a meal',
   'entry.mealDescriptionLabel': 'What did you eat? (optional)',
@@ -142,6 +215,14 @@ export const common = {
   'entry.unknownOptionLabel': 'Another option',
   // The pickers have nothing to offer until the device has fetched the value
   // sets at least once. Says what is true rather than showing an empty box.
+  // Its own string, because the shared `entry.optionsUnavailable` ends "You can
+  // still save your entry without them" — true for the optional pickers on the
+  // intake and meal screens, and false here in the one way that matters. With
+  // no colour scale the amount-optional route is gone, so a patient who cannot
+  // measure can save nothing at all. Reachable by design: the value-set cache
+  // is unseeded until the first successful sync.
+  'entry.urineColorUnavailable':
+    'We could not load the colour choices yet. For now, you will need to enter an amount to save this entry.',
   'entry.optionsUnavailable':
     'We could not load the choices for this yet. You can still save your entry without them.',
 
