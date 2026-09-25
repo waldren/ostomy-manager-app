@@ -311,3 +311,111 @@ That entry is the same one created on the device in airplane mode for clause 1 �
 An emulator run, recorded as such. It closes **none** of HW-1..HW-10 in [`gate-b-hardware-verification.md`](gate-b-hardware-verification.md), and does not touch CLAUDE.md's "not verified on hardware" caveat. The AVD reports `hardware_keystore` but never `strongbox_keystore` — KeyMint in software.
 
 Two defects found during the runs remain open and were **not** fixed by passing the gate: #59 (the sync worker's first cycle after cold start still runs with no token, and clauses only passed because a manual foreground produced an authenticated one) and #40.
+
+---
+
+## Run 5 — sign-in on a device, after ADR-0021 (2026-09-25)
+
+Not a Gate B run. A single-purpose walkthrough recording the fix for **#72**,
+because a green test suite was consistent with sign-in being **entirely broken on
+Android** and could not be the evidence.
+
+### What was broken
+
+Tap Sign in, authorize at the provider, and the app returned to the **login
+screen** with no session and no message. Reproduced by hand by the repo owner and
+under automation, on a clean `wipe`.
+
+The authorization half always worked — the provider issued a code and redirected.
+`adb logcat`:
+
+```
+START u0 {act=VIEW cat=[BROWSABLE] dat=ostomydiary://redirect/...
+          cmp=org.ostomy.diary/.MainActivity} with LAUNCH_SINGLE_TASK
+          result code=2
+```
+
+`result code=2` is `START_TASK_TO_FRONT`. The redirect resolves to
+`MainActivity` — the only component owning the `ostomydiary` BROWSABLE filter —
+and `singleTask` brings its task forward, tearing down the Custom Tab.
+`BrowserProxyActivity`, which is what resolves `promptAsync()`, is never the
+target. The hook awaiting that promise never saw success.
+
+### Three defects, found in this order, each hiding the next
+
+**1. The completer was in the wrong place.** Fixed by ADR-0021: the redirect
+route reads the code from its own params and exchanges it. `result code=2` still
+appears in the log after the fix — the fix works *with* the platform's behaviour
+rather than changing it, which is why no native config changed.
+
+**2. The route navigated away before it could finish.** My own bug, and only a
+device showed it. `<Redirect href="/" />` rendered unconditionally, so the route
+unmounted before `useAutoDiscovery`'s async fetch resolved. Instrumented trace:
+
+```
+[T72] effect discovery= NULL params= {"code":"aU6Buk-…","state":"yxDDZOrkW7"}
+```
+
+The code and state arrived correctly and were dropped on the floor. The route now
+holds — rendering a "Finishing sign in" screen — and redirects only once the work
+is done.
+
+**3. `completeLogin` cannot store a refresh token on a device with no biometric
+enrolment.** Not #72, and not introduced by this change:
+
+```
+[T72] EXCHANGE FAILED: 'ExpoSecureStore.setValueWithKeyAsync' has been rejected.
+→ Caused by: Could not Authenticate the user: No biometrics are currently enrolled
+```
+
+That is `setRefreshToken` with ADR-0015's `requireAuthentication: true`. The
+exchange had already succeeded. Enrolling a fingerprint
+(`android-emulator.sh fingerprint`) let sign-in complete. **A patient whose phone
+has no enrolled biometric appears unable to sign in at all** — filed separately;
+see below.
+
+### The result
+
+| Step | Observed |
+| ---- | -------- |
+| Tap Sign in | Chrome Custom Tab opens on `localhost:8090`, hostname preserved by `adb reverse` so `iss` matches |
+| Submit `gate-b-patient-1` | Provider redirects to `ostomydiary://redirect` |
+| Redirect | Route holds, reads `code` + `state`, verifies state, exchanges |
+| `completeLogin` | OS biometric sheet; `emu finger touch 1` |
+| Landing | **"You are signed in"**, with Add a stoma entry / Add a drink / **Add a urine entry** / Add a meal |
+
+P3.S2's Add Urine button rendering on a device is the first time any of that
+sprint has been seen outside jest.
+
+The session is real, not local: **20 × `"statusCode":200`** from `apps/api` in the
+three minutes after landing. (Also one `403`, consistent with #59's
+unauthenticated first sync cycle.)
+
+### The failure path was verified too, before the fix was complete
+
+While the exchange was still failing, the login screen rendered *"We could not
+sign you in. Please try again."* with a Try again button — proving the other half
+of ADR-0021 on the device: a failure reported from the redirect route **survives
+the remount** that route's own navigation causes. Before this change that message
+was written to `login.tsx`'s local state and discarded in the same moment, which
+is why #72 presented as "the screen flashes".
+
+### What this does not prove
+
+An emulator run, recorded as such. It closes **none** of HW-1..HW-10 and does not
+touch CLAUDE.md's "not verified on hardware" caveat — the AVD reports
+`hardware_keystore` and never `strongbox_keystore`.
+
+It also says nothing about TalkBack. #65 is now **reachable** — Add Urine can be
+opened on a device for the first time — but not done.
+
+### Opened by this run
+
+- The no-biometric-enrolment sign-in block (finding 3), which is a product
+  question about ADR-0015, not an emulator artifact.
+- A spec file placed in `apps/mobile/app/` becomes a **route**: Expo Router
+  enumerates that directory with `require.context`, so the spec pulled
+  `@testing-library/react-native` into the app bundle and the bundle stopped
+  loading, with an error naming neither the file nor the reason. Every other
+  mobile spec already lives under `src/`; the redirect route's spec is now
+  `src/auth/redirectRoute.spec.tsx`.

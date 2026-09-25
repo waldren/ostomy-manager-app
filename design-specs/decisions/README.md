@@ -39,10 +39,13 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0018](0018-estimation-method-snomed-code.md) | The Measured/Estimated toggle is an explicit SNOMED qualifier both ways: 414135002 estimated, 258104002 measured | Accepted (amended 2026-09-18) |
 | [0019](0019-clock-skew-allowance.md) | A synced operation's clientTimestamp may run five minutes ahead before it is refused | Accepted |
 | [0020](0020-android-only-v1.md) | Ship v1's mobile client on Android only; iOS is deferred, not dropped | Accepted |
+| [0021](0021-redirect-route-completes-oidc-flow.md) | The redirect route completes the OIDC code exchange; the PKCE verifier is stored without ADR-0015's biometric gate | Accepted |
 
 **ADR-0012 completes ADR-0005** rather than superseding it. ADR-0005's decisions all stand; it simply had no source of truth for the entry measurement system, and ADR-0012 supplies one. ADR-0005 is not edited, per the immutability rule above.
 
 **ADR-0020 narrows ADR-0014** rather than superseding it. ADR-0014's reasoning stands in full for the platform it was written about; the iOS backup gap it recorded is closed by removing that platform, not by implementing the exclusion. ADR-0014 is not edited, per the immutability rule above.
+
+**ADR-0021 narrows ADR-0015.** The biometric gate ADR-0015 places on stored auth secrets does not extend to the short-lived PKCE verifier: that value is read while a session is being established, when there is no enrolled identity to authenticate against, so gating it would deadlock the flow it exists to complete. ADR-0015 is not edited, per the immutability rule above. Keychain accessibility and device binding are unchanged — the narrowing is to the biometric gate alone.
 
 **ADR-0020 changed the spec.** SRS_v2 was updated to v2.6 in the same change: §2 Cross-Platform Availability and §4.2 now name Android for v1, with iOS deferred.
 

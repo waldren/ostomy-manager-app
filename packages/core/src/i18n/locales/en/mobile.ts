@@ -73,6 +73,12 @@ export const mobile = {
     'We could not unlock your diary. Try again, or use your phone passcode.',
   'login.unlockRetryButton': 'Try unlocking again',
   'login.cancelledBody': 'Sign in was cancelled. Tap Sign in when you are ready.',
+  // The redirect route's waiting state (ADR-0021). It holds while the code is
+  // exchanged, because navigating away is what previously stopped the flow
+  // completing at all — so there is a moment the patient waits, and it says so
+  // rather than showing a blank screen or, for a screen-reader user, silence.
+  'login.completingHeading': 'Finishing sign in',
+  'login.completingBody': 'Just a moment while we finish signing you in.',
   'login.offlineBody':
     'You are not connected to the internet. Signing in needs a connection. Try again when you have Wi-Fi or mobile data.',
   'home.title': 'Home',

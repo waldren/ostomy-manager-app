@@ -66,6 +66,25 @@ import {
  */
 export interface AuthContextValue {
   readonly phase: AuthPhase;
+  /**
+   * Whether the last sign-in attempt failed, surviving a remount of the screen
+   * that started it (ADR-0021).
+   *
+   * It lives here rather than in `app/login.tsx`'s `useState` because the OIDC
+   * redirect NAVIGATES — `/redirect` -> `/` -> `/login` — and that remounts the
+   * login screen, discarding any failure it had set. That is the whole reason
+   * #72 read as "the screen flashes and goes back to sign in": the message was
+   * written and then thrown away, in the same moment, by the navigation the
+   * redirect itself caused.
+   *
+   * Any outcome of an OIDC round trip has that problem, not just this one, so
+   * the state belongs above the route.
+   */
+  readonly signInFailed: boolean;
+  /** Records that a sign-in attempt failed. Called by `app/redirect.tsx`, which cannot render the message itself. */
+  readonly reportSignInFailure: () => void;
+  /** Clears it, when a fresh attempt starts. */
+  readonly clearSignInFailure: () => void;
   readonly accessToken: string | undefined;
   /** Runs the biometric/passcode prompt and, on success, transitions to `authenticated` — see this file's header comment for what a concurrent refresh failure does and does not affect. */
   readonly unlock: () => Promise<BiometricUnlockOutcome>;
@@ -103,6 +122,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const [phase, setPhase] = useState<AuthPhase>('checking');
+  const [signInFailed, setSignInFailed] = useState(false);
   const [accessToken, setAccessToken] = useState<string | undefined>(undefined);
   const lastActivityAt = useRef(Date.now());
   const backgroundedAt = useRef(0);
@@ -255,10 +275,22 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       }
       setAccessToken(tokens.accessToken);
       markActivity();
+      // A success clears any earlier failure here, not in the login screen: on
+      // the path this exists for, that screen is about to mount fresh and would
+      // otherwise render a stale error over a completed sign-in.
+      setSignInFailed(false);
       setPhase('authenticated');
     },
     [markActivity],
   );
+
+  const reportSignInFailure = useCallback(() => {
+    setSignInFailed(true);
+  }, []);
+
+  const clearSignInFailure = useCallback(() => {
+    setSignInFailed(false);
+  }, []);
 
   const unlock = useCallback(async (): Promise<BiometricUnlockOutcome> => {
     // `expo-local-authentication`'s `promptMessage` is rendered by the
@@ -403,8 +435,28 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   }, [discovery, config]);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ phase, accessToken, unlock, completeLogin, signOut, markActivity }),
-    [phase, accessToken, unlock, completeLogin, signOut, markActivity],
+    () => ({
+      phase,
+      accessToken,
+      unlock,
+      completeLogin,
+      signOut,
+      markActivity,
+      signInFailed,
+      reportSignInFailure,
+      clearSignInFailure,
+    }),
+    [
+      phase,
+      accessToken,
+      unlock,
+      completeLogin,
+      signOut,
+      markActivity,
+      signInFailed,
+      reportSignInFailure,
+      clearSignInFailure,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

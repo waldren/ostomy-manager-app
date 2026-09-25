@@ -101,6 +101,82 @@ export function extractAuthorizationCode(
   };
 }
 
+/**
+ * Why the redirect's own query string is the authoritative source of the
+ * code, and `promptAsync()` is not (ADR-0021).
+ *
+ * On Android the authorization server's redirect to `ostomydiary://redirect`
+ * is resolved by `MainActivity` — the only component declaring that scheme's
+ * BROWSABLE filter — and `launchMode="singleTask"` brings its existing task
+ * to the front (`START_TASK_TO_FRONT`), tearing down the Custom Tab.
+ * `expo-web-browser`'s `BrowserProxyActivity`, which is what resolves
+ * `promptAsync()`, is never the target, so that promise does not report the
+ * success it is waiting for. Sign-in could not complete at all (#72).
+ *
+ * The code was never lost: it arrives in the deep link, which Expo Router
+ * hands to `app/redirect.tsx` as ordinary route params. So the completer reads
+ * it from there, which works whichever component the platform happens to
+ * resolve the redirect to — and needs no change to the native manifest,
+ * whose `singleTask` mode is load-bearing for every other deep link.
+ */
+export type AuthorizationCallbackOutcome =
+  | { readonly kind: 'authorization'; readonly authorization: AuthorizationCodeResult }
+  /** The provider reported a failure in the redirect itself (RFC 6749 §4.1.2.1). */
+  | { readonly kind: 'provider-error' }
+  /** No request was in flight, or its `state` does not match. */
+  | { readonly kind: 'unexpected' }
+  /** Nothing actionable in the URL — the route was reached some other way. */
+  | { readonly kind: 'not-a-callback' };
+
+/**
+ * Reads an authorization code out of the redirect's parameters, checking it
+ * against the request that was actually issued.
+ *
+ * Plain and synchronous so it can be tested without a device: the persistence
+ * and the token call are the caller's, and this is the part that decides
+ * whether a given URL is a callback this app asked for.
+ *
+ * **`state` is verified here and the result is refused if it disagrees.** A
+ * completer driven by a URL is reachable by anything that can open a link with
+ * this app's scheme, so without that check it would exchange a code an
+ * attacker chose — the CSRF that `state` exists for (RFC 6749 §10.12). A
+ * mismatch is `unexpected`, never silently retried.
+ */
+export function readAuthorizationCallback(
+  params: Readonly<Record<string, string | string[] | undefined>>,
+  pending:
+    | { readonly codeVerifier: string; readonly state: string; readonly redirectUri: string }
+    | undefined,
+): AuthorizationCallbackOutcome {
+  // Expo Router types a repeated query parameter as an array. A provider does
+  // not send one, so the array form is treated as absent rather than having
+  // its first element picked: guessing which of two values to trust is how a
+  // parameter-pollution bug starts.
+  const single = (value: string | string[] | undefined): string | undefined =>
+    typeof value === 'string' ? value : undefined;
+
+  const error = single(params.error);
+  const code = single(params.code);
+  const state = single(params.state);
+
+  if (error !== undefined) return { kind: 'provider-error' };
+  if (code === undefined) return { kind: 'not-a-callback' };
+  // From here the URL claims to be a callback, so every remaining failure is
+  // reported rather than ignored — a code this app cannot safely exchange is a
+  // sign-in that failed, and the patient has to be told.
+  if (pending === undefined) return { kind: 'unexpected' };
+  if (state === undefined || state !== pending.state) return { kind: 'unexpected' };
+
+  return {
+    kind: 'authorization',
+    authorization: {
+      code,
+      redirectUri: pending.redirectUri,
+      codeVerifier: pending.codeVerifier,
+    },
+  };
+}
+
 export async function exchangeAuthorizationCode(
   discovery: AuthSession.DiscoveryDocument,
   config: OidcClientConfig,
