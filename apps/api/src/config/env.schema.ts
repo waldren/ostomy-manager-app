@@ -118,6 +118,19 @@ const corsAllowedOrigins = z
 
 export const rawEnvSchema = z.object({
   nodeEnv: z.enum(['development', 'test', 'production']).default('development'),
+  /**
+   * The commit this image was built from, stamped in at build time.
+   *
+   * Exists so "what is actually running" is answerable without shell access to
+   * the host. #76: the development stack sat three merges behind `main` with
+   * nothing surfacing it, because the only way to tell was to inspect the
+   * container by hand — and a deploy that never ran looks exactly like one that
+   * did.
+   *
+   * Optional, and absent is a legitimate state: a locally-run `pnpm start` has
+   * no build step to stamp it. `/health` reports `null` rather than pretending.
+   */
+  buildCommit: z.string().trim().min(1).optional(),
   port: z.coerce.number().int().positive().default(3000),
   logLevel: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 

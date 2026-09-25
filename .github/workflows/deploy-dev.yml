@@ -1,4 +1,4 @@
-name: Deploy dev
+name: Deploy dev (disabled — no runner, see #76)
 
 # Targets the self-hosted runner on the on-premise dev host
 # (docs/deployment-development.md "Deployment pipeline"). This workflow
@@ -20,9 +20,25 @@ name: Deploy dev
 # group (CLAUDE.md, docs/deployment-development.md "Runner operational
 # notes").
 
+# DISABLED: `workflow_dispatch` only, not `push: main` (#76).
+#
+# There is no self-hosted runner registered for this repository
+# (`gh api repos/.../actions/runners` returns `total_count: 0`), so every job
+# this workflow queued waited forever. Three merges landed that way while the
+# development stack served pre-merge code, and **a queued-forever job is
+# indistinguishable from a slow one on the PR page** — which is precisely why
+# nobody noticed.
+#
+# Leaving the `push` trigger in place would keep manufacturing that false
+# signal. Removing it makes the absence honest: nothing claims to deploy, and
+# `docs/deployment-development.md` "Deploying by hand" says what to do instead.
+#
+# The file is kept, not deleted, because the sequence below is correct and is
+# what the manual procedure reproduces — build, tag, migrate, deploy,
+# health-check, prune, in that order. Restore the `push: main` trigger in the
+# same change that registers a runner, and delete this comment with it.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   # One deploy at a time: two concurrent `docker compose up` runs against the
