@@ -38,10 +38,19 @@ type LoginFailure = 'signIn' | 'unlock' | 'cancelled' | 'unavailable';
  * two pre-authenticated phases that exist.
  */
 export default function Login(): React.JSX.Element {
-  const { phase, unlock, completeLogin } = useAuth();
+  const { phase, unlock, signInFailed, clearSignInFailure } = useAuth();
   const { t } = useTranslation('mobile');
   const { isReady, login } = useOidcLogin();
-  const [failure, setFailure] = useState<LoginFailure | undefined>(undefined);
+  /**
+   * Failures this screen owns end to end: a biometric unlock that failed, a
+   * browser the patient dismissed, discovery that never resolved.
+   *
+   * A failed OIDC **exchange** is deliberately not here. That outcome is
+   * decided in `app/redirect.tsx` after a navigation that remounts this
+   * component, so state set there cannot be read here — it lives on
+   * `AuthContext` as `signInFailed` and is merged in below. See ADR-0021.
+   */
+  const [localFailure, setLocalFailure] = useState<LoginFailure | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState<boolean | undefined>(undefined);
 
@@ -56,6 +65,10 @@ export default function Login(): React.JSX.Element {
     };
   }, [phase]);
 
+  // The context's flag wins when set, because it describes an attempt that
+  // actually reached the provider — strictly more informative than anything
+  // this mount could know, since this mount did not start it.
+  const failure: LoginFailure | undefined = signInFailed ? 'signIn' : localFailure;
   const message = failure ? FAILURE_COPY_KEY[failure] : undefined;
 
   /*
@@ -71,35 +84,45 @@ export default function Login(): React.JSX.Element {
   }, [message, t]);
 
   const handleSignIn = useCallback(async () => {
-    setFailure(undefined);
+    setLocalFailure(undefined);
+    // Cleared here too: a previous attempt's failure must not be shown over a
+    // fresh one still in progress, and this is the only place a fresh one
+    // starts.
+    clearSignInFailure();
     setBusy(true);
     try {
-      const tokens = await login();
-      if (tokens) {
-        await completeLogin(tokens);
-      } else {
-        // `login()` resolves undefined when discovery is unavailable or the
-        // patient dismissed the browser. Previously this set nothing at
-        // all: the button appeared to do nothing, forever, with no error
-        // and no announcement, and the patient tapped it repeatedly.
-        setFailure(isReady ? 'cancelled' : 'unavailable');
+      // `login()` LAUNCHES the flow; it does not complete it (ADR-0021).
+      // `app/redirect.tsx` performs the exchange and calls `completeLogin`,
+      // because on Android the redirect only ever arrives as a deep link (#72).
+      const outcome = await login();
+      if (outcome === 'unavailable') {
+        setLocalFailure('unavailable');
+      } else if (outcome === 'dismissed') {
+        // The browser closed with no redirect following it — the patient
+        // pressed Back or cancelled at the provider. Without this the screen
+        // would wait on a completion that is never coming.
+        setLocalFailure('cancelled');
       }
+      // `launched` deliberately sets nothing. The redirect route decides the
+      // outcome, and this component is about to be remounted by its
+      // navigation — which is exactly why the failure it may report lives on
+      // the context rather than here.
     } catch {
       // Never log the error: it may embed a query string carrying an
       // authorization code or provider-side detail, and this app has no
       // sanctioned diagnostic sink for auth failures.
-      setFailure('signIn');
+      setLocalFailure('signIn');
     } finally {
       setBusy(false);
     }
-  }, [login, completeLogin, isReady]);
+  }, [login, clearSignInFailure]);
 
   const handleUnlock = useCallback(async () => {
-    setFailure(undefined);
+    setLocalFailure(undefined);
     setBusy(true);
     try {
       const outcome = await unlock();
-      if (outcome.outcome === 'failed') setFailure('unlock');
+      if (outcome.outcome === 'failed') setLocalFailure('unlock');
     } finally {
       setBusy(false);
     }
