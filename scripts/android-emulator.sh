@@ -264,6 +264,26 @@ warn() { printf '  WARN    %s\n' "$*"; }
 bad()  { printf '  MISSING %s\n' "$*"; }
 step() { printf '==> %s\n' "$*"; }
 
+# The bundle is the one thing `adb reverse` cannot redirect.
+#
+# Everything else this script forwards — the API on 3000, mock-oidc on 8090 —
+# the app requests as `localhost`, so the device-side listener `adb reverse`
+# installs picks it up. The React Native dev client does not: on an emulator
+# `AndroidInfoHelpers.getServerHost()` returns **10.0.2.2**, the QEMU alias for
+# the host's loopback, which the emulator's own network stack resolves. adb is
+# not in that path at all, so `reverse tcp:8081 tcp:8082` has no effect on it.
+#
+# This script used to advise exactly that, and it cannot work: the device asks
+# 10.0.2.2:8081, reaches host 8081, and gets whatever is published there — the
+# admin SPA, which answers 200 with HTML that is not a bundle. Verified by
+# logcat (`A connection to http://10.0.2.2:8081/ was leaked`) and by the bundle
+# only loading once Metro held host 8081.
+#
+# So Metro needs host 8081 itself, which means stopping the admin container.
+# The alternative is setting the dev client's `debug_http_host` preference to
+# `localhost:8081` per install, which is per-device state no script should be
+# silently writing.
+
 # --- doctor -------------------------------------------------------------------
 
 cmd_doctor() {
@@ -271,6 +291,18 @@ cmd_doctor() {
 
   step "Android SDK"
   ok "SDK at ${SDK}"
+  # This script finds the SDK for itself, so every emulator command works
+  # without it — but Gradle does not, and it fails at CONFIGURE time with
+  # "SDK location not found", naming a `local.properties` that does not exist
+  # rather than the variable it actually wants. `android/` is generated build
+  # output, so writing that file is not a durable fix; exporting is.
+  #
+  # Reported the same way as the JDK below, because the failure looks identical
+  # to a broken checkout and cost a session's build cycle to diagnose.
+  if [[ -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
+    warn "neither ANDROID_HOME nor ANDROID_SDK_ROOT is set. Gradle needs one. Export this before building:"
+    warn "           export ANDROID_HOME=\"${SDK}\""
+  fi
   [[ -x "${ADB}" ]] && ok "adb" || { bad "platform-tools/adb"; failures=$((failures + 1)); }
   [[ -x "${EMULATOR}" ]] && ok "emulator" || { bad "emulator"; failures=$((failures + 1)); }
 
@@ -623,9 +655,10 @@ cmd_wire() {
   # cannot find the bundler.
   if lsof -i ":8081" >/dev/null 2>&1 || netstat -an 2>/dev/null | grep -qE '[.:]8081[[:space:]]+.*LISTEN'; then
     warn "host port 8081 is in use (the admin SPA publishes it)."
-    warn "         Start Metro on another port and forward that one:"
-    warn "           pnpm --filter @ostomy/mobile start --port 8082"
-    warn "           ${ADB##*/} -s ${EMULATOR_SERIAL} reverse tcp:8082 tcp:8082"
+    warn "         Metro MUST have host 8081. Stop the admin container first:"
+    warn "           docker stop ostomy-dev-admin"
+    warn "           pnpm --filter @ostomy/mobile start --port 8081"
+    warn "         (restart it afterwards: docker start ostomy-dev-admin)"
   fi
 }
 
