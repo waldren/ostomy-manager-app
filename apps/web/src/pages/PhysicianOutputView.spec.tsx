@@ -388,8 +388,12 @@ describe('PhysicianOutputView — voided urine (SRS §3.7)', () => {
 
     render(<PhysicianOutputView />);
 
+    // Anchored on the clause unique to `table.noOutput`. The leading sentence
+    // is shared with `netBalance.outputMissing`, so the shorter query passes
+    // only because a urine-only day renders `noInputs` instead — a day with
+    // intake AND urine would match twice and throw.
     expect(
-      await screen.findByText(/no stoma output was recorded for this day/i),
+      await screen.findByText(/the other entries for this day are shown above/i),
     ).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(screen.queryByText(/^0 mL$/)).not.toBeInTheDocument();

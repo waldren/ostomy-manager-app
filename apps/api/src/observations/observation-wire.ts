@@ -101,6 +101,12 @@ export interface AcceptedObservationCode {
   readonly canonicalUnit: 'mL' | 'kg';
   /** Whether the mandatory Measured/Estimated toggle applies (SRS §3.1). */
   readonly volumetric: boolean;
+  // Read by `interpretObservationPayload`, which passes
+  // `volumetric && hasVolume` to `resolveMethodForEntry`. It was declared and
+  // unread until P3.S2's review found that: with only volumetric codes
+  // accepted, "the toggle applies" and "a number was supplied" are the same
+  // question, and a resolution keyed on the second alone would store
+  // `258104002` on the first weight row P6 writes.
   /**
    * Whether `fluidTypeCode` is meaningful for this code. AC 2.3 AC1 makes the
    * categorisation optional ON INTAKE and meaningless everywhere else, so a

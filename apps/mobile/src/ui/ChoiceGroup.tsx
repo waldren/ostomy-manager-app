@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { tokens } from '@ostomy/ui/tokens';
 import { useId } from 'react';
-import { PixelRatio, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 /**
  * The selected-option glyph.
@@ -103,6 +103,29 @@ export function ChoiceGroup<TValue extends string>({
   const errorId = useId();
   const invalid = errorMessage !== undefined;
 
+  /**
+   * The swatch size, recomputed on every OS text-size change.
+   *
+   * `useWindowDimensions().fontScale` is reactive; `PixelRatio.getFontScale()`
+   * read at module load is not — an Android font-scale change recreates the
+   * activity but keeps the JS runtime, so a module-level constant goes stale
+   * until the app is force-killed. That is exactly the patient who just
+   * changed the setting, reading larger labels beside an unchanged swatch.
+   *
+   * Starts from `xl` (24) rather than `md` (12), because the urine scale's
+   * adjacent steps differ by as little as 1.09:1 and at 12dp the four palest
+   * were indistinguishable to anyone — least of all to a population whose
+   * age-related lens yellowing degrades exactly the blue/yellow axis those
+   * steps live on. The swatch is the MATCHING affordance: the patient looks at
+   * what they passed and matches it.
+   *
+   * No success criterion sets a minimum size for a decorative graphic, but
+   * SRS §5.4's scalable-text and this-population clauses both bear on it. The
+   * `max` floor keeps it from shrinking when the OS setting is below 1.
+   */
+  const { fontScale } = useWindowDimensions();
+  const swatchSize = Math.max(tokens.spacing.xl, tokens.spacing.xl * fontScale);
+
   return (
     <View style={styles.container}>
       <Text nativeID={labelId} style={styles.label}>
@@ -116,7 +139,12 @@ export function ChoiceGroup<TValue extends string>({
 
       <View
         role="radiogroup"
-        accessibilityLabel={label}
+        // No `accessibilityLabel` here. `aria-labelledby` and the visible label
+        // `Text` already name the group, so it added nothing — and on Android a
+        // `ViewGroup` carrying a `contentDescription` can become a single
+        // accessibility-focus target that COLLAPSES its children, which would
+        // make every option in this control unreachable. A JS-tree query like
+        // `getAllByRole('radio')` cannot see that either way (see #65).
         aria-labelledby={labelId}
         aria-describedby={hint === undefined ? undefined : hintId}
         accessibilityHint={hint}
@@ -153,7 +181,11 @@ export function ChoiceGroup<TValue extends string>({
                 <View
                   accessible={false}
                   importantForAccessibility="no"
-                  style={[styles.swatch, { backgroundColor: choice.swatchColor }]}
+                  style={[
+                    styles.swatch,
+                    { width: swatchSize, height: swatchSize },
+                    { backgroundColor: choice.swatchColor },
+                  ]}
                 />
               )}
               <Text style={[styles.optionLabel, selected ? styles.optionLabelSelected : undefined]}>
@@ -172,13 +204,6 @@ export function ChoiceGroup<TValue extends string>({
     </View>
   );
 }
-
-/**
- * Computed once at module load, like every other token-derived measure here.
- * `PixelRatio.getFontScale()` is the user's OS text-size setting; the `max`
- * keeps it from shrinking below the base when that setting is below 1.
- */
-const SWATCH_SIZE = Math.max(tokens.spacing.xl, tokens.spacing.xl * PixelRatio.getFontScale());
 
 const styles = StyleSheet.create({
   container: { gap: tokens.spacing.xs },
@@ -200,20 +225,8 @@ const styles = StyleSheet.create({
   // is a clinical distinction the patient can no longer read.
   options: { flexDirection: 'row', flexWrap: 'wrap', gap: tokens.spacing.sm },
   swatch: {
-    // Scales with the OS text size, and starts from `xl` rather than `md`.
-    //
-    // At a fixed 12dp the four palest steps of the urine scale are
-    // indistinguishable to anyone — adjacent-pair contrast runs 1.09:1 to
-    // 1.47:1 — and this population's age-related lens yellowing degrades
-    // exactly the blue/yellow axis the scale lives on. Meanwhile at Android's
-    // largest font scale the label reached ~32px beside a 12px square.
-    //
-    // The swatch is the MATCHING affordance: the patient looks at what they
-    // passed and matches it. No success criterion sets a minimum size for a
-    // decorative graphic, but SRS §5.4's scalable-text and this-population
-    // clauses both bear on it.
-    width: SWATCH_SIZE,
-    height: SWATCH_SIZE,
+    // Size comes from `swatchSize` at render time, not from here — see the
+    // component. Only the fill and the border live in the stylesheet.
     borderRadius: tokens.radius.sm,
     borderWidth: 1,
     borderColor: tokens.color.border,

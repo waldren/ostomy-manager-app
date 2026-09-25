@@ -136,10 +136,16 @@ export const common = {
   // six names, and nothing in the words said which end was which.
   'entry.urineColorHint':
     'The list goes from lightest to darkest. Pick the closest match. Colour on its own is a useful entry, even with no amount.',
-  // Belt to the labels' braces. A hint can be switched off in TalkBack, so
-  // the ordering words live in the labels too — this adds the position, which
-  // React Native does not report for this control.
-  'entry.urineColorStepHint': 'Step {{step}} of {{total}}, lightest to darkest.',
+  // POSITION only. The direction is already established twice before a user
+  // reaches option 1 — once in the label's own hint, once by the two ends
+  // naming themselves — so repeating "lightest to darkest" here spoke that
+  // phrase seven times in one control. Verbosity in a screen-reader flow is not
+  // neutral: it is what trains someone to swipe past a control before it
+  // finishes speaking, and this is the control they must not swipe past.
+  //
+  // React Native reports no position-in-set for a `ChoiceGroup`, which is why
+  // this channel exists at all.
+  'entry.urineColorStepHint': 'Step {{step}} of {{total}}.',
   // The pale-to-dark urine colour scale (AC 12.1 AC3). Each step is named in
   // words, because the swatch beside it is decorative and hidden from
   // assistive technology — the words ARE the scale.

@@ -129,21 +129,42 @@ export function interpretMethodWireValue(raw: unknown): MethodWireInterpretation
  * Settles wire `null` against the volume, which is the only thing that
  * disambiguates it.
  *
- * Called once, by `interpretObservationPayload`, immediately after
- * `hasVolume` is known — so every consumer downstream reads an
- * already-resolved interpretation and neither `toMeasuredOrEstimated` nor
- * `toStoredMethod` has to take a second argument it might be passed wrongly.
+ * Called once, by `interpretObservationPayload`, immediately after both facts
+ * are known — so every consumer downstream reads an already-resolved
+ * interpretation and neither `toMeasuredOrEstimated` nor `toStoredMethod` has
+ * to take a second argument it might be passed wrongly.
  *
  * Only the implicit `measured` reading moves. An explicit qualifier is left
  * exactly as sent, so `METHOD_NOT_APPLICABLE` still fires on a client that
  * asserts a measurement technique for a number it did not supply.
+ *
+ * ## `toggleApplies`, not `hasVolume`
+ *
+ * The two are equivalent for every code this release accepts, and they stop
+ * being equivalent at P6. Body weight (`29463-7`) carries a `valueQuantity` in
+ * kg and no toggle — CLAUDE.md: the toggle "applies to volumetric entries
+ * only, since a weight is read off a scale" — and `apps/mobile`'s
+ * `enqueueWeightOrHeartRateObservationCreate` already sends exactly that shape
+ * today: a value, and `method: null`.
+ *
+ * Keyed on `hasVolume`, that payload would resolve to `measured` and store
+ * `258104002` on a weight row. CHECK 4 is satisfied (a value is present),
+ * nothing raises, and both CLAUDE.md's "`method` left unpopulated" and
+ * ADR-0018's single meaning for `null` at rest become quietly false — visible
+ * only in a FHIR export, long after the rows are written and with no way to
+ * tell a wrongly-defaulted row from a deliberate answer.
+ *
+ * So the caller passes `AcceptedObservationCode.volumetric && hasVolume`. That
+ * flag's own doc comment already says it "is what decides whether the
+ * Measured/Estimated toggle applies", and until now nothing in `apps/api` read
+ * it.
  */
 export function resolveMethodForEntry(
   interpretation: MethodWireInterpretation,
-  hasVolume: boolean,
+  toggleApplies: boolean,
   wireValueWasNull: boolean,
 ): MethodWireInterpretation {
-  if (hasVolume) return interpretation;
+  if (toggleApplies) return interpretation;
   if (interpretation.kind === 'measured' && wireValueWasNull) {
     return { kind: 'no-toggle' };
   }

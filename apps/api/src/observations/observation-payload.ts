@@ -163,12 +163,21 @@ export function interpretObservationPayload(
     });
   }
 
-  // Settled against the volume, because wire `null` means "measured" on an
-  // entry that has one and "no toggle applies" on one that does not — and
-  // §7.2 gives a client no other way to say the latter. See
-  // `resolveMethodForEntry`.
+  // Settled against whether the toggle APPLIES, because wire `null` means
+  // "measured" where it does and "no toggle applies" where it does not — and
+  // §7.2 gives a client no other way to say the latter.
+  //
+  // Two conditions, not one. `codeRules.volumetric` is whether this KIND of
+  // observation has a toggle at all (a weight does not), and `hasVolume` is
+  // whether this particular payload supplied a number. They are equivalent for
+  // every code this release accepts and diverge at P6 — see
+  // `resolveMethodForEntry` for the row a weight would otherwise write.
   const hasVolume = parsed.valueQuantity !== undefined;
-  const method = resolveMethodForEntry(rawMethod, hasVolume, parsed.method === null);
+  const method = resolveMethodForEntry(
+    rawMethod,
+    codeRules.volumetric && hasVolume,
+    parsed.method === null,
+  );
 
   const enteredMeasurementSystem = toCoreMeasurementSystem(parsed.enteredMeasurementSystem);
   if (enteredMeasurementSystem === undefined) {

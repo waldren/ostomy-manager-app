@@ -64,7 +64,7 @@ export const web = {
   // `emptyState.*`, which is a day with nothing at all, and it points upward
   // rather than leaving a reader to conclude the load failed.
   'physicianView.table.noOutput':
-    'No stoma output was recorded for this day. Other kinds of entry may still be shown above.',
+    'No stoma output was recorded for this day. The other entries for this day are shown above.',
   'app.title': 'Ostomy Care',
   // WCAG 2.4.2: the title names the page, not just the product. In an SPA it
   // is also how a screen-reader user learns a route changed.
@@ -151,7 +151,12 @@ export const web = {
   'physicianView.unitsMetric': 'Milliliters (mL)',
   'physicianView.unitsImperial': 'Fluid ounces (oz)',
 
-  'physicianView.emptyState.heading': 'No stoma output logged for this day',
+  // Not "no stoma output" — this fires on `observations.length === 0`, a day
+  // with nothing of ANY kind. Since P3.S2 there are two adjacent empty states
+  // and this is the broader one; claiming a fact about stoma output where the
+  // truth is broader sent a reader looking for the other kinds of entry that
+  // were also absent.
+  'physicianView.emptyState.heading': 'Nothing logged for this day',
   'physicianView.emptyState.body':
     'No entries were recorded for this day. That does not always mean there was no output — it may not have been logged.',
 

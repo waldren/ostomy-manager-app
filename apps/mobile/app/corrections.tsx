@@ -27,6 +27,9 @@ import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { discardRejectedCreate, reenqueueCorrectedObservation } from '../src/db/offlineWrites';
 import { getObservationById } from '../src/db/repositories/observationsRepository';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
+
+/** LOINC 9187-6 — voided urine, whose amount question uses a different noun. */
+const VOIDED_URINE_LOINC_CODE = '9187-6';
 import { listRejectedOperations } from '../src/db/repositories/syncQueueRepository';
 import { readThresholds, type CachedThresholds } from '../src/db/repositories/thresholdsRepository';
 import type { LocalObservation, SyncQueueEntry } from '../src/db/types';
@@ -288,7 +291,18 @@ export default function Corrections(): React.JSX.Element {
                     ) : (
                       <>
                         <NumericField
-                          label={t('common:entry.stomaOutputAmountLabel')}
+                          // The label has to match the KIND of entry. This
+                          // screen never says which one it is editing, so the
+                          // noun in the question is the only signal a patient
+                          // gets — and "How much came out?" for a rejected
+                          // urine entry points at the wrong body function
+                          // entirely. Reachable as soon as a urine entry WITH an
+                          // amount is rejected.
+                          label={
+                            entry.observation.code === VOIDED_URINE_LOINC_CODE
+                              ? t('common:entry.urineAmountLabel')
+                              : t('common:entry.stomaOutputAmountLabel')
+                          }
                           value={amountText}
                           onChangeText={setAmountText}
                           unitLabel={units.volumeUnit}

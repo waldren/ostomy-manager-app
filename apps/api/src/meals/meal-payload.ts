@@ -250,7 +250,12 @@ export function toMealAuditSnapshot(row: Meal): Record<string, unknown> {
     tagCodes: row.tagCodes,
     effectiveDatetime: row.effectiveDatetime.toISOString(),
     enteredTimezone: row.enteredTimezone,
-    localDate: row.localDate.toISOString(),
+    // `YYYY-MM-DD`, matching `toAuditSnapshot`'s. This is a `@db.Date` column
+    // and a grouping key (ADR-0016), not an instant — a full ISO timestamp
+    // invites a reader of the audit store to treat the UTC-midnight suffix as
+    // meaningful, and two representations of one key in one append-only table
+    // is a difference nothing can later reconcile.
+    localDate: row.localDate.toISOString().slice(0, 10),
     clientUpdatedAt: row.clientUpdatedAt.toISOString(),
     serverSequence: row.serverSequence.toString(),
     deletedAt: row.deletedAt === null ? null : row.deletedAt.toISOString(),

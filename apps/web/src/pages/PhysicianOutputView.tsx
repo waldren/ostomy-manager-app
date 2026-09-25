@@ -358,12 +358,27 @@ export function PhysicianOutputView() {
               mirrored: this sprint is what made a urine-only day an ordinary
               case rather than a curiosity.
             */}
-            <h2>{t('physicianView.table.heading')}</h2>
             {entries.length === 0 ? (
-              <p>{t('physicianView.table.noOutput')}</p>
+              <>
+                <h2>{t('physicianView.table.heading')}</h2>
+                <p>{t('physicianView.table.noOutput')}</p>
+              </>
             ) : (
               <>
+                {/*
+                  The heading stays BETWEEN the chart and the table.
+
+                  Hoisting it above the chart to cover the empty message put it
+                  immediately before `OutputChart`'s own `h2` — two sibling
+                  headings about stoma output, the first promising "entries" and
+                  landing a reader on a chart, with the table it names two
+                  headings further down. Heading navigation is how a clinician
+                  skims this page; un-associating a heading from its content is
+                  the same defect as having no heading at all, which is what the
+                  urine and balance regions were fixed for in this same change.
+                */}
                 <OutputChart entries={entries} />
+                <h2>{t('physicianView.table.heading')}</h2>
                 <OutputTable
                   entries={entries}
                   total={toDisplayDailyTotal(outputObservations, targetSystem)}

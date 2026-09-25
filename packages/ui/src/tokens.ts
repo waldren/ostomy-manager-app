@@ -61,6 +61,46 @@ export const tokens = {
    * later has no swatch here and renders without one rather than with a
    * wrong one.
    */
+  /**
+   * The pale-to-dark urine colour scale (SRS §3.7, AC 12.1 AC3).
+   *
+   * CONTENT colours, not palette colours: each one depicts the shade a patient
+   * is asked to recognise. Decorative in the strict accessibility sense — every
+   * step carries a text label that is the whole distinction, so the swatch is
+   * hidden from assistive technology. Never a background behind text, and never
+   * the only carrier of a step's identity.
+   *
+   * ## The 1.4.11 exemption, measured rather than asserted
+   *
+   * | step | vs `background` | vs `surface` | vs `border` |
+   * | --- | --- | --- | --- |
+   * | `pale_straw` | 1.11:1 | 1.03:1 | 5.31:1 |
+   * | `straw` | 1.21:1 | 1.12:1 | 4.88:1 |
+   * | `yellow` | 1.36:1 | 1.26:1 | 4.35:1 |
+   * | `dark_yellow` | 1.67:1 | 1.54:1 | 3.54:1 |
+   * | `amber` | 2.46:1 | 2.27:1 | 2.41:1 |
+   * | `brown` | 4.99:1 | 4.60:1 | 1.19:1 |
+   *
+   * Adjacent-step pairs: 1.09 / 1.12 / 1.23 / 1.47 / 2.03:1.
+   *
+   * Three things those numbers establish, in the order they matter:
+   *
+   * 1. **The exemption is legitimate.** WCAG 1.4.11 exempts a graphical object
+   *    "where a particular presentation is essential to the information being
+   *    conveyed". `pale_straw` cannot be raised to 3:1 against white without
+   *    ceasing to depict pale straw. No fill ratio applies.
+   * 2. **The 1px border is what carries 1.4.11, and it does.** `color.border`
+   *    is 5.92:1 on `background` and 5.46:1 on `surface`, so the swatch's SHAPE
+   *    clears 3:1 on both surfaces at every step, independent of fill.
+   * 3. **The border vanishing into the two darkest fills is harmless.** 2.41:1
+   *    and 1.19:1 would matter if the border identified the swatch against its
+   *    own fill; it identifies it against the SURFACE, and those two fills are
+   *    2.46:1 and 4.99:1 against white on their own.
+   *
+   * The adjacent-pair ratios of 1.09–1.47:1 are why the labels have to be the
+   * scale rather than a caption on it: this population's age-related lens
+   * yellowing degrades exactly the blue/yellow axis these six live on.
+   */
   urineColorSwatch: {
     pale_straw: '#f8f4d2',
     straw: '#f5eba8',

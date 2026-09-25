@@ -87,8 +87,11 @@ describe('UrineColorChoice', () => {
     const steps = view
       .getAllByRole('radio')
       .map((option: { props: { accessibilityHint?: string } }) => option.props.accessibilityHint);
-    expect(steps[0]).toBe('Step 1 of 6, lightest to darkest.');
-    expect(steps[5]).toBe('Step 6 of 6, lightest to darkest.');
+    // Position only. The direction is already stated twice before option 1 —
+    // once in the group hint, once by the two ends naming themselves — and
+    // repeating it per option spoke the phrase seven times in one control.
+    expect(steps[0]).toBe('Step 1 of 6.');
+    expect(steps[5]).toBe('Step 6 of 6.');
   });
 
   /**

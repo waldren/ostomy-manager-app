@@ -95,7 +95,8 @@ export async function replaceObservation(
     `UPDATE observations SET
       code = ?, value_quantity_value = ?, value_quantity_unit = ?,
       effective_datetime = ?, method = ?, status = ?,
-      entered_measurement_system = ?, fluid_type_code = ?, urine_color_code = ?,
+      entered_measurement_system = ?, entered_timezone = ?, local_date = ?,
+      fluid_type_code = ?, urine_color_code = ?,
       client_updated_at = ?, updated_at = ?
     WHERE id = ?;`,
     [
@@ -106,6 +107,19 @@ export async function replaceObservation(
       fields.method,
       fields.status,
       fields.enteredMeasurementSystem,
+      // Both were computed by every caller, passed in, and DISCARDED — the SET
+      // list named neither. `reenqueueCorrectedObservation` re-reads the zone
+      // with a comment explaining why ("a patient who has since flown home is
+      // correcting it from where they are"), and that did not happen.
+      //
+      // Latent rather than live today, because no edit path can change
+      // `effectiveDatetime` yet. It becomes real the moment one can: ADR-0016
+      // calls this column permanent and unrecoverable per row, and a
+      // `local_date` left disagreeing with a changed instant puts the entry in
+      // the wrong day for every daily figure, silently. Code that documents a
+      // behaviour it does not have is the worse half of the defect.
+      fields.enteredTimezone,
+      fields.localDate,
       fields.fluidTypeCode,
       // A full replacement writes EVERY clinical column, including this one.
       // Left out of the SET list, a correction to a voided-urine entry would

@@ -1096,7 +1096,10 @@ function incomingSnapshot(operation: SyncPushOperationParsed): Record<string, un
     // WAS discarded — tripwire 7 in its documented form.
     urineColorCode: payload.urineColorCode ?? null,
     fluidTypeCode: payload.fluidTypeCode ?? null,
-    enteredTimezone: payload.enteredTimezone,
+    // `?? null` here too, so an absent field records `null` rather than
+    // dropping its key — one representation of "the client did not send this",
+    // in a table with no UPDATE grant to tidy later.
+    enteredTimezone: payload.enteredTimezone ?? null,
     clientUpdatedAt: operation.clientTimestamp.toISOString(),
   };
 }
