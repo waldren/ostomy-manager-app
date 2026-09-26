@@ -100,7 +100,7 @@ The centre of ADR-0015, and the one OS guarantee this design depends on and has 
 
 Enrol one fingerprint, sign in, add a second fingerprint in Settings, cold-start the app.
 
-(This step was HW-6a while iOS was in scope. Its iOS half, HW-6b, is retained in ADR-0020's reinstatement list and is not open work. Issue #39 cites "HW-6a"; it means this step.)
+(This step was HW-6a while iOS was in scope. Its iOS half, HW-6b, is retained in ADR-0020's reinstatement list and is not open work. Older references to "HW-6a" mean this step; issue #39 now cites it as HW-6.)
 
 **Pass, both halves:** the stored refresh token is unreadable and the app routes to a full OIDC sign-in, **and the local diary survives**. ADR-0014 deliberately leaves `requireAuthentication` off the database key so that adding a fingerprint never costs the patient unsynced entries; the second half is the one that is easy to forget and expensive to get wrong.
 
