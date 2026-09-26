@@ -239,6 +239,14 @@ export async function refreshAccessToken(
  * would fail in exactly the same way. Signing the patient out would cost them their
  * offline access and fix nothing.
  *
+ * **One false-positive class to know about before adding a background refresh.** An
+ * issuer that ROTATES refresh tokens and invalidates the superseded one answers
+ * `invalid_grant` to a duplicate refresh — so two concurrent refreshes would sign a
+ * patient out of a perfectly good session. No concurrent path exists today: the
+ * refresh happens only in `unlock()`, the button is inert while busy, and the sync
+ * worker never refreshes. Cognito does not rotate. Adding a proactive or background
+ * refresh creates the path, and this rule would then need a single-flight guard.
+ *
  * `expo-auth-session` throws `TokenError`, whose `code` is the raw OAuth error
  * string (it reaches `CodedError` as `super(error, ...)`) and whose `params` holds
  * the response verbatim. Both are read, because `code` is the documented accessor

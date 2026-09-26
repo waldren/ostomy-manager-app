@@ -359,6 +359,17 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
    * find their entries where they left them. Purging would make an expired sign-in
    * cost them data, which is the opposite of what any of these cases call for.
    *
+   * **It does not revoke at the issuer, and that is a decision rather than an
+   * omission.** For `session-expired` there is nothing to revoke — the issuer has
+   * already rejected the token. For an enrolment change the token may still be
+   * valid at the issuer, and `signOut` does revoke in that situation; the
+   * difference is that revoking requires READING the token, and on the enrolment
+   * path the whole point is that the stored token is unreadable or must not be
+   * read. ADR-0015 leans on the re-login reaching the issuer for its audit trail,
+   * which means that trail appears when the patient signs back in and not at the
+   * moment the session ends. Stated here rather than left to be inferred from the
+   * absence of a call.
+   *
    * Errors are swallowed on purpose. Every caller is already inside a path where a
    * rejection would escape as an unhandled one — `handleUnlock` has no catch, a
    * defect this file has been bitten by twice — and the phase change is the part the
@@ -375,6 +386,13 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       // See above.
     }
     setSignedOutReason(reason);
+    // Before the phase flips. `signOut` does this too, and for the same reason: the
+    // context would otherwise hand a live bearer credential to any component while
+    // `phase === 'signedOut'`, which contradicts what that phase means. Narrow in
+    // practice — nothing reads `accessToken` outside the phase gate — but a phase
+    // claiming less than the session holds is the mirror of the bug this whole
+    // change is about.
+    setAccessToken(undefined);
     setPhase('signedOut');
   }, []);
 
@@ -430,13 +448,44 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     // stays unset until the next successful attempt, which blocks a
     // sync network call and nothing else.
     if (discovery) {
+      /**
+       * The read is in its OWN try, because a read that throws and a read that
+       * answers nothing mean different things, and the shared `try` conflated them
+       * back into #40 (found by review).
+       *
+       * A rejection is not an `invalid_grant`, so it used to fall through to the
+       * silent swallow below and leave the app `authenticated` holding no access
+       * token — the pre-#40 state exactly. Three things reach it: the patient
+       * cancelling the OS sheet that a gated read raises on Android, biometry locked
+       * out after failed presses, and an invalidated key IF the platform surfaces
+       * that as a rejection rather than as `null`.
+       *
+       * That last one matters most and is **unverified**: the comment below asserts
+       * an invalidated key "yields nothing", and on Android `SecureStoreModule`
+       * does return `null`, but nothing has run on hardware and iOS may differ. So
+       * this path must be correct whichever way it goes.
+       *
+       * It re-**locks** rather than signing out. An unreadable keychain says nothing
+       * about whether a session exists — the same argument the cold-start fallback
+       * makes when it fails toward `locked` — and the patient can simply press
+       * Unlock again. Signing them out would push an offline patient into a network
+       * login for a condition that may clear on the next press.
+       */
+      let storedRefreshToken: string | null = null;
       try {
-        // Inside the try, not before it. This read prompts for biometrics
-        // (requireAuthentication), so a cancelled sheet rejected out of
-        // `unlock()` — and `handleUnlock` has no catch, so it became an
-        // unhandled rejection with nothing shown. The same defect signOut
-        // was just fixed for.
-        const storedRefreshToken = await getRefreshToken();
+        storedRefreshToken = await getRefreshToken();
+      } catch {
+        // Nothing may be logged here: the only values in scope are a bearer
+        // credential and a keychain error (CLAUDE.md, "never log PHI").
+        lock();
+        return outcome;
+      }
+
+      try {
+        // The read above prompts for biometrics on a gated entry, which is why it
+        // is guarded at all — a cancelled sheet rejected out of `unlock()`, and
+        // `handleUnlock` has no catch, so it became an unhandled rejection with
+        // nothing shown. The same defect signOut was fixed for.
         if (!storedRefreshToken) {
           /**
            * The marker said a session existed and the token is not there, which on a
@@ -499,7 +548,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     return outcome;
-  }, [discovery, config, endSession]);
+  }, [discovery, config, endSession, lock]);
 
   /**
    * Ends the session locally, at the issuer, and on disk.
@@ -593,6 +642,13 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     // must still leave this app showing a signed-out session rather than
     // the previous patient's home screen.
     setAccessToken(undefined);
+    // A reason left over from an earlier automatic sign-out must not survive to
+    // explain a DELIBERATE one: a patient who simply signed out would otherwise be
+    // told "The fingerprint, face, or screen lock on this phone changed", which is
+    // false and alarming. `completeLogin` also clears it, best-effort, so a failure
+    // here is recovered at the next sign-in rather than being permanent.
+    setSignedOutReason(undefined);
+    void clearSignedOutReason().catch(() => undefined);
     setPhase('signedOut');
   }, [discovery, config]);
 

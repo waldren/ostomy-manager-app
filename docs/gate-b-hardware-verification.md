@@ -111,6 +111,10 @@ Enrol one fingerprint, sign in, add a second fingerprint in Settings, cold-start
 
 So the step now verifies a fix rather than an expected failure. **A failure here is a regression in `AuthContext.tsx`/`tokenStorage.ts`, not a finding about the OS** — and if the app reaches the home screen with sync permanently dead, that is precisely #40 returning.
 
+**This run also settles a question the fix had to guess at.** The code assumes an invalidated key reads as `null`; Android's `SecureStoreModule` does return `null`, but nothing has run on hardware and iOS may differ. Record **which of the two happens** — a `null` or a thrown error. Both are handled (`null` ends the session; a throw re-locks, because an unreadable keychain says nothing about whether a session exists), so either outcome passes — but only a run can say which path this platform actually takes, and the comments should then stop hedging.
+
+**With TalkBack on**, check the announcement, which no CI run can cover: the reason is **spoken** when the screen changes from Unlock to Sign in, and is **not** spoken twice on a cold start. The swap happens under an already-mounted screen — both pre-authenticated phases render the same route — so the button the patient just pressed disappears, and until #40's review that was silent.
+
 ### HW-7 — a Class 2-only handset falls back to the passcode instead of dead-ending
 
 `authenticate()` demands `biometricsSecurityLevel: 'strong'`, so on a handset whose only enrolment is Class 2 face unlock the OS may refuse the biometric. `disableDeviceFallback` is left at its default precisely so the device credential is there to catch this.
