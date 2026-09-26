@@ -47,8 +47,11 @@ export const mobile = {
   // read as "nothing leaves my phone", when the entries are uploaded and
   // read by a care team. That is a consent-adjacent misstatement in a
   // health app, and "sync" is unexplained jargon besides.
+  // "Once you are signed in", because from THIS screen the patient cannot reach an
+  // entry screen at all — the unqualified version read as a contradiction directly
+  // above copy telling them to sign in before anything can send (#40's review).
   'login.signedOutBody':
-    'You can write in your diary even with no internet. Entries save on your phone right away, and go to your care team when you are back online.',
+    'Once you are signed in, you can write in your diary even with no internet. Entries save on your phone right away, and go to your care team when you are back online.',
   'login.signInButton': 'Sign in',
   'login.lockedHeading': 'Welcome back',
   'login.lockedBody': 'Unlock your diary to continue.',
@@ -75,22 +78,52 @@ export const mobile = {
   'login.unlockUnavailableBody':
     'This phone has no fingerprint, face, or screen lock set up, so we cannot unlock your diary here. Sign in again to open it.',
   'login.signInInsteadButton': 'Sign in again instead',
-  // --- Signed out because the phone's unlock settings changed (#74) -----------
+  // --- The app ended the session by itself: two reasons, two blocks ------------
   //
-  // A patient who has been opening "Welcome back / Unlock my diary" for weeks
-  // opens the app to "Sign in to your diary". The most available inference is that
-  // their diary is gone. It is not: the purge touches only the token, and
+  // Common to both, and the reason each has a body rather than a heading alone: a
+  // patient who has been opening "Welcome back / Unlock my diary" for weeks opens
+  // the app to "Sign in to your diary", and the most available inference is that
+  // their diary is gone. It is not — ending a session clears the token only, and
   // re-login under the same subject matches the database owner, so nothing is
-  // erased. The patient has no way to know that, which is the same argument
+  // erased. The patient has no way to know that, which is the argument
   // `notProvisioned.*` was written from.
   //
-  // It must NOT say the patient added a fingerprint. The purge fires on a change
-  // in either direction, and ADR-0015's threat is someone else enrolling one
-  // covertly — naming the patient as the actor is false in exactly the case this
-  // exists for, and it would erase the only signal they will ever get about it.
+  // Each HEADING carries the cause, not a second instruction. The H1 already says
+  // "Sign in to your diary" and the button says "Sign in", so a heading like "Please
+  // sign in again" made three instructions and no explanation — and `Heading.tsx`
+  // exposes no heading level on Android, so two near-identical headings make
+  // TalkBack's rotor worse than one would.
+  //
+  // Both promise the queue will send, identically, because the behaviour IS
+  // identical: `endSession` clears the token and never purges, which a test asserts.
+  // And both say "after you sign in" rather than "once you are back in", because
+  // `login.signedOutBody` above says entries send "when you are back online" and the
+  // queue does not drain on network alone from here.
+
+  // The phone's unlock settings changed (#74).
+  //
+  // It must NOT say the patient added a fingerprint. The purge fires on a change in
+  // either direction, and ADR-0015's threat is someone else enrolling one covertly —
+  // naming the patient as the actor is false in exactly the case this exists for,
+  // and it would erase the only signal they will ever get about it.
   'login.unlockChangedHeading': 'We signed you out to keep your diary safe',
   'login.unlockChangedBody':
-    'The fingerprint, face, or screen lock on this phone changed. When that happens we sign you out and ask you to sign in again. Nothing you wrote is lost. Your entries are still on this phone.',
+    'The fingerprint, face, or screen lock on this phone changed. When that happens we sign you out and ask you to sign in again. Nothing you wrote is lost. Your entries are still on this phone, and they will send after you sign in.',
+
+  // The issuer rejected the refresh token (#40).
+  //
+  // Deliberately NOT the enrolment copy above, which claims something about the
+  // phone's security that is false here: this is an ordinary expired or revoked
+  // sign-in and the patient did nothing.
+  //
+  // "Ended", not "run out". `invalid_grant` covers expired, revoked AND reissued to
+  // another client (RFC 6749 §5.2), so "run out" asserts a timer that may not have
+  // been the cause — and if the grant was revoked because someone reset access to
+  // the account, telling the patient it was routine erases the only signal they get.
+  // Same objection as the one recorded above about naming the patient as the actor.
+  'login.sessionEndedHeading': 'Your sign-in has ended',
+  'login.sessionEndedBody':
+    'We need to check it is you again before you open your diary. Nothing you wrote is lost. Your entries are still on this phone, and they will send after you sign in.',
   'login.tryAgainButton': 'Try again',
   // Four outcomes, four remedies. One blanket "Something went wrong"
   // covered a failed sign-in, a failed unlock, a cancelled browser and

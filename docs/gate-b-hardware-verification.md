@@ -100,11 +100,20 @@ The centre of ADR-0015, and the one OS guarantee this design depends on and has 
 
 Enrol one fingerprint, sign in, add a second fingerprint in Settings, cold-start the app.
 
-(This step was HW-6a while iOS was in scope. Its iOS half, HW-6b, is retained in ADR-0020's reinstatement list and is not open work. Issue #39 cites "HW-6a"; it means this step.)
+(This step was HW-6a while iOS was in scope. Its iOS half, HW-6b, is retained in ADR-0020's reinstatement list and is not open work. Older references to "HW-6a" mean this step; issue #39 now cites it as HW-6.)
 
 **Pass, both halves:** the stored refresh token is unreadable and the app routes to a full OIDC sign-in, **and the local diary survives**. ADR-0014 deliberately leaves `requireAuthentication` off the database key so that adding a fingerprint never costs the patient unsynced entries; the second half is the one that is easy to forget and expensive to get wrong.
 
-**Expect the first half to fail as currently built.** From the code rather than from a run: `AuthContext.unlock()` reads the token inside a `try` whose `catch` is deliberately silent, and `hasStoredRefreshToken()` answers from a separate non-authenticated marker that an invalidation does not clear. An invalidated token therefore looks like an ordinary failed refresh — the app unlocks, reports an authenticated session, holds no access token, syncs nothing, and offers no route to the sign-in screen. If a handset confirms that, it is a defect in `AuthContext.tsx`/`tokenStorage.ts`, not a finding about the OS, and ADR-0015's "forces a full OIDC re-login" describes an intention the build does not implement.
+**This step used to say "expect the first half to fail", and that prediction was right.** `AuthContext.unlock()` read the token inside a `try` whose `catch` was deliberately silent, and `hasStoredRefreshToken()` answers from a separate non-authenticated marker that an invalidation does not clear — so an invalidated token looked like an ordinary failed refresh: the app unlocked, reported an authenticated session, held no access token, synced nothing, and offered no route to the sign-in screen. `SyncProvider` gates on that phase, so the worker also ran on a timer with no credential and was refused every time. Fixed under **#40**, in two halves that are worth checking separately here:
+
+- An invalidated key reads as nothing, and `unlock()` now treats a missing token as a session that is over: it purges and routes to sign-in with `login.unlockChanged*`.
+- A refresh the issuer **rejects** (`invalid_grant`) is told apart from one that merely failed, and ends the session with `login.sessionEnded*`. A network failure or a 5xx still keeps the session, deliberately.
+
+So the step now verifies a fix rather than an expected failure. **A failure here is a regression in `AuthContext.tsx`/`tokenStorage.ts`, not a finding about the OS** — and if the app reaches the home screen with sync permanently dead, that is precisely #40 returning.
+
+**This run also settles a question the fix had to guess at.** The code assumes an invalidated key reads as `null`; Android's `SecureStoreModule` does return `null`, but nothing has run on hardware and iOS may differ. Record **which of the two happens** — a `null` or a thrown error. Both are handled (`null` ends the session; a throw re-locks, because an unreadable keychain says nothing about whether a session exists), so either outcome passes — but only a run can say which path this platform actually takes, and the comments should then stop hedging.
+
+**With TalkBack on**, check the announcement, which no CI run can cover: the reason is **spoken** when the screen changes from Unlock to Sign in, and is **not** spoken twice on a cold start. The swap happens under an already-mounted screen — both pre-authenticated phases render the same route — so the button the patient just pressed disappears, and until #40's review that was silent.
 
 ### HW-7 — a Class 2-only handset falls back to the passcode instead of dead-ending
 

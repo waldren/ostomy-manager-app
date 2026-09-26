@@ -59,10 +59,16 @@ jest.mock('../db/databaseOwner', () => ({
 }));
 
 const mockRevoke = jest.fn(async () => undefined);
+const mockRefresh = jest.fn(async () => ({ accessToken: 'fresh', refreshToken: 'rt2' }));
 jest.mock('./oidcSession', () => ({
   useAutoDiscovery: () => ({ tokenEndpoint: 'https://issuer.example/token' }),
-  refreshAccessToken: jest.fn(async () => ({ accessToken: 'fresh', refreshToken: 'rt2' })),
+  refreshAccessToken: () => mockRefresh(),
   revokeRefreshToken: () => mockRevoke(),
+  // The REAL classifier, not a stand-in. What #40 turns on is whether an
+  // `invalid_grant` is told apart from a network failure, so a re-implementation here
+  // would assert only that this file agrees with itself — the same shape of mistake
+  // #55 and #61 both recorded.
+  isRefreshTokenRejected: jest.requireActual('./oidcSession').isRefreshTokenRejected,
 }));
 
 jest.mock('./oidcConfig', () => ({
@@ -79,7 +85,7 @@ jest.mock('./biometricUnlock', () => ({
 }));
 
 function Probe() {
-  const { phase, signOut, completeLogin, unlock, signedOutReason } = useAuth();
+  const { phase, signOut, completeLogin, unlock, signedOutReason, accessToken } = useAuth();
   return (
     <>
       <Text testID="phase">{phase}</Text>
@@ -90,6 +96,7 @@ function Probe() {
         unlock
       </Text>
       <Text testID="reason">{signedOutReason ?? 'none'}</Text>
+      <Text testID="token">{accessToken ?? 'none'}</Text>
       <Text
         testID="login"
         onPress={() =>
@@ -135,6 +142,7 @@ beforeEach(() => {
   mockAuthenticate.mockResolvedValue({ outcome: 'success' });
   mockTokenIsStale.mockResolvedValue(false);
   mockReadReason.mockResolvedValue(null);
+  mockRefresh.mockResolvedValue({ accessToken: 'fresh', refreshToken: 'rt2' });
 });
 
 describe('cold start never wedges on a spinner', () => {
@@ -244,6 +252,25 @@ describe('sign-out cannot be aborted', () => {
 
     expect(mockPurge).toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('signedOut'));
+  });
+});
+
+/**
+ * A reason left over from an automatic sign-out must not survive to explain a
+ * DELIBERATE one. A patient who simply signed out would otherwise be told "The
+ * fingerprint, face, or screen lock on this phone changed" — false and alarming.
+ */
+describe('signing out clears any recorded reason', () => {
+  it('clears it, so the next login screen is not falsely explained', async () => {
+    mockReadReason.mockResolvedValue('unlock-settings-changed');
+
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('signout').props.onPress();
+    });
+
+    expect(mockClearReason).toHaveBeenCalled();
+    expect(screen.getByTestId('reason')).toHaveTextContent('none');
   });
 });
 
@@ -406,6 +433,33 @@ describe('unlock re-checks enrolment, not only cold start', () => {
     expect(mockClearRefresh).toHaveBeenCalled();
   });
 
+  /**
+   * A token read that THROWS is not a token that is gone, and conflating them put
+   * #40 straight back: a rejection is not an `invalid_grant`, so it fell through to
+   * the silent swallow and left the app `authenticated` holding no access token.
+   *
+   * Reachable from a cancelled OS sheet on a gated read, a locked-out sensor, and
+   * possibly an invalidated key — whether that surfaces as `null` or a rejection is
+   * unverified, so this path has to be right either way.
+   *
+   * It re-LOCKS rather than signing out: an unreadable keychain says nothing about
+   * whether a session exists, and the patient can press Unlock again. Signing them
+   * out would push an offline patient into a network login for a condition that may
+   * clear on the next press.
+   */
+  it('re-locks, rather than signing out, when the token read throws', async () => {
+    mockGetRefresh.mockRejectedValue(new Error('keychain unavailable'));
+
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+
+    expect(screen.getByTestId('phase')).toHaveTextContent('locked');
+    expect(mockClearRefresh).not.toHaveBeenCalled();
+    expect(mockRecordReason).not.toHaveBeenCalled();
+  });
+
   it('still unlocks when the check itself fails', async () => {
     // An unreadable keychain says nothing about enrolment, and refusing to unlock on
     // that evidence would strand an offline patient.
@@ -497,5 +551,107 @@ describe('a token invalidated by a new enrolment does not survive the next launc
 
     expect(mockClearRefresh).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
+  });
+});
+
+/**
+ * #40. A refresh the ISSUER rejected is not an unknown fate.
+ *
+ * Both outcomes arrive as a thrown error from `refreshAccessToken`, and the catch
+ * swallowed them identically — so an expired or revoked refresh token left the app in
+ * `authenticated` holding no access token. `SyncProvider` gates on exactly that
+ * phase, so the worker then ran on a timer with no credential and was refused every
+ * time, while every screen truthfully reported entries saved and nothing offered a
+ * route back in. The patient's diary silently stopped syncing.
+ */
+describe('a refresh token the issuer rejects ends the session (#40)', () => {
+  /** The shape `expo-auth-session` throws: `code` is the raw OAuth error. */
+  function tokenError(error: string): Error {
+    return Object.assign(new Error(error), { code: error, params: { error } });
+  }
+
+  async function unlockAfterRefreshFails(error: unknown): Promise<void> {
+    mockRefresh.mockRejectedValue(error);
+    await renderProvider();
+    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+  }
+
+  it('routes to sign-in rather than an authenticated session with no token', async () => {
+    await unlockAfterRefreshFails(tokenError('invalid_grant'));
+
+    expect(screen.getByTestId('phase')).toHaveTextContent('signedOut');
+  });
+
+  it('says why, so the patient does not meet a bare sign-in screen', async () => {
+    await unlockAfterRefreshFails(tokenError('invalid_grant'));
+
+    expect(mockRecordReason).toHaveBeenCalledWith('session-expired');
+  });
+
+  /**
+   * Not `unlock-settings-changed`: that copy asserts something about the phone's
+   * security which is false here, and would send the patient looking for a problem
+   * that does not exist.
+   */
+  it("does not blame the phone's unlock settings", async () => {
+    await unlockAfterRefreshFails(tokenError('invalid_grant'));
+
+    expect(mockRecordReason).not.toHaveBeenCalledWith('unlock-settings-changed');
+  });
+
+  it('clears the token but never purges the database', async () => {
+    // ADR-0014's asymmetry, and the thing that makes this safe to do at all: the
+    // SQLCipher key carries no `requireAuthentication`, so the diary and anything
+    // still queued survive. Purging would make an expired sign-in cost data.
+    await unlockAfterRefreshFails(tokenError('invalid_grant'));
+
+    expect(mockClearRefresh).toHaveBeenCalled();
+    expect(mockPurge).not.toHaveBeenCalled();
+  });
+
+  it('does not leave the access token in memory', async () => {
+    // The context would otherwise hand a live bearer credential to any component
+    // while `phase === 'signedOut'`, which contradicts what that phase means — the
+    // mirror of the bug this whole change is about, a phase claiming less than the
+    // session holds.
+    //
+    // Reached through a session that actually HOLDS a token. Asserting this on the
+    // `invalid_grant` path alone passes vacuously: no token was ever set there,
+    // because the refresh that would have set one is the thing that failed.
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('login').props.onPress();
+    });
+    expect(screen.getByTestId('token')).toHaveTextContent('opaque-access-token');
+
+    // Now end the session from under it.
+    mockTokenIsStale.mockResolvedValue(true);
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+
+    expect(screen.getByTestId('phase')).toHaveTextContent('signedOut');
+    expect(screen.getByTestId('token')).toHaveTextContent('none');
+  });
+
+  it('KEEPS the session when the provider is merely unreachable', async () => {
+    // The counterpart, and the more important half. This app is used offline by
+    // design, so signing a patient out of a diary they can still write in is the
+    // worse of the two errors — and a rule that signed out on every failed refresh
+    // would do it every time they unlocked without a network.
+    await unlockAfterRefreshFails(new TypeError('Network request failed'));
+
+    expect(screen.getByTestId('phase')).toHaveTextContent('authenticated');
+    expect(mockClearRefresh).not.toHaveBeenCalled();
+  });
+
+  it('keeps the session for a transient server error too', async () => {
+    await unlockAfterRefreshFails(tokenError('temporarily_unavailable'));
+
+    expect(screen.getByTestId('phase')).toHaveTextContent('authenticated');
+    expect(mockClearRefresh).not.toHaveBeenCalled();
   });
 });

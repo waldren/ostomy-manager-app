@@ -16,12 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import { Redirect } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
 import { isLocalUnlockAvailable } from '../src/auth/biometricUnlock';
+import type { SignedOutReason } from '../src/auth/tokenStorage';
 import { useOidcLogin } from '../src/auth/useOidcLogin';
 import { BodyText } from '../src/ui/BodyText';
 import { Button } from '../src/ui/Button';
@@ -30,6 +31,25 @@ import { Screen } from '../src/ui/Screen';
 
 /** What went wrong, so the retry can do the right thing and the copy can say the right thing. */
 type LoginFailure = 'signIn' | 'unlock' | 'cancelled' | 'unavailable';
+
+/**
+ * The copy for each way the app can end a session by itself.
+ *
+ * A `Record` over `SignedOutReason` rather than one ternary per reason, so that
+ * adding a reason with no copy fails to compile. `tokenStorage.ts` already guards
+ * the read side this way — its `SIGNED_OUT_REASONS` array exists "so adding a
+ * reason cannot silently read back as 'no reason' and put the patient on a bare
+ * sign-in screen again" — and the render side had no equivalent, which is the same
+ * hole one layer along. It also gives the announcement below a single place to
+ * read from, instead of a third copy of the same decision.
+ */
+const SIGNED_OUT_REASON_COPY: Record<SignedOutReason, { heading: string; body: string }> = {
+  'unlock-settings-changed': {
+    heading: 'login.unlockChangedHeading',
+    body: 'login.unlockChangedBody',
+  },
+  'session-expired': { heading: 'login.sessionEndedHeading', body: 'login.sessionEndedBody' },
+};
 
 /**
  * One route rendering two states — "signed out" (full OIDC login) and
@@ -82,6 +102,41 @@ export default function Login(): React.JSX.Element {
   useEffect(() => {
     if (message) AccessibilityInfo.announceForAccessibility(t(message));
   }, [message, t]);
+
+  /**
+   * Announces a session the app ended by itself, on the transition rather than on
+   * mount (#40, #74).
+   *
+   * This used to render silently, justified by a comment claiming the route mounts
+   * fresh so reading order carries it. That is false for the path that actually
+   * produces these reasons. **Both pre-authenticated phases render THIS component**
+   * (see the comment above it), and `AuthContext`'s `endSession` is reached from
+   * inside `unlock()` — so the sequence is: the patient is here reading "Welcome
+   * back", presses Unlock, the biometric SUCCEEDS, and the phase flips to
+   * `signedOut`. No remount, no navigation. The button they just pressed unmounts
+   * and a sign-in screen appears in its place.
+   *
+   * Nothing was spoken for any of that, which is worse than the sign-in failure
+   * this file already announces: there, the action failed. Here it succeeded and
+   * the screen silently became something else.
+   *
+   * Gated on the transition, not fired on every render, because the reason is also
+   * persisted and read back at cold start — where it IS initial content and would
+   * otherwise be announced twice. `announceForAccessibility` rather than a live
+   * region because `accessibilityLiveRegion` is Android-only, and iOS is deferred
+   * rather than dropped (ADR-0020); same reasoning as the announcement above.
+   */
+  const wasLocked = useRef(false);
+  useEffect(() => {
+    if (phase === 'locked') {
+      wasLocked.current = true;
+      return;
+    }
+    if (phase !== 'signedOut' || !wasLocked.current || signedOutReason === undefined) return;
+    wasLocked.current = false;
+    const copy = SIGNED_OUT_REASON_COPY[signedOutReason];
+    AccessibilityInfo.announceForAccessibility(`${t(copy.heading)}. ${t(copy.body)}`);
+  }, [phase, signedOutReason, t]);
 
   const handleSignIn = useCallback(async () => {
     setLocalFailure(undefined);
@@ -185,22 +240,24 @@ export default function Login(): React.JSX.Element {
       ) : (
         <>
           {/*
-            Why the app signed them out, when it did (#74).
+            Why the app ended the session, when it did (#74, #40).
 
             A patient who has been opening "Welcome back / Unlock my diary" for weeks
             lands here instead, and the available inference is that their diary is
-            gone. It is not: the purge touches only the token, and re-login under the
-            same subject matches the database owner, so nothing is erased. Cause
-            before instruction, which is the order `home.tsx` uses for the same kind
-            of block.
+            gone. It is not: ending a session clears the token only, and re-login
+            under the same subject matches the database owner, so nothing is erased.
+            Cause before instruction, which is the order `home.tsx` uses for the same
+            kind of block — and which is why each heading carries the CAUSE rather
+            than repeating the instruction the H1 and the button already give.
 
-            No live region: this route mounts fresh after `checking`, so it is
-            initial content and reading order carries it.
+            Announced by the effect above, not by a live region here. See it for why
+            the "this is initial content" reasoning this block used to carry was
+            wrong.
           */}
-          {signedOutReason === 'unlock-settings-changed' ? (
+          {signedOutReason !== undefined ? (
             <>
-              <Heading level={2}>{t('login.unlockChangedHeading')}</Heading>
-              <BodyText>{t('login.unlockChangedBody')}</BodyText>
+              <Heading level={2}>{t(SIGNED_OUT_REASON_COPY[signedOutReason].heading)}</Heading>
+              <BodyText>{t(SIGNED_OUT_REASON_COPY[signedOutReason].body)}</BodyText>
             </>
           ) : null}
           <BodyText>{t('login.signedOutBody')}</BodyText>
