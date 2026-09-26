@@ -21,7 +21,7 @@ import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
-import { isBiometricUnlockAvailable } from '../src/auth/biometricUnlock';
+import { isLocalUnlockAvailable } from '../src/auth/biometricUnlock';
 import { useOidcLogin } from '../src/auth/useOidcLogin';
 import { BodyText } from '../src/ui/BodyText';
 import { Button } from '../src/ui/Button';
@@ -38,7 +38,7 @@ type LoginFailure = 'signIn' | 'unlock' | 'cancelled' | 'unavailable';
  * two pre-authenticated phases that exist.
  */
 export default function Login(): React.JSX.Element {
-  const { phase, unlock, signInFailed, clearSignInFailure } = useAuth();
+  const { phase, unlock, signInFailed, clearSignInFailure, signedOutReason } = useAuth();
   const { t } = useTranslation('mobile');
   const { isReady, login } = useOidcLogin();
   /**
@@ -52,13 +52,13 @@ export default function Login(): React.JSX.Element {
    */
   const [localFailure, setLocalFailure] = useState<LoginFailure | undefined>(undefined);
   const [busy, setBusy] = useState(false);
-  const [biometricAvailable, setBiometricAvailable] = useState<boolean | undefined>(undefined);
+  const [unlockAvailable, setUnlockAvailable] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
     if (phase !== 'locked') return;
     let cancelled = false;
-    isBiometricUnlockAvailable().then((available) => {
-      if (!cancelled) setBiometricAvailable(available);
+    isLocalUnlockAvailable().then((available) => {
+      if (!cancelled) setUnlockAvailable(available);
     });
     return () => {
       cancelled = true;
@@ -123,6 +123,15 @@ export default function Login(): React.JSX.Element {
     try {
       const outcome = await unlock();
       if (outcome.outcome === 'failed') setLocalFailure('unlock');
+      // `unavailable` means the OS has nothing to prompt with — the startup check
+      // never resolved, or the screen lock was removed between that check and this
+      // tap. Route to the branch that SAYS so: leaving it unhandled makes the one
+      // control on the screen appear to work and do nothing at all, with no status
+      // message for a user-initiated action.
+      //
+      // NOT `setLocalFailure('unavailable')` — that key already means "OIDC
+      // discovery is unreachable" and maps to `login.offlineBody`.
+      if (outcome.outcome === 'unavailable') setUnlockAvailable(false);
     } finally {
       setBusy(false);
     }
@@ -141,15 +150,30 @@ export default function Login(): React.JSX.Element {
       {locked ? (
         <>
           <BodyText>{t('login.lockedBody')}</BodyText>
-          {biometricAvailable === false ? (
+          {unlockAvailable === false ? (
             <>
-              <BodyText>{t('login.unlockUnavailableBody')}</BodyText>
+              {/*
+                `live` because this branch REPLACES the unlock button after an async
+                check resolves. A TalkBack user whose focus was on "Unlock my diary"
+                loses it when that node unmounts, with nothing announced — the same
+                class of silent swap this screen already announces explicitly for the
+                sign-in failure below.
+              */}
+              <BodyText live="polite">{t('login.unlockUnavailableBody')}</BodyText>
               <Button
                 label={t('login.signInInsteadButton')}
                 onPress={handleSignIn}
                 busy={busy}
                 disabled={!isReady}
               />
+              {/*
+                Says WHY the button is dimmed, for the same reason the signed-out
+                branch below does: `isReady` needs OIDC discovery, so an offline
+                patient here saw a permanently dimmed button, was told to sign in
+                again, and had nothing on the screen accounting for either. The
+                explanation existed and was rendered only in the other branch.
+              */}
+              {!isReady ? <BodyText tone="muted">{t('login.offlineBody')}</BodyText> : null}
             </>
           ) : (
             <>
@@ -160,6 +184,25 @@ export default function Login(): React.JSX.Element {
         </>
       ) : (
         <>
+          {/*
+            Why the app signed them out, when it did (#74).
+
+            A patient who has been opening "Welcome back / Unlock my diary" for weeks
+            lands here instead, and the available inference is that their diary is
+            gone. It is not: the purge touches only the token, and re-login under the
+            same subject matches the database owner, so nothing is erased. Cause
+            before instruction, which is the order `home.tsx` uses for the same kind
+            of block.
+
+            No live region: this route mounts fresh after `checking`, so it is
+            initial content and reading order carries it.
+          */}
+          {signedOutReason === 'unlock-settings-changed' ? (
+            <>
+              <Heading level={2}>{t('login.unlockChangedHeading')}</Heading>
+              <BodyText>{t('login.unlockChangedBody')}</BodyText>
+            </>
+          ) : null}
           <BodyText>{t('login.signedOutBody')}</BodyText>
           <Button
             label={t('login.signInButton')}

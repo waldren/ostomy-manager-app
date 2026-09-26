@@ -161,7 +161,7 @@ by a green `pnpm test`. The emulator harness
 the hardware guarantees underneath.
 
 `docs/gate-b-hardware-verification.md` is the standing list of what closes
-that gap: HW-1 to HW-10, each with its procedure, its pass condition, and
+that gap: HW-1 to HW-11, each with its procedure, its pass condition, and
 what its failure would mean. None have been run. Do not describe any of
 these controls as verified until a step there is closed with a recorded run.
 

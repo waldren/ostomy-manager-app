@@ -16,43 +16,100 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 const mockHasHardwareAsync = jest.fn();
-const mockIsEnrolledAsync = jest.fn();
+const mockGetEnrolledLevelAsync = jest.fn();
 const mockAuthenticateAsync = jest.fn();
 
 jest.mock('expo-local-authentication', () => ({
+  // Real numeric values, because their ORDER is what the module compares on.
+  SecurityLevel: { NONE: 0, SECRET: 1, BIOMETRIC_WEAK: 2, BIOMETRIC_STRONG: 3 },
   hasHardwareAsync: (...args: unknown[]) => mockHasHardwareAsync(...args),
-  isEnrolledAsync: (...args: unknown[]) => mockIsEnrolledAsync(...args),
+  getEnrolledLevelAsync: (...args: unknown[]) => mockGetEnrolledLevelAsync(...args),
   authenticateAsync: (...args: unknown[]) => mockAuthenticateAsync(...args),
 }));
 
-import { authenticate, isBiometricUnlockAvailable } from './biometricUnlock';
+import { authenticate, enrolledSecurityLevel, isLocalUnlockAvailable } from './biometricUnlock';
 
 describe('biometricUnlock', () => {
   beforeEach(() => {
     mockHasHardwareAsync.mockReset();
-    mockIsEnrolledAsync.mockReset();
+    mockGetEnrolledLevelAsync.mockReset();
     mockAuthenticateAsync.mockReset();
   });
 
-  it('is unavailable with no hardware', async () => {
-    mockHasHardwareAsync.mockResolvedValue(false);
-    mockIsEnrolledAsync.mockResolvedValue(true);
-    expect(await isBiometricUnlockAvailable()).toBe(false);
+  it('is unavailable when the OS has nothing enrolled to authenticate with', async () => {
+    mockGetEnrolledLevelAsync.mockResolvedValue(0); // NONE
+    expect(await isLocalUnlockAvailable()).toBe(false);
 
     const result = await authenticate('prompt');
     expect(result).toEqual({ outcome: 'unavailable' });
     expect(mockAuthenticateAsync).not.toHaveBeenCalled();
   });
 
-  it('is unavailable with hardware but nothing enrolled', async () => {
+  /**
+   * A handset with a screen lock and NO biometric sensor.
+   *
+   * The first fix for #74 got this wrong in its own turn: it gated the level on
+   * `hasHardwareAsync()`, which reports whether a face or fingerprint SCANNER
+   * exists. `getEnrolledLevelAsync()` answers `SECRET` from the screen lock
+   * alone, so short-circuiting to `NONE` there locked a whole class of cheap
+   * Android handsets out of their own offline diary — the same conflation of "has
+   * biometrics" with "can be authenticated" that #74 was about.
+   */
+  it('is available with a screen lock and no biometric HARDWARE at all', async () => {
+    mockHasHardwareAsync.mockResolvedValue(false);
+    mockGetEnrolledLevelAsync.mockResolvedValue(1); // SECRET
+    mockAuthenticateAsync.mockResolvedValue({ success: true });
+
+    expect(await isLocalUnlockAvailable()).toBe(true);
+    // And it prompts, rather than reporting available and then refusing.
+    expect(await authenticate('prompt')).toEqual({ outcome: 'success' });
+    expect(mockAuthenticateAsync).toHaveBeenCalled();
+  });
+
+  it('is unavailable with hardware but nothing enrolled at all', async () => {
     mockHasHardwareAsync.mockResolvedValue(true);
-    mockIsEnrolledAsync.mockResolvedValue(false);
-    expect(await isBiometricUnlockAvailable()).toBe(false);
+    mockGetEnrolledLevelAsync.mockResolvedValue(0);
+    expect(await isLocalUnlockAvailable()).toBe(false);
+  });
+
+  /**
+   * #74, and the whole reason this check changed.
+   *
+   * It used to ask `isEnrolledAsync()`, which on Android answers for BIOMETRICS
+   * ONLY. A patient with a device PIN and no fingerprint therefore got `false`,
+   * and `app/login.tsx` offered them nothing but "Sign in again instead" — a
+   * network OIDC login — so they had no offline route into their own diary on the
+   * one client that exists to work offline.
+   *
+   * Nothing else in the design agreed with that: `authenticateAsync` is called
+   * with device fallback enabled, and `login.unlockHint` promises the passcode in
+   * so many words. ADR-0015 had already rejected `disableDeviceFallback: true`
+   * for this exact population.
+   */
+  it('is available with a device passcode and no biometric enrolled', async () => {
+    mockHasHardwareAsync.mockResolvedValue(true);
+    mockGetEnrolledLevelAsync.mockResolvedValue(1); // SECRET
+    mockAuthenticateAsync.mockResolvedValue({ success: true });
+
+    expect(await isLocalUnlockAvailable()).toBe(true);
+    // And it actually prompts, rather than reporting available and then refusing.
+    expect(await authenticate('prompt')).toEqual({ outcome: 'success' });
+    expect(mockAuthenticateAsync).toHaveBeenCalled();
+  });
+
+  it('reports the enrolled level itself, not a hardware verdict', async () => {
+    // The inverse of the assertion that used to be here, which pinned a defect
+    // rather than catching one: it required `NONE` whenever no scanner was
+    // present, which is how a passcode-only handset lost its offline unlock.
+    mockHasHardwareAsync.mockResolvedValue(false);
+    mockGetEnrolledLevelAsync.mockResolvedValue(1);
+
+    expect(await enrolledSecurityLevel()).toBe(1);
   });
 
   it('succeeds when the OS prompt succeeds', async () => {
     mockHasHardwareAsync.mockResolvedValue(true);
-    mockIsEnrolledAsync.mockResolvedValue(true);
+    mockGetEnrolledLevelAsync.mockResolvedValue(3);
     mockAuthenticateAsync.mockResolvedValue({ success: true });
 
     const result = await authenticate('Unlock your diary');
@@ -71,7 +128,7 @@ describe('biometricUnlock', () => {
 
   it('reports failure without throwing when the OS prompt is cancelled', async () => {
     mockHasHardwareAsync.mockResolvedValue(true);
-    mockIsEnrolledAsync.mockResolvedValue(true);
+    mockGetEnrolledLevelAsync.mockResolvedValue(3);
     mockAuthenticateAsync.mockResolvedValue({ success: false, error: 'user_cancel' });
 
     const result = await authenticate('prompt');
