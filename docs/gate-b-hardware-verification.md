@@ -6,7 +6,7 @@ This document is the remainder — the checks that exist to prove the **device-s
 
 Every step has an ID. Cite it — "HW-6 is still open" — instead of re-describing the check each time it comes up.
 
-**v1 ships Android only ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)), so the in-scope steps are HW-1, HW-2, HW-3, HW-6, HW-7, HW-8 and HW-10.** HW-4, HW-5 and HW-9 are iOS-specific and are marked out of scope below rather than deleted: they are the list iOS reinstatement starts from, and deleting them would mean rediscovering it. The IDs never move — issue #39 and the implementation plan both cite them by number.
+**v1 ships Android only ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)), so the in-scope steps are HW-1, HW-2, HW-3, HW-6, HW-7, HW-8, HW-10 and HW-11.** HW-4, HW-5 and HW-9 are iOS-specific and are marked out of scope below rather than deleted: they are the list iOS reinstatement starts from, and deleting them would mean rediscovering it. The IDs never move — issue #39 and the implementation plan both cite them by number.
 
 ## Why an emulator cannot close them
 
@@ -160,13 +160,17 @@ Start from a wiped device with **a screen lock set and no biometric enrolled** (
 
 **A failure in part 3 specifically** means an ungated token outlives the enrolment that should have killed it, which is ADR-0015's covert-enrolment threat left open rather than closed by a different mechanism. Report it against the amendment, not against the OS — nothing here depends on an OS guarantee, which is the whole reason it needs observing.
 
+**Part 4, and it needs different hardware: a handset with NO biometric sensor at all.** An AVD reports biometric hardware, so the emulator cannot produce this state and neither can parts 1 to 3. The first fix for #74 gated the enrolment level on `hasHardwareAsync()` — which reports whether a *scanner* exists — and so locked every sensorless phone out of its own offline diary while reporting "This phone does not have face, fingerprint, or passcode unlock turned on", which was false. **Pass:** with a PIN set and no sensor, the patient reaches the device-credential prompt from **Unlock my diary** and opens the diary offline. Cheap Android handsets and many tablets are this configuration, and it skews toward this patient population rather than away from it.
+
+**Part 5.** Enrol a fingerprint, sign in, then REMOVE the fingerprint in Settings and open the app. **Pass:** the passcode unlock works and the app either syncs or routes to a sign-in explaining it — what must NOT happen is reaching the home screen with sync silently dead forever. That is a gated token whose key the OS invalidated, and it became reachable only once local unlock started accepting the passcode.
+
 **Also record** whether the patient is shown anything about the weaker protection. Nothing is shown today, deliberately (no copy was invented for it), and a run is the first chance to judge whether that is right.
 
 ## Recording a result
 
 A step is closed by a recorded run naming the handset, the OS version, the build, and the outcome — not by an argument that it ought to work. Add a row below, keep the failures, and open a fix rather than editing the step to match what happened.
 
-When every **in-scope** step is closed — HW-1, HW-2, HW-3, HW-6, HW-7, HW-8, HW-10 — CLAUDE.md's "none of the mobile device-side controls are verified on hardware" is the sentence to change, in the same commit. The out-of-scope iOS steps do not hold it open.
+When every **in-scope** step is closed — HW-1, HW-2, HW-3, HW-6, HW-7, HW-8, HW-10, HW-11 — CLAUDE.md's "none of the mobile device-side controls are verified on hardware" is the sentence to change, in the same commit. The out-of-scope iOS steps do not hold it open.
 
 | Step           | Device | OS  | Build | Date | Outcome |
 | -------------- | ------ | --- | ----- | ---- | ------- |

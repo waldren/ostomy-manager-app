@@ -57,11 +57,40 @@ export const mobile = {
   // fallback this population most needs, deliberately enabled in
   // biometricUnlock.ts for the bandaged or post-surgical hand.
   'login.unlockButton': 'Unlock my diary',
-  'login.unlockHint': 'Use your face, fingerprint, or phone passcode.',
+  // "Passcode" is Apple's word, and v1 is Android only (ADR-0020), where Settings
+  // calls this Screen lock and the sheet asks for a PIN, pattern or password. A
+  // patient who unlocks with a pattern was being told to use something their phone
+  // has never called that. Matching the word on the OS screen is the whole job of
+  // this hint.
+  //
+  // It also has to serve a patient with no biometric at all, since #74 made local
+  // unlock available to them — hence "if you set one up" rather than a second
+  // string chosen by an extra async branch.
+  'login.unlockHint':
+    'Use your fingerprint or face, if you set one up. You can also use the PIN, pattern, or password that unlocks this phone.',
   'login.unlockPromptMessage': 'Unlock your ostomy diary',
+  // Reached only when the OS has nothing enrolled to authenticate with at all
+  // (`SecurityLevel.NONE`). It used to be reached by any phone without a biometric,
+  // where it was simply false — the patient's passcode unlock WAS turned on (#74).
   'login.unlockUnavailableBody':
-    'This phone does not have face, fingerprint, or passcode unlock turned on. Sign in again to continue.',
+    'This phone has no fingerprint, face, or screen lock set up, so we cannot unlock your diary here. Sign in again to open it.',
   'login.signInInsteadButton': 'Sign in again instead',
+  // --- Signed out because the phone's unlock settings changed (#74) -----------
+  //
+  // A patient who has been opening "Welcome back / Unlock my diary" for weeks
+  // opens the app to "Sign in to your diary". The most available inference is that
+  // their diary is gone. It is not: the purge touches only the token, and
+  // re-login under the same subject matches the database owner, so nothing is
+  // erased. The patient has no way to know that, which is the same argument
+  // `notProvisioned.*` was written from.
+  //
+  // It must NOT say the patient added a fingerprint. The purge fires on a change
+  // in either direction, and ADR-0015's threat is someone else enrolling one
+  // covertly — naming the patient as the actor is false in exactly the case this
+  // exists for, and it would erase the only signal they will ever get about it.
+  'login.unlockChangedHeading': 'We signed you out to keep your diary safe',
+  'login.unlockChangedBody':
+    'The fingerprint, face, or screen lock on this phone changed. When that happens we sign you out and ask you to sign in again. Nothing you wrote is lost. Your entries are still on this phone.',
   'login.tryAgainButton': 'Try again',
   // Four outcomes, four remedies. One blanket "Something went wrong"
   // covered a failed sign-in, a failed unlock, a cancelled browser and

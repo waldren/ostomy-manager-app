@@ -36,14 +36,34 @@ describe('biometricUnlock', () => {
     mockAuthenticateAsync.mockReset();
   });
 
-  it('is unavailable with no hardware', async () => {
-    mockHasHardwareAsync.mockResolvedValue(false);
-    mockGetEnrolledLevelAsync.mockResolvedValue(3);
+  it('is unavailable when the OS has nothing enrolled to authenticate with', async () => {
+    mockGetEnrolledLevelAsync.mockResolvedValue(0); // NONE
     expect(await isLocalUnlockAvailable()).toBe(false);
 
     const result = await authenticate('prompt');
     expect(result).toEqual({ outcome: 'unavailable' });
     expect(mockAuthenticateAsync).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A handset with a screen lock and NO biometric sensor.
+   *
+   * The first fix for #74 got this wrong in its own turn: it gated the level on
+   * `hasHardwareAsync()`, which reports whether a face or fingerprint SCANNER
+   * exists. `getEnrolledLevelAsync()` answers `SECRET` from the screen lock
+   * alone, so short-circuiting to `NONE` there locked a whole class of cheap
+   * Android handsets out of their own offline diary — the same conflation of "has
+   * biometrics" with "can be authenticated" that #74 was about.
+   */
+  it('is available with a screen lock and no biometric HARDWARE at all', async () => {
+    mockHasHardwareAsync.mockResolvedValue(false);
+    mockGetEnrolledLevelAsync.mockResolvedValue(1); // SECRET
+    mockAuthenticateAsync.mockResolvedValue({ success: true });
+
+    expect(await isLocalUnlockAvailable()).toBe(true);
+    // And it prompts, rather than reporting available and then refusing.
+    expect(await authenticate('prompt')).toEqual({ outcome: 'success' });
+    expect(mockAuthenticateAsync).toHaveBeenCalled();
   });
 
   it('is unavailable with hardware but nothing enrolled at all', async () => {
@@ -77,14 +97,14 @@ describe('biometricUnlock', () => {
     expect(mockAuthenticateAsync).toHaveBeenCalled();
   });
 
-  it('reports NONE when there is no hardware, whatever the OS says about enrolment', async () => {
-    // `getEnrolledLevelAsync` is not consulted, so a device that reports an
-    // enrolment level it cannot honour cannot produce a level this app trusts.
+  it('reports the enrolled level itself, not a hardware verdict', async () => {
+    // The inverse of the assertion that used to be here, which pinned a defect
+    // rather than catching one: it required `NONE` whenever no scanner was
+    // present, which is how a passcode-only handset lost its offline unlock.
     mockHasHardwareAsync.mockResolvedValue(false);
-    mockGetEnrolledLevelAsync.mockResolvedValue(3);
+    mockGetEnrolledLevelAsync.mockResolvedValue(1);
 
-    expect(await enrolledSecurityLevel()).toBe(0);
-    expect(mockGetEnrolledLevelAsync).not.toHaveBeenCalled();
+    expect(await enrolledSecurityLevel()).toBe(1);
   });
 
   it('succeeds when the OS prompt succeeds', async () => {

@@ -45,9 +45,13 @@ import {
 import {
   clearRefreshToken,
   getRefreshToken,
+  clearSignedOutReason,
   hasStoredRefreshToken,
+  readSignedOutReason,
+  recordSignedOutReason,
   setRefreshToken,
   storedTokenIsStaleForEnrolment,
+  type SignedOutReason,
 } from './tokenStorage';
 
 /**
@@ -86,6 +90,15 @@ export interface AuthContextValue {
   readonly reportSignInFailure: () => void;
   /** Clears it, when a fresh attempt starts. */
   readonly clearSignInFailure: () => void;
+  /**
+   * Why the app signed the patient out on its own, if it did (#74).
+   *
+   * Persisted rather than held here, because the purge deletes the marker the
+   * condition is derived from and the remedy is a NETWORK login — a patient who
+   * cannot complete it will close the app and come back, and the explanation has to
+   * still be there. See `tokenStorage.ts`'s `SIGNED_OUT_REASON_KEY`.
+   */
+  readonly signedOutReason: SignedOutReason | undefined;
   readonly accessToken: string | undefined;
   /** Runs the biometric/passcode prompt and, on success, transitions to `authenticated` — see this file's header comment for what a concurrent refresh failure does and does not affect. */
   readonly unlock: () => Promise<LocalUnlockOutcome>;
@@ -125,6 +138,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   const [phase, setPhase] = useState<AuthPhase>('checking');
   const [signInFailed, setSignInFailed] = useState(false);
   const [accessToken, setAccessToken] = useState<string | undefined>(undefined);
+  const [signedOutReason, setSignedOutReason] = useState<SignedOutReason | undefined>(undefined);
   const lastActivityAt = useRef(Date.now());
   const backgroundedAt = useRef(0);
   const config = useMemo(() => getOidcClientConfig(), []);
@@ -160,11 +174,19 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
     tokenIsStale()
       .then(async (stale) => {
-        if (stale) await clearRefreshToken();
-        return hasStoredRefreshToken();
+        if (stale) {
+          // Reason first. If the purge then fails, the patient sees an explanation
+          // for a sign-out that did not happen, which is confusing; the other order
+          // signs them out with no explanation, which is the defect being fixed.
+          // Both self-heal on the next cold start, and the first is the kinder one.
+          await recordSignedOutReason('unlock-settings-changed');
+          await clearRefreshToken();
+        }
+        return Promise.all([hasStoredRefreshToken(), readSignedOutReason()]);
       })
-      .then((hasToken) => {
+      .then(([hasToken, reason]) => {
         if (cancelled) return;
+        setSignedOutReason(reason ?? undefined);
         setPhase(deriveAuthPhase({ hasStoredRefreshToken: hasToken, unlockedThisSession: false }));
       })
       .catch(() => {
@@ -310,6 +332,12 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       // the path this exists for, that screen is about to mount fresh and would
       // otherwise render a stale error over a completed sign-in.
       setSignInFailed(false);
+      // Cleared on success, never on an attempt: a patient who fails one try must
+      // not lose the explanation for why they are signing in at all. Best-effort —
+      // a stale explanation is a far smaller problem than a failed sign-in, and
+      // this runs after the token is already stored.
+      setSignedOutReason(undefined);
+      void clearSignedOutReason().catch(() => undefined);
       setPhase('authenticated');
     },
     [markActivity],
@@ -334,6 +362,34 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     const outcome = await authenticate(i18next.t('mobile:login.unlockPromptMessage'));
     if (outcome.outcome !== 'success') return outcome;
 
+    /**
+     * #74. Checked here as well as at cold start, because an Android process can
+     * live for days and the cold-start check is otherwise the only one.
+     *
+     * Without this, an attacker who enrols their own biometric while the process is
+     * alive can open the app at the lock screen, satisfy the OS prompt with the
+     * print they just added, and have `getRefreshToken()` below hand them a live
+     * bearer credential — no purge, no issuer round trip, no record anywhere. The
+     * gated case has no such window: the OS invalidates the key the moment the
+     * enrolment lands. Two native calls close most of the difference.
+     *
+     * The outcome still reports `success`, because it describes the PROMPT, which
+     * did succeed. The phase is what routes the patient, and it goes to `signedOut`
+     * with the reason recorded, so the login screen can say why.
+     */
+    try {
+      if (await storedTokenIsStaleForEnrolment()) {
+        await recordSignedOutReason('unlock-settings-changed');
+        await clearRefreshToken();
+        setSignedOutReason('unlock-settings-changed');
+        setPhase('signedOut');
+        return outcome;
+      }
+    } catch {
+      // Unreadable keychain says nothing about enrolment — fall through and unlock,
+      // for the same reason the cold-start check answers `false` on failure.
+    }
+
     setPhase('authenticated');
 
     // Best-effort only — see this file's header comment. A failure here
@@ -350,6 +406,28 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
         // was just fixed for.
         const storedRefreshToken = await getRefreshToken();
         if (!storedRefreshToken) {
+          /**
+           * The marker said a session existed and the token is not there, which on a
+           * GATED entry means one thing: the OS invalidated the key because biometric
+           * enrolment changed. This is where that is detected, from the read itself
+           * rather than inferred from `getEnrolledLevelAsync` — which dips on a
+           * locked-out sensor and would purge good sessions (see
+           * `storedTokenIsStaleForEnrolment`).
+           *
+           * Before this, the early return left the patient in `authenticated` with no
+           * access token and no route to a re-login: sync silently never worked again
+           * while every screen truthfully reported entries saved. Reachable only
+           * since local unlock started accepting the device passcode, because until
+           * then such a patient could not get past the prompt at all.
+           *
+           * Deliberately inside `if (discovery)`, so it cannot fire for an offline
+           * patient. They do not need the token yet, and signing them out would
+           * strand them in a network login they cannot complete.
+           */
+          await recordSignedOutReason('unlock-settings-changed');
+          await clearRefreshToken();
+          setSignedOutReason('unlock-settings-changed');
+          setPhase('signedOut');
           return outcome;
         }
         const tokens = await refreshAccessToken(discovery, config, storedRefreshToken);
@@ -476,6 +554,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       signInFailed,
       reportSignInFailure,
       clearSignInFailure,
+      signedOutReason,
     }),
     [
       phase,
@@ -487,6 +566,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       signInFailed,
       reportSignInFailure,
       clearSignInFailure,
+      signedOutReason,
     ],
   );
 

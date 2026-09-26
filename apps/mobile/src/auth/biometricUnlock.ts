@@ -36,13 +36,21 @@ export type LocalUnlockOutcome =
  *
  * `NONE < SECRET < BIOMETRIC_WEAK < BIOMETRIC_STRONG`, and the enum's numeric
  * order is load-bearing in two places: `isLocalUnlockAvailable` below, and
- * `tokenStorage.ts`'s enrolment-rise check, which is why this is exported
+ * `tokenStorage.ts`'s enrolment-change check, which is why this is exported
  * rather than inlined.
+ *
+ * Deliberately NOT gated on `hasHardwareAsync()`. That reports whether a face or
+ * fingerprint **scanner** exists, which is a different question from what the OS
+ * will authenticate with: `getEnrolledLevelAsync()` answers `SECRET` from the
+ * device's screen lock alone, on a handset with no sensor at all. Short-circuiting
+ * to `NONE` there reproduced #74's second defect for every sensorless phone — the
+ * same conflation of "has biometrics" with "can be authenticated" that the check
+ * below exists to undo, one layer further down.
+ *
+ * (`SecurityLevel`'s one caveat — `SECRET` from a SIM lock alone — is documented
+ * as Android before M, which is below Expo SDK 57's minimum, so it cannot occur.)
  */
 export async function enrolledSecurityLevel(): Promise<LocalAuthentication.SecurityLevel> {
-  if (!(await LocalAuthentication.hasHardwareAsync())) {
-    return LocalAuthentication.SecurityLevel.NONE;
-  }
   return LocalAuthentication.getEnrolledLevelAsync();
 }
 

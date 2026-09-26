@@ -80,13 +80,21 @@ const REFRESH_TOKEN_KEY = 'ostomy.auth.refreshToken';
 /**
  * The gated option set — used whenever the OS will accept it.
  *
- * `expo-secure-store` looks up an entry by key AND options, and reading with
- * different options than it was written with silently returns `null` rather than
- * erroring, which presents as "the patient is signed out" on every cold start.
- * There are now two option sets, so no call site may pick one by guessing:
- * `setRefreshToken` records which was used and every read goes through
- * `readMarker`. That indirection is the whole reason the marker holds a value
- * rather than a constant.
+ * Reading an entry with different options than it was written with can silently
+ * return `null` rather than erroring, which presents as "the patient is signed out"
+ * on every cold start. There are now two option sets, so no call site may pick one
+ * by guessing: `setRefreshToken` records which was used and every read goes through
+ * `readMarker`.
+ *
+ * Worth being exact about where that failure lives, since the comments here are
+ * meant to be true of the shipping platform. On **iOS** the keychain query
+ * includes the accessibility class, so a mismatch really does miss the entry. On
+ * **Android** the preference key is `keychainService-key`, `requireAuthentication`
+ * is stored inside the entry and read back from there, and the keystore alias is
+ * derived from the *stored* flag — so a mismatched read still resolves, and this
+ * indirection buys nothing on Android today beyond being right. It is kept because
+ * it is the correct shape for both platforms and because guessing would become a
+ * silent bug the moment iOS is reinstated, not because Android needs it.
  */
 const GATED_TOKEN_OPTIONS: SecureStore.SecureStoreOptions = {
   // Bound to THIS device. Not plain `AFTER_FIRST_UNLOCK`: that variant is
@@ -95,6 +103,14 @@ const GATED_TOKEN_OPTIONS: SecureStore.SecureStoreOptions = {
   // phone a live bearer credential for the patient's account. The
   // `_THIS_DEVICE_ONLY` suffix keeps the locked-device readability this
   // app needs for background refresh while removing the migration path.
+  //
+  // **`keychainAccessible` is iOS-only** and is discarded on Android, where
+  // `SecureStoreOptions` has only `authenticationPrompt`, `keychainService` and
+  // `requireAuthentication`. The no-migration property still holds on the platform
+  // v1 actually ships (ADR-0020), by a different mechanism: the AES key lives in
+  // AndroidKeyStore and is non-exportable, so ciphertext restored onto another
+  // phone has no key to decrypt it. This constant is therefore correct and inert
+  // here, and load-bearing for the phase that reinstates iOS.
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
   // See the module comment. Present on every call for the reason above.
   requireAuthentication: true,
@@ -244,7 +260,7 @@ export async function getRefreshToken(): Promise<string | null> {
 }
 
 export async function setRefreshToken(token: string): Promise<void> {
-  const enrolledLevel = await enrolledSecurityLevel();
+  const [existing, enrolledLevel] = await Promise.all([readMarker(), enrolledSecurityLevel()]);
 
   // `BIOMETRIC_STRONG`, not merely "something is enrolled": `requireAuthentication`
   // creates its keystore key with `AUTH_BIOMETRIC_STRONG`, so a device with only a
@@ -257,15 +273,46 @@ export async function setRefreshToken(token: string): Promise<void> {
   // for some OTHER reason on a device where gating IS possible, silently storing a
   // credential with less protection than the device can provide and than ADR-0015
   // requires. Here that failure still propagates, exactly as it did before.
-  const protection: TokenProtection =
-    enrolledLevel >= LocalAuthentication.SecurityLevel.BIOMETRIC_STRONG ? 'gated' : 'ungated';
+  const deviceCanGateNow = enrolledLevel >= LocalAuthentication.SecurityLevel.BIOMETRIC_STRONG;
+
+  // ...but a live level read is not proof the device CANNOT gate, and this is the
+  // second half of the same argument. `getEnrolledLevelAsync` reports
+  // `BIOMETRIC_STRONG` only while `canAuthenticate(BIOMETRIC_STRONG)` answers
+  // SUCCESS, so a transient state — a sensor locked out after failed attempts,
+  // `BIOMETRIC_ERROR_HW_UNAVAILABLE`, the documented post-OTA
+  // `BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED` — reads as `SECRET` on a phone with
+  // a fingerprint enrolled.
+  //
+  // Deciding from that read alone had two consequences, and the second is worse
+  // than the first. A token that could be gated would be rewritten ungated, which
+  // is exactly the silent downgrade the paragraph above refuses. And the recorded
+  // baseline would become `SECRET`, so the next cold start would see a rise to
+  // `BIOMETRIC_STRONG` and purge — signing the patient out, and telling them their
+  // unlock settings changed, for something that never happened. Offline they could
+  // not complete the re-login at all.
+  //
+  // So an existing gated marker is treated as standing evidence that this device
+  // supports gating: keep gating, and let a rejection propagate. A device that has
+  // GENUINELY lost its biometric does not reach here with a gated marker, because
+  // `storedTokenIsStaleForEnrolment` purges that token — marker included — at the
+  // cold start before this.
+  const gated = deviceCanGateNow || existing?.protection === 'gated';
 
   await SecureStore.setItemAsync(
     REFRESH_TOKEN_KEY,
     token,
-    protection === 'gated' ? GATED_TOKEN_OPTIONS : UNGATED_TOKEN_OPTIONS,
+    gated ? GATED_TOKEN_OPTIONS : UNGATED_TOKEN_OPTIONS,
   );
-  const marker: StoredTokenMarker = { protection, enrolledLevel };
+
+  // Marker last. A rejected token write must not leave a marker behind: the app
+  // would then believe it has a session and route to an unlock that can never
+  // succeed, which is the same failure `clearRefreshToken` orders its deletes to
+  // avoid. `BIOMETRIC_STRONG` for a gated entry because that is what the write it
+  // just completed required and demonstrated — recording a transiently low read
+  // there would be the false baseline this function exists to avoid.
+  const marker: StoredTokenMarker = gated
+    ? { protection: 'gated', enrolledLevel: LocalAuthentication.SecurityLevel.BIOMETRIC_STRONG }
+    : { protection: 'ungated', enrolledLevel };
   await SecureStore.setItemAsync(REFRESH_TOKEN_MARKER_KEY, JSON.stringify(marker), MARKER_OPTIONS);
 }
 
@@ -275,12 +322,29 @@ export async function clearRefreshToken(): Promise<void> {
   // would leave a marker with no token, routing to an unlock that can
   // never succeed.
   await SecureStore.deleteItemAsync(REFRESH_TOKEN_MARKER_KEY, MARKER_OPTIONS);
-  // Both option sets, because the marker naming which one wrote the token has
-  // just been deleted and lookup is by key AND options. Leaving the entry behind
-  // would leave a live bearer credential on a device the patient believes they
-  // have signed out of.
-  await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY, GATED_TOKEN_OPTIONS);
-  await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY, UNGATED_TOKEN_OPTIONS);
+  // Both option sets, because the marker naming which one wrote the token has just
+  // been deleted, and on iOS the keychain query includes the accessibility class.
+  // (On Android the preference key is `keychainService-key` and both calls hit the
+  // same entry, so the second is redundant there — `signOut`'s own comment makes
+  // the same platform distinction.)
+  //
+  // `allSettled`, not sequential awaits: the comment below is about not leaving a
+  // live bearer credential on a device the patient believes they have signed out
+  // of, and a first rejection skipping the second attempt would be that outcome
+  // arrived at by the code meant to prevent it. `signOut` applies the same
+  // discipline for the same reason.
+  const deletes = await Promise.allSettled([
+    SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY, GATED_TOKEN_OPTIONS),
+    SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY, UNGATED_TOKEN_OPTIONS),
+  ]);
+  // Rethrow only when NEITHER attempt got anywhere, so a caller still learns the
+  // token may survive. One success means the entry is gone.
+  const firstRejection = deletes.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (firstRejection !== undefined && deletes.every((result) => result.status === 'rejected')) {
+    throw firstRejection.reason;
+  }
 }
 
 /**
@@ -292,30 +356,133 @@ export async function hasStoredRefreshToken(): Promise<boolean> {
 }
 
 /**
- * Whether the stored token must be discarded because biometric enrolment has
- * appeared since it was written (#74).
+ * Records that the app signed the patient out because the device's unlock settings
+ * changed, so the login screen can say so.
+ *
+ * ## Why this is persisted rather than held in React state
+ *
+ * The purge deletes the marker, so `storedTokenIsStaleForEnrolment()` answers
+ * `false` from then on and the reason cannot be re-derived. State in the provider
+ * would therefore survive exactly one launch — and one launch is not enough,
+ * because the remedy is a **network** OIDC login. A patient who enrolled a
+ * fingerprint and opened the app offline cannot complete it, so they close the app
+ * and come back later, which is the likely path through this state rather than an
+ * edge of it. Second time around they would see a bare "Sign in to your diary"
+ * over what looks like an empty diary, with nothing accounting for either.
+ *
+ * Cleared when a sign-in actually succeeds, not when one is attempted: a patient
+ * who fails an attempt should not lose the explanation.
+ *
+ * Carries no secret and no PHI — it is one enum value — and it is ungated for the
+ * same reason the marker is: it has to be readable before anything prompts.
+ */
+const SIGNED_OUT_REASON_KEY = 'ostomy.auth.signedOutReason';
+
+/**
+ * Deliberately one value covering both directions of change.
+ *
+ * A biometric can appear (an ungated token, ADR-0015's covert-enrolment threat) or
+ * go away (a gated token whose key the OS has now invalidated), and the copy must
+ * not name the patient as the actor in either case: the whole point of the first
+ * is that someone else may have done it.
+ */
+export type SignedOutReason = 'unlock-settings-changed';
+
+export async function recordSignedOutReason(reason: SignedOutReason): Promise<void> {
+  await SecureStore.setItemAsync(SIGNED_OUT_REASON_KEY, reason, MARKER_OPTIONS);
+}
+
+export async function readSignedOutReason(): Promise<SignedOutReason | null> {
+  const raw = await SecureStore.getItemAsync(SIGNED_OUT_REASON_KEY, MARKER_OPTIONS);
+  return raw === 'unlock-settings-changed' ? raw : null;
+}
+
+export async function clearSignedOutReason(): Promise<void> {
+  await SecureStore.deleteItemAsync(SIGNED_OUT_REASON_KEY, MARKER_OPTIONS);
+}
+
+/**
+ * Whether the stored token must be discarded because the device's enrolment state
+ * changed in a way that makes it either unreadable or unprotected (#74).
+ *
+ * Two cases, and they are mirror images.
+ *
+ * ## An ungated token, and a biometric appears
  *
  * This stands in for the OS invalidation an ungated entry does not get, and it is
  * only able to because of what "ungated" implies. ADR-0015 says an app cannot
  * detect an enrolment change — true where a biometric already exists, since
- * `getEnrolledLevelAsync()` reports `BIOMETRIC_STRONG` both before and after a
- * second fingerprint is added. But a token stored ungated was stored with NO
- * biometric enrolled, so any enrolment raises the level, and that is observable.
- * It is also precisely ADR-0015's threat: someone who covertly adds their own
- * biometric to the patient's phone.
+ * `getEnrolledLevelAsync()` reports the same level before and after a second
+ * fingerprint is added. But a token stored ungated on a device at `NONE` or
+ * `SECRET` was stored with no biometric enrolled at all, so a first enrolment
+ * raises the level, and that is observable. It is also precisely ADR-0015's threat:
+ * someone who covertly adds their own biometric to the patient's phone.
  *
- * A rise forces a full OIDC re-login, which is the same consequence ADR-0015
- * specifies for the gated case, reached by a different mechanism. It also
- * upgrades the protection for free: the token written after that login is gated,
- * because the level now permits it.
+ * **Not** every ungated token, though, and the difference matters because it is
+ * easy to state this rule too strongly. A `BIOMETRIC_WEAK` device also takes the
+ * ungated path — a Class 2 sensor cannot back an `AUTH_BIOMETRIC_STRONG` key — and
+ * there the level is `BIOMETRIC_WEAK` before and after a second face is enrolled,
+ * so that covert enrolment is NOT detected. The exposure is narrow, since enrolling
+ * requires the device credential, which already satisfies this app's own prompt.
+ * It is listed below rather than left to be rediscovered.
  *
- * What it does NOT catch, stated plainly: a passcode changed while remaining a
- * passcode (`SECRET` to `SECRET`), and tampering with the marker itself, which is
- * ungated by necessity. Both need the attacker to have the device already
- * unlocked, at which point they can read the diary regardless.
+ * The purge also upgrades the protection for free where it can: the token written
+ * by the forced re-login is gated, if the new level permits it.
+ *
+ * ## A gated token whose key is gone is NOT decided here
+ *
+ * That state is real and worth handling — making local unlock accept the device
+ * passcode opened a route to it that did not exist before, where the patient
+ * authenticates with their PIN, reaches `authenticated`, and the token read yields
+ * nothing, so no access token ever arrives and nothing syncs while every screen
+ * truthfully reports entries saved.
+ *
+ * But it must not be inferred from the level, and the reason is the same one that
+ * shapes `setRefreshToken`. `getEnrolledLevelAsync` drops to `SECRET` on a phone
+ * with a fingerprint whenever `canAuthenticate(BIOMETRIC_STRONG)` is momentarily
+ * not SUCCESS — a sensor locked out after failed attempts, `HW_UNAVAILABLE`, the
+ * post-OTA `SECURITY_UPDATE_REQUIRED`. A rule of "gated and the level fell" would
+ * therefore purge a perfectly good session on any launch during a lockout, which is
+ * frequent, and tell the patient their unlock settings changed when they had not.
+ *
+ * `AuthContext`'s `unlock()` handles it instead, from ground truth: it reads the
+ * token, and an invalidated key yields nothing. No inference, no false positive,
+ * and nothing happens to an offline patient who does not need the token yet.
+ *
+ * ## The residual false positive, stated rather than hidden
+ *
+ * The rise rule above is safe against that transient state in every case but one,
+ * because a momentary `canAuthenticate` failure LOWERS the reported level and a
+ * lower level cannot look like a rise. The exception is a first-ever sign-in that
+ * happens during such a moment on a phone that does have a strong biometric: the
+ * token is stored ungated with a low baseline, and the next launch reads a rise.
+ * The cost is one spurious re-login, after which the token is gated correctly. It
+ * needs a network, so it is not free, and it is the one case where this mechanism
+ * can sign out a patient who did nothing.
+ *
+ * ## What neither case catches, stated plainly
+ *
+ * A passcode changed while remaining a passcode (`SECRET` to `SECRET`); a second
+ * Class 2 biometric enrolled on a `BIOMETRIC_WEAK` device, per the paragraph above;
+ * a second fingerprint added to a device that already had a strong one (the OS
+ * handles that one, which is the whole point of the gated case); and tampering with
+ * the marker itself, which is ungated by necessity. The last needs the attacker to
+ * have the device already unlocked, at which point they can read the diary
+ * regardless.
+ *
+ * It is also checked at two moments only — cold start and unlock — so an enrolment
+ * that lands while the process is alive is not noticed until one of those. The
+ * gated case has no such window, because the OS invalidates the key immediately.
+ * The two mechanisms differ in timing, and that difference is not a detail the
+ * amendment should have left implicit.
  */
 export async function storedTokenIsStaleForEnrolment(): Promise<boolean> {
   const marker = await readMarker();
+  // A gated token is the OS's to invalidate, and `unlock()` detects the result by
+  // reading it. See the comment above for why this must not guess from the level.
   if (marker === null || marker.protection === 'gated') return false;
+  // Strictly greater: a level that FELL means the patient removed a screen lock,
+  // which hands nobody anything. Signing them out of an offline diary for it would
+  // be a lockout with no threat behind it.
   return (await enrolledSecurityLevel()) > marker.enrolledLevel;
 }
