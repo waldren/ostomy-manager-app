@@ -379,14 +379,24 @@ export async function hasStoredRefreshToken(): Promise<boolean> {
 const SIGNED_OUT_REASON_KEY = 'ostomy.auth.signedOutReason';
 
 /**
- * Deliberately one value covering both directions of change.
+ * Why the app ended the session, from the patient's point of view.
  *
- * A biometric can appear (an ungated token, ADR-0015's covert-enrolment threat) or
- * go away (a gated token whose key the OS has now invalidated), and the copy must
- * not name the patient as the actor in either case: the whole point of the first
- * is that someone else may have done it.
+ * `unlock-settings-changed` deliberately covers both directions of an enrolment
+ * change. A biometric can appear (an ungated token, ADR-0015's covert-enrolment
+ * threat) or go away (a gated token whose key the OS has now invalidated), and the
+ * copy must not name the patient as the actor in either case: the whole point of
+ * the first is that someone else may have done it.
+ *
+ * `session-expired` is separate rather than folded in, because the enrolment copy
+ * makes a statement about the phone's security that would be false here — the
+ * refresh token was simply rejected by the issuer (#40).
  */
-export type SignedOutReason = 'unlock-settings-changed';
+export type SignedOutReason = 'unlock-settings-changed' | 'session-expired';
+
+const SIGNED_OUT_REASONS: readonly SignedOutReason[] = [
+  'unlock-settings-changed',
+  'session-expired',
+];
 
 export async function recordSignedOutReason(reason: SignedOutReason): Promise<void> {
   await SecureStore.setItemAsync(SIGNED_OUT_REASON_KEY, reason, MARKER_OPTIONS);
@@ -394,7 +404,9 @@ export async function recordSignedOutReason(reason: SignedOutReason): Promise<vo
 
 export async function readSignedOutReason(): Promise<SignedOutReason | null> {
   const raw = await SecureStore.getItemAsync(SIGNED_OUT_REASON_KEY, MARKER_OPTIONS);
-  return raw === 'unlock-settings-changed' ? raw : null;
+  // Membership rather than a single comparison, so adding a reason cannot silently
+  // read back as "no reason" and put the patient on a bare sign-in screen again.
+  return SIGNED_OUT_REASONS.find((reason) => reason === raw) ?? null;
 }
 
 export async function clearSignedOutReason(): Promise<void> {

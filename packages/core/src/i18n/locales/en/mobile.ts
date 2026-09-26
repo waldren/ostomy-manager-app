@@ -88,6 +88,19 @@ export const mobile = {
   // in either direction, and ADR-0015's threat is someone else enrolling one
   // covertly — naming the patient as the actor is false in exactly the case this
   // exists for, and it would erase the only signal they will ever get about it.
+  // --- Signed out because the issuer rejected the refresh token (#40) ---------
+  //
+  // Separate from the enrolment copy below, which makes a claim about the phone's
+  // security that would be false here. This is an ordinary expired or revoked
+  // sign-in, and the patient did nothing.
+  //
+  // It has to say that the entries are safe, because they ARE: the purge clears the
+  // token only, and ADR-0014 deliberately keeps the SQLCipher key ungated so the
+  // diary and anything still queued survive. Without that sentence a patient who
+  // opens the app to a sign-in screen has every reason to assume the opposite.
+  'login.sessionEndedHeading': 'Please sign in again',
+  'login.sessionEndedBody':
+    'Your sign-in has run out, so we need to check it is you again. Nothing you wrote is lost. Your entries are still on this phone and will send once you are back in.',
   'login.unlockChangedHeading': 'We signed you out to keep your diary safe',
   'login.unlockChangedBody':
     'The fingerprint, face, or screen lock on this phone changed. When that happens we sign you out and ask you to sign in again. Nothing you wrote is lost. Your entries are still on this phone.',

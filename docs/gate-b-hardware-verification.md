@@ -104,7 +104,12 @@ Enrol one fingerprint, sign in, add a second fingerprint in Settings, cold-start
 
 **Pass, both halves:** the stored refresh token is unreadable and the app routes to a full OIDC sign-in, **and the local diary survives**. ADR-0014 deliberately leaves `requireAuthentication` off the database key so that adding a fingerprint never costs the patient unsynced entries; the second half is the one that is easy to forget and expensive to get wrong.
 
-**Expect the first half to fail as currently built.** From the code rather than from a run: `AuthContext.unlock()` reads the token inside a `try` whose `catch` is deliberately silent, and `hasStoredRefreshToken()` answers from a separate non-authenticated marker that an invalidation does not clear. An invalidated token therefore looks like an ordinary failed refresh — the app unlocks, reports an authenticated session, holds no access token, syncs nothing, and offers no route to the sign-in screen. If a handset confirms that, it is a defect in `AuthContext.tsx`/`tokenStorage.ts`, not a finding about the OS, and ADR-0015's "forces a full OIDC re-login" describes an intention the build does not implement.
+**This step used to say "expect the first half to fail", and that prediction was right.** `AuthContext.unlock()` read the token inside a `try` whose `catch` was deliberately silent, and `hasStoredRefreshToken()` answers from a separate non-authenticated marker that an invalidation does not clear — so an invalidated token looked like an ordinary failed refresh: the app unlocked, reported an authenticated session, held no access token, synced nothing, and offered no route to the sign-in screen. `SyncProvider` gates on that phase, so the worker also ran on a timer with no credential and was refused every time. Fixed under **#40**, in two halves that are worth checking separately here:
+
+- An invalidated key reads as nothing, and `unlock()` now treats a missing token as a session that is over: it purges and routes to sign-in with `login.unlockChanged*`.
+- A refresh the issuer **rejects** (`invalid_grant`) is told apart from one that merely failed, and ends the session with `login.sessionEnded*`. A network failure or a 5xx still keeps the session, deliberately.
+
+So the step now verifies a fix rather than an expected failure. **A failure here is a regression in `AuthContext.tsx`/`tokenStorage.ts`, not a finding about the OS** — and if the app reaches the home screen with sync permanently dead, that is precisely #40 returning.
 
 ### HW-7 — a Class 2-only handset falls back to the passcode instead of dead-ending
 

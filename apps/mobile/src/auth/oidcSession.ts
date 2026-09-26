@@ -213,6 +213,45 @@ export async function refreshAccessToken(
   return toOidcTokens(response);
 }
 
+/**
+ * Whether a failed refresh means the refresh token itself is dead, as opposed to
+ * the provider being unreachable (#40).
+ *
+ * The distinction is the whole issue. Both arrive as a thrown error from
+ * `refreshAccessToken`, and treating them alike is why an expired session left the
+ * app reporting `authenticated` while holding no access token: nothing synced, no
+ * screen said anything, and there was no route to a sign-in.
+ *
+ * RFC 6749 §5.2's `invalid_grant` is the terminal one — "the provided authorization
+ * grant ... or refresh token is invalid, expired, revoked, does not match the
+ * redirection URI ... or was issued to another client". No amount of retrying fixes
+ * any of those; only a full OIDC login does.
+ *
+ * Everything else is deliberately NOT terminal, and the list is short on purpose. A
+ * network failure, a timeout, a 5xx, `temporarily_unavailable`, an undecodable body:
+ * all mean *unknown fate*, and the session must survive them, because this app is
+ * used offline by design and signing a patient out of a diary they can still write
+ * in would be the worse error. That is the same discipline `docs/sync-contract.md`
+ * §9.3 imposes on the sync worker for the same reason.
+ *
+ * `invalid_client` and `unauthorized_client` are excluded too, though they look
+ * terminal: they describe a client registration or deployment fault, so a re-login
+ * would fail in exactly the same way. Signing the patient out would cost them their
+ * offline access and fix nothing.
+ *
+ * `expo-auth-session` throws `TokenError`, whose `code` is the raw OAuth error
+ * string (it reaches `CodedError` as `super(error, ...)`) and whose `params` holds
+ * the response verbatim. Both are read, because `code` is the documented accessor
+ * and `params.error` is the source it comes from.
+ */
+export function isRefreshTokenRejected(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { code, params } = error as { code?: unknown; params?: unknown };
+  if (code === 'invalid_grant') return true;
+  if (typeof params !== 'object' || params === null) return false;
+  return (params as { error?: unknown }).error === 'invalid_grant';
+}
+
 export { useAuthRequest, useAutoDiscovery } from 'expo-auth-session';
 
 /**

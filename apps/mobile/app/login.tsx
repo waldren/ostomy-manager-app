@@ -203,6 +203,19 @@ export default function Login(): React.JSX.Element {
               <BodyText>{t('login.unlockChangedBody')}</BodyText>
             </>
           ) : null}
+          {/*
+            An ordinary expired or revoked sign-in (#40). Separate copy from the
+            enrolment case above, which asserts something about the phone's security
+            that is not true here — the patient did nothing, and telling them their
+            unlock settings changed would send them looking for a problem that does
+            not exist.
+          */}
+          {signedOutReason === 'session-expired' ? (
+            <>
+              <Heading level={2}>{t('login.sessionEndedHeading')}</Heading>
+              <BodyText>{t('login.sessionEndedBody')}</BodyText>
+            </>
+          ) : null}
           <BodyText>{t('login.signedOutBody')}</BodyText>
           <Button
             label={t('login.signInButton')}

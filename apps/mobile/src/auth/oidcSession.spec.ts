@@ -23,7 +23,11 @@ jest.mock('expo-web-browser', () => ({
 import type { AuthRequest, AuthSessionResult } from 'expo-auth-session';
 
 import type { OidcClientConfig } from './oidcConfig';
-import { buildAuthRequestConfig, extractAuthorizationCode } from './oidcSession';
+import {
+  buildAuthRequestConfig,
+  extractAuthorizationCode,
+  isRefreshTokenRejected,
+} from './oidcSession';
 
 const CONFIG: OidcClientConfig = {
   issuer: 'http://localhost:8090/patient-issuer',
@@ -78,5 +82,53 @@ describe('extractAuthorizationCode', () => {
     const response = successResult({ code: 'auth-code-123' });
 
     expect(extractAuthorizationCode(requestWithoutVerifier, response)).toBeUndefined();
+  });
+});
+
+/**
+ * #40. Both a dead refresh token and an unreachable provider arrive as a thrown
+ * error from `refreshAccessToken`, and treating them alike is what left the app
+ * reporting an authenticated session while holding no access token.
+ */
+describe('isRefreshTokenRejected', () => {
+  /** What `expo-auth-session`'s `TokenError` actually looks like: `code` is the raw OAuth error, `params` the response. */
+  function tokenError(error: string): Error & { code: string; params: Record<string, string> } {
+    return Object.assign(new Error(error), { code: error, params: { error } });
+  }
+
+  it('is true for invalid_grant, the one terminal case', async () => {
+    expect(isRefreshTokenRejected(tokenError('invalid_grant'))).toBe(true);
+  });
+
+  it('reads params.error when code is absent', async () => {
+    // `code` is the documented accessor and `params` is the source it comes from;
+    // a provider or library version that populates only one must still be understood.
+    expect(isRefreshTokenRejected({ params: { error: 'invalid_grant' } })).toBe(true);
+  });
+
+  it('is false for a network failure, which means unknown fate', async () => {
+    // The session must survive this. The app is used offline by design, and signing a
+    // patient out of a diary they can still write in is the worse of the two errors.
+    expect(isRefreshTokenRejected(new TypeError('Network request failed'))).toBe(false);
+  });
+
+  it('is false for a transient server error', async () => {
+    expect(isRefreshTokenRejected(tokenError('temporarily_unavailable'))).toBe(false);
+  });
+
+  /**
+   * Excluded on purpose, though they look terminal: both describe a client
+   * registration or deployment fault, so a re-login fails identically. Signing the
+   * patient out would cost them offline access and fix nothing.
+   */
+  it('is false for client-configuration errors', async () => {
+    expect(isRefreshTokenRejected(tokenError('invalid_client'))).toBe(false);
+    expect(isRefreshTokenRejected(tokenError('unauthorized_client'))).toBe(false);
+  });
+
+  it('is false for anything that is not an error object', async () => {
+    expect(isRefreshTokenRejected(undefined)).toBe(false);
+    expect(isRefreshTokenRejected(null)).toBe(false);
+    expect(isRefreshTokenRejected('invalid_grant')).toBe(false);
   });
 });
