@@ -121,7 +121,7 @@ export function SyncProvider({
   maxOperationsPerBatch = DEFAULT_MAX_OPERATIONS_PER_BATCH,
   client,
 }: SyncProviderProps): React.JSX.Element {
-  const { phase, accessToken } = useAuth();
+  const { phase, accessToken, getFreshAccessToken } = useAuth();
   const database = useDatabaseState();
 
   const [isRunning, setIsRunning] = useState(false);
@@ -130,17 +130,27 @@ export function SyncProvider({
 
   const schedulerRef = useRef<SchedulerState>(INITIAL_SCHEDULER_STATE);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // Read through a ref inside the cycle rather than captured in the closure:
-  // the gate holds one `run` for its lifetime, and a token captured at mount
-  // would be the one this app had before its first refresh.
-  const accessTokenRef = useRef<string | undefined>(accessToken);
-  accessTokenRef.current = accessToken;
+  /**
+   * Read through a ref inside the cycle rather than captured in the closure: the gate
+   * holds one `run` for its lifetime, and an accessor captured at mount would close
+   * over a stale `discovery`.
+   *
+   * It is now the auth layer's `getFreshAccessToken` rather than the token itself,
+   * which is what closes the `expiresAtSeconds` gap: an access token lives for
+   * minutes and a session lives for days, so a cycle reading the token directly sent
+   * a lapsed credential, took a 401, and stopped with `unauthenticated` — a stop that
+   * schedules no retry, so nothing recovered until the next lock and unlock. Putting
+   * the freshness check at the ONE place every request passes through means no call
+   * site has to remember it.
+   */
+  const getAccessTokenRef = useRef(getFreshAccessToken);
+  getAccessTokenRef.current = getFreshAccessToken;
 
   const port = useMemo<SyncClientPort | undefined>(() => {
     if (client) return client;
     const api = createApiClient({
       baseUrl: loadEnv().apiUrl,
-      getAccessToken: () => accessTokenRef.current,
+      getAccessToken: () => getAccessTokenRef.current(),
     });
     return {
       push: (request) => api.sync.push(request as Parameters<typeof api.sync.push>[0]),

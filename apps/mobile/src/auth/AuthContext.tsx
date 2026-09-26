@@ -38,6 +38,7 @@ import { purgeLocalDatabase } from '../db/purge';
 import { getOidcClientConfig } from './oidcConfig';
 import {
   useAutoDiscovery,
+  accessTokenNeedsRenewal,
   isRefreshTokenRejected,
   refreshAccessToken,
   revokeRefreshToken,
@@ -101,6 +102,23 @@ export interface AuthContextValue {
    */
   readonly signedOutReason: SignedOutReason | undefined;
   readonly accessToken: string | undefined;
+  /**
+   * The access token to put on the next request, refreshed first if it is at or near
+   * expiry.
+   *
+   * Every API call goes through this rather than reading `accessToken` directly, and
+   * that is the point: an access token lives for minutes and a session lives for
+   * days, so expiry mid-session is the ordinary case, not an edge. Before this,
+   * `expiresAtSeconds` was captured and never consulted — so a token simply lapsed,
+   * every request 401'd, the sync worker stopped with `unauthenticated` (which
+   * schedules no retry), and nothing recovered until the next lock and unlock. Same
+   * silent symptom as #40 and #59, a third cause.
+   *
+   * Returns `undefined` when there is nothing to send — offline with a lapsed token,
+   * or no session at all. The caller then gets a 401 and the worker's ordinary
+   * unauthenticated handling, which is correct: this cannot invent a credential.
+   */
+  readonly getFreshAccessToken: () => Promise<string | undefined>;
   /** Runs the biometric/passcode prompt and, on success, transitions to `authenticated` — see this file's header comment for what a concurrent refresh failure does and does not affect. */
   readonly unlock: () => Promise<LocalUnlockOutcome>;
   /** Called by `app/login.tsx` once the OIDC code exchange succeeds. Persists the refresh token (if the provider returned one) and transitions to `authenticated`. */
@@ -109,6 +127,24 @@ export interface AuthContextValue {
   /** Screens call this on meaningful interaction so the foreground idle lock does not fire mid-use. */
   readonly markActivity: () => void;
 }
+
+/**
+ * What happened when the app tried to obtain a fresh access token.
+ *
+ * A result rather than a thrown error, because the four failures call for four
+ * different responses and `unlock()` is the only caller that can make some of them
+ * — re-locking, in particular, is a screen-level decision.
+ */
+type AccessTokenRenewal =
+  | { readonly outcome: 'renewed'; readonly accessToken: string }
+  /** The marker said a session existed and the stored token is gone: an OS-invalidated key. */
+  | { readonly outcome: 'no-session' }
+  /** The keychain read itself threw — a cancelled sheet, a locked-out sensor. Says nothing about the session. */
+  | { readonly outcome: 'unreadable' }
+  /** The issuer rejected the refresh token. The session has already been ended. */
+  | { readonly outcome: 'rejected' }
+  /** Unknown fate: offline, no discovery document yet, a 5xx. The session survives. */
+  | { readonly outcome: 'unavailable' };
 
 /**
  * How long the app may sit backgrounded before it re-locks on return.
@@ -140,6 +176,21 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   const [signInFailed, setSignInFailed] = useState(false);
   const [accessToken, setAccessToken] = useState<string | undefined>(undefined);
   const [signedOutReason, setSignedOutReason] = useState<SignedOutReason | undefined>(undefined);
+  // Mirrors of the token, for the async accessor below. It is a stable callback so
+  // that `SyncProvider`'s client is not rebuilt on every token change, which means
+  // it must not read either value from a closure.
+  const accessTokenRef = useRef<string | undefined>(undefined);
+  accessTokenRef.current = accessToken;
+  /**
+   * When the current access token expires, in epoch seconds, or `undefined` for "the
+   * provider did not say".
+   *
+   * A ref and not state on purpose: nothing renders it, and making it state would
+   * re-render every consumer of this context on each refresh for no visible change.
+   */
+  const accessTokenExpiresAtRef = useRef<number | undefined>(undefined);
+  /** Single-flight guard — see `renewAccessToken`. */
+  const renewalInFlight = useRef<Promise<AccessTokenRenewal> | undefined>(undefined);
   const lastActivityAt = useRef(Date.now());
   const backgroundedAt = useRef(0);
   const config = useMemo(() => getOidcClientConfig(), []);
@@ -329,6 +380,10 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
         await setRefreshToken(tokens.refreshToken);
       }
       setAccessToken(tokens.accessToken);
+      // Recorded here too, not only on refresh: without it the token from a fresh
+      // sign-in has no known expiry, so the accessor would treat it as
+      // never-expiring and the first lapse would be a silent 401 again.
+      accessTokenExpiresAtRef.current = tokens.expiresAtSeconds;
       markActivity();
       // A success clears any earlier failure here, not in the login screen: on
       // the path this exists for, that screen is about to mount fresh and would
@@ -393,6 +448,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     // claiming less than the session holds is the mirror of the bug this whole
     // change is about.
     setAccessToken(undefined);
+    accessTokenExpiresAtRef.current = undefined;
     setPhase('signedOut');
   }, []);
 
@@ -403,6 +459,127 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   const clearSignInFailure = useCallback(() => {
     setSignInFailed(false);
   }, []);
+
+  /**
+   * Exchanges the stored refresh token for a new access token. The **only** place
+   * this app refreshes.
+   *
+   * ## Single-flight, and why that is a correctness requirement
+   *
+   * Concurrent refreshes are not merely wasteful. An issuer that ROTATES refresh
+   * tokens invalidates the superseded one, so the second of two overlapping
+   * refreshes gets `invalid_grant` — and this app treats `invalid_grant` as "the
+   * session is over" (#40), so it would sign the patient out of a perfectly good
+   * session. `isRefreshTokenRejected` records that hazard and says a single-flight
+   * guard is what a background refresh needs first; making every API call able to
+   * trigger a refresh is exactly that background refresh, so here is the guard.
+   * Cognito does not rotate, but the app must not depend on which issuer it is
+   * pointed at.
+   *
+   * Callers awaiting an in-flight attempt get its result rather than starting
+   * another, which also means a burst of requests at cold start produces one refresh.
+   *
+   * ## Why it reports instead of throwing
+   *
+   * The four failures need four different responses, and only `unlock()` can make
+   * some of them — re-locking the app is a decision about a screen, not about a
+   * token. See `AccessTokenRenewal`.
+   */
+  const renewAccessToken = useCallback(async (): Promise<AccessTokenRenewal> => {
+    const existing = renewalInFlight.current;
+    if (existing !== undefined) return existing;
+
+    const attempt = (async (): Promise<AccessTokenRenewal> => {
+      try {
+        // No discovery document means no token endpoint to ask, which is the
+        // ordinary offline case rather than a failure.
+        if (!discovery) return { outcome: 'unavailable' };
+
+        /**
+         * The read is separated from the refresh because a read that throws and a
+         * read that answers nothing mean different things, and one shared `try`
+         * conflated them back into #40 (found by review).
+         *
+         * A rejection is not an `invalid_grant`, so it used to fall through to the
+         * swallow and leave the app `authenticated` holding no access token — the
+         * pre-#40 state exactly. Three things reach it: the patient cancelling the OS
+         * sheet that a gated read raises on Android, biometry locked out after failed
+         * presses, and an invalidated key IF the platform surfaces that as a
+         * rejection rather than as `null`. That last is **unverified** — Android's
+         * `SecureStoreModule` returns `null`, but nothing has run on hardware and iOS
+         * may differ — so both answers are handled.
+         */
+        let storedRefreshToken: string | null = null;
+        try {
+          storedRefreshToken = await getRefreshToken();
+        } catch {
+          // Nothing may be logged: the only values in scope are a bearer credential
+          // and a keychain error (CLAUDE.md, "never log PHI").
+          return { outcome: 'unreadable' };
+        }
+
+        /**
+         * The marker said a session existed and the token is not there, which on a
+         * GATED entry means one thing: the OS invalidated the key because biometric
+         * enrolment changed. Detected from the read itself rather than inferred from
+         * `getEnrolledLevelAsync`, which dips on a locked-out sensor and would purge
+         * good sessions (see `storedTokenIsStaleForEnrolment`).
+         *
+         * Before this was handled, the patient sat in `authenticated` with no access
+         * token and no route to a re-login: sync silently never worked again while
+         * every screen truthfully reported entries saved.
+         */
+        if (!storedRefreshToken) return { outcome: 'no-session' };
+
+        const tokens = await refreshAccessToken(discovery, config, storedRefreshToken);
+        accessTokenExpiresAtRef.current = tokens.expiresAtSeconds;
+        setAccessToken(tokens.accessToken);
+        if (tokens.refreshToken !== undefined) {
+          await setRefreshToken(tokens.refreshToken);
+        }
+        return { outcome: 'renewed', accessToken: tokens.accessToken };
+      } catch (error) {
+        /**
+         * #40. A refresh the ISSUER rejected is not an unknown fate.
+         *
+         * `invalid_grant` means the refresh token is expired, revoked, or not ours
+         * (RFC 6749 §5.2). Nothing retries out of that, so the session is over.
+         * `isRefreshTokenRejected` is deliberately narrow — a network failure, a 5xx
+         * or `temporarily_unavailable` all keep the session, because this app is used
+         * offline by design and signing a patient out of a diary they can still write
+         * in is the worse of the two errors.
+         */
+        if (isRefreshTokenRejected(error)) {
+          await endSession('session-expired');
+          return { outcome: 'rejected' };
+        }
+        // Nothing PHI-bearing or security-sensitive may be logged from here in any
+        // case, and there is no crash-reporting sink to log it to.
+        return { outcome: 'unavailable' };
+      } finally {
+        renewalInFlight.current = undefined;
+      }
+    })();
+
+    renewalInFlight.current = attempt;
+    return attempt;
+  }, [discovery, config, endSession]);
+
+  /**
+   * See `AuthContextValue.getFreshAccessToken`. Stable, and reads both values through
+   * refs, so `SyncProvider`'s API client is not rebuilt whenever the token changes.
+   */
+  const getFreshAccessToken = useCallback(async (): Promise<string | undefined> => {
+    const current = accessTokenRef.current;
+    if (
+      current !== undefined &&
+      !accessTokenNeedsRenewal(accessTokenExpiresAtRef.current, Date.now())
+    ) {
+      return current;
+    }
+    const renewal = await renewAccessToken();
+    return renewal.outcome === 'renewed' ? renewal.accessToken : undefined;
+  }, [renewAccessToken]);
 
   const unlock = useCallback(async (): Promise<LocalUnlockOutcome> => {
     // `expo-local-authentication`'s `promptMessage` is rendered by the
@@ -442,113 +619,30 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
     setPhase('authenticated');
 
-    // Best-effort only — see this file's header comment. A failure here
-    // (offline, expired refresh token, provider unreachable) never
-    // reverts the phase transition above; it only means `accessToken`
-    // stays unset until the next successful attempt, which blocks a
-    // sync network call and nothing else.
-    if (discovery) {
-      /**
-       * The read is in its OWN try, because a read that throws and a read that
-       * answers nothing mean different things, and the shared `try` conflated them
-       * back into #40 (found by review).
-       *
-       * A rejection is not an `invalid_grant`, so it used to fall through to the
-       * silent swallow below and leave the app `authenticated` holding no access
-       * token — the pre-#40 state exactly. Three things reach it: the patient
-       * cancelling the OS sheet that a gated read raises on Android, biometry locked
-       * out after failed presses, and an invalidated key IF the platform surfaces
-       * that as a rejection rather than as `null`.
-       *
-       * That last one matters most and is **unverified**: the comment below asserts
-       * an invalidated key "yields nothing", and on Android `SecureStoreModule`
-       * does return `null`, but nothing has run on hardware and iOS may differ. So
-       * this path must be correct whichever way it goes.
-       *
-       * It re-**locks** rather than signing out. An unreadable keychain says nothing
-       * about whether a session exists — the same argument the cold-start fallback
-       * makes when it fails toward `locked` — and the patient can simply press
-       * Unlock again. Signing them out would push an offline patient into a network
-       * login for a condition that may clear on the next press.
-       */
-      let storedRefreshToken: string | null = null;
-      try {
-        storedRefreshToken = await getRefreshToken();
-      } catch {
-        // Nothing may be logged here: the only values in scope are a bearer
-        // credential and a keychain error (CLAUDE.md, "never log PHI").
-        lock();
-        return outcome;
-      }
-
-      try {
-        // The read above prompts for biometrics on a gated entry, which is why it
-        // is guarded at all — a cancelled sheet rejected out of `unlock()`, and
-        // `handleUnlock` has no catch, so it became an unhandled rejection with
-        // nothing shown. The same defect signOut was fixed for.
-        if (!storedRefreshToken) {
-          /**
-           * The marker said a session existed and the token is not there, which on a
-           * GATED entry means one thing: the OS invalidated the key because biometric
-           * enrolment changed. This is where that is detected, from the read itself
-           * rather than inferred from `getEnrolledLevelAsync` — which dips on a
-           * locked-out sensor and would purge good sessions (see
-           * `storedTokenIsStaleForEnrolment`).
-           *
-           * Before this, the early return left the patient in `authenticated` with no
-           * access token and no route to a re-login: sync silently never worked again
-           * while every screen truthfully reported entries saved. Reachable only
-           * since local unlock started accepting the device passcode, because until
-           * then such a patient could not get past the prompt at all.
-           *
-           * Deliberately inside `if (discovery)`, so it cannot fire for an offline
-           * patient. They do not need the token yet, and signing them out would
-           * strand them in a network login they cannot complete.
-           */
-          await endSession('unlock-settings-changed');
-          return outcome;
-        }
-        const tokens = await refreshAccessToken(discovery, config, storedRefreshToken);
-        setAccessToken(tokens.accessToken);
-        if (tokens.refreshToken !== undefined) {
-          await setRefreshToken(tokens.refreshToken);
-        }
-      } catch (error) {
-        /**
-         * #40. A refresh the ISSUER rejected is not an unknown fate, and treating it
-         * as one is the defect.
-         *
-         * `invalid_grant` means the refresh token is expired, revoked, or not ours
-         * (RFC 6749 §5.2). Retrying cannot fix it and nothing else will either, so
-         * the session is over — but the catch below swallowed it identically to a
-         * network failure, leaving the app in `authenticated` holding no access
-         * token. `SyncProvider` gates on exactly that phase, so the worker then ran
-         * on a timer with no credential and was refused every time, while every
-         * screen truthfully reported entries saved and nothing offered a way back
-         * in. The patient's diary silently stopped syncing.
-         *
-         * `isRefreshTokenRejected` is deliberately narrow — see its comment. A
-         * network failure, a 5xx or `temporarily_unavailable` still fall through to
-         * the swallow below and keep the session, because this app is used offline
-         * by design and signing a patient out of a diary they can still write in
-         * would be the worse error of the two.
-         */
-        if (isRefreshTokenRejected(error)) {
-          await endSession('session-expired');
-          return outcome;
-        }
-        // Deliberately swallowed — see header comment. Nothing PHI-bearing
-        // or security-sensitive may be logged from a catch here in any
-        // case (CLAUDE.md "never log PHI"; this app has no crash-reporting
-        // sink at all per docs/sync-contract.md §10's BAA note), and a
-        // failed refresh whose fate is UNKNOWN has a defined, safe fallback:
-        // the next screen that actually needs a network call surfaces its own
-        // failure.
-      }
+    /**
+     * Best-effort, and `renewAccessToken` is now the single place this happens (the
+     * `expiresAtSeconds` gap). A failure never reverts the phase transition above; it
+     * means `accessToken` stays unset until something asks for one again, which blocks
+     * a sync network call and nothing else.
+     */
+    const renewal = await renewAccessToken();
+    if (renewal.outcome === 'unreadable') {
+      // Re-locks rather than signing out. An unreadable keychain says nothing about
+      // whether a session exists — the same argument the cold-start fallback makes —
+      // and the patient can simply press Unlock again. Signing them out would push an
+      // offline patient into a network login for a condition that may clear.
+      lock();
+      return outcome;
     }
+    if (renewal.outcome === 'no-session') {
+      await endSession('unlock-settings-changed');
+      return outcome;
+    }
+    // 'rejected' has already ended the session; 'unavailable' is the documented
+    // offline fallback; 'renewed' is the happy path.
 
     return outcome;
-  }, [discovery, config, endSession, lock]);
+  }, [renewAccessToken, endSession, lock]);
 
   /**
    * Ends the session locally, at the issuer, and on disk.
@@ -642,6 +736,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     // must still leave this app showing a signed-out session rather than
     // the previous patient's home screen.
     setAccessToken(undefined);
+    accessTokenExpiresAtRef.current = undefined;
     // A reason left over from an earlier automatic sign-out must not survive to
     // explain a DELIBERATE one: a patient who simply signed out would otherwise be
     // told "The fingerprint, face, or screen lock on this phone changed", which is
@@ -663,6 +758,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       signInFailed,
       reportSignInFailure,
       clearSignInFailure,
+      getFreshAccessToken,
       signedOutReason,
     }),
     [
@@ -675,6 +771,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
       signInFailed,
       reportSignInFailure,
       clearSignInFailure,
+      getFreshAccessToken,
       signedOutReason,
     ],
   );

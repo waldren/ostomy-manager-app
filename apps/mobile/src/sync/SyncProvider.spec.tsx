@@ -58,7 +58,19 @@ jest.mock('expo-network', () => ({
 // subscription; the stub is what does not.
 let appStateHandler: ((state: string) => void) | undefined;
 
-const mockAuth = { phase: 'authenticated' as string, accessToken: 'token' as string | undefined };
+// Annotated because `getFreshAccessToken` refers back to `mockAuth`, which makes the
+// inferred type circular.
+const mockAuth: {
+  phase: string;
+  accessToken: string | undefined;
+  getFreshAccessToken: () => Promise<string | undefined>;
+} = {
+  phase: 'authenticated',
+  accessToken: 'token',
+  // The provider passes this to the API client instead of the raw token, so the
+  // freshness check sits at the one place every request goes through.
+  getFreshAccessToken: async () => mockAuth.accessToken,
+};
 jest.mock('../auth/AuthContext', () => ({
   useAuth: () => mockAuth,
 }));

@@ -24,6 +24,8 @@ import type { AuthRequest, AuthSessionResult } from 'expo-auth-session';
 
 import type { OidcClientConfig } from './oidcConfig';
 import {
+  ACCESS_TOKEN_RENEWAL_MARGIN_SECONDS,
+  accessTokenNeedsRenewal,
   buildAuthRequestConfig,
   extractAuthorizationCode,
   isRefreshTokenRejected,
@@ -130,5 +132,48 @@ describe('isRefreshTokenRejected', () => {
     expect(isRefreshTokenRejected(undefined)).toBe(false);
     expect(isRefreshTokenRejected(null)).toBe(false);
     expect(isRefreshTokenRejected('invalid_grant')).toBe(false);
+  });
+});
+
+/**
+ * `expiresAtSeconds` was captured and never consulted, so an access token simply
+ * lapsed mid-session: every request 401'd, the sync worker stopped with
+ * `unauthenticated` (which schedules no retry), and nothing recovered until the next
+ * lock and unlock. An access token lives for minutes and a session lives for days,
+ * so this is the ordinary case rather than an edge.
+ */
+describe('accessTokenNeedsRenewal', () => {
+  const now = 1_700_000_000_000; // ms
+  const nowSeconds = now / 1000;
+
+  it('is false for a token with plenty of life left', async () => {
+    expect(accessTokenNeedsRenewal(nowSeconds + 3600, now)).toBe(false);
+  });
+
+  it('is true for a token that has already expired', async () => {
+    expect(accessTokenNeedsRenewal(nowSeconds - 1, now)).toBe(true);
+  });
+
+  /**
+   * The margin is not decoration. A request leaving with a token that expires in
+   * 200ms arrives after it has lapsed, and this compares the issuer's expiry against
+   * the DEVICE clock, which ADR-0019 exists because it cannot be trusted.
+   */
+  it('is true inside the renewal margin, before expiry', async () => {
+    expect(accessTokenNeedsRenewal(nowSeconds + ACCESS_TOKEN_RENEWAL_MARGIN_SECONDS - 1, now)).toBe(
+      true,
+    );
+    expect(accessTokenNeedsRenewal(nowSeconds + ACCESS_TOKEN_RENEWAL_MARGIN_SECONDS + 1, now)).toBe(
+      false,
+    );
+  });
+
+  /**
+   * `undefined` is "the provider returned no `expires_in`", which
+   * `expo-auth-session`'s own `isTokenFresh` treats as never-expiring. Reading it as
+   * expired would refresh before every single request against such an issuer.
+   */
+  it('is false when the provider gave no expiry', async () => {
+    expect(accessTokenNeedsRenewal(undefined, now)).toBe(false);
   });
 });
