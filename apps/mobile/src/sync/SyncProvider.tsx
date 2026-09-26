@@ -153,6 +153,27 @@ export function SyncProvider({
   const executor = database.status === 'ready' ? database.executor : undefined;
   const canSync = phase === 'authenticated' && executor !== undefined && port !== undefined;
 
+  /**
+   * Whether an access token actually exists yet (#59).
+   *
+   * **Deliberately separate from `canSync`.** Folding it in would unregister the
+   * connectivity and foreground listeners below whenever there is no token, and
+   * those listeners are exactly how a patient who unlocked offline ever syncs. Only
+   * the REQUEST is suppressed; the subscriptions stay.
+   *
+   * It is a piece of state rather than a read through `accessTokenRef`, because the
+   * ref exists precisely so the token does not re-render this provider — and that
+   * is what made its arrival invisible to every trigger. `unlock()` sets `phase` to
+   * `authenticated` BEFORE the token refresh completes, on purpose (the refresh is
+   * best-effort so an offline patient still reaches their diary), so the first
+   * trigger fired ~4 seconds before the credential existed: two requests with no
+   * `Authorization` header, a `401`, a stop with `unauthenticated`, and — because
+   * that stop schedules no retry — nothing further until the patient backgrounded
+   * and reopened the app. The thresholds cache therefore never filled, and since it
+   * is deliberately unseeded, Add Output correctly refused every save.
+   */
+  const hasCredential = accessToken !== undefined;
+
   const clearTimer = useCallback(() => {
     if (timerRef.current !== undefined) {
       clearTimeout(timerRef.current);
@@ -206,9 +227,14 @@ export function SyncProvider({
   gateRef.current = gate;
 
   const requestSync = useCallback(() => {
-    if (!canSync) return;
+    // `hasCredential` as well as `canSync`: every endpoint is patient-guarded, so a
+    // cycle without a token is a guaranteed `401` — a wasted request on a metered
+    // connection that also parks the scheduler on a stop reason it schedules no
+    // retry for. This callback's identity changes when the token arrives, which is
+    // what makes the triggers below fire again at the moment it does.
+    if (!canSync || !hasCredential) return;
     gateRef.current.request();
-  }, [canSync]);
+  }, [canSync, hasCredential]);
 
   const recoverStaleCursor = useCallback(async () => {
     if (executor === undefined) return undefined;
@@ -223,14 +249,19 @@ export function SyncProvider({
     return outcome;
   }, [executor]);
 
-  // Trigger 1 and 3: a usable database plus an authenticated session. Also
-  // covers app launch with a queue left over from a previous run, which is
-  // the "survives restart, resumes with no user action" half of the exit
-  // criterion.
+  // Trigger 1 and 3: a usable database, an authenticated session, **and a
+  // credential to use** (#59). Also covers app launch with a queue left over from a
+  // previous run, which is the "survives restart, resumes with no user action" half
+  // of the exit criterion.
+  //
+  // `hasCredential` is in the dependency list even though `requestSync` already
+  // closes over it. It is redundant to the compiler and not to a reader: the token
+  // arriving is a distinct trigger from the session becoming usable, it arrives
+  // seconds later, and this effect not observing it is the whole of #59.
   useEffect(() => {
     if (!canSync) return;
     requestSync();
-  }, [canSync, requestSync]);
+  }, [canSync, hasCredential, requestSync]);
 
   // Trigger 2: connectivity restored.
   useEffect(() => {

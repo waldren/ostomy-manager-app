@@ -103,7 +103,15 @@ export function nextSchedulerState(state: SchedulerState, result: SyncCycleResul
  * re-authentication is a user-visible event the auth layer already drives,
  * and retrying on a timer against a missing token produces nothing but
  * failed requests on a metered connection. The next cycle comes from the
- * sign-in completing, which `SyncProvider` observes.
+ * credential arriving, which `SyncProvider` observes.
+ *
+ * That last sentence used to say "from the sign-in completing", and it described a
+ * mechanism that did not exist (#59). `SyncProvider` observed the auth PHASE, and
+ * the phase reaches `authenticated` before the token refresh completes — so the
+ * only cycle it ever started was the one that had no token, this function then
+ * scheduled nothing, and the queue sat until the patient happened to background and
+ * reopen the app. The provider now observes the token itself, which is what makes
+ * "no timer needed" true rather than merely intended.
  *
  * `not-provisioned` is the same shape for a different reason (#80): the
  * server has no record for this patient, and no amount of waiting makes one

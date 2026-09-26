@@ -103,14 +103,24 @@ function Probe() {
 // `render` is asynchronous in this version of the testing library, so it
 // must be awaited — an un-awaited render mounts after the test body has run
 // and after cleanup has unmounted the tree, so no effect ever fires.
-async function renderProvider(): Promise<void> {
-  await render(
+function providerTree() {
+  return (
     <SyncProvider
       client={{ push: jest.fn(), delta: jest.fn(), thresholds: jest.fn(), valueSets: jest.fn() }}
     >
       <Probe />
-    </SyncProvider>,
+    </SyncProvider>
   );
+}
+
+async function renderProvider(): Promise<void> {
+  await render(providerTree());
+}
+
+/** For the cases where something changes AFTER the provider is already mounted. */
+async function renderThenRerender(): Promise<(node: React.ReactElement) => Promise<void>> {
+  const view = await render(providerTree());
+  return view.rerender;
 }
 
 describe('SyncProvider', () => {
@@ -154,6 +164,60 @@ describe('SyncProvider', () => {
 
     await act(async () => undefined);
     expect(mockRunSyncCycle).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #59. `unlock()` sets `phase` to `authenticated` BEFORE the token refresh
+   * completes — deliberately, so an offline patient still reaches their diary — so
+   * this state lasts about four seconds on every cold start.
+   *
+   * Syncing in it sent two requests with no `Authorization` header, took a `401`,
+   * and stopped with `unauthenticated`, which schedules no retry. Nothing ran again
+   * until the patient happened to background and reopen the app, so the thresholds
+   * cache never filled — and because that cache is deliberately unseeded, Add Output
+   * correctly refused every save. A blocked entry screen, caused by an auth race
+   * four screens away.
+   */
+  it('does not sync while the session has no access token yet', async () => {
+    mockAuth.accessToken = undefined;
+
+    await renderProvider();
+
+    await act(async () => undefined);
+    expect(mockRunSyncCycle).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The other half, and the one that actually closes #59: the token ARRIVING has to
+   * be a trigger. `accessToken` is read through a ref inside the cycle so it does
+   * not re-render the provider, and that ref is exactly what made its arrival
+   * invisible to every trigger.
+   */
+  it('runs a cycle when the access token arrives after the phase advanced', async () => {
+    mockAuth.accessToken = undefined;
+    const rerender = await renderThenRerender();
+    await act(async () => undefined);
+    expect(mockRunSyncCycle).not.toHaveBeenCalled();
+
+    mockAuth.accessToken = 'token-arrives-late';
+    await rerender(providerTree());
+
+    await waitFor(() => {
+      expect(mockRunSyncCycle).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * The listeners must stay registered while there is no token. Folding the
+   * credential into `canSync` would unregister them, and they are how a patient who
+   * unlocked offline ever syncs — so that "fix" would trade #59 for a worse bug.
+   */
+  it('still watches for connectivity while it has no token', async () => {
+    mockAuth.accessToken = undefined;
+    await renderProvider();
+
+    // The listener was registered despite there being no credential.
+    expect(mockAddNetworkStateListener).toHaveBeenCalled();
   });
 
   it('does not sync before the local database is open', async () => {
