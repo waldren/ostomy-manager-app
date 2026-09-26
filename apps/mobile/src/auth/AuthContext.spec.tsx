@@ -24,6 +24,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
 import { act, render, screen, waitFor } from '@testing-library/react-native';
+import { useState } from 'react';
 import { Text } from 'react-native';
 
 import { AuthProvider, useAuth } from './AuthContext';
@@ -59,7 +60,13 @@ jest.mock('../db/databaseOwner', () => ({
 }));
 
 const mockRevoke = jest.fn(async () => undefined);
-const mockRefresh = jest.fn(async () => ({ accessToken: 'fresh', refreshToken: 'rt2' }));
+// Typed with every field a real `OidcTokens` carries, so a test overriding the
+// expiry is not rejected by the inferred shape of the default.
+const mockRefresh = jest.fn(async () => ({
+  accessToken: 'fresh',
+  refreshToken: 'rt2' as string | undefined,
+  expiresAtSeconds: undefined as number | undefined,
+}));
 jest.mock('./oidcSession', () => ({
   useAutoDiscovery: () => ({ tokenEndpoint: 'https://issuer.example/token' }),
   refreshAccessToken: () => mockRefresh(),
@@ -69,6 +76,9 @@ jest.mock('./oidcSession', () => ({
   // would assert only that this file agrees with itself — the same shape of mistake
   // #55 and #61 both recorded.
   isRefreshTokenRejected: jest.requireActual('./oidcSession').isRefreshTokenRejected,
+  // Real, for the same reason: the whole point is whether an expiring token is
+  // recognised as expiring, so a stand-in would assert only self-agreement.
+  accessTokenNeedsRenewal: jest.requireActual('./oidcSession').accessTokenNeedsRenewal,
 }));
 
 jest.mock('./oidcConfig', () => ({
@@ -85,7 +95,16 @@ jest.mock('./biometricUnlock', () => ({
 }));
 
 function Probe() {
-  const { phase, signOut, completeLogin, unlock, signedOutReason, accessToken } = useAuth();
+  const {
+    phase,
+    signOut,
+    completeLogin,
+    unlock,
+    signedOutReason,
+    accessToken,
+    getFreshAccessToken,
+  } = useAuth();
+  const [fresh, setFresh] = useState<string | undefined>(undefined);
   return (
     <>
       <Text testID="phase">{phase}</Text>
@@ -97,6 +116,41 @@ function Probe() {
       </Text>
       <Text testID="reason">{signedOutReason ?? 'none'}</Text>
       <Text testID="token">{accessToken ?? 'none'}</Text>
+      <Text testID="fresh">{fresh ?? 'unasked'}</Text>
+      <Text
+        testID="loginExpiring"
+        onPress={() =>
+          void completeLogin({
+            accessToken: 'already-stale',
+            refreshToken: 'rt',
+            idToken: makeJwt({ sub: 'patient-a' }),
+            // Already past. A real provider returns a short life here, and the point
+            // is that a token from a fresh SIGN-IN carries an expiry too — not only
+            // one from a refresh.
+            expiresAtSeconds: Math.floor(Date.now() / 1000) - 1,
+          })
+        }
+      >
+        log in with an expiring token
+      </Text>
+      <Text
+        testID="askFresh"
+        onPress={() => {
+          void getFreshAccessToken().then((value) => setFresh(value ?? 'none'));
+        }}
+      >
+        ask
+      </Text>
+      <Text
+        testID="askFreshTwice"
+        onPress={() => {
+          // Both started before either resolves, which is what the single-flight
+          // guard is for.
+          void Promise.all([getFreshAccessToken(), getFreshAccessToken()]);
+        }}
+      >
+        ask twice
+      </Text>
       <Text
         testID="login"
         onPress={() =>
@@ -142,7 +196,14 @@ beforeEach(() => {
   mockAuthenticate.mockResolvedValue({ outcome: 'success' });
   mockTokenIsStale.mockResolvedValue(false);
   mockReadReason.mockResolvedValue(null);
-  mockRefresh.mockResolvedValue({ accessToken: 'fresh', refreshToken: 'rt2' });
+  // No expiry by default: the provider is allowed to omit `expires_in`, and that
+  // means "does not expire" rather than "expired" — so the default keeps every test
+  // that is not about expiry out of the renewal path.
+  mockRefresh.mockResolvedValue({
+    accessToken: 'fresh',
+    refreshToken: 'rt2',
+    expiresAtSeconds: undefined,
+  });
 });
 
 describe('cold start never wedges on a spinner', () => {
@@ -653,5 +714,158 @@ describe('a refresh token the issuer rejects ends the session (#40)', () => {
 
     expect(screen.getByTestId('phase')).toHaveTextContent('authenticated');
     expect(mockClearRefresh).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The `expiresAtSeconds` gap. It was captured on every token and never consulted, so
+ * a token simply lapsed: every request 401'd, the sync worker stopped with
+ * `unauthenticated` — which schedules no retry — and nothing recovered until the
+ * next lock and unlock. An access token lives for minutes and a session lives for
+ * days, so this was the ordinary case.
+ *
+ * The check lives at the one place every API call passes through, so no call site
+ * has to remember it.
+ */
+describe('the access token is refreshed before it is used, not after it fails', () => {
+  const HOUR = 3600;
+
+  function nowSeconds(): number {
+    return Math.floor(Date.now() / 1000);
+  }
+
+  it('reuses a token that is still good, without touching the network', async () => {
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('login').props.onPress();
+    });
+    mockRefresh.mockClear();
+
+    await act(async () => {
+      screen.getByTestId('askFresh').props.onPress();
+    });
+
+    // The login handed over a token with no expiry, which means never-expiring.
+    expect(screen.getByTestId('fresh')).toHaveTextContent('opaque-access-token');
+    expect(mockRefresh).not.toHaveBeenCalled();
+  });
+
+  it('refreshes when the stored token is at or past expiry', async () => {
+    // Unlock refreshes, and the refresh result carries the expiry.
+    mockRefresh.mockResolvedValue({
+      accessToken: 'stale',
+      refreshToken: 'rt2',
+      expiresAtSeconds: nowSeconds() - 1,
+    });
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+    expect(screen.getByTestId('token')).toHaveTextContent('stale');
+
+    mockRefresh.mockResolvedValue({
+      accessToken: 'renewed',
+      refreshToken: 'rt3',
+      expiresAtSeconds: nowSeconds() + HOUR,
+    });
+    await act(async () => {
+      screen.getByTestId('askFresh').props.onPress();
+    });
+
+    expect(screen.getByTestId('fresh')).toHaveTextContent('renewed');
+  });
+
+  it('does not refresh again once the token is fresh', async () => {
+    mockRefresh.mockResolvedValue({
+      accessToken: 'good',
+      refreshToken: 'rt2',
+      expiresAtSeconds: nowSeconds() + HOUR,
+    });
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+    mockRefresh.mockClear();
+
+    await act(async () => {
+      screen.getByTestId('askFresh').props.onPress();
+    });
+
+    expect(mockRefresh).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Single-flight, and it is a correctness requirement rather than an optimisation.
+   * An issuer that ROTATES refresh tokens invalidates the superseded one, so the
+   * second of two overlapping refreshes answers `invalid_grant` — which this app
+   * treats as "the session is over" (#40). Concurrent refreshes would therefore sign
+   * a patient out of a perfectly good session.
+   */
+  it('collapses concurrent requests into one refresh', async () => {
+    mockRefresh.mockResolvedValue({
+      accessToken: 'stale',
+      refreshToken: 'rt2',
+      expiresAtSeconds: nowSeconds() - 1,
+    });
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+    mockRefresh.mockClear();
+
+    await act(async () => {
+      screen.getByTestId('askFreshTwice').props.onPress();
+    });
+
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The expiry has to be recorded at SIGN-IN, not only at refresh. Without it the
+   * token from a fresh login has no known expiry, the accessor treats it as
+   * never-expiring, and the first lapse is a silent 401 again — the whole gap,
+   * reintroduced for exactly the patients who just signed in.
+   */
+  it('knows the expiry of a token that came from signing in', async () => {
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('loginExpiring').props.onPress();
+    });
+    expect(screen.getByTestId('token')).toHaveTextContent('already-stale');
+
+    mockRefresh.mockResolvedValue({
+      accessToken: 'renewed-after-login',
+      refreshToken: 'rt3',
+      expiresAtSeconds: Math.floor(Date.now() / 1000) + 3600,
+    });
+    await act(async () => {
+      screen.getByTestId('askFresh').props.onPress();
+    });
+
+    expect(screen.getByTestId('fresh')).toHaveTextContent('renewed-after-login');
+  });
+
+  it('answers undefined rather than a stale token when the provider is unreachable', async () => {
+    mockRefresh.mockResolvedValue({
+      accessToken: 'stale',
+      refreshToken: 'rt2',
+      expiresAtSeconds: nowSeconds() - 1,
+    });
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+
+    // Offline now. Sending the lapsed token would take a 401 and park the worker on a
+    // stop it schedules no retry for; sending nothing takes the same 401 without
+    // pretending the credential was good.
+    mockRefresh.mockRejectedValue(new TypeError('Network request failed'));
+    await act(async () => {
+      screen.getByTestId('askFresh').props.onPress();
+    });
+
+    expect(screen.getByTestId('fresh')).toHaveTextContent('none');
+    // And the session survives it — this is unknown fate, not a dead token.
+    expect(screen.getByTestId('phase')).toHaveTextContent('authenticated');
   });
 });

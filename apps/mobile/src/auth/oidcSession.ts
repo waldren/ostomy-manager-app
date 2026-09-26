@@ -214,6 +214,39 @@ export async function refreshAccessToken(
 }
 
 /**
+ * How long before expiry an access token is treated as already stale.
+ *
+ * Not zero, for two reasons. A request that leaves with a token expiring in 200ms
+ * arrives after it has lapsed, so the margin has to cover a round trip on a slow
+ * mobile connection. And this compares the issuer's `expires_in` against the
+ * DEVICE's clock, which ADR-0019 exists because it cannot be trusted — a phone a
+ * minute fast would otherwise keep a token it thinks is valid and be refused.
+ *
+ * Erring early costs one extra refresh; erring late costs a failed request whose
+ * recovery is the thing this whole mechanism exists to provide.
+ */
+export const ACCESS_TOKEN_RENEWAL_MARGIN_SECONDS = 60;
+
+/**
+ * Whether the access token should be renewed before the next request goes out.
+ *
+ * `undefined` means the provider returned no `expires_in`, which
+ * `expo-auth-session`'s own `TokenResponse.isTokenFresh` treats as "does not
+ * expire" — never as zero. Treating it as expired would refresh before every
+ * single request against such an issuer.
+ *
+ * A pure function of the two inputs so it can be tested without a clock, a
+ * keychain or a provider.
+ */
+export function accessTokenNeedsRenewal(
+  expiresAtSeconds: number | undefined,
+  nowMs: number,
+): boolean {
+  if (expiresAtSeconds === undefined) return false;
+  return expiresAtSeconds - ACCESS_TOKEN_RENEWAL_MARGIN_SECONDS <= nowMs / 1000;
+}
+
+/**
  * Whether a failed refresh means the refresh token itself is dead, as opposed to
  * the provider being unreachable (#40).
  *
