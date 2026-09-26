@@ -1,6 +1,6 @@
 # v1 Implementation Plan — Ostomy Patient Management Application
 
-Status: active (revision 2, 2026-09-19) · Derived from `design-specs/requirements/SRS_v2.md` (v2.5) and the nineteen accepted ADRs in `design-specs/decisions/`
+Status: active (revision 2, 2026-09-19 · §2, §4.1 and §4.2 reconciled 2026-09-26) · Derived from `design-specs/requirements/SRS_v2.md` (v2.6) and the twenty-one accepted ADRs in `design-specs/decisions/`
 
 **Revision 2 exists because revision 1 stopped describing the repository.** Its "current state" section described a scaffolding-only repo that has since shipped P0, P1, P2 and half of P3; its decision table still listed items that are now accepted ADRs; and roughly a third of the merged commits since Gate B was written belong to no sprint in it. This revision re-baselines against what is actually built, folds the unowned work into named sprints and a tracked debt lane, and records four decisions taken on 2026-09-19 (§3.2).
 
@@ -26,7 +26,7 @@ Sequence the remaining work from today's repository through complete v1, as boun
 
 ---
 
-## 2. Current state (verified 2026-09-19)
+## 2. Current state (verified 2026-09-26)
 
 ### 2.1 What is built
 
@@ -34,14 +34,14 @@ Sequence the remaining work from today's repository through complete v1, as boun
 | ----- | ------ | -------- |
 | **P0** — repo foundations | **Complete** | `packages/config` (tsconfig, ESLint flat config, Prettier); root `pnpm verify` running check:env + format + build:deps + lint + typecheck + test + three verify steps; `.github/workflows/pr.yml` and `deploy-dev.yml`; three build-failing lint rules with their own tests |
 | **P1** — foundation | **Complete** | API skeleton with typed config, structurally separate patient/admin OIDC guards, Pino logger with credential redaction; Compose dev stack; Prisma schema + migrations; `packages/core` kernel; global `AuditInterceptor` with `route-guard-coverage.spec.ts` failing the build on an unaudited mutating route |
-| **P2** — stoma output slice | **Code complete, gate unrun** | P2.S0 sync contract; P2.S1a/b observations + sync endpoints; P2.S2a/b mobile substrate, entry screen, sync worker, correction inbox; P2.S3 web SPA; P2.S4 seed generator. **The Gate B walkthrough has never been run or recorded** |
-| **P3** — entry types + config | **S1 done, S1b in flight** | P3.S1 fluid intake and meals (PRs A–E); P3.S1b Daily Net Fluid Balance on web, unmerged on `feat/web-net-fluid-balance` |
+| **P2** — stoma output slice | **Complete, gate passed** | P2.S0 sync contract; P2.S1a/b observations + sync endpoints; P2.S2a/b mobile substrate, entry screen, sync worker, correction inbox; P2.S3 web SPA; P2.S4 seed generator. **Gate B passed on run 4, 2026-09-23**, all six clauses, recorded in `docs/gate-b-walkthrough.md` — on an emulator, so it closes no HW step |
+| **P3** — entry types + config | **S1, S1b, S2 done; S3 next** | P3.S1 fluid intake and meals (PRs A–E); P3.S1b Daily Net Fluid Balance on web; P3.S2 voided urine — the colour scale, colour-without-volume, and its exclusion from the balance (#64) |
 
-Nineteen ADRs accepted (ADR-0001 to ADR-0019). `docs/sync-contract.md` is normative and governs its implementations.
+Twenty-one ADRs accepted (ADR-0001 to ADR-0021) — ADR-0020 Android-only v1, ADR-0021 the redirect route completing the OIDC exchange, and ADR-0015 amended at #74 for a device with no biometric enrolled. `docs/sync-contract.md` is normative and governs its implementations.
 
 ### 2.2 What is not built, and is scheduled
 
-P3.S2 voided urine · P3.S3 admin config API · P3.S4 Quick-Add · P3.S5 remaining seed scenarios · all of P4–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
+P3.S3 admin config API · P3.S4 Quick-Add · P3.S5 remaining seed scenarios · all of P4–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
 
 ### 2.3 What is not built, and was owned by nobody until this revision
 
@@ -49,8 +49,8 @@ This is the finding that motivated the re-baseline. Each item below was recorded
 
 | Item | Recorded in | Now |
 | ---- | ----------- | --- |
-| Device-side controls unverified on hardware (HW-1..HW-10) | ADR-0014, ADR-0015, CLAUDE.md, `docs/gate-b-hardware-verification.md` | Debt lane, after R.S2 rescopes it to Android |
-| An OS-invalidated refresh token has no route back to sign-in | Read from `AuthContext.tsx` during this review | Debt lane — predicted failure of HW-6 |
+| Device-side controls unverified on hardware (HW-1..HW-11) | ADR-0014, ADR-0015, CLAUDE.md, `docs/gate-b-hardware-verification.md` | Debt lane, #39. Rescoped to Android by R.S2; HW-11 added by #74, and two of its parts need hardware an emulator cannot imitate |
+| An OS-invalidated refresh token has no route back to sign-in | Read from `AuthContext.tsx` during this review | **Fixed** — #74 for the invalidated key, #40 for a token the issuer rejects. The prediction was right, and HW-6 now verifies the fix instead of expecting the failure |
 | iOS backup exclusion plugin | ADR-0014 "known gap" | **Closed by decision** — out of v1 scope (§3.2) |
 | WCAG 1.4.4: SVG tick labels do not scale with text zoom | P2.S3 reviewer deferral | Debt lane, `accessibility` |
 | Chart's hidden description duplicates the table verbatim | P2.S3 reviewer deferral | Debt lane, `accessibility` |
@@ -68,6 +68,8 @@ This is the finding that motivated the re-baseline. Each item below was recorded
 Eight of the last fifteen merged PRs belong to no sprint: the Android emulator harness (#30, #31, #37), container images built and *run* in PR CI (#33), two dev-stack image repairs (#22, #24), a security-commit repair with the tests it never had (#17), advisory remediation, and the §5.4 stale-cursor recovery (#34). Two of those repairs existed because images drifted undetected for three and five PRs respectively.
 
 This is not waste and it is not scope creep — it is the cost of running a real deployment target. Revision 2 stops pretending the plan is a complete accounting of the work and instead names the lane (§5.7) so its volume is visible when sequencing.
+
+**The lane has since more than doubled, and naming it was the right call.** Between R.S1 and P3.S2 landing, off-plan work closed: sign-in being impossible on Android at all (#72, which needed **ADR-0021** — the redirect route completes the OIDC exchange, because `promptAsync` never reports the success `expo-auth-session` waits for when Android resolves the redirect to `MainActivity`); a stale dev stack being invisible and `deploy-dev.yml` never having run (#76, with `scripts/dev-stack-status.sh`); a token with no patient record being reported as an authentication failure, which made the client re-authenticate in a loop (#80, adding `PATIENT_NOT_PROVISIONED` to §6.1); sign-in being impossible for a patient with no biometric enrolled (#74, amending ADR-0015); and the two above. Every one was found by running the thing rather than by a test, which is the same lesson §4.1's outcome records.
 
 ---
 
@@ -140,7 +142,7 @@ _Reviewers:_ `code-reviewer` on any fix; `hipaa-compliance-reviewer` if the audi
 
 > **Outcome.** Four runs. The gate passed on run 4, and **every clause that blocked it was a defect the gate existed to find** — none were test-environment noise. In order: an illegal redirect URI whose unit tests asserted a fixture the app never produced; an AVD image with no Custom Tabs provider; a sub-less token from a mock-IdP misconfiguration this sprint itself introduced; and `apps/api` never enabling CORS, so `apps/web` had never once loaded data in a browser. The last of those had survived P2.S3 and P3.S1b with 130 passing tests, because those tests mock `fetch`.
 >
-> **The gating rule above is now satisfied and P3.S2 can be dispatched.** Two defects found on the way remain open and were not fixed by passing: #59 and #40. Nothing here closes any HW step — it was an emulator run.
+> **The gating rule above is now satisfied and P3.S2 can be dispatched.** Two defects found on the way were not fixed by passing: #59 and #40. **#40 is fixed** (#84 — a refresh token the issuer rejects is told apart from an unreachable provider, and ends the session instead of leaving a phase that claims more than the session can back). **#59 is still open and is the last thread from this gate**; it blocks clause 1 on a cold start, because the worker asks for thresholds before a token exists and the deliberately-unseeded cache then refuses the save. Nothing here closes any HW step — it was an emulator run.
 
 **R.S2 — Android-only v1 (S) — main session + `expo-mobile-developer`**
 ADR-0020 recording the cut and its reasoning; SRS amendments at §2 and §4.2 (the two sections that actually name iOS — §4.3 does not); `app.json` `platforms` narrowed; `docs/gate-b-hardware-verification.md` rescoped to HW-1, HW-2, HW-3, HW-6a, HW-7, HW-8 plus an Android background-termination step replacing HW-10; CLAUDE.md's platform and caveat lines.
@@ -157,15 +159,20 @@ _Exit:_ every statement in CLAUDE.md and `docs/` that this review found stale is
 
 > **The P3.S1b label.** The Daily Net Fluid Balance work on `feat/web-net-fluid-balance` was labelled P3.S2 in CLAUDE.md, but `apps/api`'s code comments already use P3.S2 for voided urine (`9187-6`). It is the web consumer of P3.S1's intake data, so it is **P3.S1b**, and CLAUDE.md is corrected on that branch before merge. Voided urine keeps P3.S2 — one CLAUDE.md line changes instead of a dozen code comments.
 
-### 4.2 Phase P3 — Remaining entry types and the configuration surface (resumes after R)
+### 4.2 Phase P3 — Remaining entry types and the configuration surface (resumed; R complete)
 
 | Sprint | Size | Owner | Goal | Spec / AC |
 | ------ | ---- | ----- | ---- | --------- |
-| **P3.S2** | M | `expo-mobile-developer` + `nestjs-api-developer` (serial) | Voided urine: same Measured/Estimated contract, the pale-to-dark colour scale **with a text label on every step**, colour-without-volume as a valid entry, and **exclusion from Daily Net Fluid Balance** | §3.7, AC 12.1 AC1–AC4 |
+| **P3.S2** _done 2026-09-25 (#64)_ | M | `expo-mobile-developer` + `nestjs-api-developer` (serial) | Voided urine: same Measured/Estimated contract, the pale-to-dark colour scale **with a text label on every step**, colour-without-volume as a valid entry, and **exclusion from Daily Net Fluid Balance** | §3.7, AC 12.1 AC1–AC4 |
 | **P3.S3** | M | `nestjs-api-developer` + `fhir-data-modeler` | `/api/v1/admin/...` config API at final shape: value sets (retire, never delete), default range tables, validation thresholds. Separate guard, separate audience, every change audit-logged. **Plus the maintenance script R7 promised and revision 1 never scheduled** — today a threshold can only be changed by editing a migration | §3.11, §5.2, ADR-0008 |
 | **P3.S4** | S | `expo-mobile-developer` | Quick-Add widgets generated from the patient's own recent entries. Must resolve on tap with **no loading state**. No spec AC — state exit criteria in the dispatch | §3.1, Epic 3 |
 | **P3.S5** | S | `fhir-data-modeler` | Remaining seed scenarios except `leak-cluster` (P5): `high-output-dehydration`, `new-post-op`, `colostomy-baseline`, `validation-edge-cases` | `deployment-development.md` |
 
+> **P3.S2 outcome.** It shipped, but **two review rounds found it did not work at all**, and both reviewers found it independently. A colour-only entry could not be saved from the phone, for two unrelated causes: the wire's `method: null` was read as "measured" so the server rejected an entry no correction could fix, and `urine_color` was never in `PUBLISHED_VALUE_SET_KEYS`, so the scale never reached the device — guarded by a test that asserted the *exclusion* of `urine_color_scale`, a key no migration ever created. A check that passes by matching nothing.
+>
+> Four further defects were found **on a device** that no test could see, including a swatch size computed at module load, which an Android font-scale change leaves stale because the JS runtime survives it. The lesson is §4.1's again, and it now has enough instances to be a rule rather than an anecdote: **this project's tests are good at logic and blind to whether the thing runs.**
+>
+> It also left the entry-screen copy debt visible (#63, #71) and one open accessibility item needing a person and audio (#65 — three TalkBack questions the release build will not answer, because it does not log utterance text).
 ### 4.3 Phase P4 — Onboarding, preferences, suggested ranges, and the Gate C spikes
 
 _This is where the app becomes usable by a real patient. Note the prerequisite nothing states today: a `patients` row currently exists only because the seeder wrote one, so **P4.S1 is what makes a genuine first run possible at all**._
@@ -302,7 +309,7 @@ A sprint ID is claimed in this document **before** it appears in a commit messag
 | **Never log PHI** | P1.S1 | Serializers never assemble a body into a log line. There is nothing for a "scrubber" to scrub because no PHI payload is logged in the first place |
 | **Thresholds as configuration** | P1.S4 + P1.S5 | Seeded by **migration**, not by `packages/seed` — `ThresholdsService` throws without them and that sits on every clinical write path. Mobile's cache is deliberately unseeded: a default there is a hardcoded threshold wearing a database costume |
 | **Patient-local day** | P2.S2b (ADR-0016) | Captured per observation as IANA zone + `local_date`; never re-derived from a profile or a reader's timezone |
-| **Device-side controls** | P2.S2a (ADR-0014/0015) | **Implemented, unverified.** `docs/gate-b-hardware-verification.md` holds HW-1..HW-10; none are closed. An emulator pass never closes one |
+| **Device-side controls** | P2.S2a (ADR-0014/0015, amended at #74) | **Implemented, unverified.** `docs/gate-b-hardware-verification.md` holds HW-1..HW-11; none are closed. An emulator pass never closes one, and HW-11 has two parts an emulator cannot even reach |
 
 ---
 
@@ -326,7 +333,7 @@ A sprint ID is claimed in this document **before** it appears in a commit messag
 
 **R9 — NEW: documentation drift is a recurring defect class, not an oversight.** CLAUDE.md described an empty `.github/workflows/`; `security-hipaa.md` owed a warning that had shipped; this plan described a repo that no longer existed; a sprint ID meant two things. Each was written accurately and then outlived its truth.
 
-_Sharpened by R.S3, which is the strongest evidence for this risk in the document:_ **R.S2 — a sprint whose whole purpose was making the repo's platform claims true — itself left CLAUDE.md asserting SRS v2.5 and nineteen ADRs**, having just written v2.6 and ADR-0020. Discipline applied by intention does not survive; only a mechanical check does. Treat "update the pointer in the same commit" as a rule needing enforcement, not as a habit. The rule that answers it is already in CLAUDE.md — *when a decision changes something this file states, change it in the same commit* — and it needs extending to `docs/` and to this plan, which is why R.S3 exists and why §5.8 is a rule rather than an observation.
+_Sharpened by R.S3, which is the strongest evidence for this risk in the document:_ **R.S2 — a sprint whose whole purpose was making the repo's platform claims true — itself left CLAUDE.md asserting SRS v2.5 and nineteen ADRs**, having just written v2.6 and ADR-0020. Discipline applied by intention does not survive; only a mechanical check does. Treat "update the pointer in the same commit" as a rule needing enforcement, not as a habit. _Second instance, 2026-09-26:_ **this document's own header** still claimed SRS v2.5 and nineteen ADRs while §4.1 sat two screens below warning about precisely that, and §2 still described Gate B as unrun four runs after it passed. The risk is not that contributors forget; it is that a prose document has no failing test. The rule that answers it is already in CLAUDE.md — *when a decision changes something this file states, change it in the same commit* — and it needs extending to `docs/` and to this plan, which is why R.S3 exists and why §5.8 is a rule rather than an observation.
 
 **R10 — NEW: the Android-only cut narrows the tested surface, not the claimed one, unless R.S2 actually lands.** `app.json` still names iOS, SRS still names iOS in three places, and Expo will still happily build an iOS bundle nobody has run. A scope cut that lives only in a planning document is worse than no cut, because it removes the pressure to verify without removing the claim.
 
