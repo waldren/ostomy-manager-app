@@ -108,7 +108,9 @@ Enrol one fingerprint, sign in, add a second fingerprint in Settings, cold-start
 
 ### HW-7 — a Class 2-only handset falls back to the passcode instead of dead-ending
 
-`isBiometricUnlockAvailable()` asks `isEnrolledAsync()`, which does not discriminate biometric class, while `authenticate()` demands `biometricsSecurityLevel: 'strong'`. On a handset whose only enrolment is Class 2 face unlock, the app therefore offers an unlock the OS may refuse to satisfy. `disableDeviceFallback` is left at its default precisely so the device credential is there to catch this.
+`authenticate()` demands `biometricsSecurityLevel: 'strong'`, so on a handset whose only enrolment is Class 2 face unlock the OS may refuse the biometric. `disableDeviceFallback` is left at its default precisely so the device credential is there to catch this.
+
+This step used to describe the availability check as the risk — it asked `isEnrolledAsync()`, which does not discriminate biometric class. That prediction was right and the dead-end turned out to be wider than Class 2: it caught every handset with no biometric enrolled at all. Fixed under #74, so the step is now checking a fix rather than an expected failure. `isLocalUnlockAvailable()` asks `getEnrolledLevelAsync() !== NONE`.
 
 **Pass:** the patient reaches the device-credential prompt and gets into the app.
 
@@ -139,6 +141,26 @@ Queue entries offline, background the app, then force the reclaim: `adb shell am
 **Pass:** the lock gate appears rather than the previous screen, every queued entry is still present, and they push when connectivity returns.
 
 **A failure means** the patient loses entries they were told were saved, which is what `sync-contract.md` §9.5 exists to prevent.
+
+### HW-11 — a handset with NO biometric enrolled can sign in, use the diary offline, and is invalidated when one appears
+
+Issue #74 and [ADR-0015](../design-specs/decisions/0015-biometric-local-access.md)'s amendment. This is the state nothing had tested: jest runs no keychain, and the emulator used for the earlier walkthroughs had a fingerprint enrolled, which is exactly why the bug survived. The absence of an enrolment has to be arranged deliberately — it is not a state you arrive at by accident.
+
+Start from a wiped device with **a screen lock set and no biometric enrolled** (`android-emulator.sh wipe`, then set a PIN only). Three parts, in order, on one device:
+
+1. **Sign in.** Complete the OIDC flow.
+2. **Cold-start and open the diary with the PIN**, offline. Turn the radios off first, so nothing can succeed by reaching the network.
+3. **Enrol a fingerprint in Settings, then cold-start again.**
+
+**Pass, all three:**
+
+1. Sign-in completes and reaches the home screen. Before #74 it failed here with `Could not Authenticate the user: No biometrics are currently enrolled`, showing the patient "We could not sign you in. Please try again." — so this part alone is the regression test for the reported defect.
+2. The lock screen offers **Unlock my diary**, the device-credential prompt appears, and the diary opens with the network off. What must NOT happen is the screen offering only "Sign in again instead": that is a network login, and offering it to an offline patient is the second defect #74 fixed.
+3. The app routes to a **full OIDC sign-in** rather than unlocking, **and the local diary survives** — same two halves as HW-6, for the same ADR-0014 reason. This is the reimplemented invalidation signal, so a pass here is the only evidence that it works: the level rise is detected at cold start, the ungated token is purged, and the token stored by the re-login is gated.
+
+**A failure in part 3 specifically** means an ungated token outlives the enrolment that should have killed it, which is ADR-0015's covert-enrolment threat left open rather than closed by a different mechanism. Report it against the amendment, not against the OS — nothing here depends on an OS guarantee, which is the whole reason it needs observing.
+
+**Also record** whether the patient is shown anything about the weaker protection. Nothing is shown today, deliberately (no copy was invented for it), and a run is the first chance to judge whether that is right.
 
 ## Recording a result
 

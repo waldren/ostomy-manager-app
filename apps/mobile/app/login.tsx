@@ -21,7 +21,7 @@ import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
-import { isBiometricUnlockAvailable } from '../src/auth/biometricUnlock';
+import { isLocalUnlockAvailable } from '../src/auth/biometricUnlock';
 import { useOidcLogin } from '../src/auth/useOidcLogin';
 import { BodyText } from '../src/ui/BodyText';
 import { Button } from '../src/ui/Button';
@@ -52,13 +52,13 @@ export default function Login(): React.JSX.Element {
    */
   const [localFailure, setLocalFailure] = useState<LoginFailure | undefined>(undefined);
   const [busy, setBusy] = useState(false);
-  const [biometricAvailable, setBiometricAvailable] = useState<boolean | undefined>(undefined);
+  const [unlockAvailable, setUnlockAvailable] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
     if (phase !== 'locked') return;
     let cancelled = false;
-    isBiometricUnlockAvailable().then((available) => {
-      if (!cancelled) setBiometricAvailable(available);
+    isLocalUnlockAvailable().then((available) => {
+      if (!cancelled) setUnlockAvailable(available);
     });
     return () => {
       cancelled = true;
@@ -141,7 +141,7 @@ export default function Login(): React.JSX.Element {
       {locked ? (
         <>
           <BodyText>{t('login.lockedBody')}</BodyText>
-          {biometricAvailable === false ? (
+          {unlockAvailable === false ? (
             <>
               <BodyText>{t('login.unlockUnavailableBody')}</BodyText>
               <Button

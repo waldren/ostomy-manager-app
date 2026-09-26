@@ -72,7 +72,7 @@ Beyond ordinary coverage of what changed, these are required and are not optiona
 
 Some of `apps/mobile`'s controls cannot be tested by any runner here: jest has no keychain, cannot simulate a biometric enrolment change, and has no OS backup transport, and an emulator has software KeyMint rather than secure hardware. That covers [ADR-0014](../design-specs/decisions/0014-local-phi-encryption-and-device-ownership.md)'s encrypted store and [ADR-0015](../design-specs/decisions/0015-biometric-local-access.md)'s enrolment invalidation and Class 3 requirement.
 
-[`gate-b-hardware-verification.md`](gate-b-hardware-verification.md) holds those as HW-1 to HW-10, with procedures and pass conditions, and records which have been run. Do not write an automated test that claims to cover one of them — a mocked keychain asserts only that the mock was called.
+[`gate-b-hardware-verification.md`](gate-b-hardware-verification.md) holds those as HW-1 to HW-11, with procedures and pass conditions, and records which have been run. Do not write an automated test that claims to cover one of them — a mocked keychain asserts only that the mock was called.
 
 ## Test data
 

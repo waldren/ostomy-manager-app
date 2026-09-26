@@ -32,12 +32,14 @@ const mockHasStored = jest.fn(async () => true);
 const mockGetRefresh = jest.fn(async () => 'rt' as string | null);
 const mockClearRefresh = jest.fn(async () => undefined);
 const mockSetRefresh = jest.fn(async (_token: string) => undefined);
+const mockTokenIsStale = jest.fn(async () => false);
 
 jest.mock('./tokenStorage', () => ({
   hasStoredRefreshToken: () => mockHasStored(),
   getRefreshToken: () => mockGetRefresh(),
   clearRefreshToken: () => mockClearRefresh(),
   setRefreshToken: (t: string) => mockSetRefresh(t),
+  storedTokenIsStaleForEnrolment: () => mockTokenIsStale(),
 }));
 
 const mockPurge = jest.fn(async () => undefined);
@@ -61,18 +63,25 @@ jest.mock('./oidcConfig', () => ({
   getOidcClientConfig: () => ({ issuer: 'https://issuer.example', clientId: 'ostomy-mobile' }),
 }));
 
+const mockAuthenticate = jest.fn(
+  async (_prompt: string) => ({ outcome: 'success' }) as { outcome: string },
+);
 jest.mock('./biometricUnlock', () => ({
-  authenticate: jest.fn(async () => ({ outcome: 'success' })),
-  isBiometricUnlockAvailable: jest.fn(async () => true),
+  authenticate: (prompt: string) => mockAuthenticate(prompt),
+  isLocalUnlockAvailable: jest.fn(async () => true),
+  enrolledSecurityLevel: jest.fn(async () => 3),
 }));
 
 function Probe() {
-  const { phase, signOut, completeLogin } = useAuth();
+  const { phase, signOut, completeLogin, unlock } = useAuth();
   return (
     <>
       <Text testID="phase">{phase}</Text>
       <Text testID="signout" onPress={() => void signOut()}>
         sign out
+      </Text>
+      <Text testID="unlock" onPress={() => void unlock()}>
+        unlock
       </Text>
       <Text
         testID="login"
@@ -116,6 +125,8 @@ beforeEach(() => {
   mockHasStored.mockResolvedValue(true);
   mockGetRefresh.mockResolvedValue('rt');
   mockGetOwner.mockResolvedValue(null);
+  mockAuthenticate.mockResolvedValue({ outcome: 'success' });
+  mockTokenIsStale.mockResolvedValue(false);
 });
 
 describe('cold start never wedges on a spinner', () => {
@@ -275,5 +286,94 @@ describe('database ownership is decided from the ID token', () => {
 
     await waitFor(() => expect(mockSetOwner).toHaveBeenCalled());
     expect(mockPurge).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #74. This app's own prompt is the gate, and for an ungated token it is the
+ * ONLY thing standing in front of the diary.
+ *
+ * `tokenStorage.ts` always documented the division of labour —
+ * `requireAuthentication` is there for the OS invalidation signal, not for the
+ * prompt, because `unlock()` calls `authenticate()` itself. On a device with no
+ * biometric enrolled the token is now stored without that flag, so the SecureStore
+ * read no longer prompts either. That makes the claim load-bearing rather than
+ * merely true, and nothing was asserting it.
+ */
+describe('unlock is gated by this app, not by the keychain read (#74)', () => {
+  it('does not reach an authenticated session when the prompt fails', async () => {
+    mockAuthenticate.mockResolvedValue({ outcome: 'failed' });
+
+    await renderProvider();
+    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
+
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+
+    expect(screen.getByTestId('phase')).toHaveTextContent('locked');
+  });
+
+  it('does not read the stored token when the prompt fails', async () => {
+    // The read is inside the success branch. If it ever moves ahead of the
+    // prompt, an ungated token is handed over with no authentication at all —
+    // and on a gated one the OS sheet would appear before this app's own.
+    mockAuthenticate.mockResolvedValue({ outcome: 'failed' });
+
+    await renderProvider();
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+
+    expect(mockGetRefresh).not.toHaveBeenCalled();
+  });
+
+  it('reaches an authenticated session when the prompt succeeds', async () => {
+    // The counterpart, so the two tests above cannot pass by unlock being broken.
+    await renderProvider();
+    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
+
+    await act(async () => {
+      screen.getByTestId('unlock').props.onPress();
+    });
+
+    expect(screen.getByTestId('phase')).toHaveTextContent('authenticated');
+  });
+});
+
+/**
+ * #74. An ungated token records the enrolment level it was written at, and a rise
+ * means a biometric was enrolled since — ADR-0015's covert-enrolment threat, and
+ * the one form of the change an app can actually observe.
+ */
+describe('a token invalidated by a new enrolment does not survive the next launch', () => {
+  it('purges it and routes to a full sign-in', async () => {
+    mockTokenIsStale.mockResolvedValue(true);
+    // Answers as the real module would after the purge.
+    mockHasStored.mockResolvedValue(false);
+
+    await renderProvider();
+
+    expect(mockClearRefresh).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('signedOut'));
+  });
+
+  it('leaves the session alone when nothing has changed', async () => {
+    await renderProvider();
+
+    expect(mockClearRefresh).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
+  });
+
+  it('keeps the session when the staleness check itself fails', async () => {
+    // A keychain that cannot be read says nothing about enrolment. Purging on
+    // that evidence would push an offline patient into a network login they
+    // cannot complete — the same failure the cold-start fallback above avoids.
+    mockTokenIsStale.mockRejectedValue(new Error('keychain unavailable'));
+
+    await renderProvider();
+
+    expect(mockClearRefresh).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
   });
 });

@@ -24,19 +24,54 @@ import * as LocalAuthentication from 'expo-local-authentication';
  * not a general-purpose biometric API.
  */
 
-export type BiometricUnlockOutcome =
+export type LocalUnlockOutcome =
   | { readonly outcome: 'success' }
-  /** No enrolled biometrics/passcode, or no hardware — the caller falls back to full OIDC re-login. */
+  /** Nothing the OS can authenticate against at all — the caller falls back to full OIDC re-login. */
   | { readonly outcome: 'unavailable' }
   /** The user cancelled or failed the prompt. The caller keeps showing the unlock prompt rather than treating this as a sign-out. */
   | { readonly outcome: 'failed' };
 
-export async function isBiometricUnlockAvailable(): Promise<boolean> {
-  const [hasHardware, isEnrolled] = await Promise.all([
-    LocalAuthentication.hasHardwareAsync(),
-    LocalAuthentication.isEnrolledAsync(),
-  ]);
-  return hasHardware && isEnrolled;
+/**
+ * The strongest thing the OS will authenticate this person with right now.
+ *
+ * `NONE < SECRET < BIOMETRIC_WEAK < BIOMETRIC_STRONG`, and the enum's numeric
+ * order is load-bearing in two places: `isLocalUnlockAvailable` below, and
+ * `tokenStorage.ts`'s enrolment-rise check, which is why this is exported
+ * rather than inlined.
+ */
+export async function enrolledSecurityLevel(): Promise<LocalAuthentication.SecurityLevel> {
+  if (!(await LocalAuthentication.hasHardwareAsync())) {
+    return LocalAuthentication.SecurityLevel.NONE;
+  }
+  return LocalAuthentication.getEnrolledLevelAsync();
+}
+
+/**
+ * Whether this app can unlock the stored session locally — by biometric OR by
+ * the device passcode.
+ *
+ * Named for unlock rather than for biometrics, because the previous name is
+ * what made this wrong (#74). It asked `isEnrolledAsync()`, which on Android
+ * answers for BIOMETRICS ONLY: a patient with a PIN and no fingerprint got
+ * `false`, and `app/login.tsx` then offered them nothing but "Sign in again
+ * instead" — a network OIDC login. So an unenrolled patient had no offline
+ * route into their own diary, on the one client that exists to work offline.
+ *
+ * Nothing else in the design agreed with that check. `authenticate()` below
+ * passes `disableDeviceFallback: false` on purpose, so the OS would have
+ * accepted the passcode had it been asked; `login.unlockHint` promises "Use
+ * your face, fingerprint, or phone passcode"; and `login.unlockUnavailableBody`
+ * tells the patient their phone has no "passcode unlock turned on" — a claim
+ * the code never checked. ADR-0015 had already rejected
+ * `disableDeviceFallback: true` for exactly this population ("post-surgical
+ * hands, dry skin, tremor"), so this restores the decision the ADR made rather
+ * than changing it.
+ *
+ * `SECRET` therefore counts. `NONE` does not, and that is the only case where a
+ * full re-login is genuinely the patient's only way in.
+ */
+export async function isLocalUnlockAvailable(): Promise<boolean> {
+  return (await enrolledSecurityLevel()) !== LocalAuthentication.SecurityLevel.NONE;
 }
 
 /**
@@ -47,8 +82,8 @@ export async function isBiometricUnlockAvailable(): Promise<boolean> {
  * bandaged hand, and this app has no weaker "PIN" flow of its own to fall
  * back to instead.
  */
-export async function authenticate(promptMessage: string): Promise<BiometricUnlockOutcome> {
-  if (!(await isBiometricUnlockAvailable())) {
+export async function authenticate(promptMessage: string): Promise<LocalUnlockOutcome> {
+  if (!(await isLocalUnlockAvailable())) {
     return { outcome: 'unavailable' };
   }
 

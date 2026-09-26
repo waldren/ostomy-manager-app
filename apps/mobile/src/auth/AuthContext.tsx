@@ -30,7 +30,7 @@ import { AppState } from 'react-native';
 
 import i18next from '../i18n/i18n';
 
-import { authenticate, type BiometricUnlockOutcome } from './biometricUnlock';
+import { authenticate, type LocalUnlockOutcome } from './biometricUnlock';
 import { deriveAuthPhase, type AuthPhase } from './authPhase';
 import { readSubjectClaim } from './tokenSubject';
 import { getDatabaseOwner, setDatabaseOwner } from '../db/databaseOwner';
@@ -47,6 +47,7 @@ import {
   getRefreshToken,
   hasStoredRefreshToken,
   setRefreshToken,
+  storedTokenIsStaleForEnrolment,
 } from './tokenStorage';
 
 /**
@@ -87,7 +88,7 @@ export interface AuthContextValue {
   readonly clearSignInFailure: () => void;
   readonly accessToken: string | undefined;
   /** Runs the biometric/passcode prompt and, on success, transitions to `authenticated` — see this file's header comment for what a concurrent refresh failure does and does not affect. */
-  readonly unlock: () => Promise<BiometricUnlockOutcome>;
+  readonly unlock: () => Promise<LocalUnlockOutcome>;
   /** Called by `app/login.tsx` once the OIDC code exchange succeeds. Persists the refresh token (if the provider returned one) and transitions to `authenticated`. */
   readonly completeLogin: (tokens: OidcTokens) => Promise<void>;
   readonly signOut: () => Promise<void>;
@@ -131,7 +132,37 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
 
   useEffect(() => {
     let cancelled = false;
-    hasStoredRefreshToken()
+    /**
+     * #74. A refresh token stored without the biometric gate carries the
+     * enrolment level it was written at, and a rise means a biometric was
+     * enrolled since — the transition ADR-0015 exists to respond to, and the one
+     * case an app CAN observe (see `storedTokenIsStaleForEnrolment`).
+     *
+     * Purging here rather than at the point of enrolment because there is no
+     * point of enrolment to hook: the OS offers no change signal, so the next
+     * cold start is the first moment this app can know. The consequence for the
+     * patient is ADR-0015's stated one either way — a full OIDC re-login — and
+     * the token that login stores IS gated, because the level now allows it.
+     *
+     * Answering `false` on failure is deliberate. A keychain that cannot be read
+     * says nothing about enrolment, and purging a session on that evidence would
+     * push an offline patient into a network login they cannot complete. The
+     * `hasStoredRefreshToken` call below fails toward `locked` for the same
+     * reason.
+     */
+    const tokenIsStale = async (): Promise<boolean> => {
+      try {
+        return await storedTokenIsStaleForEnrolment();
+      } catch {
+        return false;
+      }
+    };
+
+    tokenIsStale()
+      .then(async (stale) => {
+        if (stale) await clearRefreshToken();
+        return hasStoredRefreshToken();
+      })
       .then((hasToken) => {
         if (cancelled) return;
         setPhase(deriveAuthPhase({ hasStoredRefreshToken: hasToken, unlockedThisSession: false }));
@@ -292,7 +323,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     setSignInFailed(false);
   }, []);
 
-  const unlock = useCallback(async (): Promise<BiometricUnlockOutcome> => {
+  const unlock = useCallback(async (): Promise<LocalUnlockOutcome> => {
     // `expo-local-authentication`'s `promptMessage` is rendered by the
     // operating system's own biometric sheet, not by this app's JSX tree —
     // there is no node for the `i18next/no-literal-string` lint rule (which
