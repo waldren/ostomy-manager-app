@@ -193,6 +193,26 @@ export const mobile = {
   'common.startupErrorBody':
     'Something went wrong while opening your diary on this phone. Close the app and open it again. If that does not work, sign in again.',
   'common.startupErrorButton': 'Sign in again',
+  // --- The safe ranges have not reached this phone yet (#63) -------------------
+  //
+  // NOT `startupErrorBody`, which the three entry screens used to borrow. That copy
+  // says "Close the app and open it again. If that does not work, sign in again." —
+  // advice that cannot work here however many times it is followed, and the same
+  // defect class as #74's "Please try again" and #40's silent session. It also named
+  // the wrong thing: the condition is an empty `validation_thresholds_cache`, not a
+  // database that would not open, and `home.tsx` still uses that string for the
+  // genuine database failure it was written for.
+  //
+  // What is actually true: the cache is **deliberately unseeded**, because a default
+  // there is a hardcoded threshold wearing a database costume, so the save refuses
+  // rather than validating against invented numbers. It fills from a sync, which
+  // needs one online moment after signing in. Nothing for the patient to fix, and
+  // nothing to restart.
+  //
+  // It says "safe range" rather than "validation threshold": the patient's reason to
+  // care is that the app checks entries against limits their care team sets.
+  'entry.thresholdsUnavailableBody':
+    'This phone does not have your safe ranges yet, so it cannot check your entries. Connect to the internet for a moment and they will arrive on their own. You do not need to close the app.',
 } as const;
 
 export type MobileCatalogKey = keyof typeof mobile;

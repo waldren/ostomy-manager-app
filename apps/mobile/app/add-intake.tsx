@@ -18,14 +18,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { formatDateTime, formatVolumeQuantity } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
+import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
-import { readThresholds, type CachedThresholds } from '../src/db/repositories/thresholdsRepository';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
 import {
   amountError,
@@ -90,7 +90,6 @@ export default function AddIntake(): React.JSX.Element {
   const [fluidTypeCode, setFluidTypeCode] = useState<string | undefined>(undefined);
   const [effectiveDateTime] = useState(() => clockNow());
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
-  const [cached, setCached] = useState<CachedThresholds | null | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
 
@@ -99,20 +98,7 @@ export default function AddIntake(): React.JSX.Element {
   const containers = useValueSetOptions(VALUE_SET_KEY.CONTAINER_SIZE);
   const fluidTypes = useValueSetOptions(VALUE_SET_KEY.FLUID_TYPE);
 
-  useEffect(() => {
-    if (database.status !== 'ready') return;
-    let cancelled = false;
-    readThresholds(database.executor)
-      .then((value) => {
-        if (!cancelled) setCached(value ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setCached(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [database]);
+  const cached = useCachedThresholds(database);
 
   const save = useCallback(
     async (confirmedWarning: boolean) => {
@@ -184,7 +170,7 @@ export default function AddIntake(): React.JSX.Element {
       <Heading>{t('common:entry.intakeHeading')}</Heading>
 
       {cached === null ? (
-        <BodyText tone="error">{t('mobile:common.startupErrorBody')}</BodyText>
+        <BodyText tone="error">{t('mobile:entry.thresholdsUnavailableBody')}</BodyText>
       ) : null}
 
       <NumericField

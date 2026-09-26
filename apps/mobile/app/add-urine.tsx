@@ -18,17 +18,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { formatDateTime } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
+import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import {
   enqueueVolumelessUrineCreate,
   enqueueVolumetricObservationCreate,
 } from '../src/db/offlineWrites';
-import { readThresholds, type CachedThresholds } from '../src/db/repositories/thresholdsRepository';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
 import { UrineColorChoice } from '../src/entry/UrineColorChoice';
 import { amountError, methodError, toCanonicalValueString } from '../src/entry/useStomaOutputEntry';
@@ -112,7 +112,6 @@ export default function AddUrine(): React.JSX.Element {
   const [urineColorCode, setUrineColorCode] = useState<string | undefined>(undefined);
   const [effectiveDateTime] = useState(() => clockNow());
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
-  const [cached, setCached] = useState<CachedThresholds | null | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
 
@@ -120,20 +119,7 @@ export default function AddUrine(): React.JSX.Element {
   const units = unitsForMeasurementSystem(measurementSystem);
   const colors = useValueSetOptions(VALUE_SET_KEY.URINE_COLOR);
 
-  useEffect(() => {
-    if (database.status !== 'ready') return;
-    let cancelled = false;
-    readThresholds(database.executor)
-      .then((value) => {
-        if (!cancelled) setCached(value ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setCached(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [database]);
+  const cached = useCachedThresholds(database);
 
   const changeAmount = useCallback((next: string) => {
     setAmountText(next);
@@ -250,7 +236,7 @@ export default function AddUrine(): React.JSX.Element {
       <Heading>{t('common:entry.urineHeading')}</Heading>
 
       {cached === null ? (
-        <BodyText tone="error">{t('mobile:common.startupErrorBody')}</BodyText>
+        <BodyText tone="error">{t('mobile:entry.thresholdsUnavailableBody')}</BodyText>
       ) : null}
 
       {/* AC 12.1 AC2 — optional, and the label says so before the save. */}

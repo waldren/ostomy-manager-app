@@ -18,14 +18,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { formatDateTime } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
+import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
-import { readThresholds, type CachedThresholds } from '../src/db/repositories/thresholdsRepository';
 import {
   amountError,
   checkEntry,
@@ -86,31 +86,13 @@ export default function AddOutput(): React.JSX.Element {
   const [method, setMethod] = useState<MeasuredOrEstimated | undefined>(undefined);
   const [effectiveDateTime, setEffectiveDateTime] = useState(() => clockNow());
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
-  const [cached, setCached] = useState<CachedThresholds | undefined | null>(undefined);
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
 
   const measurementSystem = DEFAULT_MEASUREMENT_SYSTEM;
   const units = unitsForMeasurementSystem(measurementSystem);
 
-  useEffect(() => {
-    if (database.status !== 'ready') return;
-    let cancelled = false;
-    readThresholds(database.executor)
-      .then((value) => {
-        // `null` is "we looked and there is nothing", distinct from
-        // `undefined`, "we have not looked yet" — the screen renders a
-        // different thing for each, and collapsing them would show the
-        // cannot-validate message during the ordinary first render.
-        if (!cancelled) setCached(value ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setCached(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [database]);
+  const cached = useCachedThresholds(database);
 
   const save = useCallback(
     async (confirmedWarning: boolean) => {
@@ -179,7 +161,7 @@ export default function AddOutput(): React.JSX.Element {
       <Heading>{t('common:entry.stomaOutputHeading')}</Heading>
 
       {cached === null ? (
-        <BodyText tone="error">{t('mobile:common.startupErrorBody')}</BodyText>
+        <BodyText tone="error">{t('mobile:entry.thresholdsUnavailableBody')}</BodyText>
       ) : null}
 
       <NumericField
