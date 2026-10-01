@@ -37,6 +37,8 @@ See `apps/api/README.md`.
 
 **`validation_thresholds` is seeded by a migration, not by `packages/seed`.** The rows are configuration every environment needs, not development data — `ThresholdsService` throws without them, and that sits on the Tier 1/Tier 2 path of every observation write and every synced operation, so a dev-only seed would leave production 500ing on its first clinical write. `ON CONFLICT DO NOTHING`, so a redeploy never resets a value an admin tuned. Integration tests upsert their own values over the defaults.
 
+**Changing one is `scripts/admin-config.mjs`, not a new migration** (P3.S3, closing R7). It speaks HTTP to `/api/v1/admin/...` as an authenticated admin and never SQL to the database, and that is the load-bearing part: these writes are audited with the actor and before/after values inside the write's own transaction, so a `psql` UPDATE leaves a log saying a bound changed with no record of what it used to be — and nothing on a stored observation says which bound it was checked against, so that history is reconstructable from nowhere else. ADR-0008 said "a script against the database" until the script existed; it is amended. What the API still cannot check is whether a value is *clinically* sensible for its key — a 20 mL stoma-output warning passes every rule there is (#93).
+
 **The toolchain does exist** (sprint P0). `packages/config` holds the shared tsconfig, ESLint flat config and Prettier config that every workspace extends, and the root has working commands:
 
 ```

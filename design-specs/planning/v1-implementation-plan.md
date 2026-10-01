@@ -327,7 +327,7 @@ A sprint ID is claimed in this document **before** it appears in a commit messag
 
 **R6 — Missing acceptance criteria for Epics 3–11, 15, 16.** Live and now acute: P5.S2 and P5.S6 are the two where "done" is genuinely ambiguous, and P5.S6 is also the physician-access route. Write AC into the spec before dispatching either.
 
-**R7 — Thresholds are load-bearing long before the console that manages them.** _Partly retired_ — defaults ship by migration with `ON CONFLICT DO NOTHING`. _Still live:_ there is no way to change one without editing a migration. P3.S3 carries the maintenance script.
+**R7 — Thresholds are load-bearing long before the console that manages them.** _Retired_ — defaults ship by migration with `ON CONFLICT DO NOTHING`, and `scripts/admin-config.mjs` (P3.S3) changes one through the admin API, audited, with no release. What remains is not R7: the API cannot tell whether a value is clinically sensible for its key, tracked as #93.
 
 **R8 — NEW: verification is weaker than it looks.** Three suites can be green while proving much less than a reader assumes: the integration suite skips itself without Docker; no device or simulator runs anywhere in CI; and there is no mobile e2e at all. The mitigation is not more unit tests — it is R.S1, the HW list, and P4.S7's e2e decision.
 
