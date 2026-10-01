@@ -30,6 +30,7 @@ import assert from 'node:assert/strict';
 import {
   describeBounds,
   describeFailure,
+  describeSettableRange,
   readClaims,
   resolveDescription,
   tierWarnings,
@@ -125,6 +126,43 @@ describe('describeFailure', () => {
     const rendered = describeFailure(502, undefined);
     assert.match(rendered, /HTTP 502/);
     assert.doesNotMatch(rendered, /older than this script/);
+  });
+});
+
+describe('describeSettableRange', () => {
+  it('renders a decided range', () => {
+    assert.equal(
+      describeSettableRange({ minSettableValue: 60, maxSettableValue: 3600 }),
+      'settable 60 to 3600',
+    );
+  });
+
+  /**
+   * The distinction worth keeping. `validation_thresholds` encodes "no clinical
+   * bound decided for this key" as a range spanning the whole `DECIMAL(12,4)`
+   * column (#93), which constrains nothing — so rendering it as
+   * "settable 0.0001 to 99999999.9999" would present the absence of a decision
+   * as a decision, to the one reader in a position to notice.
+   */
+  it('says plainly when no bound has been decided', () => {
+    const rendered = describeSettableRange({
+      minSettableValue: 0.0001,
+      maxSettableValue: 99999999.9999,
+    });
+    assert.match(rendered, /no settable bound decided/);
+    assert.doesNotMatch(rendered, /0\.0001/);
+  });
+
+  it('treats a range open at only one end as decided', () => {
+    // Half-open is still a real constraint and must not read as undecided.
+    assert.match(
+      describeSettableRange({ minSettableValue: 60, maxSettableValue: 99999999.9999 }),
+      /settable 60/,
+    );
+    assert.match(
+      describeSettableRange({ minSettableValue: 0.0001, maxSettableValue: 3600 }),
+      /to 3600/,
+    );
   });
 });
 

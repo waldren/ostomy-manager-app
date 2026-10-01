@@ -141,15 +141,34 @@ describe.skipIf(!dockerAvailable)('AdminThresholdsService — real PostgreSQL', 
    */
   async function seedThreshold(
     key: string,
-    options: { value?: number; tier?: string; unit?: string; description?: string | null } = {},
+    options: {
+      value?: number;
+      tier?: string;
+      unit?: string;
+      description?: string | null;
+      /**
+       * #93's bounds. Required of this fixture because they are required of the
+       * table: the columns are `NOT NULL` with the database default dropped, so
+       * dropping them from this INSERT is a constraint violation rather than a
+       * silently unbounded row. That is the forcing function working — an
+       * inserter must say what the key may be set to.
+       *
+       * The defaults here are the full column width, which is what "no narrower
+       * bound decided" means, so a test that does not care about #93 behaves as
+       * it did before it.
+       */
+      minSettableValue?: number;
+      maxSettableValue?: number;
+    } = {},
   ): Promise<void> {
     const owner = new PgClient({ connectionString: ownerDatabaseUrl });
     await owner.connect();
     try {
       await owner.query(
         `INSERT INTO validation_thresholds
-           (id, threshold_key, tier, value, unit, patient_adjustable, description, created_at, updated_at)
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, TRUE, $5, now(), now())
+           (id, threshold_key, tier, value, unit, patient_adjustable, description,
+            min_settable_value, max_settable_value, created_at, updated_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, TRUE, $5, $6, $7, now(), now())
          ON CONFLICT (threshold_key) DO NOTHING`,
         [
           key,
@@ -157,6 +176,8 @@ describe.skipIf(!dockerAvailable)('AdminThresholdsService — real PostgreSQL', 
           options.value ?? 2000,
           options.unit ?? 'mL',
           options.description === undefined ? 'seeded by the test' : options.description,
+          options.minSettableValue ?? 0.0001,
+          options.maxSettableValue ?? 99999999.9999,
         ],
       );
     } finally {
@@ -248,6 +269,12 @@ describe.skipIf(!dockerAvailable)('AdminThresholdsService — real PostgreSQL', 
       const rows = await auditRowsFor(write.thresholdId);
       expect(Object.keys(rows[0]!.afterValue as object).sort()).toEqual([
         'description',
+        // #93's bounds are recorded on both sides even though they cannot change
+        // through this surface. "Was this value legal when it was written?" is
+        // not answerable from the value alone once a later migration narrows a
+        // range, and the audit row is the only surviving record.
+        'maxSettableValue',
+        'minSettableValue',
         'patientAdjustable',
         'thresholdKey',
         'tier',
@@ -435,6 +462,158 @@ describe.skipIf(!dockerAvailable)('AdminThresholdsService — real PostgreSQL', 
       expect(await prisma.auditEvent.count({ where: { entityType: THRESHOLD_ENTITY_TYPE } })).toBe(
         before,
       );
+    });
+  });
+
+  describe('the range a key may be set within (#93)', () => {
+    const BOUNDED = 'p3s3_probe_bounded';
+
+    beforeAll(async () => {
+      await seedThreshold(BOUNDED, { value: 300, minSettableValue: 60, maxSettableValue: 3600 });
+    });
+
+    it('reports the bounds on the read, so a caller can show them before typing', async () => {
+      const row = (await service.listThresholds()).thresholds.find(
+        (candidate) => candidate.thresholdKey === BOUNDED,
+      );
+
+      expect(row).toMatchObject({ minSettableValue: 60, maxSettableValue: 3600 });
+    });
+
+    it('refuses a value below the floor, naming the field and the rule only', async () => {
+      await expect(
+        service.updateThreshold(BOUNDED, { value: 1, description: null }, ADMIN_SUBJECT, undefined),
+      ).rejects.toMatchObject({
+        response: {
+          error: {
+            code: 'INVALID_THRESHOLD_UPDATE',
+            fields: [{ field: 'value', rule: 'outside_settable_range' }],
+          },
+        },
+      });
+    });
+
+    it('refuses a value above the ceiling', async () => {
+      await expect(
+        service.updateThreshold(
+          BOUNDED,
+          { value: 86_400, description: null },
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({
+        response: { error: { code: 'INVALID_THRESHOLD_UPDATE' } },
+      });
+    });
+
+    it('changes nothing and writes no audit row when it refuses', async () => {
+      const before = await rowFor(BOUNDED);
+      const auditBefore = await auditRowsFor(before!.id);
+
+      await expect(
+        service.updateThreshold(BOUNDED, { value: 2, description: null }, ADMIN_SUBJECT, undefined),
+      ).rejects.toThrow();
+
+      const after = await rowFor(BOUNDED);
+      expect(after!.value.toNumber()).toBe(before!.value.toNumber());
+      expect(after!.updatedAt.toISOString()).toBe(before!.updatedAt.toISOString());
+      expect(await auditRowsFor(before!.id)).toHaveLength(auditBefore.length);
+    });
+
+    it('accepts both boundaries, because the range is inclusive', async () => {
+      // Asserted because an exclusive comparison is the likelier typo, and it
+      // would make the published bounds a lie at exactly the two values a
+      // careful admin is most likely to enter.
+      for (const value of [60, 3600]) {
+        const write = await service.updateThreshold(
+          BOUNDED,
+          { value, description: null },
+          ADMIN_SUBJECT,
+          undefined,
+        );
+        expect(write.threshold.value).toBe(value);
+      }
+    });
+
+    /**
+     * The database enforces this too, which is the difference between this table
+     * and `clinical_default_ranges` (#97). Written as the OWNER so it bypasses
+     * the service entirely: the point is that a migration, a seeder or a psql
+     * session cannot create a state the API refuses.
+     */
+    it('is enforced by a CHECK constraint, not only by the service', async () => {
+      const owner = new PgClient({ connectionString: ownerDatabaseUrl });
+      await owner.connect();
+      try {
+        await expect(
+          owner.query(`UPDATE validation_thresholds SET value = 1 WHERE threshold_key = $1`, [
+            BOUNDED,
+          ]),
+        ).rejects.toThrow(/validation_thresholds_value_within_settable_range/);
+
+        await expect(
+          owner.query(
+            `UPDATE validation_thresholds
+                SET min_settable_value = 5000, max_settable_value = 100
+              WHERE threshold_key = $1`,
+            [BOUNDED],
+          ),
+        ).rejects.toThrow(/validation_thresholds_settable_range_ordered/);
+      } finally {
+        await owner.end();
+      }
+    });
+
+    it('refuses to insert a threshold row that states no bounds', async () => {
+      // The forcing function: `NOT NULL` with no database default, so a future
+      // migration cannot add a key and leave it silently unbounded.
+      const owner = new PgClient({ connectionString: ownerDatabaseUrl });
+      await owner.connect();
+      try {
+        await expect(
+          owner.query(
+            `INSERT INTO validation_thresholds
+               (id, threshold_key, tier, value, unit, patient_adjustable, created_at, updated_at)
+             VALUES (gen_random_uuid(), 'p3s3_probe_unbounded', 'TIER_2_SOFT_WARNING', 1, 'mL',
+                     TRUE, now(), now())`,
+          ),
+        ).rejects.toThrow(/min_settable_value/);
+      } finally {
+        await owner.end();
+      }
+    });
+
+    describe('what the migration decided, and what it deliberately did not', () => {
+      it('bounds the clock-skew allowance, which ADR-0019 already reasoned about', async () => {
+        const row = (await service.listThresholds()).thresholds.find(
+          (candidate) => candidate.thresholdKey === SKEW_KEY,
+        );
+
+        expect(row).toMatchObject({ minSettableValue: 60, maxSettableValue: 3600 });
+      });
+
+      /**
+       * **This assertion is expected to change, and that is its purpose.**
+       *
+       * `stoma_output_single_entry_warning_ml` is left at the full width of the
+       * column, which encodes "no narrower bound has been decided" and leaves the
+       * key exactly as constrained as it was before #93. The numbers are a
+       * clinical judgement — below what value does a Tier 2 warning fire so often
+       * that it trains patients to dismiss warnings, and above what value does it
+       * never usefully fire — and #93 is open for them.
+       *
+       * Pinning the undecided state here means the decision cannot land silently:
+       * whoever narrows the range has to delete this test, in the same change,
+       * and say so.
+       */
+      it('leaves the stoma-output warning range undecided, pending a clinical answer', async () => {
+        const row = (await service.listThresholds()).thresholds.find(
+          (candidate) => candidate.thresholdKey === WARNING_KEY,
+        );
+
+        expect(row!.maxSettableValue).toBeGreaterThan(99_999_999);
+        expect(row!.minSettableValue).toBeLessThan(1);
+      });
     });
   });
 

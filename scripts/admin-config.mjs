@@ -435,6 +435,25 @@ function announceIdentity(subject) {
 // --- reads --------------------------------------------------------------------
 
 /**
+ * The full width of the `DECIMAL(12,4)` column `value` is stored in.
+ *
+ * A settable range spanning this is how `validation_thresholds` encodes "no
+ * narrower bound has been decided for this key" (#93) — it leaves the key
+ * exactly as constrained as it was before the column existed. Worth rendering
+ * differently from a real range, because "settable 0.0001 to 99999999.9999"
+ * reads as a decision and is the absence of one.
+ */
+const COLUMN_FLOOR = 0.0001;
+const COLUMN_CEILING = 99999999.9999;
+
+export function describeSettableRange(row) {
+  if (row.minSettableValue <= COLUMN_FLOOR && row.maxSettableValue >= COLUMN_CEILING) {
+    return 'no settable bound decided for this key (#93)';
+  }
+  return `settable ${String(row.minSettableValue)} to ${String(row.maxSettableValue)}`;
+}
+
+/**
  * A default range's bounds, which may be one-sided.
  *
  * `lowValue` and `highValue` are each nullable and the create refuses only the
@@ -470,6 +489,7 @@ const SURFACES = {
         const fixed = row.patientAdjustable ? '' : '  [not patient-adjustable]';
         console.log(`  ${row.thresholdKey}`);
         console.log(`      ${String(row.value)}${unit}   ${row.tier}${fixed}`);
+        console.log(`      ${describeSettableRange(row)}`);
       }
       return body.thresholds.length;
     },
@@ -681,6 +701,28 @@ async function setThreshold(key, rawValue, options, token) {
     console.log(`      label   ${String(current.description)}  ->  ${after}`);
   }
   console.log(`      tier    ${current.tier}  (immutable)`);
+  console.log(`      range   ${describeSettableRange(current)}`);
+
+  /**
+   * Refused here as well as by the API, which is not redundant.
+   *
+   * The API is the enforcement point and a `400 outside_settable_range` is the
+   * real answer. But this script has already read the bounds, so it can say
+   * what the range IS — the 400 deliberately names only the field and a rule
+   * code, never the numbers — and it can refuse before anything is sent, which
+   * is the difference between "that value is not allowed, here is the range"
+   * and a code the operator has to go look up.
+   */
+  if (current.value !== value) {
+    if (value < current.minSettableValue || value > current.maxSettableValue) {
+      throw new Refused(
+        `${String(value)} is outside what this key may be set to — ` +
+          `${String(current.minSettableValue)} to ${String(current.maxSettableValue)}. ` +
+          'That range is seeded by migration and is immutable through this API; widening it ' +
+          'is a migration with a reviewer.',
+      );
+    }
+  }
 
   for (const message of tierWarnings(current)) warn(message);
 
