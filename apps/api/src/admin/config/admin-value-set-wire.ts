@@ -15,6 +15,12 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import {
+  MAX_REPRESENTABLE_VALUE_ML,
+  MAX_VALUE_DECIMAL_PLACES,
+  exceedsMaxMagnitude,
+  exceedsMaxPrecision,
+} from '@ostomy/core/admin';
 import { z } from 'zod';
 
 /**
@@ -60,7 +66,9 @@ export const addValueSetMemberSchema = z
       .string()
       .min(1)
       .max(VALUE_SET_MEMBER_CODE_MAX_LENGTH)
-      .regex(/^[a-z0-9_]+$/)
+      // Must start with a letter: `_`, `__` and all-digit codes are permanent once
+      // created, and none of them is a code anyone would choose on purpose.
+      .regex(/^[a-z][a-z0-9_]*$/)
       .meta({
         description:
           'The stable code clinical records will reference. Lower snake case. Permanent once created: retiring it is the only way to withdraw it, because stored entries resolve their meaning through it.',
@@ -69,24 +77,60 @@ export const addValueSetMemberSchema = z
       description:
         'Presentation order within the set. The only field a later change may safely touch.',
     }),
-    numericValue: z.number().nullable().meta({
-      description:
-        'The quantity this code carries, for sets whose members are quantities (a container size). Null for a category. Immutable in effect: an entry stored against this code is read back through this value, so changing it would rewrite what past entries mean.',
-    }),
+    /**
+     * Bounded against the column, because the column is `DECIMAL(12,4)` and Postgres
+     * does two unhelpful things at its edges (both reviews of PR A).
+     *
+     * Past `10^8` it raises `numeric field overflow`, which is a Prisma error rather
+     * than an `HttpException` and therefore reaches the admin as an opaque 500 naming
+     * no field. Past four decimal places it **silently rounds** and commits: an admin
+     * typing `250.00005` gets a `201` and a member that means `250.0001`. That one is
+     * the worse of the two, because `numericValue` is the clinical meaning of a code
+     * and there is no edit endpoint — the wrong figure then governs every entry made
+     * through that button until someone notices and retires it.
+     *
+     * CLAUDE.md records this exact pair as already paid for once on the observations
+     * path, where both were HTTP 500s. The constants are the canonical column shape,
+     * imported rather than restated: `@ostomy/core/admin` is the subpath
+     * `packages/config/eslint/index.js`'s admin allow-list already names, created by
+     * this sprint because nothing had needed it before.
+     */
+    numericValue: z
+      .number()
+      .nullable()
+      .refine((value) => value === null || !exceedsMaxMagnitude(value), {
+        error: `numericValue must be smaller than ${String(MAX_REPRESENTABLE_VALUE_ML)}`,
+      })
+      .refine((value) => value === null || !exceedsMaxPrecision(value), {
+        error: `numericValue must have at most ${String(MAX_VALUE_DECIMAL_PLACES)} decimal places`,
+      })
+      .meta({
+        description:
+          'The quantity this code carries, for sets whose members are quantities (a container size). Null for a category. Immutable in effect: an entry stored against this code is read back through this value, so changing it would rewrite what past entries mean. Bounded by the DECIMAL(12,4) column it is stored in.',
+      }),
     numericUnit: z.string().min(1).max(32).nullable().meta({
       description:
         'The unit numericValue is in, stored beside it rather than assumed from the set. Travels with numericValue: both present or both null.',
     }),
   })
   .strict()
-  .refine(
-    (value) => (value.numericValue === null) === (value.numericUnit === null),
+  .superRefine((value, ctx) => {
     // A value with no unit is one a reader has to guess about, and a unit with no
-    // value is meaningless. The patient-facing projection carries both or neither,
-    // so accepting a half-populated pair here would put a row on the wire that the
-    // read model cannot describe.
-    { message: 'numericValue and numericUnit must both be present or both be null' },
-  );
+    // value is meaningless. The patient-facing projection carries both or neither, so
+    // a half-populated pair would put a row on the wire the read model cannot
+    // describe.
+    //
+    // `superRefine` with an explicit `path`, not a top-level `refine`: a top-level
+    // one carries `path: []`, and the controller reports `issue.path.join('.')` — so
+    // the rule this comment calls a contract was reported as an empty field name.
+    if ((value.numericValue === null) !== (value.numericUnit === null)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['numericUnit'],
+        message: 'numericValue and numericUnit must both be present or both be null',
+      });
+    }
+  });
 
 export type AddValueSetMemberRequest = z.infer<typeof addValueSetMemberSchema>;
 
@@ -96,6 +140,7 @@ export const adminValueSetMemberSchema = z.object({
   sortOrder: z.number().int(),
   numericValue: z.number().nullable(),
   numericUnit: z.string().nullable(),
+  retiredAt: z.string().nullable(),
   /**
    * Visible here and invisible to patients, on purpose. A patient client infers
    * retirement from ABSENCE (CLAUDE.md, P3.S1) — which is why its cache does a
@@ -133,4 +178,18 @@ export interface ValueSetMemberSnapshot {
   readonly numericValue: number | null;
   readonly numericUnit: string | null;
   readonly status: 'ACTIVE' | 'RETIRED';
+  /** ISO 8601, or null while active. In the snapshot so the audit row shows the transition and not only the status. */
+  readonly retiredAt: string | null;
+}
+
+/**
+ * Projects the `DECIMAL(12,4)` column to a JSON number, or null.
+ *
+ * One helper because this was written out four times in the service and a fifth in
+ * `ThresholdsService` — and `docs/sync-contract.md` §7.3's reason for a number rather
+ * than a string (a clinical value stays a number; a string pushes parsing onto every
+ * consumer) is the kind of decision that should be stated once.
+ */
+export function toNumericValue(value: { toNumber: () => number } | null): number | null {
+  return value === null ? null : value.toNumber();
 }

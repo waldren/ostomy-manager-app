@@ -19,10 +19,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * P3.S3, ADR-0008. Against real PostgreSQL, as the runtime role.
  *
  * Integration rather than unit, because every guarantee worth testing here is a
- * database guarantee: that the audit row lands in the SAME transaction as the
- * configuration change, that retirement is a status and not a delete, and that the
- * runtime role can insert an audit row and cannot amend one (ADR-0011). Mocking
- * `$transaction` would assert the shape of my own mock.
+ * database guarantee: that the configuration change and its audit row share one
+ * transaction, that retirement is a status and not a delete, that the runtime role
+ * cannot delete a member, and that a write is felt by the patient-facing read path.
+ * Mocking `$transaction` would assert the shape of my own mock.
+ *
+ * The wire contract is unit-tested separately (`admin-value-set-wire.spec.ts`) because
+ * this suite skips itself when Docker is unreachable, so anything that can be proven
+ * without a database should not live here.
  */
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -69,11 +73,22 @@ const RUNTIME_ROLE = 'ostomy_runtime';
 const RUNTIME_PASSWORD = 'admin-value-sets-integration-test-only-password';
 const ADMIN_SUBJECT = 'admin-integration-subject';
 const SET_KEY = 'container_size';
+/**
+ * A set no shipped client renders, inserted by this suite.
+ *
+ * `PUBLISHED_VALUE_SET_KEYS` in `value-sets.controller.ts` names the four a patient
+ * client may render, and the table currently holds exactly those four — so without
+ * this, the admin surface's "shows unpublished sets too" behaviour has nothing to
+ * demonstrate against.
+ */
+const UNPUBLISHED_SET_KEY = 'p3s3_unpublished_probe_set';
 
 describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', () => {
   let container: StartedPostgreSqlContainer;
   let prisma: PrismaClient;
   let service: AdminValueSetsService;
+  /** Held so the cache-invalidation tests can read through the patient-facing path. */
+  let thresholds: ThresholdsService;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:17-alpine')
@@ -97,11 +112,21 @@ describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', (
     await owner.connect();
     try {
       await owner.query(`ALTER ROLE "${RUNTIME_ROLE}" WITH LOGIN PASSWORD '${RUNTIME_PASSWORD}'`);
+      // Belt and braces: the P3.S1 migration already creates this set and seeds its
+      // members, which is what makes the "code the deployment already defines" test
+      // meaningful. Kept so the suite still runs if that migration ever stops seeding,
+      // and `DO NOTHING` so it never fights the migration for ownership.
       await owner.query(
         `INSERT INTO value_sets (id, key, description, created_at, updated_at)
          VALUES (gen_random_uuid(), $1, 'Quick-select container sizes', now(), now())
          ON CONFLICT (key) DO NOTHING`,
         [SET_KEY],
+      );
+      await owner.query(
+        `INSERT INTO value_sets (id, key, description, created_at, updated_at)
+         VALUES (gen_random_uuid(), $1, 'A set no client publishes', now(), now())
+         ON CONFLICT (key) DO NOTHING`,
+        [UNPUBLISHED_SET_KEY],
       );
     } finally {
       await owner.end();
@@ -110,7 +135,9 @@ describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', (
     const runtimeDatabaseUrl = `postgresql://${RUNTIME_ROLE}:${RUNTIME_PASSWORD}@${container.getHost()}:${String(container.getPort())}/ostomy_admin_config_test`;
     prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: runtimeDatabaseUrl }) });
 
-    const thresholds = new ThresholdsService(prisma as never, 60_000);
+    // A 60s TTL, so anything these tests observe as fresh is the result of an explicit
+    // invalidation rather than the TTL quietly expiring under them.
+    thresholds = new ThresholdsService(prisma as never, 60_000);
     service = new AdminValueSetsService(
       prisma as never,
       new AuditService(prisma as never) as never,
@@ -135,6 +162,7 @@ describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', (
       SET_KEY,
       { code: 'p3s3_probe_created', sortOrder: 10, numericValue: 250, numericUnit: 'mL' },
       ADMIN_SUBJECT,
+      undefined,
     );
 
     const rows = await auditRowsFor(write.memberId);
@@ -160,34 +188,52 @@ describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', (
    * suite used it as a throwaway test code and hit this conflict for real, which is
    * the check working — hence the `p3s3_` prefix on everything this suite creates.
    */
-  it('refuses a code the deployment already defines', async () => {
+  it('refuses a code the deployment already defines, as a conflict', async () => {
+    // The body, not merely that something threw. A bare `rejects.toThrow()` passed
+    // equally for a clean 409 and for the opaque 500 a raw Prisma `P2002` produces —
+    // which is exactly the regression worth catching here.
     await expect(
       service.addMember(
         SET_KEY,
         { code: 'bottle_500', sortOrder: 20, numericValue: 500, numericUnit: 'mL' },
         ADMIN_SUBJECT,
+        undefined,
       ),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { error: { code: 'VALUE_SET_MEMBER_CODE_IN_USE' } },
+    });
   });
 
-  it('refuses a code this suite just created', async () => {
+  it('refuses a code this suite just created, as a conflict', async () => {
     await expect(
       service.addMember(
         SET_KEY,
         { code: 'p3s3_probe_created', sortOrder: 20, numericValue: 250, numericUnit: 'mL' },
         ADMIN_SUBJECT,
+        undefined,
       ),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { error: { code: 'VALUE_SET_MEMBER_CODE_IN_USE' } },
+    });
   });
 
-  it('refuses a set that does not exist, rather than creating one', async () => {
+  it('refuses a set that does not exist, and creates nothing', async () => {
     await expect(
       service.addMember(
         'a_set_nobody_defined',
         { code: 'x', sortOrder: 0, numericValue: null, numericUnit: null },
         ADMIN_SUBJECT,
+        undefined,
       ),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      status: 404,
+      response: { error: { code: 'VALUE_SET_NOT_FOUND' } },
+    });
+
+    // The test name said "rather than creating one" and nothing checked it.
+    expect(await prisma.valueSet.findUnique({ where: { key: 'a_set_nobody_defined' } })).toBeNull();
   });
 
   /**
@@ -200,15 +246,35 @@ describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', (
       SET_KEY,
       { code: 'p3s3_probe_retired', sortOrder: 30, numericValue: 1000, numericUnit: 'mL' },
       ADMIN_SUBJECT,
+      undefined,
     );
 
-    const retired = await service.retireMember(SET_KEY, 'p3s3_probe_retired', ADMIN_SUBJECT);
+    const retired = await service.retireMember(
+      SET_KEY,
+      'p3s3_probe_retired',
+      ADMIN_SUBJECT,
+      undefined,
+    );
 
     expect(retired.member.status).toBe('RETIRED');
     // Still there, and still resolving to the meaning an old entry relied on.
     const row = await prisma.valueSetMember.findUnique({ where: { id: created.memberId } });
     expect(row).not.toBeNull();
     expect(row!.numericValue?.toNumber()).toBe(1000);
+    expect(row!.status).toBe('RETIRED');
+    /**
+     * Asserted on the ROW, not on the returned snapshot. The snapshot reports
+     * `retiredAt` from a local variable the service constructs, so it reads non-null
+     * even when the column is never written — my first version of this assertion was
+     * vacuous for exactly that reason, and a mutation removing `retiredAt` from the
+     * `data` object left the suite green.
+     *
+     * This surface is the column's only writer. Without it, every retired member
+     * reads `retired_at IS NULL` forever and "retired before release X" silently
+     * answers nothing.
+     */
+    expect(row!.retiredAt).not.toBeNull();
+    expect(retired.member.retiredAt).toBe(row!.retiredAt?.toISOString());
   });
 
   it('records the retirement as an UPDATE with before and after', async () => {
@@ -216,15 +282,22 @@ describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', (
       SET_KEY,
       { code: 'p3s3_probe_audited', sortOrder: 40, numericValue: 500, numericUnit: 'mL' },
       ADMIN_SUBJECT,
+      undefined,
     );
-    await service.retireMember(SET_KEY, 'p3s3_probe_audited', ADMIN_SUBJECT);
+    await service.retireMember(SET_KEY, 'p3s3_probe_audited', ADMIN_SUBJECT, undefined);
 
     const rows = await auditRowsFor(created.memberId);
     expect(rows.map((row) => row.action)).toEqual(['CREATE', 'UPDATE']);
+    // Asserted on the RETIRE row specifically. Only the create row's actor was
+    // checked, so an actor dropped on this path would have passed.
+    expect(rows[1]!.actorType).toBe('ADMIN');
+    expect(rows[1]!.actorId).toBe(ADMIN_SUBJECT);
     // `UPDATE`, never `DELETE`: the row still exists, and telling a future reader
     // otherwise would contradict the guarantee retirement provides.
-    expect(rows[1]!.beforeValue).toMatchObject({ status: 'ACTIVE' });
+    expect(rows[1]!.beforeValue).toMatchObject({ status: 'ACTIVE', retiredAt: null });
     expect(rows[1]!.afterValue).toMatchObject({ status: 'RETIRED' });
+    // The transition is visible in the row, not only the end state.
+    expect((rows[1]!.afterValue as { retiredAt: string | null }).retiredAt).not.toBeNull();
   });
 
   /**
@@ -236,9 +309,15 @@ describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', (
       SET_KEY,
       { code: 'p3s3_probe_idempotent', sortOrder: 50, numericValue: 750, numericUnit: 'mL' },
       ADMIN_SUBJECT,
+      undefined,
     );
-    await service.retireMember(SET_KEY, 'p3s3_probe_idempotent', ADMIN_SUBJECT);
-    const again = await service.retireMember(SET_KEY, 'p3s3_probe_idempotent', ADMIN_SUBJECT);
+    await service.retireMember(SET_KEY, 'p3s3_probe_idempotent', ADMIN_SUBJECT, undefined);
+    const again = await service.retireMember(
+      SET_KEY,
+      'p3s3_probe_idempotent',
+      ADMIN_SUBJECT,
+      undefined,
+    );
 
     expect(again.member.status).toBe('RETIRED');
     expect(again.auditEventId).toBeUndefined();
@@ -267,6 +346,7 @@ describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', (
         SET_KEY,
         { code: 'p3s3_probe_never_committed', sortOrder: 60, numericValue: 100, numericUnit: 'mL' },
         ADMIN_SUBJECT,
+        undefined,
       ),
     ).rejects.toThrow();
 
@@ -311,17 +391,147 @@ describe.skipIf(!dockerAvailable)('AdminValueSetsService — real PostgreSQL', (
       SET_KEY,
       { code: 'p3s3_probe_tx', sortOrder: 70, numericValue: 300, numericUnit: 'mL' },
       ADMIN_SUBJECT,
+      undefined,
     );
 
     expect(received).toHaveLength(1);
-    // `undefined` here would mean the audit row is a second transaction.
-    expect(received[0]).toBeDefined();
+    // `toBeDefined()` alone was still vacuous: passing `this.prisma` instead of `tx`
+    // kept it green while the guarantee was gone — the same hole, one level up from
+    // the one it was written to close.
+    //
+    // Identity is the discriminator, and it is the right one: the service is
+    // constructed with exactly this client, so `this.prisma` would be referentially
+    // equal to it while the transaction client never is. (A reviewer suggested also
+    // asserting the client has no `$transaction`; it does have one in this Prisma
+    // version, so that check fails against correct code.)
+    expect(received[0]).not.toBe(prisma);
   });
 
-  it('reports retired members, which the patient surface hides', async () => {
+  /**
+   * Both sides of a two-sided contract, in one test, with a code of its own.
+   *
+   * It previously asserted only that SOME retired member appeared, which passed only
+   * because earlier tests in the file had retired something — a dependency on
+   * execution order — and it never consulted the patient surface its name invokes.
+   */
+  it('reports a retired member that the patient surface hides', async () => {
+    await service.addMember(
+      SET_KEY,
+      { code: 'p3s3_probe_listing', sortOrder: 80, numericValue: 400, numericUnit: 'mL' },
+      ADMIN_SUBJECT,
+      undefined,
+    );
+    await service.retireMember(SET_KEY, 'p3s3_probe_listing', ADMIN_SUBJECT, undefined);
+
     const listed = await service.listValueSets();
     const set = listed.valueSets.find((candidate) => candidate.key === SET_KEY);
+    expect(set?.members).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'p3s3_probe_listing', status: 'RETIRED' }),
+      ]),
+    );
 
-    expect(set?.members.some((member) => member.status === 'RETIRED')).toBe(true);
+    // Absent from what a patient client renders. Retirement is expressed by ABSENCE
+    // there, which is why the device cache does a delete-then-insert per set.
+    const active = await thresholds.getActiveValueSetMembers(SET_KEY);
+    expect(active.map((member) => member.code)).not.toContain('p3s3_probe_listing');
+  });
+
+  /**
+   * The entire stated reason `AdminConfigModule` imports `ThresholdsModule`, and
+   * nothing verified it: removing both `invalidate()` calls left the whole suite green.
+   */
+  describe('a write is felt by the patient-facing read path', () => {
+    it('shows an added member without waiting out the cache TTL', async () => {
+      await thresholds.getActiveValueSetMembers(SET_KEY); // populate
+      await service.addMember(
+        SET_KEY,
+        { code: 'p3s3_probe_cache_add', sortOrder: 90, numericValue: 150, numericUnit: 'mL' },
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      const active = await thresholds.getActiveValueSetMembers(SET_KEY);
+      expect(active.map((member) => member.code)).toContain('p3s3_probe_cache_add');
+    });
+
+    it('stops offering a retired member without waiting out the cache TTL', async () => {
+      await service.addMember(
+        SET_KEY,
+        { code: 'p3s3_probe_cache_retire', sortOrder: 91, numericValue: 160, numericUnit: 'mL' },
+        ADMIN_SUBJECT,
+        undefined,
+      );
+      await thresholds.getActiveValueSetMembers(SET_KEY); // populate, with it present
+      await service.retireMember(SET_KEY, 'p3s3_probe_cache_retire', ADMIN_SUBJECT, undefined);
+
+      const active = await thresholds.getActiveValueSetMembers(SET_KEY);
+      expect(active.map((member) => member.code)).not.toContain('p3s3_probe_cache_retire');
+    });
+  });
+
+  /**
+   * "Retired, never deleted" stated in this surface's own terms. It is proven
+   * generically in `prisma.integration.spec.ts`, but a migration re-granting `DELETE`
+   * would be caught there and not here, and this is the file a reviewer of this
+   * surface reads.
+   */
+  it('cannot delete a member, because the runtime role holds no DELETE grant', async () => {
+    const created = await service.addMember(
+      SET_KEY,
+      { code: 'p3s3_probe_undeletable', sortOrder: 92, numericValue: 170, numericUnit: 'mL' },
+      ADMIN_SUBJECT,
+      undefined,
+    );
+
+    await expect(prisma.valueSetMember.delete({ where: { id: created.memberId } })).rejects.toThrow(
+      /permission denied/i,
+    );
+  });
+
+  /** The same grant, for the audit table, on an ADMIN-actor row specifically (ADR-0011). */
+  it('cannot amend the audit row it just wrote', async () => {
+    const created = await service.addMember(
+      SET_KEY,
+      { code: 'p3s3_probe_audit_immutable', sortOrder: 93, numericValue: 180, numericUnit: 'mL' },
+      ADMIN_SUBJECT,
+      undefined,
+    );
+
+    await expect(
+      prisma.auditEvent.update({
+        where: { id: created.auditEventId },
+        data: { actorId: 'someone-else' },
+      }),
+    ).rejects.toThrow(/permission denied/i);
+  });
+
+  it('records the correlation id when the request carries one', async () => {
+    // Without it an admin configuration change cannot be tied back to a request in the
+    // logs, on the one surface where "who did this, in which request" is the point.
+    const created = await service.addMember(
+      SET_KEY,
+      { code: 'p3s3_probe_correlated', sortOrder: 94, numericValue: 190, numericUnit: 'mL' },
+      ADMIN_SUBJECT,
+      'request-abc',
+    );
+
+    const rows = await auditRowsFor(created.memberId);
+    expect(rows[0]!.correlationId).toBe('request-abc');
+  });
+
+  /**
+   * The "deliberately not filtered by `PUBLISHED_VALUE_SET_KEYS`" claim in
+   * `listValueSets`'s own comment, which nothing checked.
+   *
+   * It needed a set to exist that no client publishes, and none does today — the table
+   * holds exactly the four published sets, so the claim was untestable against real
+   * data and my first attempt asserted a set (`appliance_type`) that does not exist.
+   * `UNPUBLISHED_SET_KEY` is inserted by the owner role in `beforeAll` to stand in for
+   * the case the comment describes.
+   */
+  it('lists a set no client publishes, so configuration is inspectable before release', async () => {
+    const listed = await service.listValueSets();
+    expect(listed.valueSets.map((set) => set.key)).toContain(UNPUBLISHED_SET_KEY);
   });
 });

@@ -27,15 +27,33 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConflictResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 import type { Request } from 'express';
+import { z } from 'zod';
+
+import type { OpenApiSchemaObject } from '../../observations/observation-openapi';
 
 import { Audited } from '../../audit/audited.decorator';
 import { stageCommittedAuditEntry } from '../../audit/audit-recorder';
+import { getRequestId } from '../../logging/request-id';
 import { getAdminActor } from '../admin-actor';
 import { AdminJwtAuthGuard } from '../admin-jwt-auth.guard';
 
-import { addValueSetMemberSchema, type AdminValueSetsResponse } from './admin-value-set-wire';
+import {
+  addValueSetMemberSchema,
+  adminValueSetsResponseSchema,
+  type AdminValueSetsResponse,
+  type ValueSetMemberSnapshot,
+} from './admin-value-set-wire';
 import { AdminValueSetsService, VALUE_SET_MEMBER_ENTITY_TYPE } from './admin-value-sets.service';
 
 /**
@@ -57,6 +75,29 @@ import { AdminValueSetsService, VALUE_SET_MEMBER_ENTITY_TYPE } from './admin-val
  * client needs its own `packages/core` subpath, its own ESLint allow-list entry and
  * an ADR-0007 owner, and `apps/admin` does not exist until P8.S1.
  */
+/**
+ * Converted once, so the `.meta({ description })` text in the wire module actually
+ * reaches the document.
+ *
+ * It did not before: the routes carried `@ApiOperation` alone, so `openapi.json`
+ * described them with `"parameters": []` and no request body — not merely sparse but
+ * structurally invalid, since `{key}` and `{code}` are path-templated. That is the
+ * document the P8 console will be generated from, and it is the reason the wire
+ * module's response schemas were unused outside their own file.
+ */
+const ADD_MEMBER_BODY_SCHEMA: OpenApiSchemaObject = z.toJSONSchema(addValueSetMemberSchema, {
+  target: 'openapi-3.0',
+  io: 'input',
+}) as OpenApiSchemaObject;
+const VALUE_SETS_RESPONSE_SCHEMA: OpenApiSchemaObject = z.toJSONSchema(
+  adminValueSetsResponseSchema,
+  { target: 'openapi-3.0' },
+) as OpenApiSchemaObject;
+const ERROR_CODE_SCHEMA: OpenApiSchemaObject = {
+  type: 'object',
+  properties: { error: { type: 'object', properties: { code: { type: 'string' } } } },
+} as OpenApiSchemaObject;
+
 @ApiTags('admin-config')
 @ApiBearerAuth('admin-oidc')
 @Controller('admin/value-sets')
@@ -65,6 +106,7 @@ export class AdminValueSetsController {
   constructor(@Inject(AdminValueSetsService) private readonly service: AdminValueSetsService) {}
 
   @Get()
+  @ApiOkResponse({ schema: VALUE_SETS_RESPONSE_SCHEMA })
   @ApiOperation({
     summary: 'Read every value set, including retired members',
     description:
@@ -76,6 +118,10 @@ export class AdminValueSetsController {
 
   @Post(':key/members')
   @Audited()
+  @ApiParam({ name: 'key', description: 'The value set to add to. It must already exist.' })
+  @ApiBody({ schema: ADD_MEMBER_BODY_SCHEMA })
+  @ApiConflictResponse({ schema: ERROR_CODE_SCHEMA })
+  @ApiNotFoundResponse({ schema: ERROR_CODE_SCHEMA })
   @ApiOperation({
     summary: 'Add a member to an existing value set',
     description:
@@ -85,7 +131,7 @@ export class AdminValueSetsController {
     @Param('key') key: string,
     @Body() body: unknown,
     @Req() request: Request,
-  ): Promise<{ code: string }> {
+  ): Promise<ValueSetMemberSnapshot> {
     // Parsed here rather than by a global `ValidationPipe`: the same reason
     // `docs/sync-contract.md` gives for validating sync payloads per operation —
     // a schema applied by framework configuration is a schema nobody reads at the
@@ -93,17 +139,30 @@ export class AdminValueSetsController {
     // together) that is a contract, not a formality.
     const parsed = addValueSetMemberSchema.safeParse(body);
     if (!parsed.success) {
-      // Field paths and no values. The offending input is administrative rather
-      // than clinical here, but the habit is the rule (CLAUDE.md): a validation
-      // error names the field and the rule, never the value.
+      /**
+       * Field paths and reason codes, never values. The offending input is
+       * administrative rather than clinical here, but the habit is the rule
+       * (CLAUDE.md): a validation error names the field and the rule, never the value.
+       *
+       * The reason code is carried because the path alone is not always enough. An
+       * unrecognised key reports `path: []`, so the two most interesting rejections —
+       * an unknown field, and the both-or-neither `numericValue`/`numericUnit` rule —
+       * named no field at all. Zod's issue codes are a closed vocabulary, so they leak
+       * nothing. `message` is deliberately still dropped: it can quote the input.
+       */
       throw new BadRequestException({
-        code: 'INVALID_VALUE_SET_MEMBER',
-        fields: parsed.error.issues.map((issue) => issue.path.join('.')),
+        error: {
+          code: 'INVALID_VALUE_SET_MEMBER',
+          fields: parsed.error.issues.map((issue) => ({
+            field: issue.path.join('.'),
+            rule: issue.code,
+          })),
+        },
       });
     }
 
     const admin = getAdminActor(request);
-    const write = await this.service.addMember(key, parsed.data, admin.id);
+    const write = await this.service.addMember(key, parsed.data, admin.id, getRequestId(request));
     // Staged as already-committed, because the service wrote it inside the same
     // transaction as the row it describes. The id is the proof the interceptor
     // checks, which is why the service returns it.
@@ -120,19 +179,32 @@ export class AdminValueSetsController {
       // — both happen in one transaction.
       write.auditEventId,
     );
-    return { code: write.member.code };
+    // The persisted snapshot, not just the code: `numericValue` is stored in a
+    // `DECIMAL(12,4)` column, and echoing what was written is how an admin sees that
+    // what they typed is what governs. The schema now rejects values the column
+    // cannot hold, so this is belt-and-braces rather than the only guard.
+    return write.member;
   }
 
   @Post(':key/members/:code/retire')
   @HttpCode(200)
-  /**
-   * `allowEmpty` because retiring an already-retired member legitimately records
-   * nothing: no row changed, so there is nothing to describe, and writing a second
-   * audit row for a no-op would be uncorrectable in an append-only table with no
-   * DELETE grant anywhere (ADR-0011). The default behaviour — treat "staged nothing"
-   * as a forgotten call and fail the request — is right for a single-entity write and
-   * wrong here, which is the same argument sync push made for this escape hatch.
-   */
+  @ApiParam({ name: 'key', description: 'The value set the member belongs to.' })
+  @ApiParam({
+    name: 'code',
+    description: 'The member code to withdraw. It keeps resolving for stored entries.',
+  })
+  @ApiNotFoundResponse({ schema: ERROR_CODE_SCHEMA })
+  // `allowEmpty` because retiring an already-retired member legitimately records
+  // nothing: no row changed, so there is nothing to describe, and a second audit row
+  // for a no-op would be uncorrectable in an append-only table with no DELETE grant
+  // anywhere (ADR-0011). The default — treat "staged nothing" as a forgotten call and
+  // fail the request — is right for a single-entity write and wrong here, the same
+  // argument sync push made for this escape hatch.
+  //
+  // The cost, stated: it disables the trip-wire for BOTH branches, so the
+  // `auditEventId !== undefined` guard below is what keeps staging and writing in
+  // step. A line comment rather than a `/** */` block because a doc block between
+  // decorators attaches to nothing and never appears on hover.
   @Audited({ allowEmpty: true })
   @ApiOperation({
     summary: 'Retire a member, so it stops being offered without ceasing to resolve',
@@ -143,9 +215,9 @@ export class AdminValueSetsController {
     @Param('key') key: string,
     @Param('code') code: string,
     @Req() request: Request,
-  ): Promise<{ code: string; status: string }> {
+  ): Promise<{ code: string; status: string; retiredAt: string | null }> {
     const admin = getAdminActor(request);
-    const write = await this.service.retireMember(key, code, admin.id);
+    const write = await this.service.retireMember(key, code, admin.id, getRequestId(request));
     if (write.auditEventId !== undefined) {
       stageCommittedAuditEntry(
         request,
@@ -161,6 +233,13 @@ export class AdminValueSetsController {
         write.auditEventId,
       );
     }
-    return { code: write.member.code, status: write.member.status };
+    // Says which happened. A caller could not previously tell a fresh retirement from
+    // a no-op, and inferring it from the absence of an audit id would couple a
+    // response decision to an audit-logging detail.
+    return {
+      code: write.member.code,
+      status: write.member.status,
+      retiredAt: write.member.retiredAt,
+    };
   }
 }
