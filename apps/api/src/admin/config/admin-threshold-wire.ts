@@ -193,6 +193,21 @@ export const adminThresholdSchema = z.object({
   unit: z.string().nullable(),
   patientAdjustable: z.boolean(),
   description: z.string().nullable(),
+  /**
+   * The range `value` may be set within (#93), returned so a caller can show it
+   * BEFORE someone types a number the API will refuse.
+   *
+   * That ordering is the point. The 400 is the backstop; a console or the
+   * maintenance script displaying "settable 60 to 3600" is what prevents the
+   * mistake. Immutable through this surface — see `IMMUTABLE_FIELDS`.
+   *
+   * A pair spanning the full width of the `DECIMAL(12,4)` column means no
+   * narrower bound has been decided for that key yet, which is the state
+   * `stoma_output_single_entry_warning_ml` is deliberately in: the numbers are a
+   * clinical judgement and #93 is open for them.
+   */
+  minSettableValue: z.number(),
+  maxSettableValue: z.number(),
   // `z.iso.datetime()` and not a bare string, so a generated console gets a date-time
   // format rather than having to know. It is also the concurrency token a caller sends
   // back on the next write.
@@ -224,4 +239,16 @@ export interface ThresholdSnapshot {
   readonly unit: string | null;
   readonly patientAdjustable: boolean;
   readonly description: string | null;
+  /**
+   * Immutable, so `before` and `after` always agree — and recorded in both
+   * anyway, deliberately.
+   *
+   * The audit row is the only surviving record of what a bound used to be, and
+   * "was this value legal when it was written?" is not answerable from the
+   * value alone: a later migration can narrow the range. Without these, an
+   * audit reader looking at today's bounds would conclude a historically legal
+   * edit had been illegal.
+   */
+  readonly minSettableValue: number;
+  readonly maxSettableValue: number;
 }

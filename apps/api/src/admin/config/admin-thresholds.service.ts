@@ -15,7 +15,13 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { Prisma } from '../../generated/prisma/client';
 
@@ -60,6 +66,46 @@ interface ThresholdRow {
   readonly unit: string | null;
   readonly patientAdjustable: boolean;
   readonly description: string | null;
+  readonly minSettableValue: { toNumber: () => number };
+  readonly maxSettableValue: { toNumber: () => number };
+}
+
+/**
+ * `value` must lie within the range this key allows (#93).
+ *
+ * The shape rules — positive, fits `DECIMAL(12,4)` — cannot catch a value that
+ * is well-formed and still disables the system. `sync_clock_skew_allowance_seconds
+ * = 1` Tier-1 blocks queued entries from every slightly-fast device, each
+ * landing in a correction inbox describing a problem the patient cannot fix; a
+ * 20 mL stoma-output warning fires on every entry, which is exactly how
+ * patients learn to dismiss warnings.
+ *
+ * Three things about where and how this runs:
+ *
+ * It reads the bounds off the row this transaction has ALREADY read, so there
+ * is no second query and no way for the bounds to be read from a different row
+ * version than the value being replaced.
+ *
+ * It runs **before** the write, which is not merely tidier: the same invariant
+ * is a CHECK constraint, so skipping this would turn an out-of-range edit into a
+ * Prisma error and therefore an opaque 500 naming no field — precisely the
+ * defect PR A fixed for the representable-range bounds, and one that
+ * `docs/sync-contract.md` §9 would have a client retry forever if it were on a
+ * sync path. The constraint is the backstop; this is the interface.
+ *
+ * It names the field and a rule code and **never the offending value or the
+ * bounds**. The bounds are not secret — `GET` returns them — but this response
+ * is built by the same rule as every other 400 on these surfaces, and a caller
+ * that wants them has already been given them.
+ */
+function assertWithinSettableRange(value: number, bounds: ThresholdSnapshot): void {
+  if (value >= bounds.minSettableValue && value <= bounds.maxSettableValue) return;
+  throw new BadRequestException({
+    error: {
+      code: 'INVALID_THRESHOLD_UPDATE',
+      fields: [{ field: 'value', rule: 'outside_settable_range' }],
+    },
+  });
 }
 
 /** One place, so the audit snapshot and the read projection cannot drift apart. */
@@ -75,6 +121,8 @@ function toSnapshot(row: ThresholdRow): ThresholdSnapshot {
     unit: row.unit,
     patientAdjustable: row.patientAdjustable,
     description: row.description,
+    minSettableValue: toRequiredNumber(row.minSettableValue),
+    maxSettableValue: toRequiredNumber(row.maxSettableValue),
   };
 }
 
@@ -168,6 +216,7 @@ export class AdminThresholdsService {
       }
 
       const before = toSnapshot(existing);
+      assertWithinSettableRange(request.value, before);
 
       /**
        * Conditional on the row not having moved since it was read, which it was not.

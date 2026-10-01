@@ -79,7 +79,18 @@ const ERROR_CODE_SCHEMA: OpenApiSchemaObject = {
  * response can only ever contain names from this list — a caller cannot get arbitrary
  * input reflected back by sending it as a key.
  */
-const IMMUTABLE_FIELDS: readonly string[] = ['tier', 'thresholdKey', 'unit', 'patientAdjustable'];
+const IMMUTABLE_FIELDS: readonly string[] = [
+  'tier',
+  'thresholdKey',
+  'unit',
+  'patientAdjustable',
+  // #93's bounds. Immutable through this surface for the same reason `tier` is:
+  // one endpoint cannot adjudicate between "an admin is tuning a bound" and "an
+  // admin is widening the bound that was supposed to stop them". Changing one is
+  // a migration, with a reviewer.
+  'minSettableValue',
+  'maxSettableValue',
+];
 
 /**
  * The threshold half of the admin configuration API (P3.S3 PR B, ADR-0008).

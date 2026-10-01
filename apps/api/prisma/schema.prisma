@@ -1066,8 +1066,17 @@ model ClinicalDefaultRange {
   /// The runtime role holds `DELETE` on this table and that is load-bearing, unlike
   /// on the other two config tables: the admin surface (P3.S3 PR C) hard-deletes a
   /// row. Recorded here rather than beside the grant, because the init migration is
-  /// already applied and Prisma checksums migration files — editing one makes
-  /// `migrate deploy` refuse it as modified.
+  /// already applied and an applied migration must not be edited.
+  ///
+  /// The reason is worse than the one first written here, which said Prisma
+  /// "checksums migration files — editing one makes `migrate deploy` refuse it as
+  /// modified". It does record a checksum, and on Prisma 7.10 a mismatch is
+  /// **not** reported: an edited applied migration left `migrate deploy` and
+  /// `migrate status` both answering "Database schema is up to date!" with the
+  /// stored and computed checksums plainly different (verified while adding the
+  /// #93 migration). So the file and the database diverge with nothing surfacing
+  /// it, which is a stronger argument for the rule, not a weaker one — there is
+  /// no tripwire to catch the mistake.
   id String @id @default(uuid()) @map("id") @db.Uuid
 
   ostomyType OstomyType @map("ostomy_type")
@@ -1141,6 +1150,33 @@ model ValidationThreshold {
 
   value Decimal @map("value") @db.Decimal(12, 4)
   unit  String? @map("unit")
+
+  /// The range an admin may set `value` within, per key (#93).
+  ///
+  /// Not thresholds themselves and not patient-facing: they bound what the
+  /// ADMIN surface accepts, which `value`'s own shape rules (positive, fits
+  /// DECIMAL(12,4)) cannot. A value can be perfectly well-shaped and still
+  /// disable the system — `sync_clock_skew_allowance_seconds = 1` Tier-1 blocks
+  /// every slightly-fast device, and a 20 mL stoma-output warning fires on
+  /// every entry, which is the failure mode that teaches patients to dismiss
+  /// warnings.
+  ///
+  /// **`NOT NULL` is load-bearing.** With no database default, a future
+  /// migration cannot add a threshold row without stating its bounds in the
+  /// same reviewed change. A nullable pair would leave every key added after
+  /// #93 silently unbounded with nothing detecting it.
+  ///
+  /// Immutable through the admin API — absent from `updateThreshold`'s Prisma
+  /// `data` object and listed in the controller's `IMMUTABLE_FIELDS`, the same
+  /// mechanism `tier` uses. Changing one is a migration, which is also why this
+  /// does **not** satisfy SRS §3.8's "clinical tuning does not require a
+  /// deploy"; it is the shape that can satisfy it later without moving data.
+  ///
+  /// Two CHECK constraints back these: the pair must be ordered, and `value`
+  /// must lie within it. So unlike `clinical_default_ranges` (#97) this table's
+  /// invariants are not application-only.
+  minSettableValue Decimal @map("min_settable_value") @db.Decimal(12, 4)
+  maxSettableValue Decimal @map("max_settable_value") @db.Decimal(12, 4)
 
   /// False where a patient must not widen the bound. Today that is
   /// `sync_clock_skew_allowance_seconds` — a patient who could widen it could

@@ -269,11 +269,19 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
       // Clinical thresholds are admin-managed configuration, never constants
       // in code — seeded here the way a real deploy's seed script would, by
       // the owner role.
+      // These fixtures state the bounds because the table requires them, and because
+      // of a Postgres detail that is not obvious: `NOT NULL` is enforced on the
+      // PROPOSED insert tuple, before `ON CONFLICT` is resolved. So an upsert that
+      // only ever takes the DO UPDATE branch still fails without them. The values
+      // are the full column width — "no narrower bound decided" (#93) — so this
+      // fixture constrains nothing it did not constrain before, and DO UPDATE
+      // deliberately leaves the bounds alone so a migration-seeded range survives.
       await owner.query(
-        `INSERT INTO validation_thresholds (id, threshold_key, tier, value, unit, updated_at)
+        `INSERT INTO validation_thresholds
+           (id, threshold_key, tier, value, unit, min_settable_value, max_settable_value, updated_at)
          VALUES
-           (gen_random_uuid(), $1, 'TIER_2_SOFT_WARNING', $3, 'mL', now()),
-           (gen_random_uuid(), $2, 'OPERATIONAL', 300, 'seconds', now())
+           (gen_random_uuid(), $1, 'TIER_2_SOFT_WARNING', $3, 'mL', 0.0001, 99999999.9999, now()),
+           (gen_random_uuid(), $2, 'OPERATIONAL', 300, 'seconds', 0.0001, 99999999.9999, now())
            ON CONFLICT (threshold_key) DO UPDATE SET
              tier = EXCLUDED.tier, value = EXCLUDED.value,
              unit = EXCLUDED.unit, updated_at = EXCLUDED.updated_at`,
