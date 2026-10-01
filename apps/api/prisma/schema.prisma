@@ -1063,6 +1063,11 @@ model ValueSetMember {
 /// red-flag bound that quietly became patient-adjustable would let a patient
 /// widen the bound that tells them to seek care.
 model ClinicalDefaultRange {
+  /// The runtime role holds `DELETE` on this table and that is load-bearing, unlike
+  /// on the other two config tables: the admin surface (P3.S3 PR C) hard-deletes a
+  /// row. Recorded here rather than beside the grant, because the init migration is
+  /// already applied and Prisma checksums migration files — editing one makes
+  /// `migrate deploy` refuse it as modified.
   id String @id @default(uuid()) @map("id") @db.Uuid
 
   ostomyType OstomyType @map("ostomy_type")
@@ -1092,12 +1097,15 @@ model ClinicalDefaultRange {
   @@map("clinical_default_ranges")
 }
 
-/// Not clinical (Tier 1/Tier 2) validation tiers only: `SAFETY_THRESHOLD`
-/// covers the heart-rate red-flag bound (SRS §3.8, §3.9 — explicitly NOT a
-/// validation concern, and the one threshold that is not patient-adjustable)
-/// and `OPERATIONAL` covers non-clinical admin-managed config that still
-/// must not be a code constant, such as the sync clock-skew allowance
-/// (ADR-0001 point 5).
+/// `SAFETY_THRESHOLD` is for a bound that triggers a clinical safety response
+/// rather than a data-quality verdict — never routed through the validation
+/// warning path, because that teaches patients to dismiss it (SRS §3.13).
+///
+/// **It does not cover the heart-rate red-flag bound, and this comment used to
+/// say it did** (#94). That bound lives in `clinical_default_ranges`, which is
+/// where SRS §3.11 manages it — see `ValidationThreshold`'s comment below and
+/// `ClinicalDefaultRange`'s. A reader going top-down hit the wrong answer first,
+/// twenty-four lines before the right one.
 enum ValidationTier {
   TIER_1_HARD_BLOCK
   TIER_2_SOFT_WARNING
@@ -1134,7 +1142,13 @@ model ValidationThreshold {
   value Decimal @map("value") @db.Decimal(12, 4)
   unit  String? @map("unit")
 
-  /// False only for the heart-rate red-flag threshold today (SRS §3.9).
+  /// False where a patient must not widen the bound. Today that is
+  /// `sync_clock_skew_allowance_seconds` — a patient who could widen it could
+  /// make their own device win every conflict (ADR-0019).
+  ///
+  /// This used to say "false only for the heart-rate red-flag threshold", which
+  /// was wrong twice: that bound is not in this table (#94), and the clock-skew
+  /// row has been seeded false since P3.
   patientAdjustable Boolean @default(true) @map("patient_adjustable")
 
   /// Admin-tool label only — see ValueSet.description for why this is not
