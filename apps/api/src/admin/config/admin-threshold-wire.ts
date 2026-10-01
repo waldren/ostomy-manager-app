@@ -60,10 +60,19 @@ import { z } from 'zod';
  * which is the mistake `ValidationThreshold.unit`'s own column comment anticipates.
  * Changing both together is a different threshold, i.e. a migration.
  *
- * **`patientAdjustable` — because it is a safety property.** It is `false` only for
- * the heart-rate red flag today, which CLAUDE.md names as "the one threshold that is
- * not patient-adjustable". Flipping it true would let a patient widen the bound that
- * exists to tell them to seek care.
+ * **`patientAdjustable` — because two unrelated rules already set it, and one endpoint
+ * cannot tell which applies.** The first version of this comment said it was `false`
+ * only for the heart-rate red flag, "which CLAUDE.md names as the one threshold that is
+ * not patient-adjustable". Both halves were wrong, and a reviewer checked what I had
+ * not: the heart-rate row is not seeded yet (P7), while
+ * `sync_clock_skew_allowance_seconds` IS seeded `false` — because a patient who could
+ * widen it could make their own device win every conflict (ADR-0019). CLAUDE.md's claim
+ * had been stale since that migration landed, and this comment propagated it.
+ *
+ * So the conclusion stands on firmer ground than it did: there are already two
+ * distinct, non-clinical reasons for `false`, and when the red flag arrives there will
+ * be a third that is clinical. A single PUT cannot adjudicate between them, and
+ * flipping the flag on either existing row has a different consequence.
  *
  * And there is no create and no delete. The rows are seeded by migration precisely
  * because every environment needs them — `ThresholdsService` throws without them, on
@@ -71,7 +80,14 @@ import { z } from 'zod';
  * configuration no code reads, and a deleted one would 500 the next clinical write.
  */
 
-/** Admin-tool label only, never patient-facing copy (ADR-0006). */
+/**
+ * Admin-tool label only, never patient-facing copy (ADR-0006).
+ *
+ * A wire policy rather than the column's shape — `description` is `TEXT` and keeps any
+ * length. The cap exists because the label is copied into `before_value`/`after_value`
+ * on an append-only table with no `DELETE` grant anywhere (ADR-0011): an unbounded
+ * admin string there is unbounded forever.
+ */
 export const THRESHOLD_DESCRIPTION_MAX_LENGTH = 500;
 
 export const updateThresholdSchema = z
@@ -81,20 +97,38 @@ export const updateThresholdSchema = z
      * member's quantity: past `10^8` Postgres raises an overflow that surfaces as an
      * opaque 500, and past four decimal places it silently rounds and commits.
      *
-     * Non-negative rather than strictly positive, because `0` is meaningful for at
-     * least one row — `sync_clock_skew_allowance_seconds` of `0` means "allow no
-     * skew". A negative bound is meaningful for none of them: a soft warning at `-1`
-     * warns on every entry a patient ever makes.
+     * **Strictly positive, and the first version of this comment got that wrong in the
+     * most consequential way available.** It permitted `0` and cited
+     * `sync_clock_skew_allowance_seconds` as the reason — the one key where `0` is the
+     * most harmful value reachable through this endpoint.
      *
-     * What this cannot check is whether a value is *clinically* sensible for its key.
-     * A 20 mL stoma-output warning passes every rule here and would warn on
-     * essentially every entry, which is the failure mode that teaches patients to
-     * dismiss warnings. That judgement belongs to whoever is making the change, and
-     * the audit row is what makes it reviewable afterwards.
+     * Traced rather than assumed: that row becomes `maxClockSkewMs`, and
+     * `packages/core`'s own test asserts that `maxClockSkewMs: 0` turns a timestamp 30
+     * seconds in the future from `pass` into **`blocked`** — a Tier 1 hard block with no
+     * override. So an admin reading "allowance" as "slack I can tighten" would reject
+     * every queued entry from every patient whose phone clock runs a second fast, each
+     * one landing in the correction inbox describing a problem the patient cannot fix:
+     * their clock is wrong and the entry form has no clock field. ADR-0019 names that
+     * as "the expensive direction" and argues for keeping the allowance "generous
+     * enough that it fires only on genuinely broken clocks".
+     *
+     * `0` is excluded as a STRUCTURAL refusal, not a clinical bound — the same category
+     * as Tier 1's own positive-value rule, which compares against zero in code without
+     * being a hardcoded threshold. A soft warning at `0` likewise warns on every entry
+     * a patient ever makes.
+     *
+     * What this still cannot check is whether a value is *clinically* sensible for its
+     * key: a 20 mL stoma-output warning passes every rule here, and a 1-second skew
+     * allowance passes this one. Both reviews of PR B converged on the fix — a
+     * per-key settable range, held as configuration rather than code so it is not a
+     * hardcoded threshold wearing a different costume — and it is tracked rather than
+     * invented here, because choosing those numbers is a clinical decision and not a
+     * refactor. It becomes blocking before the first `TIER_1_HARD_BLOCK` ceiling or the
+     * heart-rate red flag is seeded.
      */
     value: z
       .number()
-      .min(0)
+      .gt(0)
       .refine((candidate) => !exceedsMaxMagnitude(candidate), {
         error: `value must be smaller than ${String(MAX_REPRESENTABLE_VALUE_ML)}`,
       })
@@ -106,16 +140,29 @@ export const updateThresholdSchema = z
           'The new bound. Governs from the next client fetch, with no application release (AC 13.2 AC2). Stored in a DECIMAL(12,4) column and rejected if it does not fit, rather than silently rounded.',
       }),
     /**
-     * Optional, and absent means "leave it alone" rather than "clear it".
+     * Required and nullable, which it was not: it was optional, with absent meaning
+     * "leave it alone". Three things were wrong with that, and the method name was the
+     * least of them.
      *
-     * `exactOptionalPropertyTypes` is on, so the service must spread-or-omit rather
-     * than assign `undefined` — and that distinction is the reason this is not
-     * `.nullable()`: a caller who wants to clear the label sends an empty string,
-     * which is visibly different in the audit row from never having mentioned it.
+     * The column is `TEXT NULL` and the read surface publishes `string | null`, so
+     * clearing a label by sending `''` minted a SECOND "no label" state that this API
+     * could never return to `NULL` — the integration spec proved it by restoring with
+     * `original.description ?? ''`, because `null` was unsendable. A console would then
+     * render `''` and `null` identically while their audit snapshots differed, and the
+     * only way back was a migration.
+     *
+     * It also meant a caller could not submit the representation it had just read
+     * (`.strict()` rejects the read shape's other fields), which is the opposite of
+     * what `PUT` promises — and "absent means unchanged" is `PATCH`'s semantics by
+     * definition, so the method name misdescribed the operation.
+     *
+     * Required makes the body the complete state of the mutable pair: `null` clears to
+     * `NULL`, one empty representation, nothing partial. The cost is that a caller
+     * changing only the label must send the current value, which it already had to do.
      */
-    description: z.string().max(THRESHOLD_DESCRIPTION_MAX_LENGTH).optional().meta({
+    description: z.string().max(THRESHOLD_DESCRIPTION_MAX_LENGTH).nullable().meta({
       description:
-        'Admin-tool label, never patient-facing copy (ADR-0006). Omit to leave the existing label unchanged.',
+        'Admin-tool label, never patient-facing copy (ADR-0006). Null clears it. Required, because the body is the complete new state of the two mutable fields.',
     }),
   })
   .strict();
@@ -146,8 +193,13 @@ export const adminThresholdSchema = z.object({
   unit: z.string().nullable(),
   patientAdjustable: z.boolean(),
   description: z.string().nullable(),
-  updatedAt: z.string(),
+  // `z.iso.datetime()` and not a bare string, so a generated console gets a date-time
+  // format rather than having to know. It is also the concurrency token a caller sends
+  // back on the next write.
+  updatedAt: z.iso.datetime(),
 });
+
+export type AdminThreshold = z.infer<typeof adminThresholdSchema>;
 
 export const adminThresholdsResponseSchema = z.object({
   thresholds: z.array(adminThresholdSchema),

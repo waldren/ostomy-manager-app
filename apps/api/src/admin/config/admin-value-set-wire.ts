@@ -182,14 +182,7 @@ export interface ValueSetMemberSnapshot {
   readonly retiredAt: string | null;
 }
 
-/**
- * Projects the `DECIMAL(12,4)` column to a JSON number, or null.
- *
- * One helper because this was written out four times in the service and a fifth in
- * `ThresholdsService` — and `docs/sync-contract.md` §7.3's reason for a number rather
- * than a string (a clinical value stays a number; a string pushes parsing onto every
- * consumer) is the kind of decision that should be stated once.
- */
-export function toNumericValue(value: { toNumber: () => number } | null): number | null {
-  return value === null ? null : value.toNumber();
-}
+// Re-exported from its own module, which is where it moved when the threshold surface
+// needed it too — a wire contract importing another wire contract's helper read oddly
+// beside this module's own argument that the two surfaces are separate (PR B review).
+export { toNumericValue } from './decimal';

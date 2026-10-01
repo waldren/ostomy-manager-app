@@ -27,8 +27,10 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
   ApiBody,
+  ApiConflictResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -46,10 +48,11 @@ import { getAdminActor } from '../admin-actor';
 import { AdminJwtAuthGuard } from '../admin-jwt-auth.guard';
 
 import {
+  adminThresholdSchema,
   adminThresholdsResponseSchema,
   updateThresholdSchema,
+  type AdminThreshold,
   type AdminThresholdsResponse,
-  type ThresholdSnapshot,
 } from './admin-threshold-wire';
 import { AdminThresholdsService, THRESHOLD_ENTITY_TYPE } from './admin-thresholds.service';
 
@@ -61,10 +64,22 @@ const THRESHOLDS_RESPONSE_SCHEMA: OpenApiSchemaObject = z.toJSONSchema(
   adminThresholdsResponseSchema,
   { target: 'openapi-3.0' },
 ) as OpenApiSchemaObject;
+const THRESHOLD_RESPONSE_SCHEMA: OpenApiSchemaObject = z.toJSONSchema(adminThresholdSchema, {
+  target: 'openapi-3.0',
+}) as OpenApiSchemaObject;
 const ERROR_CODE_SCHEMA: OpenApiSchemaObject = {
   type: 'object',
   properties: { error: { type: 'object', properties: { code: { type: 'string' } } } },
 } as OpenApiSchemaObject;
+
+/**
+ * The fields this surface refuses to change, for naming them in a 400.
+ *
+ * Intersected with Zod's reported keys rather than echoed from the request, so the
+ * response can only ever contain names from this list — a caller cannot get arbitrary
+ * input reflected back by sending it as a key.
+ */
+const IMMUTABLE_FIELDS: readonly string[] = ['tier', 'thresholdKey', 'unit', 'patientAdjustable'];
 
 /**
  * The threshold half of the admin configuration API (P3.S3 PR B, ADR-0008).
@@ -105,10 +120,16 @@ export class AdminThresholdsController {
   @Audited()
   @ApiParam({
     name: 'key',
+    type: String,
     description:
       'The threshold_key. It must already exist: there is no upsert, because a key this table does not hold is configuration no clinical rule reads.',
   })
   @ApiBody({ schema: UPDATE_BODY_SCHEMA })
+  // The success body was absent from the generated document, which said this operation
+  // returns nothing — and a PUT's response is how a console refreshes its view.
+  @ApiOkResponse({ schema: THRESHOLD_RESPONSE_SCHEMA })
+  @ApiBadRequestResponse({ schema: ERROR_CODE_SCHEMA })
+  @ApiConflictResponse({ schema: ERROR_CODE_SCHEMA })
   @ApiNotFoundResponse({ schema: ERROR_CODE_SCHEMA })
   @ApiOperation({
     summary: "Change a threshold's value",
@@ -119,23 +140,30 @@ export class AdminThresholdsController {
     @Param('key') key: string,
     @Body() body: unknown,
     @Req() request: Request,
-  ): Promise<ThresholdSnapshot> {
+  ): Promise<AdminThreshold> {
     const parsed = updateThresholdSchema.safeParse(body);
     if (!parsed.success) {
-      // Field paths and reason codes, never values — the same envelope and the same
-      // reasoning as the value-set surface. `message` is dropped because it can quote
-      // the input; Zod's issue codes are a closed vocabulary and leak nothing.
-      //
-      // `.strict()` is doing real work on this route in particular: a caller who sends
-      // `tier` is told so rather than having it silently ignored, which is the
-      // difference between a refused change and a change someone believes they made.
+      /**
+       * Field names and reason codes, never values. `message` is dropped because it can
+       * quote the input; Zod's issue codes are a closed vocabulary and leak nothing.
+       *
+       * An `unrecognized_keys` issue is expanded, because it carries `path: []` — so
+       * the previous version reported `field: ''` for the two most interesting
+       * rejections, and the comment here claimed a caller who sends `tier` "is told
+       * so" while the spec right next to it asserted the empty string. Both reviews
+       * caught that. The keys are intersected with `IMMUTABLE_FIELDS` rather than
+       * echoed, so the response cannot reflect arbitrary input back.
+       */
       throw new BadRequestException({
         error: {
           code: 'INVALID_THRESHOLD_UPDATE',
-          fields: parsed.error.issues.map((issue) => ({
-            field: issue.path.join('.'),
-            rule: issue.code,
-          })),
+          fields: parsed.error.issues.flatMap((issue) =>
+            issue.code === 'unrecognized_keys'
+              ? issue.keys
+                  .filter((key) => IMMUTABLE_FIELDS.includes(key))
+                  .map((field) => ({ field, rule: 'immutable_field' }))
+              : [{ field: issue.path.join('.'), rule: issue.code }],
+          ),
         },
       });
     }
@@ -159,8 +187,8 @@ export class AdminThresholdsController {
       write.auditEventId,
     );
     // The persisted row, so an admin sees the value that now governs rather than the
-    // one they sent. The schema already rejects what the column cannot hold, so this
-    // is confirmation rather than the guard.
-    return write.threshold;
+    // one they sent, plus the new `updatedAt` — which is the concurrency token for the
+    // next write, and without it a caller must re-GET before it can make one.
+    return { ...write.threshold, updatedAt: write.updatedAt };
   }
 }

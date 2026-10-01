@@ -26,7 +26,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { MAX_REPRESENTABLE_VALUE_ML } from '@ostomy/core/admin';
 import { describe, expect, it } from 'vitest';
 
-import { updateThresholdSchema } from './admin-threshold-wire';
+import { ValidationTier } from '../../generated/prisma/enums';
+
+import { THRESHOLD_TIERS, updateThresholdSchema } from './admin-threshold-wire';
 
 function reject(body: unknown): { field: string; rule: string }[] {
   const parsed = updateThresholdSchema.safeParse(body);
@@ -35,19 +37,28 @@ function reject(body: unknown): { field: string; rule: string }[] {
   return parsed.error.issues.map((issue) => ({ field: issue.path.join('.'), rule: issue.code }));
 }
 
-describe('what a threshold update may contain', () => {
-  it('accepts a value alone', async () => {
-    expect(updateThresholdSchema.safeParse({ value: 1500 }).success).toBe(true);
-  });
-
-  it('accepts a value with a new admin label', async () => {
+describe('the body is the complete state of the two mutable fields', () => {
+  it('accepts a value and a label', async () => {
     expect(updateThresholdSchema.safeParse({ value: 1500, description: 'tightened' }).success).toBe(
       true,
     );
   });
 
+  it('accepts null as the way to clear the label', async () => {
+    expect(updateThresholdSchema.safeParse({ value: 1500, description: null }).success).toBe(true);
+  });
+
   it('requires a value, since that is the only reason to call it', async () => {
     expect(reject({ description: 'label only' })[0]!.field).toBe('value');
+  });
+
+  /**
+   * Required, not optional. Optional meant "absent leaves it alone", which is PATCH's
+   * semantics — and because the column is nullable while the only sendable empty value
+   * was `''`, it minted a second "no label" state the API could never return to NULL.
+   */
+  it('requires the label, so there is one empty representation and not two', async () => {
+    expect(reject({ value: 1500 })[0]!.field).toBe('description');
   });
 });
 
@@ -66,27 +77,42 @@ describe('fields this surface must never change', () => {
    * suppress that signal with no code change and no release to notice it.
    */
   it('refuses a tier change outright', async () => {
-    expect(reject({ value: 2000, tier: 'TIER_1_HARD_BLOCK' })).toEqual([
-      { field: '', rule: 'unrecognized_keys' },
-    ]);
+    // `unrecognized_keys` carries `path: []`, so the issue itself names no field — the
+    // controller expands `issue.keys` to recover it. Asserted here on the keys for the
+    // same reason: the first version pinned `field: ''` and locked in a 400 that told
+    // an admin nothing about which field was refused.
+    const parsed = updateThresholdSchema.safeParse({
+      value: 2000,
+      description: null,
+      tier: 'TIER_1_HARD_BLOCK',
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('unreachable');
+    const issue = parsed.error.issues[0]!;
+    expect(issue.code).toBe('unrecognized_keys');
+    expect('keys' in issue ? issue.keys : []).toEqual(['tier']);
   });
 
   it('refuses a key change, which would be a deletion in disguise', async () => {
     // `ThresholdsService` finds the row by key and throws when one is missing rather
     // than inventing a default, so a rename and a delete are indistinguishable.
-    expect(reject({ value: 2000, thresholdKey: 'something_else' })[0]!.rule).toBe(
-      'unrecognized_keys',
-    );
+    expect(
+      reject({ value: 2000, description: null, thresholdKey: 'something_else' })[0]!.rule,
+    ).toBe('unrecognized_keys');
   });
 
   it('refuses a unit change, which would silently redefine the value', async () => {
     // The key already names the unit, and no reader re-reads it — editing the unit
     // alone changes what the number means while every interpretation stays put.
-    expect(reject({ value: 2000, unit: 'L' })[0]!.rule).toBe('unrecognized_keys');
+    expect(reject({ value: 2000, description: null, unit: 'L' })[0]!.rule).toBe(
+      'unrecognized_keys',
+    );
   });
 
   it('refuses flipping the patient-adjustable safety flag', async () => {
-    expect(reject({ value: 2000, patientAdjustable: true })[0]!.rule).toBe('unrecognized_keys');
+    expect(reject({ value: 2000, description: null, patientAdjustable: true })[0]!.rule).toBe(
+      'unrecognized_keys',
+    );
   });
 });
 
@@ -97,47 +123,82 @@ describe('fields this surface must never change', () => {
  */
 describe('the DECIMAL(12,4) column the value is stored in', () => {
   it('rejects a magnitude the column cannot hold', async () => {
-    expect(reject({ value: MAX_REPRESENTABLE_VALUE_ML })[0]!.field).toBe('value');
+    expect(reject({ value: MAX_REPRESENTABLE_VALUE_ML, description: null })[0]!.field).toBe(
+      'value',
+    );
   });
 
   it('rejects more precision than the column keeps, rather than rounding it', async () => {
-    expect(reject({ value: 2000.00005 })[0]!.field).toBe('value');
+    expect(reject({ value: 2000.00005, description: null })[0]!.field).toBe('value');
   });
 
   it('accepts four decimal places', async () => {
-    expect(updateThresholdSchema.safeParse({ value: 2000.0001 }).success).toBe(true);
+    expect(updateThresholdSchema.safeParse({ value: 2000.0001, description: null }).success).toBe(
+      true,
+    );
   });
 });
 
 describe('the sign of a bound', () => {
   /**
-   * `0` is meaningful for at least one row — `sync_clock_skew_allowance_seconds` of
-   * zero means "allow no skew" — so this is non-negative rather than positive.
+   * The assertion that replaced "accepts zero", which was the blocking finding of PR
+   * B's review and the most consequential thing I got wrong in it.
+   *
+   * `sync_clock_skew_allowance_seconds` becomes `maxClockSkewMs`, and `packages/core`'s
+   * own test asserts that `maxClockSkewMs: 0` turns a timestamp 30 seconds in the
+   * future from `pass` into `blocked` — a Tier 1 hard block with no override. So `0`
+   * there rejects every queued entry from every patient whose phone clock runs a second
+   * fast, into a correction inbox describing a problem they cannot fix. The original
+   * comment cited that exact key as the REASON to permit zero.
    */
-  it('accepts zero', async () => {
-    expect(updateThresholdSchema.safeParse({ value: 0 }).success).toBe(true);
+  it('rejects zero, which on the clock-skew row is a Tier 1 block on every fast clock', async () => {
+    expect(reject({ value: 0, description: null })[0]!.field).toBe('value');
   });
 
   it('rejects a negative bound, which no threshold can mean', async () => {
     // A soft warning at -1 warns on every entry a patient ever makes.
-    expect(reject({ value: -1 })[0]!.field).toBe('value');
+    expect(reject({ value: -1, description: null })[0]!.field).toBe('value');
+  });
+
+  it('accepts the smallest positive value', async () => {
+    expect(updateThresholdSchema.safeParse({ value: 0.0001, description: null }).success).toBe(
+      true,
+    );
   });
 
   it('rejects a non-numeric value', async () => {
-    expect(reject({ value: '2000' })[0]!.field).toBe('value');
+    expect(reject({ value: '2000', description: null })[0]!.field).toBe('value');
+  });
+});
+
+/**
+ * The wire set is a deliberate mirror of the database enum rather than an import — see
+ * the module comment for why. `toSnapshot`'s parameter type makes a divergence a
+ * compile error today, but that guard evaporates the moment someone "simplifies"
+ * `ThresholdRow.tier` to `string`, and it would surface as an assignability error on an
+ * unrelated line rather than "you added a tier and did not publish it".
+ *
+ * If a tier is ever added and deliberately NOT published, list it here with the reason
+ * rather than deleting this test.
+ */
+describe('the published tier set', () => {
+  it('matches the database enum', async () => {
+    expect([...THRESHOLD_TIERS].sort()).toEqual(Object.values(ValidationTier).sort());
   });
 });
 
 describe('the admin label', () => {
-  it('rejects one longer than the column keeps', async () => {
+  /**
+   * A wire policy, not the column's shape — `description` is `TEXT` and keeps any
+   * length. The cap exists because the label is copied into the audit row's
+   * before/after JSON, on a table with no DELETE grant anywhere: an unbounded admin
+   * string there is unbounded forever.
+   */
+  it('rejects one long enough to be unbounded in an append-only table', async () => {
     expect(reject({ value: 2000, description: 'x'.repeat(501) })[0]!.field).toBe('description');
   });
 
-  /**
-   * Empty string and absent are different on purpose: one clears the label, the other
-   * leaves it alone, and the audit row shows which happened.
-   */
-  it('accepts an empty string, which is how a label is cleared', async () => {
+  it('accepts an empty string, though null is the way to clear it', async () => {
     expect(updateThresholdSchema.safeParse({ value: 2000, description: '' }).success).toBe(true);
   });
 });

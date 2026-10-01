@@ -15,13 +15,15 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+
+import { Prisma } from '../../generated/prisma/client';
 
 import { AuditService } from '../../audit/audit.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ThresholdsService } from '../../thresholds/thresholds.service';
 
-import { toNumericValue } from './admin-value-set-wire';
+import { toRequiredNumber } from './decimal';
 import type {
   AdminThresholdsResponse,
   ThresholdSnapshot,
@@ -38,6 +40,16 @@ export interface ThresholdWrite {
   /** The `validation_thresholds.id`, which is what the audit row identifies. */
   readonly thresholdId: string;
   readonly auditEventId: string;
+  /**
+   * The row's new `updated_at`, ISO 8601.
+   *
+   * Returned because it is the concurrency token for the NEXT write — without it a
+   * caller has to re-GET after every change to be able to make another one. It is
+   * deliberately not part of `ThresholdSnapshot`, which is the audit shape: it changes
+   * on every write by definition, so recording it as a before/after pair is noise in a
+   * row that exists to show what substantively changed.
+   */
+  readonly updatedAt: string;
 }
 
 /** The Prisma row shape both paths project from. */
@@ -55,9 +67,11 @@ function toSnapshot(row: ThresholdRow): ThresholdSnapshot {
   return {
     thresholdKey: row.thresholdKey,
     tier: row.tier,
-    // `value` is NOT NULL on this table, unlike a member's quantity — the helper is
-    // shared for the Decimal conversion, and the non-null assertion is the column's.
-    value: toNumericValue(row.value) as number,
+    // `toRequiredNumber`, not `toNumericValue(...) as number`: the column is NOT NULL,
+    // and a cast is what made the old version compile rather than the declaration —
+    // so making the row type nullable later would keep compiling while `null` flowed
+    // into the audit JSON and into a response the schema declares as `z.number()`.
+    value: toRequiredNumber(row.value),
     unit: row.unit,
     patientAdjustable: row.patientAdjustable,
     description: row.description,
@@ -124,6 +138,15 @@ export class AdminThresholdsService {
     request: UpdateThresholdRequest,
     adminId: string,
     correlationId: string | undefined,
+    /**
+     * The `updatedAt` the caller last read, when it read one.
+     *
+     * Optional so the maintenance script (PR D) and a first-time console can write
+     * without a prior GET. Supplying it is what makes a write safe against a
+     * concurrent one; omitting it accepts last-write-wins, which is why the
+     * conditional update below still runs on the value this transaction read.
+     */
+    expectedUpdatedAt?: Date,
   ): Promise<ThresholdWrite> {
     const write = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.validationThreshold.findUnique({ where: { thresholdKey } });
@@ -133,21 +156,62 @@ export class AdminThresholdsService {
 
       const before = toSnapshot(existing);
 
-      const updated = await tx.validationThreshold.update({
-        where: { id: existing.id },
-        data: {
-          value: request.value,
-          // Spread-or-omit: `exactOptionalPropertyTypes` rejects an explicit
-          // `undefined`, and the distinction is semantic here rather than cosmetic —
-          // an absent `description` means "leave the label alone", where an empty
-          // string means "clear it", and the audit row shows which one happened.
-          ...(request.description !== undefined ? { description: request.description } : {}),
-          // `tier`, `thresholdKey`, `unit` and `patientAdjustable` are absent from
-          // this object and must stay absent. See the wire module for why each one is
-          // immutable; the shortest of those reasons is that a warning must never
-          // become a block.
-        },
-      });
+      /**
+       * Conditional on the row not having moved since it was read, which it was not.
+       *
+       * `findUnique` then `update({ where: { id } })` at READ COMMITTED loses a
+       * concurrent write: both transactions read 2000, the first commits 1500, the
+       * second's predicate still matches on the primary key, and it writes 1200. The
+       * value is merely last-write-wins — but the AUDIT CHAIN is worse than that, and
+       * it is the thing this entity cannot afford to get wrong. The log then holds
+       * `2000 -> 1500` and `2000 -> 1200`, so nothing records that 1500 ever governed,
+       * and a reader reconstructing which bound was in force at a given moment gets a
+       * wrong answer. This service's own comment calls the before value "the only
+       * record of what the rule used to be"; a hole in that chain is not recoverable
+       * from anywhere else, because nothing on a stored observation says which bound
+       * it was checked against.
+       *
+       * PR A's conditional `updateMany` does not transfer: a retire has a target state
+       * to build a predicate from and a blind value write has none. So the predicate is
+       * the row version — `updatedAt`, from the caller when it supplied one and
+       * otherwise from this transaction's own read.
+       *
+       * Honest limit: `updated_at` is `TIMESTAMPTZ(3)` and Prisma sets it client-side,
+       * so two writes landing in the same millisecond defeat the token. The row lock
+       * makes that window very small rather than absent.
+       */
+      const token = expectedUpdatedAt ?? existing.updatedAt;
+      let updated;
+      try {
+        updated = await tx.validationThreshold.update({
+          where: { id: existing.id, updatedAt: token },
+          data: {
+            value: request.value,
+            // `null` clears the label; a string replaces it. Always present, because
+            // the body is the complete state of the mutable pair — see the wire
+            // module for why "absent means unchanged" was withdrawn.
+            description: request.description,
+            // `tier`, `thresholdKey`, `unit` and `patientAdjustable` are absent from
+            // this object and must stay absent. See the wire module for why each one is
+            // immutable; the shortest of those reasons is that a warning must never
+            // become a block.
+            //
+            // Note these are read off `request` BY NAME and never spread into `data`.
+            // That is load-bearing and invisible: a request object built by spreading
+            // would not be caught by excess-property checking (the hazard CLAUDE.md
+            // records for the sync constructors), and naming the fields means even a
+            // polluted one cannot reach `tier`.
+          },
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+          // The row moved between the read and the write. Reported rather than
+          // silently applied, so the caller re-reads instead of overwriting a change
+          // it never saw.
+          throw new ConflictException({ error: { code: 'THRESHOLD_MODIFIED_CONCURRENTLY' } });
+        }
+        throw error;
+      }
 
       const after = toSnapshot(updated);
 
@@ -158,6 +222,11 @@ export class AdminThresholdsService {
           action: 'UPDATE',
           entityType: THRESHOLD_ENTITY_TYPE,
           entityId: existing.id,
+          // Named by `AuditEvent.reasonCode`'s column comment and by `AuditContext`'s
+          // own doc for P3.S3 specifically. Without it an admin configuration change
+          // lands with `reason_code = NULL` and cannot be told apart from any other
+          // write path when querying the log.
+          reasonCode: 'admin_config_change',
           ...(correlationId !== undefined ? { correlationId } : {}),
           // Both sides, always. A threshold change is the one admin action whose
           // effect is invisible in the data it governs — nothing about a later
@@ -169,7 +238,12 @@ export class AdminThresholdsService {
         tx,
       );
 
-      return { threshold: after, thresholdId: existing.id, auditEventId: auditEvent.id };
+      return {
+        threshold: after,
+        thresholdId: existing.id,
+        auditEventId: auditEvent.id,
+        updatedAt: updated.updatedAt.toISOString(),
+      };
     });
 
     // After the commit, never inside it: invalidating for a write that then rolls back
