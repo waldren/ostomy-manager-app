@@ -10,6 +10,10 @@
       "types": "./dist/units/index.d.ts",
       "default": "./dist/units/index.js"
     },
+    "./admin": {
+      "types": "./dist/admin/index.d.ts",
+      "default": "./dist/admin/index.js"
+    },
     "./validation": {
       "types": "./dist/validation/index.d.ts",
       "default": "./dist/validation/index.js"

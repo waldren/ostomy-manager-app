@@ -18,6 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { Module, type DynamicModule } from '@nestjs/common';
 
 import { AdminAuthModule } from './admin/admin-auth.module';
+import { AdminConfigModule } from './admin/config/admin-config.module';
 import { AuditInterceptorModule } from './audit/audit-interceptor.module';
 import { AuditStubModule } from './audit/test-support/audit-stub.module';
 import { PatientAuthModule } from './auth/patient-auth.module';
@@ -82,6 +83,7 @@ export class AppModule {
         HealthModule,
         PatientAuthModule,
         AdminAuthModule,
+        AdminConfigModule,
         PrismaModule,
         ErrorSanitizerModule,
         AuditInterceptorModule,
