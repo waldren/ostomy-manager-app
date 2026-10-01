@@ -101,6 +101,39 @@ describe('admin/patient boundary (SRS §3.11, ADR-0008)', () => {
     }
   });
 
+  /**
+   * `scripts/admin-config.mjs` is the admin API's only client until `apps/admin`
+   * exists (P3.S3's maintenance script), and it sat outside the glob while
+   * being exactly the kind of code this rule watches. Nothing was wrong at the
+   * time - it imports three node builtins - but a later edit reaching for a
+   * patient type would not have failed the build. Review caught it.
+   */
+  it('covers the admin maintenance script, the only admin client before the console', async () => {
+    const ids = await ruleIdsFor(
+      `import { x } from '@ostomy/core/fhir';`,
+      'scripts/admin-config.mjs',
+    );
+    expect(hasBoundaryError(ids)).toBe(true);
+  });
+
+  it('still permits the allow-listed imports in that script', async () => {
+    const ids = await ruleIdsFor(
+      `import { x } from '@ostomy/core/admin';`,
+      'scripts/admin-config.mjs',
+    );
+    expect(hasBoundaryError(ids)).toBe(false);
+  });
+
+  it('does not fire on an unrelated script', async () => {
+    // The glob is `admin-*.mjs`, not all of `scripts/`: dev-reset and the rest
+    // are not admin clients and should not inherit the restriction.
+    const ids = await ruleIdsFor(
+      `import { x } from '@ostomy/core/fhir';`,
+      'scripts/some-other-tool.mjs',
+    );
+    expect(hasBoundaryError(ids)).toBe(false);
+  });
+
   it('does not fire outside admin code', async () => {
     const ids = await ruleIdsFor(`import { x } from '@ostomy/core/fhir';`, 'apps/web/src/probe.ts');
     expect(hasBoundaryError(ids)).toBe(false);

@@ -57,7 +57,17 @@ const UI = [
  * several phases before the console SPA, so scoping this to `apps/admin`
  * alone would leave the higher-sensitivity half uncovered.
  */
-const ADMIN = ['apps/admin/**/*.{ts,tsx,js,jsx,mjs,cjs}', 'apps/api/src/admin/**/*.{ts,mjs,cjs}'];
+const ADMIN = [
+  'apps/admin/**/*.{ts,tsx,js,jsx,mjs,cjs}',
+  'apps/api/src/admin/**/*.{ts,mjs,cjs}',
+  // `scripts/admin-*.mjs` is the admin API's only client until `apps/admin`
+  // exists, and it sat outside this list while being exactly the kind of code
+  // the rule watches for. Nothing was wrong when it was added — it imports
+  // three node builtins and nothing else — but a later edit reaching for a
+  // patient type would not have failed the build. The rule only restricts
+  // `@ostomy/*` specifiers, so covering it costs nothing.
+  'scripts/admin-*.mjs',
+];
 
 /**
  * Workspace modules admin code is permitted to import. Deny by default.
