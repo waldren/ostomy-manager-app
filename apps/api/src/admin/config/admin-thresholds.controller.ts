@@ -187,8 +187,14 @@ export class AdminThresholdsController {
       write.auditEventId,
     );
     // The persisted row, so an admin sees the value that now governs rather than the
-    // one they sent, plus the new `updatedAt` — which is the concurrency token for the
-    // next write, and without it a caller must re-GET before it can make one.
+    // one they sent, plus the new `updatedAt`.
+    //
+    // `updatedAt` is the row version and is what a conditional write WOULD be
+    // built on; it is not yet a token a caller can send back, because the
+    // request body is `.strict()` over `{value, description}`. An earlier
+    // version of this comment called it "the concurrency token for the next
+    // write", which overstated what this surface accepts — see
+    // `updateThreshold`'s `expectedUpdatedAt` for the whole picture.
     return { ...write.threshold, updatedAt: write.updatedAt };
   }
 }

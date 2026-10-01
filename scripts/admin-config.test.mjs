@@ -12,16 +12,28 @@
 //
 //   pnpm test:scripts
 //
-// Scope is the three functions where a wrong answer is silent. Everything else
+// Scope is the pure functions where a wrong answer is silent. Everything else
 // in that script is I/O against a live stack, verified by running it rather
 // than by mocking `fetch` — a mock of these surfaces would assert that the
 // script agrees with my model of the API, which is exactly what was wrong twice
 // while writing it (`valueSetKey` for `key`, and one envelope shape for two).
+//
+// `resolveDescription` and `tierWarnings` were extracted out of `setThreshold`
+// specifically because review found a bug in each while they were trapped
+// inside an I/O function and therefore untestable: `--label ''` persisted an
+// empty description, and the OPERATIONAL warning told the reader to consult a
+// label the script did not print.
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { describeBounds, describeFailure, readClaims } from './admin-config.mjs';
+import {
+  describeBounds,
+  describeFailure,
+  readClaims,
+  resolveDescription,
+  tierWarnings,
+} from './admin-config.mjs';
 
 describe('describeFailure', () => {
   it('reads the config routes’ nested envelope', () => {
@@ -68,6 +80,45 @@ describe('describeFailure', () => {
     // The commonest real cause, and one a reader will not guess: the deploy
     // never ran, so the route this script calls does not exist yet (#76).
     assert.match(describeFailure(404, undefined), /older than this script/);
+  });
+
+  /**
+   * Reachable for real, and nothing pinned it: `admin-thresholds.controller.ts`
+   * filters `unrecognized_keys` down to `IMMUTABLE_FIELDS`, so a body carrying
+   * an unknown key that is not an immutable field — `{value, description,
+   * bogus}` — yields `fields: []` and a 400 naming nothing. (That filter is an
+   * API defect of its own, filed separately; this asserts the script renders
+   * the result sanely rather than crashing or printing an empty dash list.)
+   */
+  it('renders a 400 whose field list came back empty', () => {
+    assert.equal(
+      describeFailure(400, { error: { code: 'INVALID_THRESHOLD_UPDATE', fields: [] } }),
+      'HTTP 400 INVALID_THRESHOLD_UPDATE',
+    );
+  });
+
+  describe('the issuer diagnostic', () => {
+    it('explains an invalid-issuer 401 and names the iss the token carried', () => {
+      const rendered = describeFailure(
+        401,
+        { code: 'ADMIN_AUTH_INVALID_ISSUER' },
+        { tokenIssuer: 'http://localhost:8090/admin-issuer' },
+      );
+      assert.match(rendered, /ADMIN_AUTH_INVALID_ISSUER/);
+      assert.match(rendered, /iss=http:\/\/localhost:8090\/admin-issuer/);
+      assert.match(rendered, /DEV_HOST_ADDRESS/);
+    });
+
+    it('still explains it when no token issuer is known', () => {
+      const rendered = describeFailure(401, { code: 'ADMIN_AUTH_INVALID_ISSUER' });
+      assert.match(rendered, /exact string equality/);
+      assert.doesNotMatch(rendered, /undefined/);
+    });
+
+    it('does not attach the issuer explanation to an unrelated code', () => {
+      const rendered = describeFailure(401, { code: 'ADMIN_AUTH_MALFORMED_TOKEN' });
+      assert.equal(rendered, 'HTTP 401 ADMIN_AUTH_MALFORMED_TOKEN');
+    });
   });
 
   it('does not claim a non-404 came from somewhere it cannot know about', () => {
@@ -117,6 +168,21 @@ describe('describeBounds', () => {
     assert.equal(describeBounds({ lowValue: -800, highValue: 0, unit: 'mL' }), '-800 to 0 mL');
   });
 
+  /**
+   * The create refuses a row with neither bound, and this still has to render
+   * one: `admin-default-range-wire.ts` is explicit that the table has no unique
+   * and no CHECK constraints, so a migration, a seeder or a psql session can
+   * produce a state the API refuses — and this listing is the tool you would
+   * use to find it. It printed `up to null mL`, which is the defect this
+   * function exists to prevent, applied to the one row where it matters most.
+   */
+  it('names a row with no bounds instead of printing null', () => {
+    const rendered = describeBounds({ lowValue: null, highValue: null, unit: 'mL' });
+    assert.doesNotMatch(rendered, /null/);
+    assert.match(rendered, /no bounds/);
+    assert.match(rendered, /invalid/);
+  });
+
   it('keeps a negative bound, unlike an entered volume', () => {
     // Tier 1's positive-value rule is about entered volumes. A default RANGE
     // legitimately has a negative floor.
@@ -124,6 +190,89 @@ describe('describeBounds', () => {
       describeBounds({ lowValue: -800, highValue: -100, unit: 'mL' }),
       '-800 to -100 mL',
     );
+  });
+});
+
+describe('resolveDescription', () => {
+  const current = { description: 'the existing label' };
+
+  it('carries the existing label forward when none is given', () => {
+    // The reason the write path reads before writing at all: the PUT body is
+    // `.strict()` with `description` required, so "unchanged" has to be sent.
+    assert.equal(resolveDescription({}, current), 'the existing label');
+  });
+
+  it('replaces the label when one is given', () => {
+    assert.equal(resolveDescription({ label: 'a new label' }, current), 'a new label');
+  });
+
+  it('clears the label to null on --clear-label', () => {
+    assert.equal(resolveDescription({ 'clear-label': true }, current), null);
+  });
+
+  /**
+   * The blocking bug review found. `options.label ?? current.description` let
+   * `--label ''` through, and the wire schema has no `.min(1)`, so an empty
+   * string persisted — re-opening the second "no label" state
+   * `admin-threshold-wire.ts` says was deliberately withdrawn, where `''` and
+   * `null` render identically while their audit snapshots differ.
+   */
+  it('refuses an empty label rather than persisting one', () => {
+    assert.throws(() => resolveDescription({ label: '' }, current), /--clear-label/);
+  });
+
+  it('carries forward a label that is already null', () => {
+    assert.equal(resolveDescription({}, { description: null }), null);
+  });
+});
+
+describe('tierWarnings', () => {
+  const row = (over) => ({
+    thresholdKey: 'k',
+    tier: 'TIER_2_SOFT_WARNING',
+    patientAdjustable: true,
+    ...over,
+  });
+
+  it('says nothing for an ordinary patient-adjustable soft warning', () => {
+    assert.deepEqual(tierWarnings(row()), []);
+  });
+
+  it('warns that a Tier 1 bound blocks outright', () => {
+    assert.match(tierWarnings(row({ tier: 'TIER_1_HARD_BLOCK' }))[0], /no override/);
+  });
+
+  it('warns that a safety threshold is not a data-quality warning', () => {
+    assert.match(tierWarnings(row({ tier: 'SAFETY_THRESHOLD' }))[0], /safety response/);
+  });
+
+  it('warns that a non-adjustable bound governs every patient', () => {
+    assert.match(tierWarnings(row({ patientAdjustable: false }))[0], /every patient/);
+  });
+
+  /**
+   * The clock-skew row gets its own sentence rather than the generic
+   * OPERATIONAL one, because the expensive direction is counter-intuitive and
+   * named in ADR-0019: "allowance" reads as slack to tighten, and tightening it
+   * Tier-1 blocks every queued entry from every patient whose device clock runs
+   * fast. It is also the only OPERATIONAL row seeded, so the generic warning
+   * would be the only thing an operator ever saw here.
+   */
+  it('names the expensive direction for the clock-skew allowance', () => {
+    const messages = tierWarnings(
+      row({
+        thresholdKey: 'sync_clock_skew_allowance_seconds',
+        tier: 'OPERATIONAL',
+        patientAdjustable: false,
+      }),
+    );
+    assert.ok(
+      messages.some((message) => /LOWERING/.test(message) && /ADR-0019/.test(message)),
+      `expected the ADR-0019 warning, got ${JSON.stringify(messages)}`,
+    );
+    // And the two generic ones still apply, so the specific sentence adds to
+    // the warnings rather than replacing them.
+    assert.equal(messages.length, 3);
   });
 });
 
@@ -141,6 +290,17 @@ describe('readClaims', () => {
 
   it('refuses a payload that is not JSON', () => {
     assert.throws(() => readClaims('header.bm90LWpzb24.signature'), /not JSON/);
+  });
+
+  /**
+   * `JSON.parse` returns these happily, and `assertUsable` then threw a raw
+   * TypeError reading `.iss` off them — a crash where a refusal was meant.
+   */
+  it('refuses a payload that is valid JSON but not an object', () => {
+    for (const payload of ['null', '42', '"a string"', '[1,2]']) {
+      const encoded = Buffer.from(payload).toString('base64url');
+      assert.throws(() => readClaims(`h.${encoded}.s`), /not a JSON object/, payload);
+    }
   });
 
   /**

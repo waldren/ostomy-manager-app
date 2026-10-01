@@ -141,10 +141,23 @@ export class AdminThresholdsService {
     /**
      * The `updatedAt` the caller last read, when it read one.
      *
-     * Optional so the maintenance script (PR D) and a first-time console can write
-     * without a prior GET. Supplying it is what makes a write safe against a
-     * concurrent one; omitting it accepts last-write-wins, which is why the
-     * conditional update below still runs on the value this transaction read.
+     * **No HTTP caller can supply this, and this comment used to imply one
+     * could.** It said the parameter was optional "so the maintenance script
+     * (PR D) and a first-time console can write without a prior GET" — and PR D
+     * then showed that wrong in both halves: the script *does* GET first (it has
+     * to, because `updateThresholdSchema` requires `description` and a
+     * value-only change must carry the label forward), and it still cannot pass
+     * a token, because that schema is `.strict()` over `{value, description}`
+     * and the controller never reads one. So every write through the API today
+     * takes the `?? existing.updatedAt` branch below.
+     *
+     * The parameter is kept because the branch it feeds is correct and the
+     * console will want it, but adding it to the surface needs a wire change —
+     * tracked rather than implied here. Until then the honest statement is:
+     * **the HTTP surface is last-write-wins on the value**, while the audit
+     * chain stays sound, because the conditional update runs against the row as
+     * read inside this transaction, so two concurrent writers cannot both record
+     * the same before-value — the loser gets a 409.
      */
     expectedUpdatedAt?: Date,
   ): Promise<ThresholdWrite> {

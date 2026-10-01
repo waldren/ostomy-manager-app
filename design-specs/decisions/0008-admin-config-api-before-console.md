@@ -23,7 +23,7 @@ We will split them.
 
 **Later (P8):** the admin console SPA in `apps/admin`.
 
-**In between:** configuration is seeded by migration and changed by a maintenance script (`scripts/admin-config.mjs`, P3.S3).
+**In between:** configuration is seeded by migration and changed by a maintenance script (`scripts/admin-config.mjs`, P3.S3). That script reads all three surfaces and writes **only `validation_thresholds`** — the value-set and default-range endpoints exist and have no command, so those two remain migration-only until the console. The heart-rate red flag is in that second group (#94).
 
 "Final shape" is the binding part of this decision. The admin API is not a temporary internal endpoint to be hardened later; it is the real thing, with the console arriving as its first UI client.
 
@@ -33,7 +33,7 @@ We will split them.
 
 **What this costs.** Between P3 and P8, changing a clinical threshold means running a script rather than clicking a UI — `scripts/admin-config.mjs`, which speaks HTTP to the admin API as an authenticated admin.
 
-That last part is a correction to this paragraph, which said "against the database" until the script was written. It would have been the wrong script. A `psql` UPDATE produces **no audit row**, so the log would record that a bound changed with no record of what it used to be — and nothing on a stored observation says which bound it was checked against, so that history is reconstructable from nowhere else. A `psql` session also runs as a role that can rewrite `audit_events`, which ADR-0011 exists to prevent. Going through the API makes the script's writes indistinguishable from the console's, which is also what lets the console supersede it without a migration of operator habits. That is acceptable while the only operator is the developer, and it stops being acceptable the moment a clinician needs to tune a range — which is the real trigger for P8, more than the phase ordering is. The maintenance script is also throwaway work.
+That last part is a correction to this paragraph, which said "against the database" until the script was written. It would have been the wrong script. A `psql` UPDATE writes **no audit row at all** — the log records nothing, not a partial story, and the only trace is the row's own `updated_at` moving — and nothing on a stored observation says which bound it was checked against, so that history is reconstructable from nowhere else. A `psql` session also runs as a role that can rewrite `audit_events`, which ADR-0011 exists to prevent. Going through the API makes the script's writes indistinguishable from the console's, which is also what lets the console supersede it without a migration of operator habits. That is acceptable while the only operator is the developer, and it stops being acceptable the moment a clinician needs to tune a range — which is the real trigger for P8, more than the phase ordering is. The maintenance script is also throwaway work.
 
 **What it forecloses.** Nothing, **provided the API is genuinely built at final shape**. If it is built as a shortcut — a shared guard with a role check, unaudited writes, hard deletes on value-set members — then P8 becomes a rewrite of the API rather than the addition of a client, and the boundary that §4.6 makes architectural will have been an authorization-logic property in the meantime. That is the failure mode this ADR exists to prevent, and it would first become visible at P8.S1 when the import-boundary lint rule starts failing.
 

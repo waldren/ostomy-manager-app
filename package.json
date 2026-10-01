@@ -16,7 +16,7 @@
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm -r --if-present run test && pnpm test:scripts",
     "test:scripts": "node --test scripts/admin-config.test.mjs",
-    "test:unit": "pnpm -r --if-present run test:unit",
+    "test:unit": "pnpm -r --if-present run test:unit && pnpm test:scripts",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "check:env": "bash scripts/check-no-committed-env.sh",

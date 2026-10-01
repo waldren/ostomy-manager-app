@@ -31,6 +31,7 @@ pnpm lint:fix        # ...and autofix (inserts missing AGPL headers)
 pnpm typecheck       # tsc --noEmit per workspace
 pnpm test            # full test suite
 pnpm test:unit       # excludes Testcontainers-backed integration tests
+pnpm test:scripts    # scripts/ (node:test, not vitest - see below)
 pnpm format          # Prettier check
 pnpm format:write    # ...and rewrite
 pnpm check:env       # fails if a .env is tracked by git
@@ -38,6 +39,20 @@ pnpm verify          # everything CI runs, in the same order
 ```
 
 `pnpm verify` is the one to run before opening a PR.
+
+`pnpm test:scripts` is separate because `scripts/` is not a pnpm workspace, so
+`pnpm -r` walks past it and a vitest spec there would run nowhere. It uses
+Node's built-in runner and is chained into both `test` and `test:unit`, so you
+do not normally invoke it directly.
+
+```bash
+pnpm admin:config    # read/change admin config - see scripts/README.md
+```
+
+`pnpm admin:config` is operational rather than part of the build: it reads the
+validation thresholds, value sets and clinical default ranges from a running
+API, and changes a threshold. It needs a reachable stack and an admin identity;
+`--help` lists what it wants.
 
 Scoped to a single workspace:
 
