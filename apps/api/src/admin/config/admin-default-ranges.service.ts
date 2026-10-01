@@ -108,7 +108,17 @@ export class AdminDefaultRangesService {
    */
   async listDefaultRanges(): Promise<AdminDefaultRangesResponse> {
     const rows = await this.prisma.clinicalDefaultRange.findMany({
-      orderBy: [{ ostomyType: 'asc' }, { rangeType: 'asc' }, { minDaysPostOp: 'asc' }],
+      // `nulls: 'first'`, because Postgres `ASC` is NULLS LAST and a null
+      // `minDaysPostOp` means "from surgery" — day 0, the FIRST window. It was sorting
+      // after day 3650, which contradicted this route's own claim that the windows read
+      // in sequence. That ordering also matters for the overlap race: an accidentally
+      // overlapping pair is what an admin is most likely to spot by eye, and the old
+      // ordering could separate the two rows.
+      orderBy: [
+        { ostomyType: 'asc' },
+        { rangeType: 'asc' },
+        { minDaysPostOp: { sort: 'asc', nulls: 'first' } },
+      ],
     });
 
     return {
@@ -143,19 +153,73 @@ export class AdminDefaultRangesService {
       rangeType: string;
       minDaysPostOp: number | null;
       maxDaysPostOp: number | null;
+      windowDays: number | null;
+      unit: string;
     },
   ): Promise<void> {
+    /**
+     * Serialised per type pair before the read, which closes the race the first
+     * version only documented.
+     *
+     * Being inside the transaction buys atomicity of the refusal — nothing is written
+     * when it throws — and **no read-set stability at all**: at READ COMMITTED the
+     * `findMany` and the `create` are separate statements with separate snapshots even
+     * when nothing else is running. The first version of this comment said the
+     * transaction meant "the rows it reads are the rows the write will land beside"
+     * and then admitted otherwise in the next sentence.
+     *
+     * `SELECT … FOR UPDATE` cannot fix it, and is worth recording as rejected so
+     * nobody tries: row locks cannot lock rows that do not exist, and the common case
+     * is two creates into a type pair with no siblings. This is a phantom, not a lost
+     * update. `SERIALIZABLE` would work via predicate locks but introduces a 40001 /
+     * `P2034` retry class this repo has no precedent for handling.
+     *
+     * A transaction-scoped advisory lock is the proportionate fix and the one this
+     * repo already named for the analogous phantom — see
+     * `design-specs/data-model/p1-s3-schema-coverage.md`'s note on the delta cursor.
+     * It releases on commit or rollback, needs no isolation change and no new grant,
+     * and a hash collision only over-serialises.
+     *
+     * Not taken in `delete`: a delete only frees a window, so a create racing it may
+     * 409 spuriously, which costs a re-read rather than a corrupt row.
+     */
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${candidate.ostomyType}:${candidate.rangeType}`}))`;
+
     // Only `create` calls this, and there is no `excludeId` parameter, because an
-    // update cannot produce an overlap: the ostomy type, range type and both window
-    // bounds are all immutable, so the only row whose window could move is one that
-    // cannot. A first draft carried that parameter and nothing passed it — dead code
-    // that would have read as though updates were checked when they need not be.
+    // update cannot produce an overlap: every identity field — the ostomy type, the
+    // range type, both window bounds and `windowDays` — is immutable, so the only row
+    // whose window could move is one that cannot. A first draft carried that parameter
+    // and nothing passed it.
     const siblings = await tx.clinicalDefaultRange.findMany({
       where: { ostomyType: candidate.ostomyType, rangeType: candidate.rangeType },
     });
 
-    if (siblings.some((sibling) => windowsOverlap(sibling, candidate))) {
+    /**
+     * Scoped by `windowDays` as well as the type pair.
+     *
+     * Without it, a 5%-over-7-days rule and a 10%-over-30-days rule for the same
+     * ostomy type and the same post-operative window collide — and SRS §3.12 has the
+     * admin managing "rolling-window definitions", plural, so that pair is ordinary
+     * configuration rather than a mistake. Two rows of DIFFERENT shape matching one
+     * patient is not ambiguity: §3.9 seeds both as separate ranges.
+     */
+    const sameShape = siblings.filter((sibling) => sibling.windowDays === candidate.windowDays);
+    if (sameShape.some((sibling) => windowsOverlap(sibling, candidate))) {
       throw new ConflictException({ error: { code: 'DEFAULT_RANGE_WINDOW_OVERLAPS' } });
+    }
+
+    /**
+     * Every row sharing a `rangeType` must agree on the unit.
+     *
+     * The wire module rests `unit`'s immutability on "the rangeType already names it",
+     * and across rows nothing enforced that: days 0–30 in `mL` beside days 31–60 in
+     * `oz` were both accepted. Per row that is self-describing and harmless; the
+     * hazard is that §3.9's consumer is precisely the reader the comment licenses to
+     * treat `rangeType` as naming the unit. Free to check, because the siblings are
+     * already here.
+     */
+    if (siblings.some((sibling) => sibling.unit !== candidate.unit)) {
+      throw new ConflictException({ error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } });
     }
   }
 
@@ -238,7 +302,9 @@ export class AdminDefaultRangesService {
           data: {
             lowValue: request.lowValue,
             highValue: request.highValue,
-            windowDays: request.windowDays,
+            // `windowDays` is absent and must stay absent: it is part of the row
+            // identity, so two rules for one `rangeType` are told apart by it. See the
+            // wire module for why it moved out of the mutable set.
           },
         });
       } catch (error) {
@@ -307,7 +373,28 @@ export class AdminDefaultRangesService {
       }
 
       const before = toSnapshot(existing);
-      await tx.clinicalDefaultRange.delete({ where: { id: existing.id } });
+
+      /**
+       * Conditional on the row not having moved since it was snapshotted.
+       *
+       * `findUnique` then `delete({ where: { id } })` are two statements with their own
+       * snapshots at READ COMMITTED. If another admin's `PUT` commits between them,
+       * Prisma's delete re-reads at the newer snapshot and removes **v2** while
+       * `beforeValue` records **v1** — and this is the one path where that is
+       * unrecoverable, because after the delete the audit row is the only surviving
+       * record of what the row said. `updateDefaultRange` already guards this shape;
+       * the delete did not, which is the asymmetry a reviewer caught.
+       */
+      try {
+        await tx.clinicalDefaultRange.delete({
+          where: { id: existing.id, updatedAt: existing.updatedAt },
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+          throw new ConflictException({ error: { code: 'DEFAULT_RANGE_MODIFIED_CONCURRENTLY' } });
+        }
+        throw error;
+      }
 
       const auditEvent = await this.audit.record(
         {

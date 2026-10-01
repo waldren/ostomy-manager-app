@@ -28,7 +28,7 @@ import { BadRequestException } from '@nestjs/common';
 import type { Request } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 
-import { AdminDefaultRangesController } from './admin-default-ranges.controller';
+import { AdminDefaultRangesController, rowIdPipe } from './admin-default-ranges.controller';
 import { DEFAULT_RANGE_ENTITY_TYPE } from './admin-default-ranges.service';
 
 const SNAPSHOT = {
@@ -43,7 +43,7 @@ const SNAPSHOT = {
 };
 
 const VALID_CREATE = { ...SNAPSHOT };
-const VALID_UPDATE = { lowValue: 400, highValue: 1100, windowDays: null };
+const VALID_UPDATE = { lowValue: 400, highValue: 1100 };
 const ROW_ID = '11111111-1111-4111-8111-111111111111';
 
 function makeController() {
@@ -109,11 +109,7 @@ describe('validation happens before the service is reached', () => {
     const { controller, updateDefaultRange } = makeController();
 
     await expect(
-      controller.update(
-        ROW_ID,
-        { lowValue: 1e9, highValue: null, windowDays: null },
-        adminRequest(),
-      ),
+      controller.update(ROW_ID, { lowValue: 1e9, highValue: null }, adminRequest()),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(updateDefaultRange).not.toHaveBeenCalled();
   });
@@ -140,11 +136,7 @@ describe('validation happens before the service is reached', () => {
 
     const serialised = JSON.stringify(
       await refusalBody(() =>
-        controller.update(
-          ROW_ID,
-          { lowValue: 987654321, highValue: null, windowDays: null },
-          adminRequest(),
-        ),
+        controller.update(ROW_ID, { lowValue: 987654321, highValue: null }, adminRequest()),
       ),
     );
 
@@ -235,6 +227,44 @@ describe('the success bodies', () => {
   it('returns what a deleted row said, which is otherwise only in the audit log', async () => {
     const { controller } = makeController();
 
-    expect(await controller.remove(ROW_ID, adminRequest())).toEqual(SNAPSHOT);
+    // Plus the id, so a console can reconcile which row went. `updatedAt` is
+    // genuinely absent: a row that no longer exists has no last-modified time.
+    expect(await controller.remove(ROW_ID, adminRequest())).toEqual({ ...SNAPSHOT, id: ROW_ID });
+  });
+});
+
+/**
+ * The malformed-id 400, tested on the shipped pipe instance.
+ *
+ * It cannot be reached through the controller's methods — direct calls bypass pipes —
+ * and reaching it over HTTP needs the admin JWKS harness. Exercising the instance is
+ * what proves the shape the route actually serves.
+ *
+ * `ParseUUIDPipe`'s default throws a message-bearing body, which `ErrorSanitizerFilter`
+ * correctly refuses to forward and rewrites to `{ error: { code: 'BAD_REQUEST' } }` —
+ * safe, but it would make a malformed id answer in a different vocabulary from a
+ * malformed body. An authored body with neither `statusCode` nor `message` passes the
+ * filter untouched and keeps the code set closed.
+ */
+describe('a malformed row id', () => {
+  const meta = { type: 'param' as const, data: 'id' };
+
+  it('is refused with this surface’s own code, not a framework message', async () => {
+    await expect(rowIdPipe.transform('not-a-uuid', meta)).rejects.toMatchObject({
+      response: { error: { code: 'INVALID_DEFAULT_RANGE_ID' } },
+    });
+  });
+
+  it('carries neither statusCode nor message, so the error filter forwards it as authored', async () => {
+    const body = await rowIdPipe
+      .transform('not-a-uuid', meta)
+      .then(() => undefined)
+      .catch((error: unknown) => (error as { response: Record<string, unknown> }).response);
+
+    expect(Object.keys(body ?? {})).toEqual(['error']);
+  });
+
+  it('accepts a real row id', async () => {
+    await expect(rowIdPipe.transform(ROW_ID, meta)).resolves.toBe(ROW_ID);
   });
 });

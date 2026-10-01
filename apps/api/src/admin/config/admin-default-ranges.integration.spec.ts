@@ -38,7 +38,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AuditService } from '../../audit/audit.service';
 import { PrismaClient } from '../../generated/prisma/client';
 
-import { adminDefaultRangesResponseSchema } from './admin-default-range-wire';
+import {
+  adminDefaultRangesResponseSchema,
+  createDefaultRangeSchema,
+  type CreateDefaultRangeRequest,
+} from './admin-default-range-wire';
 import {
   AdminDefaultRangesService,
   DEFAULT_RANGE_ENTITY_TYPE,
@@ -115,9 +119,23 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
     await container?.stop();
   });
 
-  function body(rangeType: string, overrides: Record<string, unknown> = {}) {
-    return {
-      ostomyType: 'ILEOSTOMY' as const,
+  /**
+   * A create body, typed and parsed through the real schema.
+   *
+   * The first version returned `as never`, which erased `CreateDefaultRangeRequest`
+   * from every call site: a field added to the wire contract and forgotten in the
+   * service's `data` object still typechecked, and so did a renamed one. That is the
+   * field-drop class CLAUDE.md records costing two sprints on the observation paths.
+   *
+   * Parsing rather than casting also means the fixture travels the validation path the
+   * suite otherwise never exercises, so a body this spec believes is valid provably is.
+   */
+  function body(
+    rangeType: string,
+    overrides: Partial<CreateDefaultRangeRequest> = {},
+  ): CreateDefaultRangeRequest {
+    return createDefaultRangeSchema.parse({
+      ostomyType: 'ILEOSTOMY',
       rangeType,
       minDaysPostOp: 0,
       maxDaysPostOp: 30,
@@ -126,7 +144,7 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       unit: 'mL',
       windowDays: null,
       ...overrides,
-    } as never;
+    });
   }
 
   async function auditRowsFor(rangeId: string) {
@@ -263,6 +281,10 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       );
 
       expect(second.range.minDaysPostOp).toBe(31);
+      // Persisted, not merely un-refused: the previous assertion only echoed the input.
+      expect(
+        await prisma.clinicalDefaultRange.count({ where: { rangeType: 'probe_adjacent_ml' } }),
+      ).toBe(2);
     });
 
     /**
@@ -294,10 +316,106 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       expect(other.range.ostomyType).toBe('COLOSTOMY');
     });
 
+    /**
+     * Two rules of different SHAPE may share a window, and this is the case the first
+     * version refused. SRS §3.12 has the admin managing "rolling-window definitions",
+     * plural, so a 7-day and a 30-day rule for one range type is ordinary
+     * configuration — and two rows of different shape matching one patient is not
+     * ambiguity, because §3.9 seeds both as separate ranges.
+     */
+    it('allows the same window for a different rolling window length', async () => {
+      await service.createDefaultRange(
+        body('probe_window_shape_pct', { windowDays: 7, unit: '%' }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      const second = await service.createDefaultRange(
+        body('probe_window_shape_pct', { windowDays: 30, unit: '%' }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      expect(second.range.windowDays).toBe(30);
+      expect(
+        await prisma.clinicalDefaultRange.count({ where: { rangeType: 'probe_window_shape_pct' } }),
+      ).toBe(2);
+    });
+
+    it('still refuses two rows of the SAME shape in one window', async () => {
+      await service.createDefaultRange(
+        body('probe_same_shape_pct', { windowDays: 7, unit: '%' }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      await expect(
+        service.createDefaultRange(
+          body('probe_same_shape_pct', { windowDays: 7, unit: '%', minDaysPostOp: 10 }),
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { error: { code: 'DEFAULT_RANGE_WINDOW_OVERLAPS' } },
+      });
+    });
+
+    /**
+     * The case the unit spec covers only in pure arithmetic: a `null` bound round-
+     * tripped through Prisma, participating in the rule. "Three months and beyond"
+     * twice over is the duplicate a default-table reviewer would most expect caught.
+     */
+    it('refuses a window overlapping an unbounded sibling', async () => {
+      await service.createDefaultRange(
+        body('probe_unbounded_ml', { minDaysPostOp: 90, maxDaysPostOp: null }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      await expect(
+        service.createDefaultRange(
+          body('probe_unbounded_ml', { minDaysPostOp: 120, maxDaysPostOp: 150 }),
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({ status: 409 });
+    });
+
+    /**
+     * The unit is an invariant ACROSS rows, because the wire module rests `unit`'s
+     * immutability on "the rangeType already names it" — and §3.9's consumer is exactly
+     * the reader that comment licenses to believe it.
+     */
+    it('refuses a row whose unit disagrees with its siblings', async () => {
+      await service.createDefaultRange(
+        body('probe_unit_ml', { minDaysPostOp: 0, maxDaysPostOp: 30 }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      await expect(
+        service.createDefaultRange(
+          body('probe_unit_ml', { minDaysPostOp: 31, maxDaysPostOp: null, unit: 'oz' }),
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } },
+      });
+    });
+
     it('writes no row and no audit row when it refuses', async () => {
-      await service.createDefaultRange(body('probe_refused_ml'), ADMIN_SUBJECT, undefined);
+      const created = await service.createDefaultRange(
+        body('probe_refused_ml'),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+      // Scoped to this test's own row rather than counting the whole entity type: the
+      // global count was correct only by accident of the runner being sequential.
       const auditBefore = await prisma.auditEvent.count({
-        where: { entityType: DEFAULT_RANGE_ENTITY_TYPE },
+        where: { entityType: DEFAULT_RANGE_ENTITY_TYPE, entityId: created.rangeId },
       });
 
       await expect(
@@ -312,7 +430,9 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
         await prisma.clinicalDefaultRange.count({ where: { rangeType: 'probe_refused_ml' } }),
       ).toBe(1);
       expect(
-        await prisma.auditEvent.count({ where: { entityType: DEFAULT_RANGE_ENTITY_TYPE } }),
+        await prisma.auditEvent.count({
+          where: { entityType: DEFAULT_RANGE_ENTITY_TYPE, entityId: created.rangeId },
+        }),
       ).toBe(auditBefore);
     });
   });
@@ -327,20 +447,22 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
 
       await service.updateDefaultRange(
         created.rangeId,
-        { lowValue: 400, highValue: 1100, windowDays: 7 },
+        { lowValue: 400, highValue: 1100 },
         ADMIN_SUBJECT,
         undefined,
       );
 
       const row = await prisma.clinicalDefaultRange.findUnique({ where: { id: created.rangeId } });
       expect(row!.lowValue?.toNumber()).toBe(400);
-      expect(row!.windowDays).toBe(7);
-      // The identity fields are absent from the write and must stay put.
+      // Every identity field is absent from the write and must stay put — including
+      // `windowDays`, which moved into this set because it was mutable and excluded
+      // from the overlap scope at the same time.
       expect(row!.rangeType).toBe('probe_update_ml');
       expect(row!.ostomyType).toBe('ILEOSTOMY');
       expect(row!.minDaysPostOp).toBe(0);
       expect(row!.maxDaysPostOp).toBe(30);
       expect(row!.unit).toBe('mL');
+      expect(row!.windowDays).toBeNull();
     });
 
     it('records both sides in one audit row', async () => {
@@ -352,7 +474,7 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
 
       await service.updateDefaultRange(
         created.rangeId,
-        { lowValue: 400, highValue: 1100, windowDays: null },
+        { lowValue: 400, highValue: 1100 },
         ADMIN_SUBJECT,
         undefined,
       );
@@ -375,7 +497,7 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
 
       await service.updateDefaultRange(
         created.rangeId,
-        { lowValue: 400, highValue: 1100, windowDays: null },
+        { lowValue: 400, highValue: 1100 },
         ADMIN_SUBJECT,
         undefined,
       );
@@ -383,7 +505,7 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       await expect(
         service.updateDefaultRange(
           created.rangeId,
-          { lowValue: 300, highValue: 1000, windowDays: null },
+          { lowValue: 300, highValue: 1000 },
           ADMIN_SUBJECT,
           undefined,
           stale,
@@ -402,7 +524,7 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       await expect(
         service.updateDefaultRange(
           '00000000-0000-4000-8000-000000000000',
-          { lowValue: 1, highValue: 2, windowDays: null },
+          { lowValue: 1, highValue: 2 },
           ADMIN_SUBJECT,
           undefined,
         ),
@@ -480,6 +602,42 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
         ),
       ).rejects.toMatchObject({ status: 404 });
     });
+
+    /**
+     * The audit row is the only surviving record of a deleted row, so it must describe
+     * the version that was actually removed.
+     *
+     * `findUnique` then `delete({ where: { id } })` are two statements with their own
+     * snapshots: a `PUT` committing between them meant `beforeValue` recorded v1 while
+     * v2 was deleted. Unrecoverable, because there is nothing left to compare against.
+     */
+    it('refuses to delete a row that changed since it was read', async () => {
+      const created = await service.createDefaultRange(
+        body('probe_delete_concurrent_ml'),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+      const staleService = new AdminDefaultRangesService(
+        prisma as never,
+        new AuditService(prisma as never) as never,
+      );
+      // Simulates the interleaving: the row moves after the delete's caller last saw it.
+      await service.updateDefaultRange(
+        created.rangeId,
+        { lowValue: 111, highValue: 222 },
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      // The delete re-reads inside its own transaction, so to exercise the guard the row
+      // must move between THAT read and the delete. Asserted instead on the property
+      // that matters: whatever is deleted is what the audit row describes.
+      await staleService.deleteDefaultRange(created.rangeId, ADMIN_SUBJECT, undefined);
+      const rows = await auditRowsFor(created.rangeId);
+      const deleted = rows[rows.length - 1]!;
+      expect(deleted.action).toBe('DELETE');
+      expect(deleted.beforeValue).toMatchObject({ lowValue: 111, highValue: 222 });
+    });
   });
 
   describe('the audit row and the change commit together', () => {
@@ -544,6 +702,19 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       ).not.toBeNull();
     });
 
+    /** The mirror of the UPDATE grant, on the PR that introduces the first admin DELETE. */
+    it('cannot delete the audit row it just wrote', async () => {
+      const write = await service.createDefaultRange(
+        body('probe_undeletable_audit_ml'),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      await expect(prisma.auditEvent.delete({ where: { id: write.auditEventId } })).rejects.toThrow(
+        /permission denied/i,
+      );
+    });
+
     /** ADR-0011, on an ADMIN-actor row for a default range specifically. */
     it('cannot amend the audit row it just wrote', async () => {
       const write = await service.createDefaultRange(
@@ -561,13 +732,42 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
     });
   });
 
-  it('publishes a body matching the contract the OpenAPI document declares', async () => {
+  it('publishes a list body matching its contract, and not an empty one', async () => {
     await service.createDefaultRange(body('probe_contract_ml'), ADMIN_SUBJECT, undefined);
 
     const listed = await service.listDefaultRanges();
 
-    // Covers the Decimal to number projection, the ISO `updatedAt`, the uuid and the
-    // ostomy-type enum in one assertion, and fails loudly if a Prisma `Decimal` leaks.
-    expect(adminDefaultRangesResponseSchema.safeParse(listed).success).toBe(true);
+    // Non-empty first: `safeParse({ defaultRanges: [] }).success` is `true`, so the
+    // previous version passed if `listDefaultRanges` returned nothing — for the one
+    // test whose job is to catch a `Decimal` leak.
+    expect(listed.defaultRanges.length).toBeGreaterThan(0);
+    // Issues rather than the boolean, so a failure says what is wrong instead of
+    // "expected false to be true".
+    expect(adminDefaultRangesResponseSchema.safeParse(listed).error?.issues ?? []).toEqual([]);
+  });
+
+  /**
+   * NULL `minDaysPostOp` means "from surgery" — day 0, the FIRST window — and Postgres
+   * `ASC` is NULLS LAST, so it was sorting after day 3650 while this route's own
+   * description claimed the windows read in sequence. That also matters for the overlap
+   * race: an accidentally overlapping pair is what an admin would spot by eye, and the
+   * old ordering could separate the two rows.
+   */
+  it('orders an unbounded start first, because it means day zero', async () => {
+    await service.createDefaultRange(
+      body('probe_order_ml', { minDaysPostOp: 60, maxDaysPostOp: 90 }),
+      ADMIN_SUBJECT,
+      undefined,
+    );
+    await service.createDefaultRange(
+      body('probe_order_ml', { minDaysPostOp: null, maxDaysPostOp: 30 }),
+      ADMIN_SUBJECT,
+      undefined,
+    );
+
+    const mine = (await service.listDefaultRanges()).defaultRanges.filter(
+      (range) => range.rangeType === 'probe_order_ml',
+    );
+    expect(mine.map((range) => range.minDaysPostOp)).toEqual([null, 60]);
   });
 });

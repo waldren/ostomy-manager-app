@@ -28,7 +28,11 @@ import { OstomyType } from '../../generated/prisma/enums';
 import { describe, expect, it } from 'vitest';
 
 import {
+  IDENTITY_FIELDS,
+  MAX_DAYS_POST_OP,
+  MAX_WINDOW_DAYS,
   OSTOMY_TYPES,
+  SAFETY_RANGE_TYPES,
   createDefaultRangeSchema,
   updateDefaultRangeSchema,
   windowsOverlap,
@@ -106,6 +110,30 @@ describe('windowsOverlap', () => {
   it('is true for two fully open windows', async () => {
     expect(windowsOverlap(w(null, null), w(null, null))).toBe(true);
   });
+
+  it('is true for a fully open window against any bounded one', async () => {
+    // Only open-vs-open was covered, which left the commonest shape untested.
+    expect(windowsOverlap(w(null, null), w(5, 6))).toBe(true);
+  });
+
+  it('handles a single-day window', async () => {
+    expect(windowsOverlap(w(30, 30), w(30, 30))).toBe(true);
+    expect(windowsOverlap(w(30, 30), w(31, 31))).toBe(false);
+  });
+
+  /**
+   * Symmetry, because the service only ever calls `windowsOverlap(sibling, candidate)`
+   * and relies on the answer being orientation-independent. It is the property someone
+   * would break by "simplifying" to `aStart <= bEnd` alone.
+   */
+  it('is symmetric', async () => {
+    const windows = [w(null, null), w(null, 10), w(0, 0), w(0, 30), w(30, 60), w(90, null)];
+    for (const a of windows) {
+      for (const b of windows) {
+        expect(windowsOverlap(a, b)).toBe(windowsOverlap(b, a));
+      }
+    }
+  });
 });
 
 describe('creating a default range', () => {
@@ -154,13 +182,62 @@ describe('creating a default range', () => {
   });
 
   it('refuses a range type that is not lower snake case', async () => {
-    expect(rejectCreate({ ...VALID_CREATE, rangeType: 'Daily-Output' })[0]!.field).toBe(
-      'rangeType',
-    );
+    // The rule too, not only the field: asserting the field alone passes if the value
+    // happened to be refused for its length instead.
+    expect(rejectCreate({ ...VALID_CREATE, rangeType: 'Daily-Output' })[0]).toEqual({
+      field: 'rangeType',
+      rule: 'invalid_format',
+    });
   });
 
   it('refuses an unknown field rather than ignoring it', async () => {
     expect(rejectCreate({ ...VALID_CREATE, patientId: 'nope' })[0]!.rule).toBe('unrecognized_keys');
+  });
+
+  it('refuses a post-operative day beyond the sanity ceiling', async () => {
+    // Nothing asserted this, so `MAX_DAYS_POST_OP` was deletable with the suite green.
+    expect(rejectCreate({ ...VALID_CREATE, maxDaysPostOp: MAX_DAYS_POST_OP + 1 })[0]!.field).toBe(
+      'maxDaysPostOp',
+    );
+  });
+
+  describe('the rolling window', () => {
+    it('accepts a window within the ceiling', async () => {
+      expect(
+        createDefaultRangeSchema.safeParse({ ...VALID_CREATE, windowDays: MAX_WINDOW_DAYS })
+          .success,
+      ).toBe(true);
+    });
+
+    it('refuses a window longer than a year, which is a typo not a baseline', async () => {
+      expect(rejectCreate({ ...VALID_CREATE, windowDays: MAX_WINDOW_DAYS + 1 })[0]!.field).toBe(
+        'windowDays',
+      );
+    });
+
+    it('refuses a zero or fractional window', async () => {
+      expect(rejectCreate({ ...VALID_CREATE, windowDays: 0 })[0]!.field).toBe('windowDays');
+      expect(rejectCreate({ ...VALID_CREATE, windowDays: 7.5 })[0]!.field).toBe('windowDays');
+    });
+  });
+
+  /**
+   * Deliberate, and the one rule here most likely to be "harmonised" away. Tier 1's
+   * positive-value rule exists for entered volumes, where zero and below are
+   * structurally impossible. A default RANGE is different: `net_fluid_balance_ml` and
+   * `weight_change_threshold_percent` legitimately have negative floors.
+   */
+  it('accepts a negative floor, unlike an entered volume', async () => {
+    expect(
+      createDefaultRangeSchema.safeParse({ ...VALID_CREATE, lowValue: -800, highValue: -100 })
+        .success,
+    ).toBe(true);
+  });
+
+  it('refuses a range type longer than the contract allows', async () => {
+    expect(rejectCreate({ ...VALID_CREATE, rangeType: 'a'.repeat(65) })[0]!.field).toBe(
+      'rangeType',
+    );
   });
 
   describe('the DECIMAL(12,4) column the bounds are stored in', () => {
@@ -175,19 +252,23 @@ describe('creating a default range', () => {
 });
 
 describe('updating a default range', () => {
-  const VALID_UPDATE = { lowValue: 400, highValue: 1100, windowDays: null };
+  const VALID_UPDATE = { lowValue: 400, highValue: 1100 };
 
   it('accepts new bounds', async () => {
     expect(updateDefaultRangeSchema.safeParse(VALID_UPDATE).success).toBe(true);
   });
 
   /**
-   * These three together are WHICH default this is, so editing one turns the row into a
+   * These together are WHICH default this is, so editing one turns the row into a
    * different default rather than correcting this one. `.strict()` is what refuses
    * them, and refusing beats ignoring: an admin who sends `maxDaysPostOp` and gets a
    * 200 has every reason to believe the window moved.
+   *
+   * Derived from the schemas rather than listed, so a create-only field added later is
+   * covered automatically — a hardcoded list is how `windowDays` came to be both
+   * identity and mutable.
    */
-  it.each(['ostomyType', 'rangeType', 'minDaysPostOp', 'maxDaysPostOp', 'unit'])(
+  it.each([...IDENTITY_FIELDS])(
     'refuses a change to %s, which is part of the row identity',
     async (field) => {
       const parsed = updateDefaultRangeSchema.safeParse({ ...VALID_UPDATE, [field]: 'anything' });
@@ -199,13 +280,18 @@ describe('updating a default range', () => {
     },
   );
 
-  it('still refuses a range with neither bound', async () => {
-    const parsed = updateDefaultRangeSchema.safeParse({
-      lowValue: null,
-      highValue: null,
-      windowDays: null,
-    });
+  it('still refuses a range with neither bound, naming the field', async () => {
+    const parsed = updateDefaultRangeSchema.safeParse({ lowValue: null, highValue: null });
     expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('unreachable');
+    // Symmetric with the create-side assertion, which pins the exact issue.
+    expect(parsed.error.issues.map((issue) => issue.path.join('.'))).toEqual(['lowValue']);
+  });
+
+  it('counts the rolling window as identity, not as a parameter', async () => {
+    // The blocking finding of PR C's review: it was mutable and excluded from the
+    // overlap scope at the same time.
+    expect(IDENTITY_FIELDS).toContain('windowDays');
   });
 });
 
@@ -214,6 +300,16 @@ describe('updating a default range', () => {
  * the threshold tiers record — a type the database gains is not automatically a type
  * this API publishes. This is what makes a divergence say so.
  */
+/**
+ * The anchor §3.9's seeding will key its exclusion on. Asserted so the name cannot
+ * drift unnoticed between here and the schema comments that describe it (#94).
+ */
+describe('the safety range types', () => {
+  it('names the heart-rate red-flag bound', async () => {
+    expect(SAFETY_RANGE_TYPES).toContain('heart_rate_red_flag_bpm');
+  });
+});
+
 describe('the published ostomy types', () => {
   it('match the database enum', async () => {
     expect([...OSTOMY_TYPES].sort()).toEqual(Object.values(OstomyType).sort());

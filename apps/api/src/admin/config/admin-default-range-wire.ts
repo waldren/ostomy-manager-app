@@ -58,17 +58,40 @@ import { z } from 'zod';
  *
  * ## What may change on an existing row
  *
- * `lowValue`, `highValue` and `windowDays` — the parameters of the rule. Not
- * `ostomyType`, `rangeType` or the day window: those three together are *which*
- * default this is, so editing one turns the row into a different default rather than
- * correcting this one. Same argument as `thresholdKey`. A mistake there is a delete
- * and a create, which this surface supports precisely because nothing references these
- * rows by identity.
+ * `lowValue` and `highValue` — the bounds, and nothing else. `ostomyType`,
+ * `rangeType`, the day window and `windowDays` together are *which* default this is,
+ * so editing one turns the row into a different default rather than correcting this
+ * one. Same argument as `thresholdKey`. A mistake there is a delete and a create,
+ * which this surface supports precisely because nothing references these rows by
+ * identity.
  *
- * Not `unit` either, for the reason the threshold surface gives: the `rangeType`
- * already names it (`daily_output_ml`, `weight_change_threshold_percent`,
- * `resting_heart_rate_elevation_bpm`), and editing it alone redefines every value in
- * the row while every reader's interpretation stays put.
+ * **`windowDays` was mutable and excluded from the overlap scope, which was
+ * incoherent** (PR C review). SRS §3.12 has the admin managing "the weight-change
+ * percentage thresholds **and rolling-window definitions**", plural — so a
+ * 5%-over-7-days rule and a 10%-over-30-days rule for the same ostomy type and the
+ * same post-operative window is ordinary configuration, and the overlap rule
+ * *refused the second one*. Meanwhile an admin could edit a window length with no
+ * uniqueness recheck, so the field was a rule parameter for mutation and part of the
+ * row's meaning for nothing.
+ *
+ * Making it identity resolves both: multiple rolling windows per `rangeType` coexist,
+ * and the overlap rule means "no two rows of the same shape match one patient". The
+ * alternative — letting `rangeType` name the window, as it names the unit — would
+ * make the column vestigial, which is the worse answer for a column §3.12 asks for by
+ * name.
+ *
+ * Not `unit` either, for the reason the threshold surface gives: editing it alone
+ * redefines every value in the row while every reader's interpretation stays put.
+ * Unlike the threshold surface, this table can hold several rows per `rangeType`, so
+ * "the key names the unit" is an invariant ACROSS rows rather than a property of one —
+ * and the service enforces it, because resting the immutability argument on something
+ * unenforced is how §3.9's reader comes to trust it wrongly.
+ *
+ * One gap this surface cannot close: `rangeType` is free text, and AC 14.1 AC1 wants a
+ * plain-language basis for the suggestion seeded from these rows. Copy is i18n-keyed
+ * (ADR-0006), so an admin-invented `rangeType` has no key — the same reachable state
+ * CLAUDE.md records for an admin-added value-set member, which renders as "Another
+ * option". Named here so §3.9's consumer decides it deliberately.
  *
  * ## Why delete is allowed here and not on a value-set member
  *
@@ -79,6 +102,20 @@ import { z } from 'zod';
  * from it to this table. Deleting a default therefore cannot alter a range any patient
  * already has. Combined with the overlap rule, which makes a wrong row something that
  * must be removable rather than merely editable, delete is the right affordance.
+ *
+ * **That argument is conditional, and the condition expires.** What is verifiable
+ * today is that the delete is safe *while nothing reads this table*. Once §3.9's
+ * seeding lands (P6/P7) two things change: `DELETE` becomes the only operation in the
+ * system that can switch off a safety prompt, once the red-flag bound lives here
+ * (#94); and because `ostomyType` is NOT NULL, a population-wide bound needs one row
+ * per ostomy type, so deleting one leaves half the population with no bound and
+ * nothing detects the asymmetry. Whichever sprint builds the seeding must revisit
+ * whether a safety-class row may be deleted at all. Recorded here rather than left to
+ * go stale, because the claim reads as unconditional and will not announce its own
+ * expiry.
+ *
+ * There is also no restore path: the audit `beforeValue` holds the content, and
+ * recovering it means a human reading JSON out of `audit_events` and retyping it.
  */
 
 /** Matches `OstomyType` in the Prisma schema. v1 is colostomy and ileostomy only (SRS Appendix A). */
@@ -90,11 +127,16 @@ export const RANGE_UNIT_MAX_LENGTH = 32;
 /**
  * A sanity ceiling on the post-operative window, not a clinical bound.
  *
- * Roughly thirty years in days. It exists so a typo cannot create a window that
- * overlaps every future row for the same type pair and silently wins every match —
- * the overlap rule is only as useful as the windows being plausible.
+ * Roughly thirty years in days. Its job is keeping the integer in a plausible domain,
+ * nothing more — the first version of this comment claimed it stopped a typo
+ * "silently winning every match", which is wrong twice: `maxDaysPostOp: null` is an
+ * explicitly supported unbounded window, and the overlap rule is what prevents a
+ * silent win.
  */
 export const MAX_DAYS_POST_OP = 11_000;
+
+/** A rolling window longer than a year is a typo rather than a baseline. */
+export const MAX_WINDOW_DAYS = 365;
 
 const decimalBound = (field: string) =>
   z
@@ -115,17 +157,26 @@ const decimalBound = (field: string) =>
  * a suggestion of nothing.
  */
 const ruleFields = {
+  /**
+   * Negative bounds are accepted, deliberately, and this is the one place that is
+   * easy to "harmonise" away. `net_fluid_balance_ml` and
+   * `weight_change_threshold_percent` legitimately have negative floors, so this
+   * surface does NOT reuse Tier 1's positive-value rule — which exists for entered
+   * volumes, where zero and below are structurally impossible. A test pins it.
+   */
   lowValue: decimalBound('lowValue').nullable().meta({
-    description: 'The bottom of the range, or null where the rule has no floor.',
+    description: 'The bottom of the range, or null where the rule has no floor. May be negative.',
   }),
   highValue: decimalBound('highValue').nullable().meta({
-    description: 'The top of the range, or null where the rule has no ceiling.',
-  }),
-  windowDays: z.number().int().positive().max(365).nullable().meta({
-    description:
-      'Rolling-window length for a windowed rule (a weight or heart-rate baseline). Null where the rule is a flat bound.',
+    description: 'The top of the range, or null where the rule has no ceiling. May be negative.',
   }),
 };
+
+/** Part of the row identity — see the module comment. Create-only. */
+const windowDaysField = z.number().int().positive().max(MAX_WINDOW_DAYS).nullable().meta({
+  description:
+    'Rolling-window length for a windowed rule (a weight or heart-rate baseline). Null where the rule is a flat bound. Part of the row identity: two rules for one rangeType are told apart by it, so it cannot be edited.',
+});
 
 /** Both bounds cannot be absent, and a floor above a ceiling is not a range. */
 function checkBounds(
@@ -190,8 +241,9 @@ export const createDefaultRangeSchema = z
     }),
     unit: z.string().min(1).max(RANGE_UNIT_MAX_LENGTH).meta({
       description:
-        'The unit both bounds are in. Permanent, because the rangeType already names it and editing it alone would redefine every value in the row.',
+        'The unit both bounds are in. Permanent: editing it alone would redefine every value in the row. Rows sharing a rangeType must agree on it, which the service enforces.',
     }),
+    windowDays: windowDaysField,
     ...ruleFields,
   })
   .strict()
@@ -215,6 +267,18 @@ export const updateDefaultRangeSchema = z
 
 export type UpdateDefaultRangeRequest = z.infer<typeof updateDefaultRangeSchema>;
 
+/**
+ * The fields that define *which* default a row is, derived rather than listed.
+ *
+ * Derived from the two schemas so that adding a create-only field automatically makes
+ * it identity — and automatically makes the update surface refuse it. A hardcoded list
+ * would leave a new field silently mutable, which is the mechanism by which
+ * `windowDays` came to be both.
+ */
+export const IDENTITY_FIELDS: readonly string[] = Object.keys(
+  createDefaultRangeSchema.def.shape,
+).filter((field) => !Object.keys(updateDefaultRangeSchema.def.shape).includes(field));
+
 export const adminDefaultRangeSchema = z.object({
   id: z.uuid(),
   ostomyType: z.enum(OSTOMY_TYPES),
@@ -232,7 +296,40 @@ export const adminDefaultRangesResponseSchema = z.object({
   defaultRanges: z.array(adminDefaultRangeSchema),
 });
 
+/**
+ * What a DELETE returns: the row as it was, plus its id, and no `updatedAt`.
+ *
+ * Declared rather than reusing `adminDefaultRangeSchema`, which was the bug both
+ * reviews caught: the route advertised that schema — `id` and `updatedAt` both
+ * required, `additionalProperties: false` — while the handler returned neither. The
+ * published document is the only contract this surface has, and a P8 console generated
+ * from it would read `undefined` off a required field. `updatedAt` is genuinely absent
+ * rather than omitted for convenience: a row that no longer exists has no last-modified
+ * time, and the id is what lets a console reconcile which row went.
+ */
+export const deletedDefaultRangeSchema = adminDefaultRangeSchema.omit({ updatedAt: true });
+
+export type DeletedDefaultRange = z.infer<typeof deletedDefaultRangeSchema>;
+
 export type AdminDefaultRange = z.infer<typeof adminDefaultRangeSchema>;
+
+/**
+ * Range types that must never seed an `effective_ranges` row.
+ *
+ * Consumed by nothing yet — §3.9's seeding is P6/P7 — and that is exactly why it
+ * exists. #94 settled that the heart-rate red-flag bound lives in this table and that
+ * "not patient-adjustable" has to be structural here, because the table has no
+ * `patient_adjustable` column: the row exists and nothing derives a patient range from
+ * it. The exclusion that enforces it will be keyed on a literal, and until now that
+ * literal appeared nowhere in code — only in two prose comments in `schema.prisma`. An
+ * implementer greps, finds comments, retypes the string, and a typo means the exclusion
+ * silently does not fire and a patient gets an adjustable red-flag bound.
+ *
+ * Nothing in this surface branches on it, deliberately: the safety property belongs to
+ * the seeder, and enforcing something here would imply it is enforced where the risk
+ * actually lives.
+ */
+export const SAFETY_RANGE_TYPES = ['heart_rate_red_flag_bpm'] as const;
 export type AdminDefaultRangesResponse = z.infer<typeof adminDefaultRangesResponseSchema>;
 
 /**
