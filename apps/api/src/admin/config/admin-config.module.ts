@@ -22,6 +22,8 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { ThresholdsModule } from '../../thresholds/thresholds.module';
 import { AdminAuthModule } from '../admin-auth.module';
 
+import { AdminDefaultRangesController } from './admin-default-ranges.controller';
+import { AdminDefaultRangesService } from './admin-default-ranges.service';
 import { AdminThresholdsController } from './admin-thresholds.controller';
 import { AdminThresholdsService } from './admin-thresholds.service';
 import { AdminValueSetsController } from './admin-value-sets.controller';
@@ -64,7 +66,7 @@ import { AdminValueSetsService } from './admin-value-sets.service';
  */
 @Module({
   imports: [PrismaModule, AuditModule, ThresholdsModule, AdminAuthModule],
-  controllers: [AdminValueSetsController, AdminThresholdsController],
-  providers: [AdminValueSetsService, AdminThresholdsService],
+  controllers: [AdminValueSetsController, AdminThresholdsController, AdminDefaultRangesController],
+  providers: [AdminValueSetsService, AdminThresholdsService, AdminDefaultRangesService],
 })
 export class AdminConfigModule {}
