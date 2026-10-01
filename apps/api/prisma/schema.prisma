@@ -1048,6 +1048,20 @@ model ValueSetMember {
 /// this drives grows with each later phase (weight, then heart rate, then
 /// whatever comes after) and none of those additions should require a
 /// migration to this table.
+///
+/// **One future range in here must never seed a suggestion** (issue #94, P7).
+/// Every other row feeds §3.9's precedence chain and ends up as a patient's
+/// `effective_ranges` row, which a patient may adjust. The heart-rate
+/// red-flag bound is the stated exception — §3.9 calls it "the one
+/// exception: a fixed clinical safety bound… not patient-adjustable", and
+/// AC 18.3 AC4 requires it be uneditable — so it lives here and must stop
+/// here. There is no `patient_adjustable` column on this table (that one is
+/// on `validation_thresholds`), so "not patient-adjustable" is expressed
+/// structurally: the row exists and nothing derives an `effective_ranges`
+/// row from it. Whichever sprint builds the §3.9 seeding owes that
+/// exclusion, and it is the kind of omission that fails silently — a
+/// red-flag bound that quietly became patient-adjustable would let a patient
+/// widen the bound that tells them to seek care.
 model ClinicalDefaultRange {
   id String @id @default(uuid()) @map("id") @db.Uuid
 
@@ -1100,7 +1114,17 @@ enum ValidationTier {
 /// (P1.S4) and `ThresholdsService` (P1.S5) read; e.g.
 /// 'stoma_output_single_entry_warning_ml',
 /// 'stoma_output_absolute_ceiling_ml', 'weight_day_over_day_change_percent',
-/// 'heart_rate_red_flag_bpm', 'sync_clock_skew_allowance_seconds'.
+/// 'sync_clock_skew_allowance_seconds'.
+///
+/// **'heart_rate_red_flag_bpm' is NOT one of them, and this comment used to
+/// list it** (issue #94). It belongs in `clinical_default_ranges`: SRS §3.11
+/// names it inside that section's "manages clinical default range tables"
+/// bullet, §3.9 calls it "a fixed clinical safety bound managed in Section
+/// 3.11", and `ClinicalDefaultRange`'s own comment already anticipates heart
+/// rate arriving there. Nothing in code ever read the key, so this was a
+/// non-normative example that pointed at the wrong table — but it is the
+/// table P3.S3 PR B built an admin write surface for, which is how it nearly
+/// became load-bearing.
 model ValidationThreshold {
   id String @id @default(uuid()) @map("id") @db.Uuid
 
