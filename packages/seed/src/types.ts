@@ -45,6 +45,27 @@ import type { MeasurementSystem } from '@ostomy/core/units';
 /** LOINC 79560-9 — stoma output. The only observation code P2 exchanges. */
 export const STOMA_OUTPUT_LOINC_CODE = '79560-9';
 
+/**
+ * The other observation codes a scenario may emit, named here rather than
+ * retyped per scenario.
+ *
+ * These are not new to the system — `packages/core/src/hydration` has
+ * classified all of them since P3.S1/P3.S2, and `observations` has carried the
+ * columns since then. They are new to the SEEDER, which until P3.S5 could only
+ * express a stoma-output row. That gap is why `high-output-dehydration` could
+ * not be written: its whole purpose is output climbing while intake stays flat
+ * and urine output falls, and two of those three were unrepresentable.
+ */
+export const FLUID_INTAKE_LOINC_CODE = '9000-1';
+export const VOIDED_URINE_LOINC_CODE = '9187-6';
+
+// Body weight (29463-7) and resting heart rate (8867-4) are deliberately absent.
+// `findTier1Problems` validates every row through the volumetric entry point,
+// which is millilitre-shaped, so a kilogram value would be checked against a
+// volume bound and the validation would mean nothing. Routing them correctly is
+// its own change — see `highOutputDehydration.ts`, where the weight signal
+// would otherwise have fitted the story.
+
 export type SeedOstomyType = 'ILEOSTOMY' | 'COLOSTOMY';
 
 /**
@@ -83,8 +104,27 @@ export interface SeedObservation {
   readonly id: string;
   readonly patientId: string;
   readonly code: string;
-  readonly valueQuantityValue: string;
-  readonly valueQuantityUnit: 'mL' | 'kg';
+  /**
+   * `null` only for a voided-urine entry recorded by colour alone.
+   *
+   * Nullable because the database is (P3.S2, SRS §3.7, AC 12.1 AC2): a patient
+   * who cannot measure saves a colour, and that is a valid hydration
+   * observation. **A missing volume is never zero** — `SUM()` skips NULL and
+   * code that coerces it does not, and the two disagree forever afterwards — so
+   * a scenario omits it rather than seeding `0`.
+   *
+   * Four CHECK constraints police this, so an invalid combination here fails at
+   * the writer rather than producing a row the application could not have made:
+   * the volume and its unit travel together, only code `9187-6` may omit the
+   * volume and only with a colour present, a colour belongs to no other code,
+   * and `method` requires a volume.
+   */
+  readonly valueQuantityValue: string | null;
+  readonly valueQuantityUnit: 'mL' | 'kg' | null;
+  /** Set only on code `9187-6`, and required there when the volume is absent. */
+  readonly urineColorCode?: string | null;
+  /** Set only on code `9000-1`. The categorisation P3.S2 found missing from the sync path. */
+  readonly fluidTypeCode?: string | null;
   readonly effectiveDatetime: Date;
   /** `null` for measured; the SNOMED estimation code for estimated (ADR-0018). */
   readonly method: string | null;

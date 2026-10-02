@@ -17,12 +17,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import {
   isBlocked,
+  validateVolumelessObservation,
   validateVolumetricEntry,
+  type VolumetricValidationResult,
   type VolumetricValidationThresholds,
 } from '@ostomy/core/validation';
 
+import { generateColostomyBaseline } from './scenarios/colostomyBaseline.js';
+import { generateHighOutputDehydration } from './scenarios/highOutputDehydration.js';
+import { generateNewPostOp } from './scenarios/newPostOp.js';
 import { generateStableIleostomy } from './scenarios/stableIleostomy.js';
-import type { ScenarioOptions, SeedDataset } from './types.js';
+import { generateValidationEdgeCases } from './scenarios/validationEdgeCases.js';
+import type { ScenarioOptions, SeedDataset, SeedObservation } from './types.js';
 
 /**
  * `@ostomy/seed` — deterministic synthetic development data (ADR-0009).
@@ -69,7 +75,19 @@ export {
 } from './types.js';
 
 /** The scenarios this release can generate. `docs/deployment-development.md` names six; the rest land at P3.S5 and P5. */
-export const SCENARIO_NAMES = ['stable-ileostomy'] as const;
+/**
+ * `leak-cluster` is absent, and that is the plan's own sequencing rather than an
+ * omission: it needs repeated leaks with shortening wear times and escalating
+ * skin severity, and there are no appliance, leak or skin tables in the schema
+ * at all. It is scheduled at P5 with the features it exercises.
+ */
+export const SCENARIO_NAMES = [
+  'stable-ileostomy',
+  'high-output-dehydration',
+  'new-post-op',
+  'colostomy-baseline',
+  'validation-edge-cases',
+] as const;
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
 
 export function isScenarioName(value: string): value is ScenarioName {
@@ -90,6 +108,14 @@ export function generateScenario(name: ScenarioName, options: GenerateOptions): 
   switch (name) {
     case 'stable-ileostomy':
       return generateStableIleostomy(options);
+    case 'high-output-dehydration':
+      return generateHighOutputDehydration(options);
+    case 'new-post-op':
+      return generateNewPostOp(options);
+    case 'colostomy-baseline':
+      return generateColostomyBaseline(options);
+    case 'validation-edge-cases':
+      return generateValidationEdgeCases(options);
     default: {
       // Exhaustiveness: adding a name to SCENARIO_NAMES without a generator
       // is a compile error here rather than a runtime surprise at 2am on the
@@ -114,6 +140,60 @@ export interface ScenarioValidationProblem {
  * rules would drift and the seeder would keep claiming validity it no longer
  * had.
  */
+/**
+ * The application's own rules over one generated row, through whichever entry
+ * point that row's shape calls for.
+ *
+ * **The dispatch is the point, and getting it wrong was a live bug for the
+ * length of one commit.** `validateVolumetricEntry` takes `rawValueMl: number`,
+ * so a volumeless row — a voided-urine entry recorded by colour alone, which
+ * P3.S5 made representable — arrived as `Number(null)`, which is `0`, which
+ * Tier 1 correctly rejects as non-positive. The seeder would therefore have
+ * refused to write a row the application accepts, reporting a rule violation
+ * that existed only in this function.
+ *
+ * `validateVolumelessObservation` is the separate entry point CLAUDE.md names
+ * for exactly this, "a separate entry point, not a flag, so no caller has to
+ * know which rules stop applying" — and it enforces the rule that matters here:
+ * `method` must be null, because a Measured/Estimated qualifier on an entry
+ * with nothing to qualify is meaningless (and the database's CHECK agrees).
+ */
+function evaluateSeedObservation(
+  observation: SeedObservation,
+  dataset: SeedDataset,
+  thresholds: VolumetricValidationThresholds,
+  now: Date,
+): VolumetricValidationResult {
+  const timestamps = {
+    field: 'valueQuantity.value' as const,
+    effectiveDateTime: observation.effectiveDatetime,
+    surgeryDate: dataset.profile.surgeryDate,
+    now,
+  };
+
+  if (observation.valueQuantityValue === null) {
+    // Mapped to the discriminator rather than passed as the SNOMED code: a
+    // volumeless row must carry NO qualifier, and `validateVolumelessObservation`
+    // reports `METHOD_NOT_APPLICABLE` when one is present. Passing `null`
+    // unconditionally would have silenced that check — the generator could then
+    // emit a colour-only urine entry with a Measured code, which the database's
+    // own CHECK would then refuse at the writer with a far less useful message.
+    return validateVolumelessObservation(
+      { ...timestamps, method: observation.method === null ? null : 'estimated' },
+      thresholds,
+    );
+  }
+
+  return validateVolumetricEntry(
+    {
+      ...timestamps,
+      rawValueMl: Number(observation.valueQuantityValue),
+      method: observation.method === null ? 'measured' : 'estimated',
+    },
+    thresholds,
+  );
+}
+
 export function findTier1Problems(
   dataset: SeedDataset,
   thresholds: VolumetricValidationThresholds,
@@ -122,17 +202,7 @@ export function findTier1Problems(
   const problems: ScenarioValidationProblem[] = [];
 
   for (const observation of dataset.observations) {
-    const result = validateVolumetricEntry(
-      {
-        field: 'valueQuantity.value',
-        rawValueMl: Number(observation.valueQuantityValue),
-        method: observation.method === null ? 'measured' : 'estimated',
-        effectiveDateTime: observation.effectiveDatetime,
-        surgeryDate: dataset.profile.surgeryDate,
-        now,
-      },
-      thresholds,
-    );
+    const result = evaluateSeedObservation(observation, dataset, thresholds, now);
 
     if (isBlocked(result) && result.tier1.outcome === 'blocked') {
       for (const error of result.tier1.errors) {
@@ -161,17 +231,11 @@ export function findTier2Warnings(
   const warnings: ScenarioValidationProblem[] = [];
 
   for (const observation of dataset.observations) {
-    const result = validateVolumetricEntry(
-      {
-        field: 'valueQuantity.value',
-        rawValueMl: Number(observation.valueQuantityValue),
-        method: observation.method === null ? 'measured' : 'estimated',
-        effectiveDateTime: observation.effectiveDatetime,
-        surgeryDate: dataset.profile.surgeryDate,
-        now,
-      },
-      thresholds,
-    );
+    // The same dispatch as Tier 1. A volumeless row has nothing to compare
+    // against a plausibility bound, so `validateVolumelessObservation` returns
+    // `pass` rather than an empty `warn` — meaning a colour-only urine entry
+    // never counts here, which is correct and not an oversight.
+    const result = evaluateSeedObservation(observation, dataset, thresholds, now);
 
     if (result.tier2.outcome === 'warn') {
       for (const warning of result.tier2.warnings) {

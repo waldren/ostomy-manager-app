@@ -137,9 +137,16 @@ describe('stable-ileostomy', () => {
     /** DECIMAL(12,4): more fractional digits is VALUE_EXCEEDS_MAX_PRECISION. */
     it('generates volumes the canonical column can hold exactly', () => {
       for (const observation of generate().observations) {
-        const fractional = observation.valueQuantityValue.split('.')[1]?.length ?? 0;
+        // Asserted rather than guarded with `?.`: this scenario emits stoma
+        // output only, so a null volume here would mean the generator had
+        // started producing a shape it does not intend. `valueQuantityValue`
+        // became nullable at P3.S5 for voided urine, and a `?? ''` here would
+        // have quietly passed that regression.
+        expect(observation.valueQuantityValue).not.toBeNull();
+        const value = observation.valueQuantityValue ?? '';
+        const fractional = value.split('.')[1]?.length ?? 0;
         expect(fractional).toBeLessThanOrEqual(4);
-        expect(Number(observation.valueQuantityValue)).toBeGreaterThan(0);
+        expect(Number(value)).toBeGreaterThan(0);
       }
     });
   });
