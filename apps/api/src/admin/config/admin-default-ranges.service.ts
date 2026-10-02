@@ -15,13 +15,20 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { AuditService } from '../../audit/audit.service';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
 import {
+  isSafetyRangeType,
   windowsOverlap,
   type AdminDefaultRangesResponse,
   type AdminOstomyType,
@@ -173,11 +180,23 @@ export class AdminDefaultRangesService {
       ],
     });
 
+    // Every known type, ordered, not only those with rows: the table starts
+    // empty and a console still has to know what it may create.
+    const limits = await this.prisma.clinicalDefaultRangeLimits.findMany({
+      orderBy: { rangeType: 'asc' },
+    });
+
     return {
       defaultRanges: rows.map((row) => ({
         ...toSnapshot(row),
         id: row.id,
         updatedAt: row.updatedAt.toISOString(),
+      })),
+      rangeTypeLimits: limits.map((row) => ({
+        rangeType: row.rangeType,
+        minValue: row.minValue.toNumber(),
+        maxValue: row.maxValue.toNumber(),
+        unit: row.unit,
       })),
     };
   }
@@ -270,8 +289,162 @@ export class AdminDefaultRangesService {
      * treat `rangeType` as naming the unit. Free to check, because the siblings are
      * already here.
      */
-    if (siblings.some((sibling) => sibling.unit !== candidate.unit)) {
-      throw new ConflictException({ error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } });
+    /**
+     * The unit rule, now read from one place instead of compared across rows.
+     *
+     * Reported as a 400 field error rather than the 409 it was under #97: a unit
+     * is now a fixed property of the type, so a wrong one is a malformed body
+     * rather than a conflict with other rows' state. No console exists yet, so
+     * this is the cheapest moment to reclassify it.
+     *
+     * This used to be `siblings.some((sibling) => sibling.unit !== candidate.unit)`
+     * — correct, and the kind of invariant that only holds while every writer
+     * goes through here. #97 made the other four rules database guarantees and
+     * could not make this one, because it is a cross-row invariant an exclusion
+     * constraint cannot partition; #102's limits table is the home it named.
+     *
+     * Comparing against the limits row is strictly stronger: the cross-row form
+     * agreed with whatever the FIRST row of a type happened to say, so a type
+     * whose rows were all in the wrong unit was self-consistent and accepted.
+     */
+    const limits = await this.limitsFor(tx, candidate.rangeType);
+    if (candidate.unit !== limits.unit) {
+      throw new BadRequestException({
+        error: {
+          code: 'INVALID_DEFAULT_RANGE',
+          fields: [{ field: 'unit', rule: 'wrong_unit_for_type' }],
+        },
+      });
+    }
+  }
+
+  /**
+   * The limits row for a range type, which the foreign key guarantees exists.
+   *
+   * Throws a 400 rather than a 500 if it does not, because the one way to reach
+   * that is a `range_type` the FK would have refused — and this read happens
+   * before the insert, so the FK has not fired yet.
+   */
+  private async limitsFor(
+    tx: Prisma.TransactionClient,
+    rangeType: string,
+  ): Promise<{ minValue: number; maxValue: number; unit: string }> {
+    const row = await tx.clinicalDefaultRangeLimits.findUnique({ where: { rangeType } });
+    if (!row) {
+      throw new BadRequestException({
+        error: {
+          code: 'INVALID_DEFAULT_RANGE',
+          fields: [{ field: 'rangeType', rule: 'unknown_range_type' }],
+        },
+      });
+    }
+    return {
+      minValue: row.minValue.toNumber(),
+      maxValue: row.maxValue.toNumber(),
+      unit: row.unit,
+    };
+  }
+
+  /**
+   * The shape a safety-class row must have, on create and on update.
+   *
+   * ## Why this exists, and what both reviews found
+   *
+   * #98's delete guard rested on "DELETE is the only operation in the system
+   * that can switch off a safety prompt". That was false. `PUT { lowValue:
+   * 0.0001, highValue: null }` silences the prompt just as completely and
+   * answers 200 with an audit row, leaving a row that still LOOKS configured in
+   * `GET` — arguably worse than the delete, which at least leaves a visibly
+   * absent row. `checkBounds` refuses only BOTH bounds being null, and
+   * `assertWithinTypeLimits` skips nulls, so nothing examined it.
+   *
+   * The ceiling in the limits table did not help either: 300 bpm was chosen
+   * because no reading can exceed it, which makes a threshold OF 300 one no
+   * reading can exceed. A typo guard, not a silencing guard.
+   *
+   * ## The three rules, and why each is decidable without a clinician
+   *
+   * **A ceiling is required.** SRS §3.13 defines the red flag as "a reading
+   * beyond a configured red-flag threshold" and its AC as a reading that
+   * "exceeds" it — the bound is directional, so a safety row without a
+   * `highValue` is not a configured threshold at all.
+   *
+   * **A floor is refused**, for the same reason: a lower bound would be a
+   * different clinical claim than the spec makes, and a two-sided safety row
+   * invites a reader to think bradycardia is in scope.
+   *
+   * **No rolling window.** #97's exclusion constraint partitions on
+   * `window_days`, so a second safety row with `windowDays: 7` over the same
+   * days is accepted and `assertNoOverlap`'s own comment says §3.9 would seed
+   * both — two red-flag bounds matching one patient, one of them silent.
+   *
+   * None of these is the clinical number. They are the shape the spec already
+   * states, enforced instead of assumed.
+   */
+  private assertSafetyRowShape(bounds: {
+    rangeType: string;
+    lowValue: number | null;
+    highValue: number | null;
+    windowDays?: number | null;
+  }): void {
+    if (!isSafetyRangeType(bounds.rangeType)) return;
+
+    const problems: { field: string; rule: string }[] = [];
+    if (bounds.highValue === null) {
+      problems.push({ field: 'highValue', rule: 'required_for_safety_type' });
+    }
+    if (bounds.lowValue !== null) {
+      problems.push({ field: 'lowValue', rule: 'not_applicable_to_safety_type' });
+    }
+    if (bounds.windowDays !== undefined && bounds.windowDays !== null) {
+      problems.push({ field: 'windowDays', rule: 'not_applicable_to_safety_type' });
+    }
+
+    if (problems.length > 0) {
+      throw new BadRequestException({
+        error: { code: 'INVALID_DEFAULT_RANGE', fields: problems },
+      });
+    }
+  }
+
+  /**
+   * Both bounds within what this range type permits (#102).
+   *
+   * The shape rules — numeric, fits `DECIMAL(12,4)` — cannot catch a value that
+   * is well-formed and still wrong for its type. The case that matters is the
+   * one #94 moved into this table: once `heart_rate_red_flag_bpm` is seeded, a
+   * high value silences a seek-care prompt with no symptom at all.
+   *
+   * **Application-only, unlike #93's and #97's checks, and the first version of
+   * this comment claimed otherwise.** It said "the constraint is the backstop,
+   * this is the interface — the same layering as #93 and #97". There is no
+   * constraint: this migration adds a CHECK on the limits table and the foreign
+   * key, and nothing compares a range's bounds against its limits row. So a
+   * migration, `packages/seed` or a psql session can still write a 99,999 bpm
+   * red-flag bound, exactly the gap #97 existed to close for the other four
+   * rules. What #102 did make structural is that the limits DATA is
+   * migration-owned (`SELECT` only), which is a different claim.
+   *
+   * It names the field and a rule code and never the value or the bounds, which
+   * is why `GET` returns the limits: a caller that wants the numbers has already
+   * been given them.
+   */
+  private assertWithinTypeLimits(
+    bounds: { lowValue: number | null; highValue: number | null },
+    limits: { minValue: number; maxValue: number },
+  ): void {
+    const offending = (['lowValue', 'highValue'] as const).filter((field) => {
+      const value = bounds[field];
+      return value !== null && (value < limits.minValue || value > limits.maxValue);
+    });
+
+    if (offending.length > 0) {
+      throw new BadRequestException({
+        error: {
+          code: 'INVALID_DEFAULT_RANGE',
+          fields: offending.map((field) => ({ field, rule: 'outside_type_limits' })),
+        },
+      });
     }
   }
 
@@ -281,7 +454,35 @@ export class AdminDefaultRangesService {
     correlationId: string | undefined,
   ): Promise<DefaultRangeWrite> {
     return this.prisma.$transaction(async (tx) => {
+      /**
+       * A safety row cannot be CREATED here either, and #98's own argument is
+       * what requires that.
+       *
+       * If removing one is too dangerous for this surface, so is creating one
+       * wrong — and the wrong ways are worse than they look. The day window is
+       * immutable and the delete is refused, so a safety row created with a
+       * window covering nobody (`{ minDaysPostOp: 10000 }` is accepted:
+       * `MAX_DAYS_POST_OP` is 11,000 and `checkWindow` only orders the ends)
+       * is **permanently unrecoverable through the API** — the correctly
+       * windowed replacement is refused by `assertNoOverlap` and by #97's
+       * exclusion constraint. One mistyped create bricks the red flag for that
+       * ostomy type. The review found that regression in #98 itself, and the
+       * test fixtures demonstrate the mechanism: they hand-partition the day
+       * window space (40-70, 80-110, 200-260) precisely because safety rows
+       * cannot be cleaned up.
+       *
+       * So the rows are seeded by migration — both ostomy types, day 0 onward,
+       * no rolling window — and `PUT` is the only mutation left. SRS §3.9 calls
+       * this "a fixed clinical safety bound managed in Section 3.11", and
+       * `validation_thresholds` is the precedent for configuration every
+       * environment needs arriving by migration.
+       */
+      if (isSafetyRangeType(request.rangeType)) {
+        throw new ConflictException({ error: { code: 'SAFETY_RANGE_NOT_CREATABLE' } });
+      }
+
       await this.assertNoOverlap(tx, request);
+      this.assertWithinTypeLimits(request, await this.limitsFor(tx, request.rangeType));
 
       /**
        * The constraint is the backstop and `assertNoOverlap` is the interface,
@@ -361,6 +562,14 @@ export class AdminDefaultRangesService {
         throw new NotFoundException({ error: { code: 'DEFAULT_RANGE_NOT_FOUND' } });
       }
 
+      /**
+       * The update is where a bound is actually changed, so it is the path that
+       * matters most for #102 — a create with a sane bound followed by a `PUT`
+       * to a silencing one would otherwise walk straight past the check.
+       */
+      this.assertSafetyRowShape({ ...request, rangeType: existing.rangeType });
+      this.assertWithinTypeLimits(request, await this.limitsFor(tx, existing.rangeType));
+
       const before = toSnapshot(existing);
       const token = expectedUpdatedAt ?? existing.updatedAt;
 
@@ -439,6 +648,24 @@ export class AdminDefaultRangesService {
       const existing = await tx.clinicalDefaultRange.findUnique({ where: { id } });
       if (!existing) {
         throw new NotFoundException({ error: { code: 'DEFAULT_RANGE_NOT_FOUND' } });
+      }
+
+      /**
+       * A safety-class row cannot be deleted through this surface (#98).
+       *
+       * Checked after the existence lookup so a missing id still answers 404 —
+       * reporting "not deletable" for a row that does not exist would tell a
+       * caller something false, and would also leak that *some* row with that
+       * id was protected.
+       *
+       * `409` rather than `403`: nothing about the admin's authorisation is
+       * wrong, and this is not a permission that a different admin would have.
+       * The request conflicts with the state of the resource — the row is of a
+       * kind that is not removable — which is what a conflict means here and
+       * what every other refusal on this surface already uses.
+       */
+      if (isSafetyRangeType(existing.rangeType)) {
+        throw new ConflictException({ error: { code: 'SAFETY_RANGE_NOT_DELETABLE' } });
       }
 
       const before = toSnapshot(existing);

@@ -175,7 +175,7 @@ export class AdminDefaultRangesController {
   @ApiOperation({
     summary: 'Add a default range',
     description:
-      'This surface has a create because the table is seeded by nothing: without one, §3.9 would have no defaults to seed suggestions from and no route to acquire any short of a migration. Every field is required — nullable rather than optional — so a body states the whole row rather than leaving a reader to guess what an absent key meant. A window overlapping an existing row of the same shape (ostomy type, range type and rolling window) is refused, because two rows matching one patient would make the seeding pick arbitrarily; rows sharing a range type must also agree on the unit.',
+      'This surface has a create because the table is seeded by nothing: without one, §3.9 would have no defaults to seed suggestions from and no route to acquire any short of a migration. Every field is required — nullable rather than optional — so a body states the whole row rather than leaving a reader to guess what an absent key meant. A window overlapping an existing row of the same shape (ostomy type, range type and rolling window) is refused, because two rows matching one patient would make the seeding pick arbitrarily; rows sharing a range type carry the unit their clinical_default_range_limits row declares.',
   })
   async create(@Body() body: unknown, @Req() request: Request): Promise<AdminDefaultRange> {
     const parsed = createDefaultRangeSchema.safeParse(body);
@@ -261,7 +261,7 @@ export class AdminDefaultRangesController {
   @ApiOperation({
     summary: 'Remove a default range',
     description:
-      "A real delete, unlike the value-set surface where a member is retired. Nothing references a default range: a patient's effective range carries its own bounds with CLINICAL_DEFAULT provenance, which is a copy rather than a pointer, so removing a default cannot alter a range any patient already has. The audit row keeps what the row said.",
+      "A real delete, unlike the value-set surface where a member is retired. Nothing references a default range: a patient's effective range carries its own bounds with CLINICAL_DEFAULT provenance, which is a copy rather than a pointer, so removing a default cannot alter a range any patient already has. The audit row keeps what the row said. One exception: a safety-class range type answers 409 SAFETY_RANGE_NOT_DELETABLE (#98). Such a row is migration-owned — seeded one per ostomy type, day 0 onward, ceiling only — and this surface refuses to create or delete one, leaving PUT as the only mutation. An earlier version of this description claimed DELETE was the only operation that could switch off a seek-care prompt; it was not. A PUT removing the ceiling did the same thing while answering 200, which is why the ceiling is now required on this type.",
   })
   async remove(
     @Param('id', rowIdPipe) id: string,
