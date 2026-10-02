@@ -76,8 +76,23 @@ export function atTime(date: Date, hour: number, minute: number): Date {
  * Via `Intl`, because the alternative is a table of rules that goes stale. Used
  * only to place a generated entry at a local hour.
  */
-function zoneOffsetMs(instant: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
+const offsetFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * Cached per zone, because constructing an `Intl.DateTimeFormat` dominates the
+ * cost and a scenario builds one entry at a time.
+ *
+ * Not a micro-optimisation: the uncached version made
+ * `stableIleostomy.spec.ts`'s 25-seed validation case take 10.4s against
+ * vitest's 5s default and turned CI red, on a test #81 already records as
+ * flaking near that limit. Two `formatToParts` calls per entry across ~11,000
+ * entries is simply too much work to redo.
+ */
+function zoneFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = offsetFormatters.get(timeZone);
+  if (cached !== undefined) return cached;
+
+  const created = new Intl.DateTimeFormat('en-US', {
     timeZone,
     hour12: false,
     year: 'numeric',
@@ -86,7 +101,13 @@ function zoneOffsetMs(instant: Date, timeZone: string): number {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-  }).formatToParts(instant);
+  });
+  offsetFormatters.set(timeZone, created);
+  return created;
+}
+
+function zoneOffsetMs(instant: Date, timeZone: string): number {
+  const parts = zoneFormatter(timeZone).formatToParts(instant);
 
   const part = (type: string): number =>
     Number(parts.find((candidate) => candidate.type === type)?.value ?? '0');
@@ -148,11 +169,15 @@ export function entryInstant(
     0,
   );
 
-  // Two passes, because the offset at the guessed instant can itself differ
-  // from the offset at the corrected one across a DST boundary.
-  let instant = new Date(wallClock - zoneOffsetMs(new Date(wallClock), timeZone));
-  instant = new Date(wallClock - zoneOffsetMs(instant, timeZone));
-  return instant;
+  /**
+   * A second pass only when the first one's offset was wrong, which happens
+   * only across a DST boundary. Checking is one `formatToParts`; redoing it
+   * unconditionally was two per entry for every entry.
+   */
+  const firstOffset = zoneOffsetMs(new Date(wallClock), timeZone);
+  const candidate = new Date(wallClock - firstOffset);
+  const settledOffset = zoneOffsetMs(candidate, timeZone);
+  return settledOffset === firstOffset ? candidate : new Date(wallClock - settledOffset);
 }
 
 /**

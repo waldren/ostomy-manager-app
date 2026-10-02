@@ -118,6 +118,9 @@ describe('new-post-op', () => {
     }
   });
 
+  // An explicit timeout: 40 seeds x a fortnight of entries. Small next to
+  // `stableIleostomy.spec.ts`'s 25 x 450, but on the same shared-runner
+  // margin, and #81 is about exactly this class of test.
   it('refuses to generate an entry before the surgery date', () => {
     // The guard the other scenarios do not need: with a fourteen-day window an
     // entry can actually approach the boundary, and ENTRY_BEFORE_SURGERY_DATE is
@@ -131,5 +134,5 @@ describe('new-post-op', () => {
         );
       }
     }
-  });
+  }, 30_000);
 });

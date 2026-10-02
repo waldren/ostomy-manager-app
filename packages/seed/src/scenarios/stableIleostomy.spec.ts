@@ -115,11 +115,27 @@ describe('stable-ileostomy', () => {
       expect(findTier1Problems(generate(), THRESHOLDS, NOW)).toEqual([]);
     });
 
+    /**
+     * An explicit timeout, because the work is real rather than accidental.
+     *
+     * 25 seeds x ~450 entries, each validated through `packages/core`'s own
+     * rules — around 11,000 generations and 11,000 validations. That is the
+     * point of the test, so the answer is not to do less of it.
+     *
+     * #81 records this case flaking on vitest's 5s default, and P3.S5's review
+     * round pushed it over: drawing the entry hour in the entry's own timezone
+     * means an `Intl` offset lookup per entry, which turned CI red at 10.4s
+     * against a local 0.7s. The lookup is now cached per zone (2.4x faster than
+     * the uncached version, still slower than before the change), and the
+     * remaining gap is a shared runner being an order of magnitude slower than
+     * a laptop. A generous explicit timeout is the honest instrument for a test
+     * whose cost is its coverage.
+     */
     it('stays valid across many seeds, not just the default one', () => {
       for (let seed = 1; seed <= 25; seed += 1) {
         expect(findTier1Problems(generate({ seed }), THRESHOLDS, NOW)).toEqual([]);
       }
-    });
+    }, 30_000);
 
     it('never places an entry at or after "now"', () => {
       for (const observation of generate().observations) {
@@ -163,11 +179,12 @@ describe('stable-ileostomy', () => {
       expect(findTier2Warnings(generate(), THRESHOLDS, NOW)).toEqual([]);
     });
 
+    // Same cost and the same explicit timeout as its Tier 1 sibling above.
     it('trips no Tier 2 warning across many seeds', () => {
       for (let seed = 1; seed <= 25; seed += 1) {
         expect(findTier2Warnings(generate({ seed }), THRESHOLDS, NOW)).toEqual([]);
       }
-    });
+    }, 30_000);
 
     it('produces daily totals in a plausible well-controlled range', () => {
       const dataset = generate();
