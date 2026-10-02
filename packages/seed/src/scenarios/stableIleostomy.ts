@@ -15,7 +15,14 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { toLocalDate } from '@ostomy/core/units';
+import {
+  addDays,
+  assertInPast,
+  entryInstant,
+  observationAt,
+  startOfUtcDay,
+  type GeneratorCodes,
+} from './shared.js';
 
 import { createRng, deterministicUuid, type Rng } from '../rng.js';
 import {
@@ -91,9 +98,7 @@ const ENTRY_ML_MAX = 320;
  */
 const ESTIMATED_IN_N = 6;
 
-export function generateStableIleostomy(
-  options: ScenarioOptions & { readonly estimationMethodCode: string | null },
-): SeedDataset {
+export function generateStableIleostomy(options: ScenarioOptions & GeneratorCodes): SeedDataset {
   const rng = createRng(options.seed ?? DEFAULT_SEED);
   const timeZone = options.timeZone ?? DEFAULT_TIME_ZONE;
 
@@ -115,7 +120,7 @@ export function generateStableIleostomy(
           now: options.now,
           dayOffset,
           timeZone,
-          estimationMethodCode: options.estimationMethodCode,
+          codes: options,
         }),
       );
     }
@@ -142,60 +147,37 @@ function generateEntry(input: {
   now: Date;
   dayOffset: number;
   timeZone: string;
-  estimationMethodCode: string | null;
+  codes: GeneratorCodes;
 }): SeedObservation {
   const { rng } = input;
 
-  // Spread across waking hours rather than uniformly over 24, so a day's
-  // chart looks like something a person produced. 07:00–23:00.
-  const hour = rng.intBetween(7, 22);
-  const minute = rng.intBetween(0, 59);
+  const effectiveDatetime = entryInstant(rng, input.now, input.dayOffset, input.timeZone);
+  assertInPast('stable-ileostomy', effectiveDatetime, input.now, input.dayOffset);
 
-  const effectiveDatetime = atTime(addDays(input.now, -input.dayOffset), hour, minute);
+  const estimated = rng.intBetween(1, ESTIMATED_IN_N) === 1;
 
-  // `dayOffset >= 1` already guarantees this, but the check is kept because
-  // it is the Tier 1 rule that would otherwise fail on a future edit to the
-  // hour bounds — and a seeder that generates an invalid row is worse than
-  // one that refuses to.
-  if (effectiveDatetime.getTime() >= input.now.getTime()) {
-    throw new Error(
-      `stable-ileostomy generated an entry at or after "now" (day offset ${String(input.dayOffset)}). Tier 1 would reject it as EFFECTIVE_DATE_TIME_IN_FUTURE.`,
-    );
-  }
-
-  const estimated = input.estimationMethodCode !== null && rng.intBetween(1, ESTIMATED_IN_N) === 1;
-
-  return {
-    id: deterministicUuid(rng),
+  /**
+   * Built by `observationAt` rather than as a literal here, which is what this
+   * file did until review pointed out that `shared.ts` claimed the helpers had
+   * MOVED when they had only been copied.
+   *
+   * The consequence was live, not theoretical: this scenario kept writing
+   * `method = NULL` for a measured entry while the four new ones were fixed to
+   * write |Measured|, so the baseline dataset was the one holding the shape
+   * ADR-0018 reserves for an observation with no toggle. That is CLAUDE.md's
+   * field-drop pattern exactly — add a column to the shared builder and four
+   * scenarios get it while the oldest silently does not.
+   */
+  return observationAt({
+    rng,
     patientId: input.patientId,
     code: STOMA_OUTPUT_LOINC_CODE,
+    effectiveDatetime,
+    timeZone: input.timeZone,
     // One decimal place: real enough to prove the column is not an integer
     // (ADR-0005), shallow enough to read in a demo.
     valueQuantityValue: rng.floatBetween(ENTRY_ML_MIN, ENTRY_ML_MAX, 1).toFixed(1),
-    valueQuantityUnit: 'mL',
-    effectiveDatetime,
-    method: estimated ? input.estimationMethodCode : null,
-    enteredMeasurementSystem: 'metric',
-    enteredTimezone: input.timeZone,
-    // Derived from the SAME shared helper the API and the phone use
-    // (ADR-0016). Computing it any other way here would seed rows whose
-    // stored day disagrees with their own instant — the silent failure
-    // that helper exists to prevent.
-    localDate: toLocalDate(effectiveDatetime, input.timeZone),
-    clientUpdatedAt: effectiveDatetime,
-  };
-}
-
-function addDays(date: Date, days: number): Date {
-  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
-}
-
-function startOfUtcDay(date: Date): Date {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-}
-
-function atTime(date: Date, hour: number, minute: number): Date {
-  return new Date(
-    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), hour, minute, 0, 0),
-  );
+    codes: input.codes,
+    estimated,
+  });
 }

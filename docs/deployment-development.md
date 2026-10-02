@@ -182,24 +182,42 @@ There is deliberately no automated version of this runbook. An automated "just m
 
 ## Seed data
 
-A scenario-based generator, run by the reset script or invocable on demand. Every scenario must produce **correlated** intake, output, medication timing, appliance, and skin data — uncorrelated random values cannot exercise the physician view (§3.5), anomaly flagging, or range adaptation (§3.9), which are precisely the features hardest to verify by hand.
+A scenario-based generator. `scripts/dev-reset.sh` seeds **only `stable-ileostomy`**; the rest are invoked by hand, and each needs its own `--subject`, because `clearExistingData` is keyed on the OIDC subject and re-using one deletes the previous scenario's patient:
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml run --rm --no-deps \
+  -e ALLOW_SYNTHETIC_SEED=true migrate \
+  node dist/seed/run.js --scenario high-output-dehydration --subject dev-patient-high-output
+```
+
+Two behaviours of the writer worth knowing before you reach for it:
+
+- **One subject per scenario, and one scenario per subject.** `clearExistingData` is keyed on the OIDC subject, so re-using a subject deletes the previous scenario's patient. And the patient id is derived from the scenario's RNG seed rather than from the subject, so seeding the *same* scenario under a *second* subject fails on `patients_pkey` — the id is already taken. Change the `--seed` as well if you genuinely want two patients of one shape.
+- **Re-seeding does not clear audit rows, and ids are stable.** `audit_events` has no foreign key to `patients`, so nothing cascades. Edit a seeded observation through the API (which correctly writes an audit row), re-seed, and the observation is recreated with its original values while the audit row describing the prior incarnation survives — now reading as the history of a row that was never audited. Harmless for a demo and confusing to debug, so it is written down rather than discovered. Deleting those rows would be within ADR-0011/ADR-0017's owner-role carve-out, but it has not been done.
+- **`prisma.patient.delete` can refuse.** `Meal`, `EffectiveRange` and `SyncOperation` reference `Patient` with `onDelete: Restrict`, so re-seeding a subject that has acquired a meal or a queued sync operation throws rather than replacing. Reachable since P3.S1 shipped meals. Every scenario must produce **correlated** data — uncorrelated random values cannot exercise the physician view (§3.5), anomaly flagging, or range adaptation (§3.9), which are precisely the features hardest to verify by hand.
+
+**What "correlated" can currently cover, and what it cannot.** This paragraph used to require correlated "intake, output, medication timing, appliance, and skin data". Three of those five have no table in the schema at all — there is no `medication_administrations`, no appliance-change, leak or peristomal-skin model — so the requirement was unmeetable by every scenario including the baseline, and silently so. Correlation today means stoma output, fluid intake and voided urine. `Meal` is in the schema (P3.S1) but `SeedDataset` has no meal field and no scenario emits one, so meals are a gap too — named here rather than listed as coverage, which is the mistake this paragraph was rewritten to remove and then repeated one table smaller. The rest arrive with the features that own them, and `leak-cluster` is scheduled at P5 for exactly that reason.
 
 Scenarios to provide:
 
-| Scenario | Purpose |
-|---|---|
-| `stable-ileostomy` | Well-controlled output over ~90 days; the baseline case |
-| `high-output-dehydration` | Output climbing past the excessive threshold while intake stays flat and urine output falls; exercises anomaly flags and the §3.7 hydration indicator together |
-| `new-post-op` | Two weeks since surgery, sparse entries; exercises early post-op default ranges and the §3.0 minimum-onboarding path |
-| `leak-cluster` | Repeated leaks with shortening wear times and escalating skin severity; exercises §3.2 trends |
-| `colostomy-baseline` | A colostomy profile, so ostomy-type-dependent ranges are visibly different |
-| `validation-edge-cases` | Entries that legitimately trip Tier 2 soft warnings (§3.8), so warning behavior is testable without hand-crafting data |
+| Scenario | Status | Purpose |
+|---|---|---|
+| `stable-ileostomy` | P2.S4 | Well-controlled output over ~90 days; the baseline case |
+| `high-output-dehydration` | P3.S5 | Output climbing past the excessive threshold while intake stays flat and urine output falls; exercises anomaly flags and the §3.7 hydration indicator together. The last days include **colour-only urine entries**, which is where "a missing volume is never zero" bites: the measured total understates the real one, and §3.7's block has to say how much of the day it covers |
+| `new-post-op` | P3.S5 | Two weeks since surgery, sparse entries — including days with nothing logged at all, and days with output and no intake; exercises early post-op default ranges and the §3.0 minimum-onboarding path. The only **imperial** scenario, so ADR-0004's render-time conversion has real history to run against |
+| `leak-cluster` | **P5** | Repeated leaks with shortening wear times and escalating skin severity; exercises §3.2 trends. Deferred because the appliance, leak and skin tables do not exist |
+| `colostomy-baseline` | P3.S5 | A colostomy profile, so ostomy-type-dependent ranges are visibly different. Roughly a third the daily output of the ileostomy baseline over half the emptyings — with only one ostomy type seeded, an implementation that ignored `ostomy_type` entirely would have looked correct |
+| `validation-edge-cases` | P3.S5 | Entries that legitimately trip Tier 2 soft warnings (§3.8), so warning behavior is testable without hand-crafting data. Carries entries on **both** sides of the bound, because a dataset of nothing but warnings looks identical to a system that warns on everything |
 
 Generator requirements:
 
 - **Deterministic.** A fixed RNG seed, so a bug found against seeded data reproduces exactly.
 - **Relative to now.** Timestamps are generated as offsets from the current date, so the dataset never ages into irrelevance and dashboards always have recent data.
 - **Valid by construction.** Generated entries must pass Tier 1 validation (§3.8) and reference only active value-set members (§3.11) — except in `validation-edge-cases`, where tripping soft warnings is the point.
+
+  **Tier 1 is enforced; value-set membership is not.** `assertScenarioIsValid` re-runs `packages/core`'s own rules over every row before the writer's first insert, and `packages/seed/src/scenarios/invariants.spec.ts` asserts that for every name in the registry, so a scenario added later is covered the day it is added. Tier 2 is counted separately and is a generator bug everywhere except the one scenario named above.
+
+  The membership half has nothing behind it. `packages/core`'s validation does not check value sets, `urine_color_code` and `fluid_type_code` deliberately carry no foreign key, and the seeder holds no list to compare against — so a typo (`pale-straw` for `pale_straw`) writes a row that renders as "Another option" on device with nothing failing anywhere. The codes the five scenarios emit were checked by hand against the seeding migrations and are all present and `ACTIVE`; nothing holds them there, and retiring one through the admin API would not stop the seeder emitting it. P3.S5 is the first sprint to emit coded fields at all, which is when this requirement became live.
 - **Synthetic, always.** Data is generated, never derived from or resembling real patient records. SRS §4.7 permits real PHI in production only; this environment is not eligible for it under any circumstance, including "just to reproduce a bug."
 
 ## Network and access

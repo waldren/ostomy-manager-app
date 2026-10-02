@@ -45,6 +45,35 @@ import type { MeasurementSystem } from '@ostomy/core/units';
 /** LOINC 79560-9 — stoma output. The only observation code P2 exchanges. */
 export const STOMA_OUTPUT_LOINC_CODE = '79560-9';
 
+/**
+ * The other observation codes a scenario may emit, named here rather than
+ * retyped per scenario.
+ *
+ * These are not new to the system — `packages/core/src/hydration` has
+ * classified all of them since P3.S1/P3.S2, and `observations` has carried the
+ * columns since then. They are new to the SEEDER, which until P3.S5 could only
+ * express a stoma-output row. That gap is why `high-output-dehydration` could
+ * not be written: its whole purpose is output climbing while intake stays flat
+ * and urine output falls, and two of those three were unrepresentable.
+ */
+export const FLUID_INTAKE_LOINC_CODE = '9000-1';
+export const VOIDED_URINE_LOINC_CODE = '9187-6';
+
+// Body weight (29463-7) and resting heart rate (8867-4) are deliberately absent.
+//
+// `findTier1Problems` now dispatches on whether a row has a volume, so the
+// claim this comment first made — "validates every row through the volumetric
+// entry point" — is no longer literally true. The argument it supported still
+// is, and is the reason these two stay out: a weight row HAS a value, so it
+// would route to the volumetric entry point and be checked against a
+// millilitre bound, and its legitimately-null `method` would be read as
+// measured so `METHOD_REQUIRED` could never fire.
+//
+// `apps/api` already solved this and wrote down why: `resolveMethodForEntry`'s
+// doc comment is titled "`toggleApplies`, not `hasVolume`". Mirroring that
+// predicate here is the change that admits these two codes, and it belongs with
+// the sprint that seeds them rather than ahead of it.
+
 export type SeedOstomyType = 'ILEOSTOMY' | 'COLOSTOMY';
 
 /**
@@ -83,8 +112,34 @@ export interface SeedObservation {
   readonly id: string;
   readonly patientId: string;
   readonly code: string;
-  readonly valueQuantityValue: string;
-  readonly valueQuantityUnit: 'mL' | 'kg';
+  /**
+   * `null` only for a voided-urine entry recorded by colour alone.
+   *
+   * Nullable because the database is (P3.S2, SRS §3.7, AC 12.1 AC2): a patient
+   * who cannot measure saves a colour, and that is a valid hydration
+   * observation. **A missing volume is never zero** — `SUM()` skips NULL and
+   * code that coerces it does not, and the two disagree forever afterwards — so
+   * a scenario omits it rather than seeding `0`.
+   *
+   * Four CHECK constraints police this, so an invalid combination here fails at
+   * the writer rather than producing a row the application could not have made:
+   * the volume and its unit travel together, only code `9187-6` may omit the
+   * volume and only with a colour present, a colour belongs to no other code,
+   * and `method` requires a volume.
+   */
+  readonly valueQuantityValue: string | null;
+  readonly valueQuantityUnit: 'mL' | 'kg' | null;
+  /**
+   * Set only on code `9187-6`, and required there when the volume is absent.
+   *
+   * Optional rather than nullable. Both would compile, and under
+   * `exactOptionalPropertyTypes` they mean different things — `observationAt`
+   * omits the key entirely rather than writing null, so this matches what the
+   * package actually produces and the writer's `?? null` handles the column.
+   */
+  readonly urineColorCode?: string;
+  /** Set only on code `9000-1`. The categorisation P3.S2 found missing from the sync path. */
+  readonly fluidTypeCode?: string;
   readonly effectiveDatetime: Date;
   /** `null` for measured; the SNOMED estimation code for estimated (ADR-0018). */
   readonly method: string | null;

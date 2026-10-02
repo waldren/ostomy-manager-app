@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 import type { VolumetricValidationThresholds } from '@ostomy/core/validation';
 import { toLocalDate } from '@ostomy/core/units';
 import { describe, expect, it } from 'vitest';
@@ -37,12 +37,14 @@ const THRESHOLDS: VolumetricValidationThresholds = {
 };
 
 const ESTIMATION_CODE = ESTIMATION_METHOD_CODE.resolved ? ESTIMATION_METHOD_CODE.code : null;
+const MEASURED_CODE = MEASURED_METHOD_CODE.resolved ? MEASURED_METHOD_CODE.code : null;
 
 function generate(overrides: { seed?: number; now?: Date } = {}) {
   return generateScenario('stable-ileostomy', {
     oidcSubject: OIDC_SUBJECT,
     now: overrides.now ?? NOW,
     estimationMethodCode: ESTIMATION_CODE,
+    measuredMethodCode: MEASURED_CODE,
     ...(overrides.seed === undefined ? {} : { seed: overrides.seed }),
   });
 }
@@ -113,11 +115,27 @@ describe('stable-ileostomy', () => {
       expect(findTier1Problems(generate(), THRESHOLDS, NOW)).toEqual([]);
     });
 
+    /**
+     * An explicit timeout, because the work is real rather than accidental.
+     *
+     * 25 seeds x ~450 entries, each validated through `packages/core`'s own
+     * rules — around 11,000 generations and 11,000 validations. That is the
+     * point of the test, so the answer is not to do less of it.
+     *
+     * #81 records this case flaking on vitest's 5s default, and P3.S5's review
+     * round pushed it over: drawing the entry hour in the entry's own timezone
+     * means an `Intl` offset lookup per entry, which turned CI red at 10.4s
+     * against a local 0.7s. The lookup is now cached per zone (2.4x faster than
+     * the uncached version, still slower than before the change), and the
+     * remaining gap is a shared runner being an order of magnitude slower than
+     * a laptop. A generous explicit timeout is the honest instrument for a test
+     * whose cost is its coverage.
+     */
     it('stays valid across many seeds, not just the default one', () => {
       for (let seed = 1; seed <= 25; seed += 1) {
         expect(findTier1Problems(generate({ seed }), THRESHOLDS, NOW)).toEqual([]);
       }
-    });
+    }, 30_000);
 
     it('never places an entry at or after "now"', () => {
       for (const observation of generate().observations) {
@@ -137,9 +155,16 @@ describe('stable-ileostomy', () => {
     /** DECIMAL(12,4): more fractional digits is VALUE_EXCEEDS_MAX_PRECISION. */
     it('generates volumes the canonical column can hold exactly', () => {
       for (const observation of generate().observations) {
-        const fractional = observation.valueQuantityValue.split('.')[1]?.length ?? 0;
+        // Asserted rather than guarded with `?.`: this scenario emits stoma
+        // output only, so a null volume here would mean the generator had
+        // started producing a shape it does not intend. `valueQuantityValue`
+        // became nullable at P3.S5 for voided urine, and a `?? ''` here would
+        // have quietly passed that regression.
+        expect(observation.valueQuantityValue).not.toBeNull();
+        const value = observation.valueQuantityValue ?? '';
+        const fractional = value.split('.')[1]?.length ?? 0;
         expect(fractional).toBeLessThanOrEqual(4);
-        expect(Number(observation.valueQuantityValue)).toBeGreaterThan(0);
+        expect(Number(value)).toBeGreaterThan(0);
       }
     });
   });
@@ -154,11 +179,12 @@ describe('stable-ileostomy', () => {
       expect(findTier2Warnings(generate(), THRESHOLDS, NOW)).toEqual([]);
     });
 
+    // Same cost and the same explicit timeout as its Tier 1 sibling above.
     it('trips no Tier 2 warning across many seeds', () => {
       for (let seed = 1; seed <= 25; seed += 1) {
         expect(findTier2Warnings(generate({ seed }), THRESHOLDS, NOW)).toEqual([]);
       }
-    });
+    }, 30_000);
 
     it('produces daily totals in a plausible well-controlled range', () => {
       const dataset = generate();
@@ -185,28 +211,52 @@ describe('stable-ileostomy', () => {
    * a dataset that is all one or the other cannot demonstrate the badge.
    */
   describe('the Measured/Estimated mix', () => {
+    /**
+     * Rewritten at P3.S5's review. These tests encoded the PRE-AMENDMENT
+     * contract — measured meant `method === null` — which ADR-0018 as amended
+     * reversed: a measured volumetric entry carries `258104002` |Measured|, and
+     * `null` at rest now means exactly one thing, "this observation has no
+     * toggle", i.e. weight or resting heart rate.
+     *
+     * They are the reason the stale encoding survived: the generator wrote null
+     * for measured and these assertions required it to, so the amendment landed
+     * in `apps/api` and the seeder went on producing a shape the application
+     * cannot produce. Partitioning on the code rather than on nullness is what
+     * makes that visible.
+     */
+    it('qualifies every volumetric entry, measured or estimated', () => {
+      const dataset = generate();
+
+      for (const observation of dataset.observations) {
+        // Every row in this scenario has a volume, so every row must carry a
+        // qualifier. A null here would assert that no toggle applies.
+        expect(observation.valueQuantityValue).not.toBeNull();
+        expect(observation.method).not.toBeNull();
+      }
+    });
+
     it('includes both measured and estimated entries', () => {
       const dataset = generate();
-      const measured = dataset.observations.filter((o) => o.method === null);
-      const estimated = dataset.observations.filter((o) => o.method !== null);
+      const measured = dataset.observations.filter((o) => o.method === MEASURED_CODE);
+      const estimated = dataset.observations.filter((o) => o.method === ESTIMATION_CODE);
 
       expect(measured.length).toBeGreaterThan(0);
       if (ESTIMATION_CODE === null) {
         // D4 unresolved: estimated entries are unrepresentable, and the
-        // generator must produce none rather than writing `method: null`
-        // and making them indistinguishable from measured ones.
+        // generator must produce none rather than writing `method: null` and
+        // making them indistinguishable from measured ones.
         expect(estimated).toHaveLength(0);
       } else {
         expect(estimated.length).toBeGreaterThan(0);
       }
     });
 
-    it('uses the resolved SNOMED code and never an invented one', () => {
-      if (ESTIMATION_CODE === null) return;
+    it('uses only the two resolved SNOMED codes, never an invented one', () => {
+      const permitted = [MEASURED_CODE, ESTIMATION_CODE].filter((code) => code !== null);
+      if (permitted.length === 0) return;
+
       for (const observation of generate().observations) {
-        if (observation.method !== null) {
-          expect(observation.method).toBe(ESTIMATION_CODE);
-        }
+        expect(permitted).toContain(observation.method);
       }
     });
   });

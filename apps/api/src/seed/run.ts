@@ -72,13 +72,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * this file is where someone would otherwise be tempted to add one.
  */
 import {
+  SCENARIO_NAMES,
   assertScenarioIsValid,
   generateScenario,
   isScenarioName,
   type ScenarioName,
   type SeedDataset,
 } from '@ostomy/seed';
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 import type { VolumetricValidationThresholds } from '@ostomy/core/validation';
 
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -103,7 +104,10 @@ function parseArgs(argv: readonly string[]): SeedArgs {
   const scenario = values.get('scenario') ?? 'stable-ileostomy';
   if (!isScenarioName(scenario)) {
     throw new Error(
-      `Unknown scenario "${scenario}". This release generates: stable-ileostomy. The remaining scenarios in docs/deployment-development.md land at P3.S5 and P5.`,
+      // The list comes from the registry, not a prose copy: the previous
+      // version named one scenario and would have gone stale the moment
+      // P3.S5 added four.
+      `Unknown scenario "${scenario}". This release generates: ${SCENARIO_NAMES.join(', ')}. "leak-cluster" lands at P5 with the appliance, leak and skin tables it needs, none of which exist yet.`,
     );
   }
 
@@ -188,7 +192,8 @@ async function write(prisma: PrismaClient, dataset: SeedDataset): Promise<void> 
     },
   });
 
-  // `createMany` rather than a loop: ~450 rows, and each insert takes a
+  // `createMany` rather than a loop: 17 to ~1,030 rows depending on the
+  // scenario, and each insert takes a
   // `sync_sequence` value from the same Postgres sequence the delta cursor
   // reads. One statement keeps that assignment contiguous and the seeding
   // fast enough that `dev-reset` stays a thing people are willing to run.
@@ -201,6 +206,13 @@ async function write(prisma: PrismaClient, dataset: SeedDataset): Promise<void> 
       valueQuantityUnit: observation.valueQuantityUnit,
       effectiveDatetime: observation.effectiveDatetime,
       method: observation.method,
+      // Named explicitly, like every other column, because CLAUDE.md's rule
+      // about the write paths applies here too: an omitted optional field
+      // typechecks cleanly and silently drops the categorisation. `?? null`
+      // rather than a spread, so a scenario that leaves one undefined writes
+      // NULL rather than relying on Prisma's default.
+      urineColorCode: observation.urineColorCode ?? null,
+      fluidTypeCode: observation.fluidTypeCode ?? null,
       enteredMeasurementSystem:
         observation.enteredMeasurementSystem === 'metric' ? 'METRIC' : 'IMPERIAL',
       enteredTimezone: observation.enteredTimezone,
@@ -253,6 +265,7 @@ async function main(): Promise<void> {
       oidcSubject: args.oidcSubject,
       now,
       estimationMethodCode: ESTIMATION_METHOD_CODE.resolved ? ESTIMATION_METHOD_CODE.code : null,
+      measuredMethodCode: MEASURED_METHOD_CODE.resolved ? MEASURED_METHOD_CODE.code : null,
       ...(args.seed === undefined ? {} : { seed: args.seed }),
     });
 
