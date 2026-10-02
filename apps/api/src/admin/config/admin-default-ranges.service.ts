@@ -89,6 +89,58 @@ function toSnapshot(row: RangeRow): DefaultRangeSnapshot {
  * version is that two rows matching the same patient makes §3.9 seed from whichever
  * the query returned, silently.
  */
+/** Postgres' SQLSTATE for `exclusion_violation`. */
+const EXCLUSION_VIOLATION = '23P01';
+
+/**
+ * Whether an error is #97's day-window exclusion constraint firing.
+ *
+ * ## The shape was discovered, not assumed
+ *
+ * A first version of this matched `P2002` and `P2010` and read the SQLSTATE
+ * from `meta.code`. All three were wrong. What Prisma 7 with the pg driver
+ * adapter actually reports, printed by the integration test that now asserts
+ * it:
+ *
+ * ```
+ * PrismaClientKnownRequestError
+ *   code: 'P2039'
+ *   meta.driverAdapterError.cause.code: '23P01'
+ *   meta.driverAdapterError.cause.message:
+ *     'conflicting key value violates exclusion constraint
+ *      "clinical_default_ranges_window_no_overlap"'
+ * ```
+ *
+ * Matching the serialised `meta` for the SQLSTATE and the constraint name
+ * rather than walking that path, deliberately: `driverAdapterError` is a
+ * driver-adapter detail whose nesting has changed across Prisma versions,
+ * while the SQLSTATE and the constraint name are the two facts Postgres
+ * guarantees. A path-walk would compile and silently stop matching on an
+ * upgrade, turning a 409 back into a 500 with no test failing — which is the
+ * failure this function exists to prevent.
+ *
+ * ## Why it is needed at all
+ *
+ * `assertNoOverlap` takes an advisory lock and reads the siblings, so two
+ * concurrent creates through this service cannot produce an overlap. What it
+ * cannot see is a row inserted by something that never takes the lock — a
+ * migration, `packages/seed`, a psql session. Before #97 such a row simply
+ * created an overlapping pair; now the constraint refuses it, and without this
+ * the refusal would reach the admin as an opaque 500 naming no rule. P3.S3 PR A
+ * fixed that shape for the representable-range bounds and #93 fixed it again
+ * for the settable range; this is the third instance, which is why it is
+ * handled here rather than left to be noticed.
+ */
+function isWindowOverlapViolation(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+
+  const reported = JSON.stringify(error.meta ?? {});
+  return (
+    reported.includes(EXCLUSION_VIOLATION) &&
+    reported.includes('clinical_default_ranges_window_no_overlap')
+  );
+}
+
 @Injectable()
 export class AdminDefaultRangesService {
   // Explicit `@Inject()`, not implicit type-based injection — see `AuditService`'s
@@ -231,18 +283,35 @@ export class AdminDefaultRangesService {
     return this.prisma.$transaction(async (tx) => {
       await this.assertNoOverlap(tx, request);
 
-      const created = await tx.clinicalDefaultRange.create({
-        data: {
-          ostomyType: request.ostomyType,
-          rangeType: request.rangeType,
-          minDaysPostOp: request.minDaysPostOp,
-          maxDaysPostOp: request.maxDaysPostOp,
-          lowValue: request.lowValue,
-          highValue: request.highValue,
-          unit: request.unit,
-          windowDays: request.windowDays,
-        },
-      });
+      /**
+       * The constraint is the backstop and `assertNoOverlap` is the interface,
+       * so a violation reaching here is translated rather than allowed to
+       * become a 500. It happens for one input only: a conflicting row that
+       * was inserted without taking the advisory lock, i.e. by a migration,
+       * the seeder, or a psql session. See `isWindowOverlapViolation`.
+       */
+      let created;
+      try {
+        created = await tx.clinicalDefaultRange.create({
+          data: {
+            ostomyType: request.ostomyType,
+            rangeType: request.rangeType,
+            minDaysPostOp: request.minDaysPostOp,
+            maxDaysPostOp: request.maxDaysPostOp,
+            lowValue: request.lowValue,
+            highValue: request.highValue,
+            unit: request.unit,
+            windowDays: request.windowDays,
+          },
+        });
+      } catch (error) {
+        if (isWindowOverlapViolation(error)) {
+          // The same code the service-side check uses, because it is the same
+          // rule — an admin should not be able to tell which layer caught it.
+          throw new ConflictException({ error: { code: 'DEFAULT_RANGE_WINDOW_OVERLAPS' } });
+        }
+        throw error;
+      }
 
       const after = toSnapshot(created);
       const auditEvent = await this.audit.record(

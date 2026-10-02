@@ -1062,6 +1062,30 @@ model ValueSetMember {
 /// exclusion, and it is the kind of omission that fails silently — a
 /// red-flag bound that quietly became patient-adjustable would let a patient
 /// widen the bound that tells them to seek care.
+/// ## Constraints Prisma cannot express, and where they live (#97)
+///
+/// Four invariants on this table are enforced by the database and are invisible
+/// in this schema, because Prisma's schema language has no syntax for an
+/// exclusion constraint or a CHECK. They are in
+/// `migrations/20261002120000_clinical_default_range_constraints/` and they are
+/// not optional decoration — `AdminDefaultRangesService` refuses the same five
+/// rules, and before #97 the table refused none of them, so any writer that was
+/// not the API could create a state the API rejects:
+///
+/// - `clinical_default_ranges_window_no_overlap` — `EXCLUDE USING gist` over
+///   (ostomy type, range type, coalesced window days, the day window as an
+///   `int4range`). Needs the `btree_gist` extension.
+/// - `clinical_default_ranges_window_ordered` — `min_days_post_op <= max_days_post_op`.
+///   The important one: an inverted row is invisible to the service's own
+///   overlap comparison, so one inserted by another route disabled the rule
+///   silently.
+/// - `clinical_default_ranges_has_a_bound` — at least one of low/high.
+/// - `clinical_default_ranges_bounds_ordered` — `low_value <= high_value`.
+///
+/// Still application-only: rows sharing a `range_type` must agree on their
+/// `unit`. It is a cross-row invariant the exclusion constraint does not
+/// partition, so it needs a `range_type` lookup table — which is what #102
+/// proposes for per-type settable bounds, and the unit belongs there.
 model ClinicalDefaultRange {
   /// The runtime role holds `DELETE` on this table and that is load-bearing, unlike
   /// on the other two config tables: the admin surface (P3.S3 PR C) hard-deletes a

@@ -53,8 +53,18 @@ import { z } from 'zod';
  * this surface's equivalent of a tier flip: nothing errors, and the wrong guidance is
  * indistinguishable from the right one afterwards.
  *
- * So overlap is refused. The window arithmetic lives here; the check against existing
- * rows has to be in the service, which is where the other rows are.
+ * So overlap is refused — by this surface and, since #97, by the table. An
+ * `EXCLUDE USING gist` constraint makes an overlapping pair unrepresentable for any
+ * writer, which is what the paragraph above needed and did not have: the ambiguity it
+ * describes was reachable by a migration, `packages/seed` or a psql session, and one
+ * shape of it was invisible to the check below afterwards (an inverted window, which
+ * `windowsOverlap` reports as overlapping nothing).
+ *
+ * The window arithmetic still lives here and the sibling read still lives in the
+ * service, and both are still worth having: the service's advisory lock and explicit
+ * check are what turn a race into a `409` naming the rule, where the constraint alone
+ * gives a Postgres violation someone has to interpret. The constraint guarantees, the
+ * check explains.
  *
  * ## What may change on an existing row
  *
