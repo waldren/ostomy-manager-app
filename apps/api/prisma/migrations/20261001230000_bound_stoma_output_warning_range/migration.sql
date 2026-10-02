@@ -1,0 +1,73 @@
+-- Narrow the settable range for stoma_output_single_entry_warning_ml (#93).
+--
+-- The #101 migration left this one pair deliberately undecided — a range
+-- spanning the whole DECIMAL(12,4) column, which constrains nothing — because
+-- choosing it is a clinical judgement rather than a refactor. This is that
+-- judgement, with the reasoning written out so a clinician can audit it or
+-- replace it in one `UPDATE`.
+--
+-- **These numbers were chosen by the implementer, not ratified by a clinician.**
+-- Recorded plainly because the rest of this file reads like settled fact and
+-- this part is not: what follows is an argument from published reference ranges
+-- and from what this row actually governs, and the argument is the thing to
+-- check, not just the two numbers.
+--
+-- ## What this row governs
+--
+-- `packages/core`'s tier2 check is `rawValueMl > softWarningMaxMl` against ONE
+-- entry's volume (`checkValueWithinTypicalRange`). So it is a SINGLE-EMPTYING
+-- bound, not a daily total — daily output lives in `clinical_default_ranges`
+-- as `daily_output_ml`, keyed by ostomy type and post-operative day.
+--
+-- This row is global: one value for every patient, every ostomy type. So it has
+-- to accommodate the highest-output legitimate case, not the typical one.
+--
+-- ## Floor: 1,000 mL
+--
+-- A typical single emptying is small. Drainable pouches hold roughly 400-900 mL
+-- and patients are taught to empty at a third to a half full, which puts an
+-- ordinary emptying around 150-400 mL. That is not what sets the floor.
+--
+-- The binding case is the NIGHT DRAINAGE BAG. High-output ostomates connect to
+-- a 1,500-2,000 mL bag overnight specifically so they do not have to get up,
+-- and the morning emptying is one entry of roughly 800-1,500 mL. It is
+-- routine, correct, and exactly the kind of entry SRS §3.8 insists must not be
+-- questioned: "a genuine 2,500 mL output day is precisely the data point the
+-- care team most needs to see", and a warning that fires every morning for the
+-- patients with the most clinically interesting output is the failure mode that
+-- teaches everyone to dismiss warnings.
+--
+-- So 1,000 mL: clear of ordinary emptyings by a wide margin, clear of most
+-- night-bag collections, and still half the seeded default, so a clinician who
+-- wants earlier signal has real room to tune down.
+--
+-- ## Ceiling: 3,000 mL
+--
+-- Two reasons, and the second is structural rather than clinical.
+--
+-- Above roughly 3,000 mL a single emptying is not physically plausible — it
+-- exceeds night-bag capacity — and the right response to physically implausible
+-- input is Tier 1's hard block, not a soft warning. A warning configured up
+-- there is decorative: it would fire only on values that should never have been
+-- accepted in the first place.
+--
+-- And `stoma_output_absolute_ceiling_ml` is a planned TIER_1_HARD_BLOCK key
+-- (named in `schema.prisma`'s `ValidationThreshold` comment, not yet seeded).
+-- A Tier 2 warning above a Tier 1 block **can never fire**, because the block
+-- rejects the entry first. Nothing enforces that coherence — #93 is explicit
+-- that this mechanism bounds one value's magnitude and "cannot express
+-- coherence between two keys" — so the ceiling is set low enough to leave room
+-- for any plausible absolute ceiling rather than relying on a check that does
+-- not exist. **Whoever seeds `stoma_output_absolute_ceiling_ml` must confirm it
+-- lands above 3,000 mL, or this warning becomes unreachable silently.**
+--
+-- ## The seeded default sits inside
+--
+-- SRS AC 2.1 AC2 fixes the default at 2,000 mL, which leaves a clinician a
+-- halving and a 1.5x loosening. The `value_within_settable_range` CHECK would
+-- refuse this migration outright if the default fell outside the pair, which is
+-- the intended forcing function and is why this is safe to apply blind.
+UPDATE "validation_thresholds"
+   SET "min_settable_value" = 1000.0000,
+       "max_settable_value" = 3000.0000
+ WHERE "threshold_key" = 'stoma_output_single_entry_warning_ml';

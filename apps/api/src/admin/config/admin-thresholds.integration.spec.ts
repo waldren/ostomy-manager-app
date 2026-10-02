@@ -593,26 +593,41 @@ describe.skipIf(!dockerAvailable)('AdminThresholdsService — real PostgreSQL', 
       });
 
       /**
-       * **This assertion is expected to change, and that is its purpose.**
+       * The decision #93 was open for, now made — and this test replaced the one
+       * that pinned the undecided state, in the same change, which is what that
+       * tripwire existed to force.
        *
-       * `stoma_output_single_entry_warning_ml` is left at the full width of the
-       * column, which encodes "no narrower bound has been decided" and leaves the
-       * key exactly as constrained as it was before #93. The numbers are a
-       * clinical judgement — below what value does a Tier 2 warning fire so often
-       * that it trains patients to dismiss warnings, and above what value does it
-       * never usefully fire — and #93 is open for them.
+       * 1,000 to 3,000 mL. The floor is set by the night drainage bag: high-output
+       * ostomates empty a 1,500-2,000 mL overnight bag as one entry of roughly
+       * 800-1,500 mL, and a warning below that fires every morning for exactly the
+       * patients whose output matters most — SRS §3.8's own failure mode. The
+       * ceiling is where a single emptying stops being physically plausible and the
+       * right tool becomes Tier 1's block, and it deliberately leaves headroom under
+       * the planned `stoma_output_absolute_ceiling_ml`, because a Tier 2 warning
+       * above a Tier 1 block can never fire and nothing enforces that coherence.
        *
-       * Pinning the undecided state here means the decision cannot land silently:
-       * whoever narrows the range has to delete this test, in the same change,
-       * and say so.
+       * The reasoning is in the migration. These numbers were chosen by an
+       * implementer and want a clinician's ratification; replacing them is one
+       * `UPDATE` plus this assertion.
        */
-      it('leaves the stoma-output warning range undecided, pending a clinical answer', async () => {
+      it('bounds the stoma-output warning to 1,000-3,000 mL', async () => {
         const row = (await service.listThresholds()).thresholds.find(
           (candidate) => candidate.thresholdKey === WARNING_KEY,
         );
 
-        expect(row!.maxSettableValue).toBeGreaterThan(99_999_999);
-        expect(row!.minSettableValue).toBeLessThan(1);
+        expect(row).toMatchObject({ minSettableValue: 1000, maxSettableValue: 3000 });
+      });
+
+      it('leaves SRS AC 2.1 AC2 default of 2,000 mL inside the range it chose', async () => {
+        // Not decoration: a range excluding its own seeded value would have been
+        // refused by the `value_within_settable_range` CHECK, so this asserts the
+        // pair was chosen around the default rather than in spite of it.
+        const row = (await service.listThresholds()).thresholds.find(
+          (candidate) => candidate.thresholdKey === WARNING_KEY,
+        );
+
+        expect(row!.value).toBeGreaterThanOrEqual(row!.minSettableValue);
+        expect(row!.value).toBeLessThanOrEqual(row!.maxSettableValue);
       });
     });
   });
