@@ -29,6 +29,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   IDENTITY_FIELDS,
+  isSafetyRangeType,
   MAX_DAYS_POST_OP,
   MAX_WINDOW_DAYS,
   OSTOMY_TYPES,
@@ -307,6 +308,55 @@ describe('updating a default range', () => {
 describe('the safety range types', () => {
   it('names the heart-rate red-flag bound', async () => {
     expect(SAFETY_RANGE_TYPES).toContain('heart_rate_red_flag_bpm');
+  });
+});
+
+/**
+ * `isSafetyRangeType` without Docker.
+ *
+ * Both reviews flagged that the predicate behind a safety guard was exercised
+ * only by `admin-default-ranges.integration.spec.ts`, which skips itself when
+ * the Docker daemon is unreachable — the condition CLAUDE.md singles out ("a
+ * green `pnpm verify` on a machine with no Docker daemon has proven much less
+ * than it looks like"). This file's own header already makes that argument for
+ * `windowsOverlap`; it is stronger for a predicate that decides whether a
+ * seek-care prompt can be switched off.
+ */
+describe('isSafetyRangeType', () => {
+  it('matches the heart-rate red flag', async () => {
+    expect(isSafetyRangeType('heart_rate_red_flag_bpm')).toBe(true);
+  });
+
+  it('matches every member of SAFETY_RANGE_TYPES, so the two cannot drift', async () => {
+    for (const rangeType of SAFETY_RANGE_TYPES) {
+      expect(isSafetyRangeType(rangeType)).toBe(true);
+    }
+  });
+
+  it('does not match an ordinary range type', async () => {
+    for (const rangeType of [
+      'daily_output_ml',
+      'net_fluid_balance_ml',
+      'urine_output_adequacy_ml',
+    ]) {
+      expect(isSafetyRangeType(rangeType)).toBe(false);
+    }
+  });
+
+  it('does not match a near miss', async () => {
+    // `heart_rate_redflag_bpm` is the typo #102's foreign key now refuses at the
+    // database. Before that it created a row this predicate would not protect —
+    // an exact-match guard over a free-text column. Asserted so the two
+    // defences are understood as complementary rather than redundant.
+    for (const rangeType of [
+      'heart_rate_redflag_bpm',
+      'heart_rate_red_flag',
+      'HEART_RATE_RED_FLAG_BPM',
+      'heart_rate_red_flag_bpm ',
+      '',
+    ]) {
+      expect(isSafetyRangeType(rangeType)).toBe(false);
+    }
   });
 });
 

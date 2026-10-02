@@ -292,6 +292,11 @@ export class AdminDefaultRangesService {
     /**
      * The unit rule, now read from one place instead of compared across rows.
      *
+     * Reported as a 400 field error rather than the 409 it was under #97: a unit
+     * is now a fixed property of the type, so a wrong one is a malformed body
+     * rather than a conflict with other rows' state. No console exists yet, so
+     * this is the cheapest moment to reclassify it.
+     *
      * This used to be `siblings.some((sibling) => sibling.unit !== candidate.unit)`
      * — correct, and the kind of invariant that only holds while every writer
      * goes through here. #97 made the other four rules database guarantees and
@@ -304,7 +309,12 @@ export class AdminDefaultRangesService {
      */
     const limits = await this.limitsFor(tx, candidate.rangeType);
     if (candidate.unit !== limits.unit) {
-      throw new ConflictException({ error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } });
+      throw new BadRequestException({
+        error: {
+          code: 'INVALID_DEFAULT_RANGE',
+          fields: [{ field: 'unit', rule: 'wrong_unit_for_type' }],
+        },
+      });
     }
   }
 
@@ -336,6 +346,68 @@ export class AdminDefaultRangesService {
   }
 
   /**
+   * The shape a safety-class row must have, on create and on update.
+   *
+   * ## Why this exists, and what both reviews found
+   *
+   * #98's delete guard rested on "DELETE is the only operation in the system
+   * that can switch off a safety prompt". That was false. `PUT { lowValue:
+   * 0.0001, highValue: null }` silences the prompt just as completely and
+   * answers 200 with an audit row, leaving a row that still LOOKS configured in
+   * `GET` — arguably worse than the delete, which at least leaves a visibly
+   * absent row. `checkBounds` refuses only BOTH bounds being null, and
+   * `assertWithinTypeLimits` skips nulls, so nothing examined it.
+   *
+   * The ceiling in the limits table did not help either: 300 bpm was chosen
+   * because no reading can exceed it, which makes a threshold OF 300 one no
+   * reading can exceed. A typo guard, not a silencing guard.
+   *
+   * ## The three rules, and why each is decidable without a clinician
+   *
+   * **A ceiling is required.** SRS §3.13 defines the red flag as "a reading
+   * beyond a configured red-flag threshold" and its AC as a reading that
+   * "exceeds" it — the bound is directional, so a safety row without a
+   * `highValue` is not a configured threshold at all.
+   *
+   * **A floor is refused**, for the same reason: a lower bound would be a
+   * different clinical claim than the spec makes, and a two-sided safety row
+   * invites a reader to think bradycardia is in scope.
+   *
+   * **No rolling window.** #97's exclusion constraint partitions on
+   * `window_days`, so a second safety row with `windowDays: 7` over the same
+   * days is accepted and `assertNoOverlap`'s own comment says §3.9 would seed
+   * both — two red-flag bounds matching one patient, one of them silent.
+   *
+   * None of these is the clinical number. They are the shape the spec already
+   * states, enforced instead of assumed.
+   */
+  private assertSafetyRowShape(bounds: {
+    rangeType: string;
+    lowValue: number | null;
+    highValue: number | null;
+    windowDays?: number | null;
+  }): void {
+    if (!isSafetyRangeType(bounds.rangeType)) return;
+
+    const problems: { field: string; rule: string }[] = [];
+    if (bounds.highValue === null) {
+      problems.push({ field: 'highValue', rule: 'required_for_safety_type' });
+    }
+    if (bounds.lowValue !== null) {
+      problems.push({ field: 'lowValue', rule: 'not_applicable_to_safety_type' });
+    }
+    if (bounds.windowDays !== undefined && bounds.windowDays !== null) {
+      problems.push({ field: 'windowDays', rule: 'not_applicable_to_safety_type' });
+    }
+
+    if (problems.length > 0) {
+      throw new BadRequestException({
+        error: { code: 'INVALID_DEFAULT_RANGE', fields: problems },
+      });
+    }
+  }
+
+  /**
    * Both bounds within what this range type permits (#102).
    *
    * The shape rules — numeric, fits `DECIMAL(12,4)` — cannot catch a value that
@@ -343,12 +415,19 @@ export class AdminDefaultRangesService {
    * one #94 moved into this table: once `heart_rate_red_flag_bpm` is seeded, a
    * high value silences a seek-care prompt with no symptom at all.
    *
-   * Runs before the write, so an out-of-range bound answers a 400 naming the
-   * field rather than surfacing as a constraint violation and an opaque 500 —
-   * the same layering as #93 and #97, and the same reason: the constraint is
-   * the backstop, this is the interface. It names the field and a rule code and
-   * never the value or the bounds (CLAUDE.md), which is why `GET` returns the
-   * limits: a caller that wants the numbers has already been given them.
+   * **Application-only, unlike #93's and #97's checks, and the first version of
+   * this comment claimed otherwise.** It said "the constraint is the backstop,
+   * this is the interface — the same layering as #93 and #97". There is no
+   * constraint: this migration adds a CHECK on the limits table and the foreign
+   * key, and nothing compares a range's bounds against its limits row. So a
+   * migration, `packages/seed` or a psql session can still write a 99,999 bpm
+   * red-flag bound, exactly the gap #97 existed to close for the other four
+   * rules. What #102 did make structural is that the limits DATA is
+   * migration-owned (`SELECT` only), which is a different claim.
+   *
+   * It names the field and a rule code and never the value or the bounds, which
+   * is why `GET` returns the limits: a caller that wants the numbers has already
+   * been given them.
    */
   private assertWithinTypeLimits(
     bounds: { lowValue: number | null; highValue: number | null },
@@ -375,6 +454,33 @@ export class AdminDefaultRangesService {
     correlationId: string | undefined,
   ): Promise<DefaultRangeWrite> {
     return this.prisma.$transaction(async (tx) => {
+      /**
+       * A safety row cannot be CREATED here either, and #98's own argument is
+       * what requires that.
+       *
+       * If removing one is too dangerous for this surface, so is creating one
+       * wrong — and the wrong ways are worse than they look. The day window is
+       * immutable and the delete is refused, so a safety row created with a
+       * window covering nobody (`{ minDaysPostOp: 10000 }` is accepted:
+       * `MAX_DAYS_POST_OP` is 11,000 and `checkWindow` only orders the ends)
+       * is **permanently unrecoverable through the API** — the correctly
+       * windowed replacement is refused by `assertNoOverlap` and by #97's
+       * exclusion constraint. One mistyped create bricks the red flag for that
+       * ostomy type. The review found that regression in #98 itself, and the
+       * test fixtures demonstrate the mechanism: they hand-partition the day
+       * window space (40-70, 80-110, 200-260) precisely because safety rows
+       * cannot be cleaned up.
+       *
+       * So the rows are seeded by migration — both ostomy types, day 0 onward,
+       * no rolling window — and `PUT` is the only mutation left. SRS §3.9 calls
+       * this "a fixed clinical safety bound managed in Section 3.11", and
+       * `validation_thresholds` is the precedent for configuration every
+       * environment needs arriving by migration.
+       */
+      if (isSafetyRangeType(request.rangeType)) {
+        throw new ConflictException({ error: { code: 'SAFETY_RANGE_NOT_CREATABLE' } });
+      }
+
       await this.assertNoOverlap(tx, request);
       this.assertWithinTypeLimits(request, await this.limitsFor(tx, request.rangeType));
 
@@ -461,6 +567,7 @@ export class AdminDefaultRangesService {
        * matters most for #102 — a create with a sane bound followed by a `PUT`
        * to a silencing one would otherwise walk straight past the check.
        */
+      this.assertSafetyRowShape({ ...request, rangeType: existing.rangeType });
       this.assertWithinTypeLimits(request, await this.limitsFor(tx, existing.rangeType));
 
       const before = toSnapshot(existing);

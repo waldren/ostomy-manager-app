@@ -492,8 +492,13 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
           undefined,
         ),
       ).rejects.toMatchObject({
-        status: 409,
-        response: { error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } },
+        status: 400,
+        response: {
+          error: {
+            code: 'INVALID_DEFAULT_RANGE',
+            fields: [{ field: 'unit', rule: 'wrong_unit_for_type' }],
+          },
+        },
       });
     });
 
@@ -884,6 +889,50 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       );
     });
 
+    /**
+     * Every seeded triple, not just the type names — this is the test that would
+     * have caught the weight-change floor.
+     *
+     * The previous version asserted type names with `arrayContaining` and pinned
+     * VALUES for one type only, so a migration seeding the wrong sign or unit
+     * for any of the other six passed everything. `weight_change_threshold_percent`
+     * was seeded with a positive floor, which made the weight-LOSS direction
+     * unconfigurable — contradicting `admin-default-range-wire.ts`, which says
+     * that type "legitimately ha[s] negative floors".
+     */
+    it.each([
+      ['daily_output_ml', 0.0001, 99_999_999.9999, 'mL'],
+      ['urine_output_adequacy_ml', 0.0001, 99_999_999.9999, 'mL'],
+      ['net_fluid_balance_ml', -99_999_999.9999, 99_999_999.9999, 'mL'],
+      ['weight_change_threshold_percent', -100, 100, '%'],
+      ['resting_heart_rate_elevation_bpm', 0.0001, 300, 'bpm'],
+      ['orthostatic_postural_rise_bpm', 0.0001, 300, 'bpm'],
+      ['heart_rate_red_flag_bpm', 0.0001, 300, 'bpm'],
+    ])('seeds %s as %s to %s %s', async (rangeType, minValue, maxValue, unit) => {
+      const limits = (await service.listDefaultRanges()).rangeTypeLimits;
+
+      expect(limits).toEqual(expect.arrayContaining([{ rangeType, minValue, maxValue, unit }]));
+    });
+
+    it('accepts a negative weight-change floor, which is the clinical direction', async () => {
+      // SRS §3.12's signal is percent change and the important direction is a
+      // drop. The first version of the limits row refused this outright.
+      const write = await service.createDefaultRange(
+        body('weight_change_threshold_percent', {
+          minDaysPostOp: 500,
+          maxDaysPostOp: 560,
+          lowValue: -3,
+          highValue: 3,
+          unit: '%',
+          windowDays: 7,
+        }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      expect(write.range.lowValue).toBe(-3);
+    });
+
     it('publishes the limits on the read, so a caller can see them first', async () => {
       // The 400 names the field and a rule code and never the numbers, so this
       // is the only place a caller can learn them. The refusal is the backstop;
@@ -901,20 +950,31 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
      * cannot be set above it — which is what stops the seek-care prompt being
      * silenced, one of the two failures #102 names.
      */
-    it('refuses a red-flag bound high enough to silence the prompt', async () => {
+    /**
+     * The limits on this type are a TYPO GUARD, not a silencing guard, and the
+     * first version of this test claimed otherwise.
+     *
+     * It was named "refuses a red-flag bound high enough to silence the prompt"
+     * and used 99,000 — so all it proved was that absurd values are refused.
+     * The ceiling is 300 bpm, chosen because no reading can exceed it, which
+     * makes a threshold OF 300 one no reading can exceed: self-refuting. In
+     * practice anything from roughly 220 upward silences it. What actually keeps
+     * the prompt reachable is the seeded rows and the shape rules, tested above.
+     */
+    it('refuses a physically impossible bound, which is all these limits do', async () => {
+      const row = await prisma.clinicalDefaultRange.findFirst({
+        where: { rangeType: 'heart_rate_red_flag_bpm', ostomyType: 'ILEOSTOMY' },
+      });
+
       await expect(
-        service.createDefaultRange(
-          body('heart_rate_red_flag_bpm', {
-            minDaysPostOp: 0,
-            maxDaysPostOp: null,
-            lowValue: null,
-            highValue: 99_000,
-            unit: 'bpm',
-          }),
+        service.updateDefaultRange(
+          row!.id,
+          { lowValue: null, highValue: 99_000 },
           ADMIN_SUBJECT,
           undefined,
         ),
       ).rejects.toMatchObject({
+        status: 400,
         response: {
           error: {
             code: 'INVALID_DEFAULT_RANGE',
@@ -924,20 +984,29 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       });
     });
 
-    it('accepts a clinically plausible red-flag bound', async () => {
-      const write = await service.createDefaultRange(
-        body('heart_rate_red_flag_bpm', {
-          minDaysPostOp: 200,
-          maxDaysPostOp: 260,
-          lowValue: null,
-          highValue: 130,
-          unit: 'bpm',
-        }),
+    it('accepts a bound at the ceiling, which is why the ceiling is not a control', async () => {
+      // Pinned deliberately. 300 bpm is accepted exactly, and a threshold no
+      // reading can reach is a silenced prompt — so this records that the limits
+      // table does not close that hole, and the service rules do. If a clinical
+      // ceiling is ever chosen (#102), this test is the one that should change.
+      const row = await prisma.clinicalDefaultRange.findFirst({
+        where: { rangeType: 'heart_rate_red_flag_bpm', ostomyType: 'COLOSTOMY' },
+      });
+
+      const updated = await service.updateDefaultRange(
+        row!.id,
+        { lowValue: null, highValue: 300 },
         ADMIN_SUBJECT,
         undefined,
       );
+      expect(updated.range.highValue).toBe(300);
 
-      expect(write.range.highValue).toBe(130);
+      await service.updateDefaultRange(
+        row!.id,
+        { lowValue: null, highValue: 120 },
+        ADMIN_SUBJECT,
+        undefined,
+      );
     });
 
     it('names both bounds when both are outside', async () => {
@@ -1034,7 +1103,13 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
             undefined,
           ),
         ).rejects.toMatchObject({
-          response: { error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } },
+          status: 400,
+          response: {
+            error: {
+              code: 'INVALID_DEFAULT_RANGE',
+              fields: [{ field: 'unit', rule: 'wrong_unit_for_type' }],
+            },
+          },
         });
       });
 
@@ -1048,7 +1123,13 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
             undefined,
           ),
         ).rejects.toMatchObject({
-          response: { error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } },
+          status: 400,
+          response: {
+            error: {
+              code: 'INVALID_DEFAULT_RANGE',
+              fields: [{ field: 'unit', rule: 'wrong_unit_for_type' }],
+            },
+          },
         });
       });
     });
@@ -1130,14 +1211,32 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
   /**
    * #98: the one row this surface will not remove.
    *
-   * `DELETE` is the only operation in the system that can switch off a safety
-   * prompt. §3.13's red-flag bound is a seek-care prompt rather than a
+   * `DELETE` was never the only operation that could switch off a safety prompt
+   * — review found a `PUT` that did the same, and an absent row that did it by
+   * default. All three are closed below. §3.13's red-flag bound is a seek-care prompt rather than a
    * data-quality warning — no override, no warning copy, and nothing in the app
    * reports that the prompt has become unreachable. It is also not needed for
    * correction: the bounds are mutable, so a wrong safety number is a `PUT`.
    */
-  describe('a safety-class range cannot be deleted (#98)', () => {
+  describe('the safety row is migration-owned (#98, corrected after review)', () => {
     const SAFETY_TYPE = SAFETY_RANGE_TYPES[0];
+
+    /**
+     * The seeded row for one ostomy type.
+     *
+     * Found rather than created, which is the whole change: review showed the
+     * admin surface could create a safety row with a window covering nobody,
+     * and that #98's delete guard then made it permanently unrecoverable — the
+     * window is immutable and the correctly-windowed replacement overlaps. So
+     * the rows are seeded by migration and this surface can only `PUT` them.
+     */
+    async function seededSafetyRow(ostomyType: 'ILEOSTOMY' | 'COLOSTOMY') {
+      const row = await prisma.clinicalDefaultRange.findFirst({
+        where: { rangeType: SAFETY_TYPE, ostomyType },
+      });
+      if (!row) throw new Error(`no seeded ${SAFETY_TYPE} row for ${ostomyType}`);
+      return row;
+    }
 
     it('names the heart-rate red flag, which is what makes the guard reachable', () => {
       // If this constant ever stops matching the seeded range type, the guard
@@ -1145,38 +1244,158 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       expect(SAFETY_TYPE).toBe('heart_rate_red_flag_bpm');
     });
 
+    it('seeds one row per ostomy type, so the prompt exists at all', async () => {
+      /**
+       * The hole that subsumed the others: nothing seeded a red-flag row, so
+       * the shipping state of every environment was "no threshold for any
+       * patient" — the silenced configuration — and #98's guard was protecting
+       * a row that did not exist.
+       *
+       * Two rows because `ostomy_type` is NOT NULL; the bound is population-wide
+       * and both carry the same value. #98's asymmetry concern is exactly what
+       * seeding both at once prevents.
+       */
+      for (const ostomyType of ['ILEOSTOMY', 'COLOSTOMY'] as const) {
+        const row = await seededSafetyRow(ostomyType);
+        expect(row.minDaysPostOp).toBe(0);
+        expect(row.maxDaysPostOp).toBeNull();
+        expect(row.windowDays).toBeNull();
+        expect(row.lowValue).toBeNull();
+        expect(row.highValue?.toNumber()).toBe(120);
+        expect(row.unit).toBe('bpm');
+      }
+    });
+
+    it('pins 120 bpm, so a clinician decision cannot land silently', async () => {
+      // Chosen by an implementer and not ratified, the same footing as #93's
+      // stoma-output pair. Resting tachycardia is conventionally above 100, but
+      // a seek-care prompt must be rare to mean anything and 100 is reachable
+      // by caffeine, anxiety or a mild fever; 120 at rest is not. Changing it is
+      // a PUT, so ratification needs no migration — it needs this test edited.
+      const row = await seededSafetyRow('ILEOSTOMY');
+
+      expect(row.highValue?.toNumber()).toBe(120);
+    });
+
     it('refuses the delete with a conflict, not a permission error', async () => {
-      const write = await service.createDefaultRange(
-        body(SAFETY_TYPE, { lowValue: null, highValue: 130, unit: 'bpm' }),
-        ADMIN_SUBJECT,
-        undefined,
-      );
+      const row = await seededSafetyRow('ILEOSTOMY');
 
       await expect(
-        service.deleteDefaultRange(write.rangeId, ADMIN_SUBJECT, undefined),
+        service.deleteDefaultRange(row.id, ADMIN_SUBJECT, undefined),
       ).rejects.toMatchObject({
+        status: 409,
         response: { error: { code: 'SAFETY_RANGE_NOT_DELETABLE' } },
       });
     });
 
+    it('refuses creating one through this surface', async () => {
+      // #98's own argument requires it: if removing one is too dangerous here,
+      // so is creating one with a window covering nobody — which the API
+      // accepted, and which the delete guard then made unrecoverable.
+      await expect(
+        service.createDefaultRange(
+          body(SAFETY_TYPE, {
+            minDaysPostOp: 10_000,
+            maxDaysPostOp: 11_000,
+            lowValue: null,
+            highValue: 130,
+            unit: 'bpm',
+          }),
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { error: { code: 'SAFETY_RANGE_NOT_CREATABLE' } },
+      });
+    });
+
+    describe('the PUT that used to silence it', () => {
+      it('refuses removing the ceiling', async () => {
+        /**
+         * The route that falsified #98's premise. `{ lowValue: 0.0001,
+         * highValue: null }` answered 200 with an audit row and left a row that
+         * still looked configured — arguably worse than the delete, which at
+         * least leaves a visibly absent row. SRS §3.13 defines the flag as a
+         * reading "beyond" a threshold, so a safety row with no ceiling is not
+         * a configured threshold.
+         */
+        const row = await seededSafetyRow('ILEOSTOMY');
+
+        await expect(
+          service.updateDefaultRange(
+            row.id,
+            { lowValue: 0.0001, highValue: null },
+            ADMIN_SUBJECT,
+            undefined,
+          ),
+        ).rejects.toMatchObject({
+          status: 400,
+          response: {
+            error: {
+              fields: expect.arrayContaining([
+                { field: 'highValue', rule: 'required_for_safety_type' },
+              ]),
+            },
+          },
+        });
+      });
+
+      it('refuses adding a floor, which the spec does not describe', async () => {
+        const row = await seededSafetyRow('COLOSTOMY');
+
+        await expect(
+          service.updateDefaultRange(
+            row.id,
+            { lowValue: 40, highValue: 120 },
+            ADMIN_SUBJECT,
+            undefined,
+          ),
+        ).rejects.toMatchObject({
+          status: 400,
+          response: {
+            error: {
+              fields: expect.arrayContaining([
+                { field: 'lowValue', rule: 'not_applicable_to_safety_type' },
+              ]),
+            },
+          },
+        });
+      });
+
+      it('leaves the row untouched when it refuses', async () => {
+        const before = await seededSafetyRow('ILEOSTOMY');
+
+        await expect(
+          service.updateDefaultRange(
+            before.id,
+            { lowValue: null, highValue: null },
+            ADMIN_SUBJECT,
+            undefined,
+          ),
+        ).rejects.toThrow();
+
+        const after = await seededSafetyRow('ILEOSTOMY');
+        expect(after.highValue?.toNumber()).toBe(before.highValue?.toNumber());
+        expect(after.updatedAt.toISOString()).toBe(before.updatedAt.toISOString());
+      });
+    });
+
     it('leaves the row and writes no audit event when it refuses', async () => {
-      const write = await service.createDefaultRange(
-        body(SAFETY_TYPE, { minDaysPostOp: 40, maxDaysPostOp: 70, lowValue: null, highValue: 130, unit: 'bpm' }),
-        ADMIN_SUBJECT,
-        undefined,
-      );
-      const auditBefore = await auditRowsFor(write.rangeId);
+      const row = await seededSafetyRow('COLOSTOMY');
+      const auditBefore = await auditRowsFor(row.id);
 
       await expect(
-        service.deleteDefaultRange(write.rangeId, ADMIN_SUBJECT, undefined),
-      ).rejects.toThrow();
+        service.deleteDefaultRange(row.id, ADMIN_SUBJECT, undefined),
+      ).rejects.toMatchObject({ status: 409 });
 
       expect(
-        await prisma.clinicalDefaultRange.findUnique({ where: { id: write.rangeId } }),
+        await prisma.clinicalDefaultRange.findUnique({ where: { id: row.id } }),
       ).not.toBeNull();
-      // A refused delete is not a change, so it leaves no trace beyond the
-      // CREATE that made the row.
-      expect(await auditRowsFor(write.rangeId)).toHaveLength(auditBefore.length);
+      // A refused delete is not a change, so it leaves no trace. The seeded row
+      // has no audit history of its own either — it arrived by migration, which
+      // CLAUDE.md notes writes no audit events.
+      expect(await auditRowsFor(row.id)).toHaveLength(auditBefore.length);
     });
 
     it('answers 404 for an id that does not exist, not "not deletable"', async () => {
@@ -1192,24 +1411,27 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       ).rejects.toMatchObject({ response: { error: { code: 'DEFAULT_RANGE_NOT_FOUND' } } });
     });
 
-    it('still allows the bounds to be corrected, which is the supported path', async () => {
-      // The guard removes the correction route that deletes; it must not remove
-      // the one that does not. A safety bound's window is population-wide, so
-      // changing the NUMBER is the only correction anyone needs.
-      const write = await service.createDefaultRange(
-        body(SAFETY_TYPE, { minDaysPostOp: 80, maxDaysPostOp: 110, lowValue: null, highValue: 130, unit: 'bpm' }),
-        ADMIN_SUBJECT,
-        undefined,
-      );
+    it('still allows the ceiling to be corrected, which is the only supported mutation', async () => {
+      // The guards remove create and delete; they must not remove the one
+      // correction anyone legitimately needs. This is also the ratification
+      // path: a clinician's number arrives by PUT, not by migration.
+      const row = await seededSafetyRow('ILEOSTOMY');
 
       const updated = await service.updateDefaultRange(
-        write.rangeId,
+        row.id,
         { lowValue: null, highValue: 125 },
         ADMIN_SUBJECT,
         undefined,
       );
-
       expect(updated.range.highValue).toBe(125);
+
+      // Put it back, because the rest of the file reads the seeded value.
+      await service.updateDefaultRange(
+        row.id,
+        { lowValue: null, highValue: 120 },
+        ADMIN_SUBJECT,
+        undefined,
+      );
     });
 
     it('still deletes an ordinary range type', async () => {

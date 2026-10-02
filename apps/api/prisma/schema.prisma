@@ -1062,69 +1062,6 @@ model ValueSetMember {
 /// exclusion, and it is the kind of omission that fails silently — a
 /// red-flag bound that quietly became patient-adjustable would let a patient
 /// widen the bound that tells them to seek care.
-/// What a `range_type` means: the bounds a default range of that type may be
-/// set within, the unit every such row must carry, and why those numbers are
-/// what they are (#102).
-///
-/// ## Why a table rather than columns on the range itself
-///
-/// #93 solved the same problem for `validation_thresholds` with per-row
-/// `min_settable_value`/`max_settable_value`, seeded by the same migration that
-/// seeds the row. That cannot work here: `clinical_default_ranges` is seeded by
-/// nothing — an admin creates its rows through the API, which is why that
-/// surface has a create at all — so per-row bounds would be supplied by the
-/// very admin they constrain. The TYPE is where the meaning lives, because
-/// every `heart_rate_red_flag_bpm` row means the same thing regardless of its
-/// ostomy type or day window.
-///
-/// ## Two things it closes
-///
-/// It gives #97's leftover rule a home. #97 made the overlap and ordering
-/// invariants database guarantees and left one application-only — rows sharing
-/// a `range_type` must agree on their `unit` — because it is a cross-row
-/// invariant an exclusion constraint cannot partition. `unit` here replaces
-/// that check with a single source of truth, and the units are not clinical
-/// judgements: they are derivable from the type name.
-///
-/// And the foreign key from `clinical_default_ranges.range_type` makes a typo
-/// unrepresentable. It was free text with a format regex, so
-/// `heart_rate_redflag_bpm` created a row of a type nothing reads — the hazard
-/// `admin-default-range-wire.ts` describes where it explains why
-/// `SAFETY_RANGE_TYPES` is a shared constant rather than a retyped literal.
-/// Adding a new range type is consequently a migration, which is right: the
-/// types are the shape of the clinical model, and SRS §3.11 has the console
-/// managing the default range *tables* rather than inventing new kinds.
-///
-/// ## Which bounds are decided
-///
-/// The signs and the physical-impossibility ceilings are engineering
-/// judgements and are set. The clinically plausible narrowing is **not**, and
-/// a pair spanning the full width of `DECIMAL(12,4)` is the encoding for
-/// "undecided" — the same convention #93 used. `basis` carries the reasoning
-/// per row. #102 stays open for the clinical half, and the specific gap is
-/// named there: for `heart_rate_red_flag_bpm` the ceiling prevents the
-/// seek-care prompt being silenced, and the floor does not prevent it firing
-/// on every reading.
-///
-/// Migration-owned. The runtime role holds `SELECT` and nothing else, so
-/// "immutable through the admin API" is a grant rather than a convention.
-model ClinicalDefaultRangeLimits {
-  rangeType String @id @map("range_type")
-
-  minValue Decimal @map("min_value") @db.Decimal(12, 4)
-  maxValue Decimal @map("max_value") @db.Decimal(12, 4)
-
-  unit  String @map("unit")
-  basis String @map("basis")
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
-
-  ranges ClinicalDefaultRange[]
-
-  @@map("clinical_default_range_limits")
-}
-
 /// ## Constraints Prisma cannot express, and where they live (#97)
 ///
 /// Four invariants on this table are enforced by the database and are invisible
@@ -1145,10 +1082,11 @@ model ClinicalDefaultRangeLimits {
 /// - `clinical_default_ranges_has_a_bound` — at least one of low/high.
 /// - `clinical_default_ranges_bounds_ordered` — `low_value <= high_value`.
 ///
-/// Still application-only: rows sharing a `range_type` must agree on their
-/// `unit`. It is a cross-row invariant the exclusion constraint does not
-/// partition, so it needs a `range_type` lookup table — which is what #102
-/// proposes for per-type settable bounds, and the unit belongs there.
+/// Closed by #102: `clinical_default_range_limits` declares the unit for each
+/// `range_type`, and a foreign key makes an unknown type unrepresentable. Note
+/// what #102 did NOT make structural — the per-type BOUND check is still
+/// application-only, so a psql session can write a bound outside its type's
+/// limits even though it cannot write an overlapping window.
 model ClinicalDefaultRange {
   /// The runtime role holds `DELETE` on this table and that is load-bearing, unlike
   /// on the other two config tables: the admin surface (P3.S3 PR C) hard-deletes a
@@ -1194,6 +1132,78 @@ model ClinicalDefaultRange {
 
   @@index([ostomyType, rangeType])
   @@map("clinical_default_ranges")
+}
+
+// Placed AFTER `ClinicalDefaultRange` deliberately. Inserted before it, this
+// model's `///` block came between that model's doc comment and the model
+// itself — so Prisma reattached `ClinicalDefaultRange`'s documentation, including
+// the #94 note that one range here must never seed a suggestion, to THIS table.
+// Confirmed in `src/generated/prisma/models/`, which is untracked and so
+// invisible in review.
+/// What a `range_type` means: the bounds a default range of that type may be
+/// set within, the unit every such row must carry, and why those numbers are
+/// what they are (#102).
+///
+/// ## Why a table rather than columns on the range itself
+///
+/// #93 solved the same problem for `validation_thresholds` with per-row
+/// `min_settable_value`/`max_settable_value`, seeded by the same migration that
+/// seeds the row. That cannot work here: `clinical_default_ranges` is seeded by
+/// nothing — an admin creates its rows through the API, which is why that
+/// surface has a create at all — so per-row bounds would be supplied by the
+/// very admin they constrain. The TYPE is where the meaning lives, because
+/// every `heart_rate_red_flag_bpm` row means the same thing regardless of its
+/// ostomy type or day window.
+///
+/// ## Two things it closes
+///
+/// It gives #97's leftover rule a home. #97 made the overlap and ordering
+/// invariants database guarantees and left one application-only — rows sharing
+/// a `range_type` must agree on their `unit` — because it is a cross-row
+/// invariant an exclusion constraint cannot partition. `unit` here replaces
+/// that check with a single source of truth, and the units are not clinical
+/// judgements: they are derivable from the type name.
+///
+/// And the foreign key from `clinical_default_ranges.range_type` makes a typo
+/// unrepresentable. It was free text with a format regex, so
+/// `heart_rate_redflag_bpm` created a row of a type nothing reads — the hazard
+/// `admin-default-range-wire.ts` describes where it explains why
+/// `SAFETY_RANGE_TYPES` is a shared constant rather than a retyped literal.
+/// Adding a new range type is consequently a migration, which is right: the
+/// types are the shape of the clinical model, and SRS §3.11 has the console
+/// managing the default range *tables* rather than inventing new kinds.
+///
+/// ## Which bounds are decided
+///
+/// The signs and the physical-impossibility ceilings are engineering
+/// judgements and are set. The clinically plausible narrowing is **not**, and
+/// a pair spanning the full width of `DECIMAL(12,4)` is the encoding for
+/// "undecided" — the same convention #93 used. `basis` carries the reasoning
+/// per row. #102 stays open for the clinical half, and the specific gap is
+/// named there: for `heart_rate_red_flag_bpm` **both** halves are undecided.
+/// An earlier version of this paragraph claimed the 300 bpm ceiling prevented
+/// the prompt being silenced — it does not, because 300 was chosen as a rate no
+/// reading can reach, which makes a threshold of 300 one no reading can reach.
+/// These limits are a typo guard. What keeps that prompt reachable is the rows
+/// seeded by migration and the shape rules in `assertSafetyRowShape`.
+///
+/// Migration-owned. The runtime role holds `SELECT` and nothing else, so
+/// "immutable through the admin API" is a grant rather than a convention.
+model ClinicalDefaultRangeLimits {
+  rangeType String @id @map("range_type")
+
+  minValue Decimal @map("min_value") @db.Decimal(12, 4)
+  maxValue Decimal @map("max_value") @db.Decimal(12, 4)
+
+  unit  String @map("unit")
+  basis String @map("basis")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  ranges ClinicalDefaultRange[]
+
+  @@map("clinical_default_range_limits")
 }
 
 /// `SAFETY_THRESHOLD` is for a bound that triggers a clinical safety response

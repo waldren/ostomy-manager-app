@@ -119,7 +119,7 @@ import { z } from 'zod';
  * system that can switch off a safety prompt, once the red-flag bound lives here
  * (#94); and because `ostomyType` is NOT NULL, a population-wide bound needs one row
  * per ostomy type, so deleting one leaves half the population with no bound and
- * nothing detects the asymmetry. Whichever sprint builds the seeding must revisit
+ * nothing detects the asymmetry. Settled by #98 (superseded, kept so the change is visible): whichever sprint builds the seeding must revisit
  * whether a safety-class row may be deleted at all. Recorded here rather than left to
  * go stale, because the claim reads as unconditional and will not announce its own
  * expiry.
@@ -256,7 +256,7 @@ export const createDefaultRangeSchema = z
     // caller's mistaken model of the type.
     unit: z.string().min(1).max(RANGE_UNIT_MAX_LENGTH).meta({
       description:
-        'The unit both bounds are in. Permanent: editing it alone would redefine every value in the row. Rows sharing a rangeType must agree on it, which the service enforces.',
+        'The unit both bounds are in. Permanent: editing it alone would redefine every value in the row. Must match the unit its clinical_default_range_limits row declares (#102), which replaced a cross-row comparison that agreed with whatever the first row of a type happened to say.',
     }),
     windowDays: windowDaysField,
     ...ruleFields,
@@ -384,17 +384,32 @@ export const SAFETY_RANGE_TYPES = ['heart_rate_red_flag_bpm'] as const;
  * that judgement for one operation, and the reason is narrow enough to state
  * exactly.
  *
- * `DELETE` is the only operation in the system that can switch off a safety
- * prompt. §3.13's red-flag bound is a seek-care prompt, not a validation
+ * `DELETE` is **not** the only operation that can switch off a safety prompt,
+ * which is what review corrected — a `PUT` removing the ceiling did it too, and
+ * never creating the row did it by default. All three routes are now closed:
+ * the rows are seeded by migration, create and delete are refused here, and
+ * `assertSafetyRowShape` requires a ceiling. What remains true is that DELETE is
+ * the most *final* of them, which is why it is refused outright rather than
+ * shaped. §3.13's red-flag bound is a seek-care prompt, not a validation
  * warning — there is no override path, no warning copy, and nothing in the app
  * reports that the prompt has stopped being reachable. Every other mutation on
  * this table changes a number; this one removes the row.
  *
- * It is also not needed. The day window is immutable, so delete-and-create is
- * the correction path for a wrong *window* — but a safety bound's window is
- * population-wide (day 0 onward), and `lowValue`/`highValue` ARE mutable, so a
- * wrong safety number is a `PUT`. There is no legitimate admin reason to delete
- * one.
+ * **The first version of this comment overstated the case, in two ways review
+ * caught.** It said "DELETE is the only operation in the system that can switch
+ * off a safety prompt" — a `PUT` removing the ceiling did the same thing and
+ * answered 200. And it rested on "a safety bound's window is population-wide
+ * (day 0 onward)", which nothing enforced: `MAX_DAYS_POST_OP` is 11,000 and the
+ * window check only orders the two ends, so a safety row covering nobody was
+ * accepted — and then permanently unrecoverable, because the window is
+ * immutable, the delete is refused, and the correctly-windowed replacement
+ * overlaps.
+ *
+ * Both are now true rather than assumed: the rows are seeded by migration, this
+ * surface refuses to create or delete one, and `assertSafetyRowShape` requires
+ * a ceiling, refuses a floor, and refuses a rolling window. `PUT` of the
+ * ceiling is the only mutation, which is also the ratification path for the
+ * clinical bound (#102).
  *
  * The cost, stated so nobody is surprised: removing a genuinely unwanted safety
  * row now needs a migration. That is the right amount of friction for the only
