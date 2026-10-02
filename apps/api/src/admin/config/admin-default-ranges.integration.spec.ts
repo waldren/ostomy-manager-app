@@ -40,6 +40,7 @@ import { PrismaClient } from '../../generated/prisma/client';
 
 import {
   adminDefaultRangesResponseSchema,
+  SAFETY_RANGE_TYPES,
   createDefaultRangeSchema,
   type CreateDefaultRangeRequest,
 } from './admin-default-range-wire';
@@ -747,6 +748,120 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
    * session cannot create a state the API would reject. Before #97 all five
    * rules were application-only, and CLAUDE.md said so in terms.
    */
+  /**
+   * #98: the one row this surface will not remove.
+   *
+   * `DELETE` is the only operation in the system that can switch off a safety
+   * prompt. §3.13's red-flag bound is a seek-care prompt rather than a
+   * data-quality warning — no override, no warning copy, and nothing in the app
+   * reports that the prompt has become unreachable. It is also not needed for
+   * correction: the bounds are mutable, so a wrong safety number is a `PUT`.
+   */
+  describe('a safety-class range cannot be deleted (#98)', () => {
+    const SAFETY_TYPE = SAFETY_RANGE_TYPES[0];
+
+    it('names the heart-rate red flag, which is what makes the guard reachable', () => {
+      // If this constant ever stops matching the seeded range type, the guard
+      // silently protects nothing — so the anchor is asserted, not assumed.
+      expect(SAFETY_TYPE).toBe('heart_rate_red_flag_bpm');
+    });
+
+    it('refuses the delete with a conflict, not a permission error', async () => {
+      const write = await service.createDefaultRange(
+        body(SAFETY_TYPE, { lowValue: null, highValue: 130, unit: 'bpm' }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      await expect(
+        service.deleteDefaultRange(write.rangeId, ADMIN_SUBJECT, undefined),
+      ).rejects.toMatchObject({
+        response: { error: { code: 'SAFETY_RANGE_NOT_DELETABLE' } },
+      });
+    });
+
+    it('leaves the row and writes no audit event when it refuses', async () => {
+      const write = await service.createDefaultRange(
+        body(SAFETY_TYPE, {
+          minDaysPostOp: 40,
+          maxDaysPostOp: 70,
+          lowValue: null,
+          highValue: 130,
+          unit: 'bpm',
+        }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+      const auditBefore = await auditRowsFor(write.rangeId);
+
+      await expect(
+        service.deleteDefaultRange(write.rangeId, ADMIN_SUBJECT, undefined),
+      ).rejects.toThrow();
+
+      expect(
+        await prisma.clinicalDefaultRange.findUnique({ where: { id: write.rangeId } }),
+      ).not.toBeNull();
+      // A refused delete is not a change, so it leaves no trace beyond the
+      // CREATE that made the row.
+      expect(await auditRowsFor(write.rangeId)).toHaveLength(auditBefore.length);
+    });
+
+    it('answers 404 for an id that does not exist, not "not deletable"', async () => {
+      // The order of the two checks matters: reporting "not deletable" for a
+      // missing row would say something false, and would leak that some row
+      // with that id was protected.
+      await expect(
+        service.deleteDefaultRange(
+          '00000000-0000-4000-8000-000000000000',
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({ response: { error: { code: 'DEFAULT_RANGE_NOT_FOUND' } } });
+    });
+
+    it('still allows the bounds to be corrected, which is the supported path', async () => {
+      // The guard removes the correction route that deletes; it must not remove
+      // the one that does not. A safety bound's window is population-wide, so
+      // changing the NUMBER is the only correction anyone needs.
+      const write = await service.createDefaultRange(
+        body(SAFETY_TYPE, {
+          minDaysPostOp: 80,
+          maxDaysPostOp: 110,
+          lowValue: null,
+          highValue: 130,
+          unit: 'bpm',
+        }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      const updated = await service.updateDefaultRange(
+        write.rangeId,
+        { lowValue: null, highValue: 125 },
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      expect(updated.range.highValue).toBe(125);
+    });
+
+    it('still deletes an ordinary range type', async () => {
+      // Otherwise the guard could be matching everything and these tests would
+      // not notice.
+      const write = await service.createDefaultRange(
+        body('p98_ordinary_ml', { minDaysPostOp: 120, maxDaysPostOp: 150 }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      await service.deleteDefaultRange(write.rangeId, ADMIN_SUBJECT, undefined);
+
+      expect(
+        await prisma.clinicalDefaultRange.findUnique({ where: { id: write.rangeId } }),
+      ).toBeNull();
+    });
+  });
+
   describe('the database enforces what the API refuses (#97)', () => {
     async function asOwner<T>(run: (client: PgClient) => Promise<T>): Promise<T> {
       const owner = new PgClient({ connectionString: ownerUrl });

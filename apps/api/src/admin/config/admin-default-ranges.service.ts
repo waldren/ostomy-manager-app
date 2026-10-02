@@ -22,6 +22,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
 import {
+  isSafetyRangeType,
   windowsOverlap,
   type AdminDefaultRangesResponse,
   type AdminOstomyType,
@@ -439,6 +440,24 @@ export class AdminDefaultRangesService {
       const existing = await tx.clinicalDefaultRange.findUnique({ where: { id } });
       if (!existing) {
         throw new NotFoundException({ error: { code: 'DEFAULT_RANGE_NOT_FOUND' } });
+      }
+
+      /**
+       * A safety-class row cannot be deleted through this surface (#98).
+       *
+       * Checked after the existence lookup so a missing id still answers 404 —
+       * reporting "not deletable" for a row that does not exist would tell a
+       * caller something false, and would also leak that *some* row with that
+       * id was protected.
+       *
+       * `409` rather than `403`: nothing about the admin's authorisation is
+       * wrong, and this is not a permission that a different admin would have.
+       * The request conflicts with the state of the resource — the row is of a
+       * kind that is not removable — which is what a conflict means here and
+       * what every other refusal on this surface already uses.
+       */
+      if (isSafetyRangeType(existing.rangeType)) {
+        throw new ConflictException({ error: { code: 'SAFETY_RANGE_NOT_DELETABLE' } });
       }
 
       const before = toSnapshot(existing);

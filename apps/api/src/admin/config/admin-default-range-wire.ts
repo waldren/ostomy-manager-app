@@ -340,6 +340,39 @@ export type AdminDefaultRange = z.infer<typeof adminDefaultRangeSchema>;
  * actually lives.
  */
 export const SAFETY_RANGE_TYPES = ['heart_rate_red_flag_bpm'] as const;
+
+/**
+ * Whether a range type is a clinical safety response rather than a data-quality
+ * bound.
+ *
+ * **This is the consumer the constant was missing.** PR C added
+ * `SAFETY_RANGE_TYPES` and said in terms that "nothing in this surface branches
+ * on it, deliberately: the safety property belongs to the seeder". #98 changed
+ * that judgement for one operation, and the reason is narrow enough to state
+ * exactly.
+ *
+ * `DELETE` is the only operation in the system that can switch off a safety
+ * prompt. §3.13's red-flag bound is a seek-care prompt, not a validation
+ * warning — there is no override path, no warning copy, and nothing in the app
+ * reports that the prompt has stopped being reachable. Every other mutation on
+ * this table changes a number; this one removes the row.
+ *
+ * It is also not needed. The day window is immutable, so delete-and-create is
+ * the correction path for a wrong *window* — but a safety bound's window is
+ * population-wide (day 0 onward), and `lowValue`/`highValue` ARE mutable, so a
+ * wrong safety number is a `PUT`. There is no legitimate admin reason to delete
+ * one.
+ *
+ * The cost, stated so nobody is surprised: removing a genuinely unwanted safety
+ * row now needs a migration. That is the right amount of friction for the only
+ * row that can silence a seek-care prompt, and `ostomy_type` being NOT NULL
+ * makes it worse than it looks — a population-wide bound needs **two** rows,
+ * and deleting one would leave half the patient population with no red flag and
+ * nothing detecting the asymmetry (#98).
+ */
+export function isSafetyRangeType(rangeType: string): boolean {
+  return (SAFETY_RANGE_TYPES as readonly string[]).includes(rangeType);
+}
 export type AdminDefaultRangesResponse = z.infer<typeof adminDefaultRangesResponseSchema>;
 
 /**
