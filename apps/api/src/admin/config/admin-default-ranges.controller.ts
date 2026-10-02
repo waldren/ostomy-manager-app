@@ -261,7 +261,7 @@ export class AdminDefaultRangesController {
   @ApiOperation({
     summary: 'Remove a default range',
     description:
-      "A real delete, unlike the value-set surface where a member is retired. Nothing references a default range: a patient's effective range carries its own bounds with CLINICAL_DEFAULT provenance, which is a copy rather than a pointer, so removing a default cannot alter a range any patient already has. The audit row keeps what the row said.",
+      "A real delete, unlike the value-set surface where a member is retired. Nothing references a default range: a patient's effective range carries its own bounds with CLINICAL_DEFAULT provenance, which is a copy rather than a pointer, so removing a default cannot alter a range any patient already has. The audit row keeps what the row said. One exception: a safety-class range type answers 409 SAFETY_RANGE_NOT_DELETABLE (#98). DELETE is the only operation in the system that can switch off a seek-care prompt, and it is not needed for correction — the day window of a safety bound is population-wide and its bounds are mutable, so a wrong safety number is a PUT. Removing one genuinely unwanted requires a migration.",
   })
   async remove(
     @Param('id', rowIdPipe) id: string,
