@@ -79,6 +79,12 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
   let container: StartedPostgreSqlContainer;
   let prisma: PrismaClient;
   let service: AdminDefaultRangesService;
+  /**
+   * Hoisted for #97's tests, which write as the OWNER on purpose: the point of
+   * a database constraint is that it holds for a writer that never goes near
+   * the service.
+   */
+  let ownerUrl: string;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:17-alpine')
@@ -87,6 +93,7 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       .withPassword('owner-test-only-password')
       .start();
     const ownerDatabaseUrl = container.getConnectionUri();
+    ownerUrl = ownerDatabaseUrl;
 
     execFileSync(
       process.execPath,
@@ -729,6 +736,216 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
           data: { afterValue: { lowValue: 0 } },
         }),
       ).rejects.toThrow(/permission denied/i);
+    });
+  });
+
+  /**
+   * #97: the invariants the API refuses are now refused by the table too.
+   *
+   * Every assertion here writes as the **owner** role, deliberately bypassing
+   * the service — the point is that a migration, `packages/seed` or a psql
+   * session cannot create a state the API would reject. Before #97 all five
+   * rules were application-only, and CLAUDE.md said so in terms.
+   */
+  describe('the database enforces what the API refuses (#97)', () => {
+    async function asOwner<T>(run: (client: PgClient) => Promise<T>): Promise<T> {
+      const owner = new PgClient({ connectionString: ownerUrl });
+      await owner.connect();
+      try {
+        return await run(owner);
+      } finally {
+        await owner.end();
+      }
+    }
+
+    function insert(
+      rangeType: string,
+      min: number | null,
+      max: number | null,
+      low: number | null,
+      high: number | null,
+      windowDays: number | null = null,
+      ostomyType = 'ILEOSTOMY',
+    ): string {
+      const sql = (value: number | null) => (value === null ? 'NULL' : String(value));
+      return `INSERT INTO clinical_default_ranges
+                (id, ostomy_type, range_type, min_days_post_op, max_days_post_op,
+                 low_value, high_value, unit, window_days, created_at, updated_at)
+              VALUES (gen_random_uuid(), '${ostomyType}', '${rangeType}', ${sql(min)}, ${sql(max)},
+                      ${sql(low)}, ${sql(high)}, 'mL', ${sql(windowDays)}, now(), now())`;
+    }
+
+    describe('the day-window exclusion constraint', () => {
+      it('accepts adjacent windows, because both ends are inclusive', async () => {
+        // Days 0-30 and 31-60 do not share a day. `int4range` is half-open, so
+        // the constraint adds 1 to the upper bound; getting that wrong is what
+        // would reintroduce the one-day overlap the API rule exists to catch.
+        await asOwner(async (owner) => {
+          await owner.query(insert('p97_adjacent', 0, 30, 500, 1200));
+          await owner.query(insert('p97_adjacent', 31, 60, 500, 1200));
+        });
+      });
+
+      it('refuses windows sharing a single day', async () => {
+        await asOwner(async (owner) => {
+          await owner.query(insert('p97_touching', 0, 30, 500, 1200));
+          await expect(owner.query(insert('p97_touching', 30, 60, 500, 1200))).rejects.toThrow(
+            /clinical_default_ranges_window_no_overlap/,
+          );
+        });
+      });
+
+      it('refuses an overlap against an open-ended window', async () => {
+        await asOwner(async (owner) => {
+          await owner.query(insert('p97_open', 60, null, 500, 1200));
+          await expect(owner.query(insert('p97_open', 90, 120, 500, 1200))).rejects.toThrow(
+            /window_no_overlap/,
+          );
+        });
+      });
+
+      /**
+       * The decision #97 asked to be made deliberately.
+       *
+       * `window_days` is coalesced in the constraint, so two rules with NO
+       * rolling window collide — matching `sibling.windowDays === candidate.windowDays`
+       * in the service, where `null === null` is TRUE. A bare `WITH =` would read
+       * `NULL = NULL` as unknown and let the pair through, leaving the database
+       * laxer than the API for the commonest case: most rules carry no window.
+       */
+      it('refuses two rules with no rolling window in the same days', async () => {
+        await asOwner(async (owner) => {
+          await owner.query(insert('p97_nullwin', 0, 30, 500, 1200, null));
+          await expect(owner.query(insert('p97_nullwin', 10, 40, 500, 1200, null))).rejects.toThrow(
+            /window_no_overlap/,
+          );
+        });
+      });
+
+      it('allows different rolling windows over the same days', async () => {
+        // A 7-day and a 30-day weight rule for one post-operative window are
+        // ordinary configuration (SRS §3.12 says "rolling-window definitions",
+        // plural), not ambiguity — §3.9 seeds both as separate ranges.
+        await asOwner(async (owner) => {
+          await owner.query(insert('p97_windows', 0, 90, 1, 5, 7));
+          await owner.query(insert('p97_windows', 0, 90, 1, 10, 30));
+        });
+      });
+
+      it('scopes the rule to one ostomy type', async () => {
+        await asOwner(async (owner) => {
+          await owner.query(insert('p97_types', 0, 30, 500, 1200, null, 'ILEOSTOMY'));
+          await owner.query(insert('p97_types', 0, 30, 200, 600, null, 'COLOSTOMY'));
+        });
+      });
+    });
+
+    describe('the CHECK constraints', () => {
+      /**
+       * The state that was not merely reachable but **invisible**.
+       *
+       * `windowsOverlap` compares `aStart <= bEnd && bStart <= aEnd`, which is
+       * false against everything for an inverted row — so one inserted by any
+       * route other than the API was permanently invisible to the overlap check
+       * and every later create silently succeeded against it. The wire schema
+       * refuses to create one, which is exactly why nobody would notice.
+       */
+      it('refuses an inverted day window, which the overlap check cannot see', async () => {
+        await asOwner(async (owner) => {
+          await expect(owner.query(insert('p97_inverted', 60, 10, 500, 1200))).rejects.toThrow(
+            /window_ordered/,
+          );
+        });
+      });
+
+      it('refuses a row with neither bound', async () => {
+        await asOwner(async (owner) => {
+          await expect(owner.query(insert('p97_nobound', 0, 30, null, null))).rejects.toThrow(
+            /has_a_bound/,
+          );
+        });
+      });
+
+      it('refuses inverted bounds', async () => {
+        await asOwner(async (owner) => {
+          await expect(owner.query(insert('p97_invbounds', 0, 30, 1200, 500))).rejects.toThrow(
+            /bounds_ordered/,
+          );
+        });
+      });
+
+      it('still allows a one-sided range, which is legitimate', async () => {
+        // `urine_output_ml` has no clinically meaningful ceiling, and
+        // `net_fluid_balance_ml` has a negative floor — both are real rows.
+        await asOwner(async (owner) => {
+          await owner.query(insert('p97_floor', 0, 30, 1200, null));
+          await owner.query(insert('p97_ceiling', 31, 60, null, 1200));
+        });
+      });
+    });
+
+    /**
+     * The one path the advisory lock cannot cover, answered as a 409.
+     *
+     * `assertNoOverlap` locks per type pair and reads the siblings, so two
+     * concurrent creates through the service cannot overlap. A row inserted by
+     * something that never takes the lock — a migration, the seeder, a psql
+     * session — is invisible to it, and before #97 simply produced an
+     * overlapping pair. Now the constraint refuses it, and the refusal has to
+     * reach the admin as the rule rather than as a 500.
+     *
+     * The error shape was **discovered rather than assumed**: a first version of
+     * `isWindowOverlapViolation` matched `P2002`/`P2010` and read the SQLSTATE
+     * from `meta.code`, and all three were wrong. Prisma 7 with the pg adapter
+     * reports `P2039` with `23P01` nested under
+     * `meta.driverAdapterError.cause.code`. This test pins the two facts
+     * Postgres guarantees — the SQLSTATE and the constraint name — so an
+     * upgrade that moves the nesting fails here instead of silently turning the
+     * 409 back into a 500.
+     */
+    it('answers a 409 when the conflicting row was inserted behind the lock', async () => {
+      await asOwner(async (owner) => {
+        await owner.query(insert('p97_race', 0, 30, 500, 1200));
+      });
+
+      await expect(
+        service.createDefaultRange(
+          body('p97_race', { minDaysPostOp: 10, maxDaysPostOp: 40 }),
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({
+        response: { error: { code: 'DEFAULT_RANGE_WINDOW_OVERLAPS' } },
+      });
+    });
+
+    it('reports the SQLSTATE and the constraint name the handler matches on', async () => {
+      await asOwner(async (owner) => {
+        await owner.query(insert('p97_shape', 0, 30, 500, 1200));
+      });
+
+      let captured: unknown;
+      try {
+        await prisma.clinicalDefaultRange.create({
+          data: {
+            ostomyType: 'ILEOSTOMY',
+            rangeType: 'p97_shape',
+            minDaysPostOp: 10,
+            maxDaysPostOp: 40,
+            lowValue: 500,
+            highValue: 1200,
+            unit: 'mL',
+            windowDays: null,
+          },
+        });
+      } catch (error) {
+        captured = error;
+      }
+
+      expect(captured).toBeInstanceOf(Error);
+      const reported = JSON.stringify((captured as { meta?: unknown }).meta ?? {});
+      expect(reported).toContain('23P01');
+      expect(reported).toContain('clinical_default_ranges_window_no_overlap');
     });
   });
 
