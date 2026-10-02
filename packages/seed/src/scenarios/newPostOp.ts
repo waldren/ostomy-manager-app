@@ -56,7 +56,14 @@ import {
   type SeedObservation,
 } from '../types.js';
 import { createRng, deterministicUuid, type Rng } from '../rng.js';
-import { addDays, assertInPast, entryInstant, observationAt, startOfUtcDay } from './shared.js';
+import {
+  addDays,
+  assertInPast,
+  entryInstant,
+  observationAt,
+  startOfUtcDay,
+  type GeneratorCodes,
+} from './shared.js';
 
 const SCENARIO = 'new-post-op';
 // Arbitrary but distinct — see `highOutputDehydration.ts` on why that matters.
@@ -74,16 +81,35 @@ const SURGERY_DAYS_AGO = 14;
  */
 const HISTORY_DAYS = SURGERY_DAYS_AGO - 1;
 
-/** Roughly two days in five have nothing logged at all. */
-const SILENT_DAY_IN_N = 5 / 2;
+/**
+ * Roughly one day in three has nothing logged at all.
+ *
+ * The comment said "two days in five" and the code said `5 / 2`, which
+ * `Math.round` turns into 3 — so the prose and the behaviour disagreed. Written
+ * as the integer it actually is.
+ */
+const SILENT_DAY_IN_N = 3;
 
 const ENTRIES_PER_DAY_MIN = 1;
 const ENTRIES_PER_DAY_MAX = 3;
 
 /**
- * Early post-op output runs higher and more variable than a settled stoma —
- * which is exactly why §3.9 keys its defaults to days since surgery rather than
- * using one population range.
+ * Per entry these run higher and more variable than a settled stoma, which is
+ * what early post-op output does and why §3.9 keys its defaults to days since
+ * surgery rather than to one population range.
+ *
+ * **The DAILY total is nonetheless low — about 600 mL against the 1,200-2,000
+ * a real fortnight-old ileostomy produces — and that is the scenario, not a
+ * mistake.** This comment used to imply the opposite, which review caught: with
+ * 1-3 entries logged on two days in three, the dataset holds roughly a third of
+ * what the patient actually passed. A partially-logged history is what sparse
+ * MEANS, and it is the case §3.7 has to survive — a balance computed from part
+ * of a day is not a small error, it is a reassuring number drawn from the wrong
+ * denominator.
+ *
+ * Against an early post-op §3.9 range this patient therefore reads as
+ * under-draining. That is a true thing about the data and exactly what someone
+ * testing the suggestion path should see, so long as they know why.
  */
 const ENTRY_ML_MIN = 180;
 const ENTRY_ML_MAX = 480;
@@ -95,9 +121,7 @@ const INTAKE_ML_MAX = 350;
 
 const ESTIMATED_IN_N = 3;
 
-export function generateNewPostOp(
-  options: ScenarioOptions & { readonly estimationMethodCode: string | null },
-): SeedDataset {
+export function generateNewPostOp(options: ScenarioOptions & GeneratorCodes): SeedDataset {
   const rng = createRng(options.seed ?? DEFAULT_SEED);
   const timeZone = options.timeZone ?? DEFAULT_TIME_ZONE;
   const patientId = deterministicUuid(rng);
@@ -107,7 +131,7 @@ export function generateNewPostOp(
   const observations: SeedObservation[] = [];
 
   for (let dayOffset = HISTORY_DAYS; dayOffset >= 1; dayOffset -= 1) {
-    if (rng.intBetween(1, Math.round(SILENT_DAY_IN_N)) === 1) continue;
+    if (rng.intBetween(1, SILENT_DAY_IN_N) === 1) continue;
 
     const entriesToday = rng.intBetween(ENTRIES_PER_DAY_MIN, ENTRIES_PER_DAY_MAX);
     for (let entry = 0; entry < entriesToday; entry += 1) {
@@ -143,7 +167,7 @@ interface EntryInput {
   readonly rng: Rng;
   readonly patientId: string;
   readonly timeZone: string;
-  readonly options: ScenarioOptions & { readonly estimationMethodCode: string | null };
+  readonly options: ScenarioOptions & GeneratorCodes;
   readonly dayOffset: number;
   readonly surgeryDate: Date;
 }
@@ -165,7 +189,7 @@ function assertAfterSurgery(instant: Date, surgeryDate: Date, dayOffset: number)
 }
 
 function instantFor(input: EntryInput): Date {
-  const instant = entryInstant(input.rng, input.options.now, input.dayOffset);
+  const instant = entryInstant(input.rng, input.options.now, input.dayOffset, input.timeZone);
   assertInPast(SCENARIO, instant, input.options.now, input.dayOffset);
   assertAfterSurgery(instant, input.surgeryDate, input.dayOffset);
   return instant;
@@ -185,7 +209,8 @@ function outputEntry(input: EntryInput): SeedObservation {
     valueQuantityValue: rng.floatBetween(ENTRY_ML_MIN, ENTRY_ML_MAX, 1).toFixed(1),
     // Estimated more often than a settled patient: a fortnight in, nobody has a
     // measuring jug routine yet. ADR-0018's qualifier is on the row either way.
-    method: estimated ? input.options.estimationMethodCode : null,
+    codes: input.options,
+    estimated,
     measurementSystem: 'imperial',
   });
 }
@@ -199,6 +224,7 @@ function intakeEntry(input: EntryInput): SeedObservation {
     code: FLUID_INTAKE_LOINC_CODE,
     effectiveDatetime: instantFor(input),
     timeZone: input.timeZone,
+    codes: input.options,
     valueQuantityValue: rng.floatBetween(INTAKE_ML_MIN, INTAKE_ML_MAX, 1).toFixed(1),
     fluidTypeCode: 'water',
     measurementSystem: 'imperial',

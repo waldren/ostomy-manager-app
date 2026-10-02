@@ -79,7 +79,7 @@ import {
   type ScenarioName,
   type SeedDataset,
 } from '@ostomy/seed';
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 import type { VolumetricValidationThresholds } from '@ostomy/core/validation';
 
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -192,7 +192,8 @@ async function write(prisma: PrismaClient, dataset: SeedDataset): Promise<void> 
     },
   });
 
-  // `createMany` rather than a loop: ~450 rows, and each insert takes a
+  // `createMany` rather than a loop: 17 to ~1,030 rows depending on the
+  // scenario, and each insert takes a
   // `sync_sequence` value from the same Postgres sequence the delta cursor
   // reads. One statement keeps that assignment contiguous and the seeding
   // fast enough that `dev-reset` stays a thing people are willing to run.
@@ -264,6 +265,7 @@ async function main(): Promise<void> {
       oidcSubject: args.oidcSubject,
       now,
       estimationMethodCode: ESTIMATION_METHOD_CODE.resolved ? ESTIMATION_METHOD_CODE.code : null,
+      measuredMethodCode: MEASURED_METHOD_CODE.resolved ? MEASURED_METHOD_CODE.code : null,
       ...(args.seed === undefined ? {} : { seed: args.seed }),
     });
 

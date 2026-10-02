@@ -25,7 +25,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * hardcoded.
  */
 
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 import type { VolumetricValidationThresholds } from '@ostomy/core/validation';
 import { describe, expect, it } from 'vitest';
 
@@ -34,6 +34,7 @@ import { STOMA_OUTPUT_LOINC_CODE, VOIDED_URINE_LOINC_CODE } from '../types.js';
 
 const NOW = new Date('2026-10-02T12:00:00.000Z');
 const ESTIMATION_CODE = ESTIMATION_METHOD_CODE.resolved ? ESTIMATION_METHOD_CODE.code : null;
+const MEASURED_CODE = MEASURED_METHOD_CODE.resolved ? MEASURED_METHOD_CODE.code : null;
 
 const SEEDED: VolumetricValidationThresholds = { softWarningMaxMl: 2000, maxClockSkewMs: 300_000 };
 
@@ -42,6 +43,7 @@ function generate() {
     oidcSubject: 'edges',
     now: NOW,
     estimationMethodCode: ESTIMATION_CODE,
+    measuredMethodCode: MEASURED_CODE,
   });
 }
 
@@ -134,9 +136,13 @@ describe('validation-edge-cases', () => {
     // warning fired because the number was guessed. §3.8's position is that a
     // real 2,500 mL day is the data point the care team most needs, so the
     // warning must be about the value rather than its provenance.
+    //
+    // Asserted against |Measured| rather than against null: ADR-0018 as amended
+    // makes `null` mean "no toggle applies", so the first version of this test
+    // was requiring the generator to produce a shape the application cannot.
     for (const entry of dataset.observations) {
       if (entry.code !== STOMA_OUTPUT_LOINC_CODE) continue;
-      expect(entry.method).toBeNull();
+      expect(entry.method).toEqual(MEASURED_CODE);
     }
   });
 });

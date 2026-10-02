@@ -24,7 +24,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * and the shape every other scenario lacks.
  */
 
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 import { describe, expect, it } from 'vitest';
 
 import { generateScenario } from '../index.js';
@@ -32,12 +32,14 @@ import { FLUID_INTAKE_LOINC_CODE, STOMA_OUTPUT_LOINC_CODE } from '../types.js';
 
 const NOW = new Date('2026-10-02T12:00:00.000Z');
 const ESTIMATION_CODE = ESTIMATION_METHOD_CODE.resolved ? ESTIMATION_METHOD_CODE.code : null;
+const MEASURED_CODE = MEASURED_METHOD_CODE.resolved ? MEASURED_METHOD_CODE.code : null;
 
 function generate(seed?: number) {
   return generateScenario('new-post-op', {
     oidcSubject: 'post-op',
     now: NOW,
     estimationMethodCode: ESTIMATION_CODE,
+    measuredMethodCode: MEASURED_CODE,
     ...(seed === undefined ? {} : { seed }),
   });
 }
@@ -64,8 +66,13 @@ describe('new-post-op', () => {
   it('is the early post-op window §3.9 keys its defaults to', () => {
     // Fourteen days of history is not enough to adapt a range from, so this
     // patient can only have clinical defaults — which is the path being
-    // exercised.
-    expect(days.size).toBeLessThanOrEqual(14);
+    // exercised. Asserted on the window itself rather than on `days.size <= 14`,
+    // which was dead: `HISTORY_DAYS` is 13, so the next test's `< 13` already
+    // implied it.
+    const spanDays = (NOW.getTime() - dataset.profile.surgeryDate.getTime()) / 86_400_000;
+
+    expect(spanDays).toBeLessThan(15);
+    expect(days.size).toBeGreaterThan(0);
   });
 
   it('leaves days with nothing logged at all', () => {

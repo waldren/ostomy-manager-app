@@ -25,7 +25,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * the assertions that make the dataset worth having.
  */
 
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 import { describe, expect, it } from 'vitest';
 
 import { generateScenario } from '../index.js';
@@ -38,25 +38,53 @@ import {
 
 const NOW = new Date('2026-10-02T12:00:00.000Z');
 const ESTIMATION_CODE = ESTIMATION_METHOD_CODE.resolved ? ESTIMATION_METHOD_CODE.code : null;
+const MEASURED_CODE = MEASURED_METHOD_CODE.resolved ? MEASURED_METHOD_CODE.code : null;
 
 function generate() {
   return generateScenario('high-output-dehydration', {
     oidcSubject: 'curves',
     now: NOW,
     estimationMethodCode: ESTIMATION_CODE,
+    measuredMethodCode: MEASURED_CODE,
   });
 }
 
-/** Measured volume per local day for one code. Unmeasured rows contribute nothing. */
+/**
+ * Measured volume per local day for one code. Unmeasured rows are skipped.
+ *
+ * `continue`, not `+ 0`, and the difference is the rule this file is about.
+ * The first version scored a volumeless row as zero while its own docstring
+ * said "contribute nothing" — arithmetically the same sum, but it created a map
+ * entry of `0` for a day whose entries were all unmeasured, which is `0 mL` as
+ * an invented reading in the most alarming possible direction for this signal.
+ * This is the helper someone copies the next time they total urine for a real
+ * dashboard.
+ */
 function dailyTotals(observations: readonly SeedObservation[], code: string): Map<string, number> {
   const totals = new Map<string, number>();
   for (const observation of observations) {
     if (observation.code !== code) continue;
-    const value =
-      observation.valueQuantityValue === null ? 0 : Number(observation.valueQuantityValue);
+    if (observation.valueQuantityValue === null) continue;
+    const value = Number(observation.valueQuantityValue);
     totals.set(observation.localDate, (totals.get(observation.localDate) ?? 0) + value);
   }
   return totals;
+}
+
+/** Mean measured volume of a single entry on one local day, for one code. */
+function meanEntryVolumeOn(
+  observations: readonly SeedObservation[],
+  code: string,
+  day: string,
+): number {
+  const volumes = observations
+    .filter(
+      (entry) =>
+        entry.code === code && entry.localDate === day && entry.valueQuantityValue !== null,
+    )
+    .map((entry) => Number(entry.valueQuantityValue));
+
+  return volumes.reduce((running, value) => running + value, 0) / volumes.length;
 }
 
 function sortedDays(totals: Map<string, number>): string[] {
@@ -81,7 +109,15 @@ describe('high-output-dehydration', () => {
     expect(urine.size).toBeGreaterThan(0);
   });
 
-  it('climbs output past the excessive daily bound', () => {
+  /**
+   * 2,000 mL is `stoma_output_single_entry_warning_ml`'s seeded value, which is
+   * a SINGLE-ENTRY rule (SRS §3.8). No daily excessive bound exists anywhere
+   * yet — `clinical_default_ranges` has no seeded rows — so this is a clinical
+   * sanity check on the daily total, not a check against a configured bound.
+   * The test name said "the excessive daily bound", which claimed more than it
+   * can.
+   */
+  it('climbs the daily output total past 2,000 mL', () => {
     expect(output.get(last) ?? 0).toBeGreaterThan(2000);
     // At least doubled, so a reader sees a trend rather than noise.
     expect(output.get(last) ?? 0).toBeGreaterThan((output.get(first) ?? 0) * 2);
@@ -95,14 +131,47 @@ describe('high-output-dehydration', () => {
 
   it('holds intake flat, which is the point of the comparison', () => {
     const values = days.map((day) => intake.get(day) ?? 0);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
+    const firstWeek = values.slice(0, 7);
+    const lastWeek = values.slice(-7);
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
 
-    // Flat to within rounding of the split, not merely "not rising".
-    expect(max - min).toBeLessThan(2);
+    /**
+     * No upward trend, rather than flat to within 2 mL.
+     *
+     * The old assertion was literally true and clinically absurd: a 45-day
+     * intake line identical to the millilitre is not something a human
+     * produces, and review flagged it as making the chart look synthetic. The
+     * claim the scenario actually needs is that intake does not rise to meet
+     * the losses — which is what this checks, against jitter.
+     */
+    expect(mean(lastWeek)).toBeLessThan(mean(firstWeek) * 1.1);
+    expect(mean(lastWeek)).toBeGreaterThan(mean(firstWeek) * 0.9);
   });
 
-  it('falls urine output as the patient dehydrates', () => {
+  /**
+   * Per MEASURED ENTRY, not per daily total — and review proved the daily form
+   * could not fail.
+   *
+   * Two mutations passed 11/11 against the old assertion: setting
+   * `URINE_ML_PER_DAY_WORST` to the baseline (a completely flat curve), and
+   * replacing the lerp outright. The daily total on the final days is depressed
+   * by the colour-only entries alone, which contributed nothing to the sum, so
+   * `< first / 2` cleared without any decline in the volumes — satisfied by the
+   * unmeasured-row artifact rather than by the thing being modelled.
+   *
+   * A rate per measured entry is immune to that: however many entries carry no
+   * volume, the ones that do must get smaller.
+   */
+  it('falls urine volume per measured entry as the patient dehydrates', () => {
+    const firstDay = meanEntryVolumeOn(dataset.observations, VOIDED_URINE_LOINC_CODE, first);
+    const lastDay = meanEntryVolumeOn(dataset.observations, VOIDED_URINE_LOINC_CODE, last);
+
+    expect(lastDay).toBeLessThan(firstDay / 2);
+  });
+
+  it('also falls as a measured daily total', () => {
+    // Kept, because it is what a reader of the chart sees — but it is no longer
+    // the only evidence for the curve.
     expect(urine.get(last) ?? 0).toBeLessThan((urine.get(first) ?? 0) / 2);
   });
 
@@ -153,8 +222,18 @@ describe('high-output-dehydration', () => {
         (entry) => entry.valueQuantityValue === null,
       );
 
+      // Some unmeasured, and some NOT — a partial day rather than an empty one.
+      //
+      // `toBeLessThan(length + 1)` is what this said, which is a tautology: a
+      // filtered subset's length is always at most the parent's, so it could
+      // never fail for any generator. Both reviews caught it independently, and
+      // it was the only thing standing behind the test's name.
       expect(unmeasuredOnLastDay.length).toBeGreaterThan(0);
-      expect(unmeasuredOnLastDay.length).toBeLessThan(lastDayEntries.length + 1);
+      expect(unmeasuredOnLastDay.length).toBeLessThan(lastDayEntries.length);
+
+      // And the claim the name actually makes: the measured total is below what
+      // the modelled day produced, because part of it was never measured.
+      expect(urine.get(last) ?? 0).toBeLessThan(450);
     });
   });
 

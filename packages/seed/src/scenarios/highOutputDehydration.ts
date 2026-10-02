@@ -56,6 +56,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * than seeding rows whose validation means nothing.
  */
 
+import { URINE_COLOR_CODES_PALE_TO_DARK } from '@ostomy/core/hydration';
+
 import {
   FLUID_INTAKE_LOINC_CODE,
   STOMA_OUTPUT_LOINC_CODE,
@@ -65,7 +67,14 @@ import {
   type SeedObservation,
 } from '../types.js';
 import { createRng, deterministicUuid, type Rng } from '../rng.js';
-import { addDays, assertInPast, entryInstant, observationAt, startOfUtcDay } from './shared.js';
+import {
+  addDays,
+  assertInPast,
+  entryInstant,
+  observationAt,
+  startOfUtcDay,
+  type GeneratorCodes,
+} from './shared.js';
 
 const SCENARIO = 'high-output-dehydration';
 // Arbitrary, but distinct from every other scenario's, which is the only real
@@ -84,15 +93,31 @@ const DECLINE_STARTS_AT_DAY_OFFSET = 30;
 const OUTPUT_ML_PER_DAY_BASELINE = 1000;
 const OUTPUT_ML_PER_DAY_WORST = 2600;
 
-/** Intake is flat on purpose: a patient not realising they must drink more. */
+/**
+ * Intake is flat on purpose: a patient not realising they must drink more.
+ *
+ * Jittered within a few percent rather than held to the millilitre. Review
+ * pointed out that a 45-day line flat to within 2 mL is not a curve a human
+ * produces, and the comparison this scenario makes — output rising while intake
+ * does not — survives the jitter intact. The spec asserts "no upward trend"
+ * rather than "identical", which is the honest version of the claim.
+ */
 const INTAKE_ML_PER_DAY = 1800;
+const INTAKE_JITTER = 0.06;
 
 /** Urine falls as the kidneys conserve. 450 mL/day is frankly oliguric. */
 const URINE_ML_PER_DAY_BASELINE = 1300;
 const URINE_ML_PER_DAY_WORST = 450;
 
-/** Light to dark, matching the `urine_color` value set's own order. */
-const URINE_COLORS = ['pale_straw', 'straw', 'yellow', 'dark_yellow', 'amber', 'brown'] as const;
+/**
+ * Light to dark — imported, not retyped.
+ *
+ * `packages/core`'s `hydration` module already publishes this ordering and uses
+ * it to score concentration, so a local copy is a second home for a clinical
+ * list. Review caught it as byte-identical duplication, which is the shape
+ * CLAUDE.md names: a list that must have one home.
+ */
+const URINE_COLORS = URINE_COLOR_CODES_PALE_TO_DARK;
 
 /** Water early; oral rehydration solution appears as the patient tries to compensate. */
 const EARLY_FLUIDS = ['water', 'coffee_or_tea', 'juice'] as const;
@@ -105,7 +130,7 @@ const UNMEASURED_IN_N = 2;
 const ESTIMATED_IN_N = 5;
 
 export function generateHighOutputDehydration(
-  options: ScenarioOptions & { readonly estimationMethodCode: string | null },
+  options: ScenarioOptions & GeneratorCodes,
 ): SeedDataset {
   const rng = createRng(options.seed ?? DEFAULT_SEED);
   const timeZone = options.timeZone ?? DEFAULT_TIME_ZONE;
@@ -161,7 +186,7 @@ interface DayInput {
   readonly rng: Rng;
   readonly patientId: string;
   readonly timeZone: string;
-  readonly options: ScenarioOptions & { readonly estimationMethodCode: string | null };
+  readonly options: ScenarioOptions & GeneratorCodes;
   readonly dayOffset: number;
   readonly severity: number;
 }
@@ -186,7 +211,7 @@ function outputForDay(input: DayInput): SeedObservation[] {
   const entries = input.severity < 0.5 ? rng.intBetween(4, 5) : rng.intBetween(6, 8);
 
   return splitDailyTotal(rng, total, entries).map((volume) => {
-    const instant = entryInstant(rng, input.options.now, input.dayOffset);
+    const instant = entryInstant(rng, input.options.now, input.dayOffset, input.timeZone);
     assertInPast(SCENARIO, instant, input.options.now, input.dayOffset);
     const estimated =
       input.options.estimationMethodCode !== null && rng.intBetween(1, ESTIMATED_IN_N) === 1;
@@ -198,7 +223,8 @@ function outputForDay(input: DayInput): SeedObservation[] {
       effectiveDatetime: instant,
       timeZone: input.timeZone,
       valueQuantityValue: volume.toFixed(1),
-      method: estimated ? input.options.estimationMethodCode : null,
+      codes: input.options,
+      estimated,
     });
   });
 }
@@ -208,8 +234,10 @@ function intakeForDay(input: DayInput): SeedObservation[] {
   const entries = rng.intBetween(5, 7);
   const fluids = input.severity < 0.5 ? EARLY_FLUIDS : LATE_FLUIDS;
 
-  return splitDailyTotal(rng, INTAKE_ML_PER_DAY, entries).map((volume) => {
-    const instant = entryInstant(rng, input.options.now, input.dayOffset);
+  const dailyTotal = INTAKE_ML_PER_DAY * rng.floatBetween(1 - INTAKE_JITTER, 1 + INTAKE_JITTER, 3);
+
+  return splitDailyTotal(rng, dailyTotal, entries).map((volume) => {
+    const instant = entryInstant(rng, input.options.now, input.dayOffset, input.timeZone);
     assertInPast(SCENARIO, instant, input.options.now, input.dayOffset);
 
     return observationAt({
@@ -218,6 +246,7 @@ function intakeForDay(input: DayInput): SeedObservation[] {
       code: FLUID_INTAKE_LOINC_CODE,
       effectiveDatetime: instant,
       timeZone: input.timeZone,
+      codes: input.options,
       valueQuantityValue: volume.toFixed(1),
       // Always categorised. P3.S2 found `fluidTypeCode` missing from the sync
       // path, so every intake entry logged offline lost its categorisation —
@@ -240,7 +269,7 @@ function urineForDay(input: DayInput): SeedObservation[] {
   const color = URINE_COLORS[colorIndex] ?? 'yellow';
 
   return splitDailyTotal(rng, total, entries).map((volume) => {
-    const instant = entryInstant(rng, input.options.now, input.dayOffset);
+    const instant = entryInstant(rng, input.options.now, input.dayOffset, input.timeZone);
     assertInPast(SCENARIO, instant, input.options.now, input.dayOffset);
 
     const unmeasured =
@@ -253,6 +282,7 @@ function urineForDay(input: DayInput): SeedObservation[] {
       code: VOIDED_URINE_LOINC_CODE,
       effectiveDatetime: instant,
       timeZone: input.timeZone,
+      codes: input.options,
       // Omitted, never zero: `SUM()` skips NULL and code that coerces does not.
       ...(unmeasured ? {} : { valueQuantityValue: volume.toFixed(1) }),
       urineColorCode: color,

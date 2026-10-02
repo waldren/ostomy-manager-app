@@ -52,7 +52,14 @@ import {
   type SeedObservation,
 } from '../types.js';
 import { createRng, deterministicUuid, type Rng } from '../rng.js';
-import { addDays, assertInPast, entryInstant, observationAt, startOfUtcDay } from './shared.js';
+import {
+  addDays,
+  assertInPast,
+  entryInstant,
+  observationAt,
+  startOfUtcDay,
+  type GeneratorCodes,
+} from './shared.js';
 
 const SCENARIO = 'colostomy-baseline';
 // Arbitrary but distinct — see `highOutputDehydration.ts` on why that matters.
@@ -91,9 +98,7 @@ const HEALTHY_URINE_COLORS = ['pale_straw', 'straw', 'yellow'] as const;
 
 const ESTIMATED_IN_N = 8;
 
-export function generateColostomyBaseline(
-  options: ScenarioOptions & { readonly estimationMethodCode: string | null },
-): SeedDataset {
+export function generateColostomyBaseline(options: ScenarioOptions & GeneratorCodes): SeedDataset {
   const rng = createRng(options.seed ?? DEFAULT_SEED);
   const timeZone = options.timeZone ?? DEFAULT_TIME_ZONE;
   const patientId = deterministicUuid(rng);
@@ -105,21 +110,27 @@ export function generateColostomyBaseline(
   for (let dayOffset = HISTORY_DAYS; dayOffset >= 1; dayOffset -= 1) {
     const context = { rng, patientId, timeZone, options, dayOffset };
 
-    for (
-      let entry = 0;
-      entry < rng.intBetween(ENTRIES_PER_DAY_MIN, ENTRIES_PER_DAY_MAX);
-      entry += 1
-    ) {
+    /**
+     * Drawn once each, not in the loop condition.
+     *
+     * The first version put `rng.intBetween(...)` in the condition, so the bound
+     * was re-rolled every iteration. It stayed deterministic and the counts
+     * stayed inside their ranges, but the distribution was not the uniform draw
+     * the constants read as — "one to three emptyings a day" came out at a mean
+     * of 1.72 rather than 2 — and the day someone sets a MIN of 0 it becomes a
+     * geometric process. `newPostOp.ts` already did this correctly.
+     */
+    const outputEntries = rng.intBetween(ENTRIES_PER_DAY_MIN, ENTRIES_PER_DAY_MAX);
+    const intakeEntries = rng.intBetween(INTAKE_ENTRIES_MIN, INTAKE_ENTRIES_MAX);
+    const urineEntries = rng.intBetween(URINE_ENTRIES_MIN, URINE_ENTRIES_MAX);
+
+    for (let entry = 0; entry < outputEntries; entry += 1) {
       observations.push(outputEntry(context));
     }
-    for (
-      let entry = 0;
-      entry < rng.intBetween(INTAKE_ENTRIES_MIN, INTAKE_ENTRIES_MAX);
-      entry += 1
-    ) {
+    for (let entry = 0; entry < intakeEntries; entry += 1) {
       observations.push(intakeEntry(context));
     }
-    for (let entry = 0; entry < rng.intBetween(URINE_ENTRIES_MIN, URINE_ENTRIES_MAX); entry += 1) {
+    for (let entry = 0; entry < urineEntries; entry += 1) {
       observations.push(urineEntry(context));
     }
   }
@@ -143,12 +154,12 @@ interface EntryInput {
   readonly rng: Rng;
   readonly patientId: string;
   readonly timeZone: string;
-  readonly options: ScenarioOptions & { readonly estimationMethodCode: string | null };
+  readonly options: ScenarioOptions & GeneratorCodes;
   readonly dayOffset: number;
 }
 
 function instantFor(input: EntryInput): Date {
-  const instant = entryInstant(input.rng, input.options.now, input.dayOffset);
+  const instant = entryInstant(input.rng, input.options.now, input.dayOffset, input.timeZone);
   assertInPast(SCENARIO, instant, input.options.now, input.dayOffset);
   return instant;
 }
@@ -165,7 +176,8 @@ function outputEntry(input: EntryInput): SeedObservation {
     effectiveDatetime: instantFor(input),
     timeZone: input.timeZone,
     valueQuantityValue: rng.floatBetween(ENTRY_ML_MIN, ENTRY_ML_MAX, 1).toFixed(1),
-    method: estimated ? input.options.estimationMethodCode : null,
+    codes: input.options,
+    estimated,
   });
 }
 
@@ -178,6 +190,7 @@ function intakeEntry(input: EntryInput): SeedObservation {
     code: FLUID_INTAKE_LOINC_CODE,
     effectiveDatetime: instantFor(input),
     timeZone: input.timeZone,
+    codes: input.options,
     valueQuantityValue: rng.floatBetween(INTAKE_ML_MIN, INTAKE_ML_MAX, 1).toFixed(1),
     fluidTypeCode: FLUIDS[rng.intBetween(0, FLUIDS.length - 1)] ?? 'water',
   });
@@ -192,6 +205,7 @@ function urineEntry(input: EntryInput): SeedObservation {
     code: VOIDED_URINE_LOINC_CODE,
     effectiveDatetime: instantFor(input),
     timeZone: input.timeZone,
+    codes: input.options,
     valueQuantityValue: rng.floatBetween(URINE_ML_MIN, URINE_ML_MAX, 1).toFixed(1),
     urineColorCode:
       HEALTHY_URINE_COLORS[rng.intBetween(0, HEALTHY_URINE_COLORS.length - 1)] ?? 'straw',

@@ -102,6 +102,28 @@ export interface GenerateOptions extends ScenarioOptions {
    * it from `@ostomy/core/validation` and hands it over (ADR-0018).
    */
   readonly estimationMethodCode: string | null;
+  /**
+   * `MEASURED_METHOD_CODE`'s value, or `null` where it is unresolved.
+   *
+   * **Added because the seeder was writing a shape the application cannot
+   * produce.** ADR-0018 as amended makes `method: null` at rest mean exactly
+   * one thing — "this observation has no toggle", i.e. weight or resting heart
+   * rate — and `toStoredMethod` writes `258104002` |Measured| for a measured
+   * volumetric entry. Every measured row this package generated was therefore
+   * asserting that no Measured/Estimated question applied to it, on 2,128 rows
+   * of a seeded database, and a FHIR export would have emitted no
+   * `Observation.method` for any of them.
+   *
+   * It survived because `apps/web` still reads a null as measured for
+   * back-compat, so the demo looked right — and because the backfill migration
+   * that made that reading sound says in terms that it "stops being true for
+   * any row written after this migration". The seeder runs after it.
+   *
+   * Injected rather than imported for the same reason as the estimation code:
+   * this package must not be the thing keeping a stale copy of a terminology
+   * code alive (ADR-0018).
+   */
+  readonly measuredMethodCode: string | null;
 }
 
 export function generateScenario(name: ScenarioName, options: GenerateOptions): SeedDataset {
@@ -134,11 +156,15 @@ export interface ScenarioValidationProblem {
 /**
  * Re-runs the application's own Tier 1 rules over a generated dataset.
  *
- * Deliberately the same `validateVolumetricEntry` the API and the phone call,
- * not a reimplementation: sharing the module is what makes a rule change
+ * Deliberately `packages/core`'s own entry points — whichever one the row's
+ * shape calls for, see `evaluateSeedObservation` — rather than a
+ * reimplementation: sharing the module is what makes a rule change
  * automatically constrain the seed data too (ADR-0009). A local copy of the
  * rules would drift and the seeder would keep claiming validity it no longer
  * had.
+ *
+ * (This said "the same `validateVolumetricEntry`" until P3.S5 made the dispatch
+ * two-way.)
  */
 /**
  * The application's own rules over one generated row, through whichever entry

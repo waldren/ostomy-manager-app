@@ -60,11 +60,19 @@ export const FLUID_INTAKE_LOINC_CODE = '9000-1';
 export const VOIDED_URINE_LOINC_CODE = '9187-6';
 
 // Body weight (29463-7) and resting heart rate (8867-4) are deliberately absent.
-// `findTier1Problems` validates every row through the volumetric entry point,
-// which is millilitre-shaped, so a kilogram value would be checked against a
-// volume bound and the validation would mean nothing. Routing them correctly is
-// its own change — see `highOutputDehydration.ts`, where the weight signal
-// would otherwise have fitted the story.
+//
+// `findTier1Problems` now dispatches on whether a row has a volume, so the
+// claim this comment first made — "validates every row through the volumetric
+// entry point" — is no longer literally true. The argument it supported still
+// is, and is the reason these two stay out: a weight row HAS a value, so it
+// would route to the volumetric entry point and be checked against a
+// millilitre bound, and its legitimately-null `method` would be read as
+// measured so `METHOD_REQUIRED` could never fire.
+//
+// `apps/api` already solved this and wrote down why: `resolveMethodForEntry`'s
+// doc comment is titled "`toggleApplies`, not `hasVolume`". Mirroring that
+// predicate here is the change that admits these two codes, and it belongs with
+// the sprint that seeds them rather than ahead of it.
 
 export type SeedOstomyType = 'ILEOSTOMY' | 'COLOSTOMY';
 
@@ -121,10 +129,17 @@ export interface SeedObservation {
    */
   readonly valueQuantityValue: string | null;
   readonly valueQuantityUnit: 'mL' | 'kg' | null;
-  /** Set only on code `9187-6`, and required there when the volume is absent. */
-  readonly urineColorCode?: string | null;
+  /**
+   * Set only on code `9187-6`, and required there when the volume is absent.
+   *
+   * Optional rather than nullable. Both would compile, and under
+   * `exactOptionalPropertyTypes` they mean different things — `observationAt`
+   * omits the key entirely rather than writing null, so this matches what the
+   * package actually produces and the writer's `?? null` handles the column.
+   */
+  readonly urineColorCode?: string;
   /** Set only on code `9000-1`. The categorisation P3.S2 found missing from the sync path. */
-  readonly fluidTypeCode?: string | null;
+  readonly fluidTypeCode?: string;
   readonly effectiveDatetime: Date;
   /** `null` for measured; the SNOMED estimation code for estimated (ADR-0018). */
   readonly method: string | null;

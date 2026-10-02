@@ -30,7 +30,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * the two datasets is what pins the clinical difference.
  */
 
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 import { describe, expect, it } from 'vitest';
 
 import { generateScenario, type ScenarioName } from '../index.js';
@@ -38,12 +38,14 @@ import { STOMA_OUTPUT_LOINC_CODE, VOIDED_URINE_LOINC_CODE, type SeedDataset } fr
 
 const NOW = new Date('2026-10-02T12:00:00.000Z');
 const ESTIMATION_CODE = ESTIMATION_METHOD_CODE.resolved ? ESTIMATION_METHOD_CODE.code : null;
+const MEASURED_CODE = MEASURED_METHOD_CODE.resolved ? MEASURED_METHOD_CODE.code : null;
 
 function generate(name: ScenarioName) {
   return generateScenario(name, {
     oidcSubject: `ratio-${name}`,
     now: NOW,
     estimationMethodCode: ESTIMATION_CODE,
+    measuredMethodCode: MEASURED_CODE,
   });
 }
 
@@ -59,6 +61,15 @@ function meanDailyOutput(dataset: SeedDataset): number {
   }
   const values = [...totals.values()];
   return values.reduce((running, value) => running + value, 0) / values.length;
+}
+
+/** Mean measured volume of a single stoma-output entry. */
+function meanEntryVolume(dataset: SeedDataset): number {
+  const volumes = dataset.observations
+    .filter((entry) => entry.code === STOMA_OUTPUT_LOINC_CODE && entry.valueQuantityValue !== null)
+    .map((entry) => Number(entry.valueQuantityValue));
+
+  return volumes.reduce((running, value) => running + value, 0) / volumes.length;
 }
 
 /** Mean stoma-output entries per local day. */
@@ -94,6 +105,23 @@ describe('colostomy-baseline', () => {
 
   it('empties fewer times a day than the ileostomy baseline', () => {
     expect(meanEntriesPerDay(colostomy)).toBeLessThan(meanEntriesPerDay(ileostomy));
+  });
+
+  /**
+   * Per ENTRY, not just per day — and review proved this one was needed.
+   *
+   * Raising this scenario's per-entry range to the ileostomy baseline's exact
+   * `120-320` — "the generator quietly became a second ileostomy" — left all six
+   * tests green, because the daily `/2` ratio was carried almost entirely by the
+   * entry COUNT. The docstring above claims the comparative form pins the
+   * clinical difference; it pinned half of it.
+   *
+   * Volume per emptying is the half that encodes the physiology: water absorbed
+   * further up the bowel means a smaller, more formed output each time, not
+   * merely fewer trips.
+   */
+  it('produces a smaller volume per emptying, not just fewer of them', () => {
+    expect(meanEntryVolume(colostomy)).toBeLessThan(meanEntryVolume(ileostomy) * 0.8);
   });
 
   it('lands in the range a colostomy default would be written against', () => {

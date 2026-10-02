@@ -41,7 +41,7 @@ Twenty-one ADRs accepted (ADR-0001 to ADR-0021) — ADR-0020 Android-only v1, AD
 
 ### 2.2 What is not built, and is scheduled
 
-P3.S3 admin config API · P3.S4 Quick-Add · P3.S5 remaining seed scenarios · all of P4–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
+P3.S4 Quick-Add · all of P4–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
 
 ### 2.3 What is not built, and was owned by nobody until this revision
 

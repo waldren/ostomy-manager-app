@@ -29,7 +29,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * covers what none of them is allowed to get wrong.
  */
 
-import { ESTIMATION_METHOD_CODE } from '@ostomy/core/validation';
+import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 import type { VolumetricValidationThresholds } from '@ostomy/core/validation';
 import { toLocalDate } from '@ostomy/core/units';
 import { describe, expect, it } from 'vitest';
@@ -52,12 +52,14 @@ const THRESHOLDS: VolumetricValidationThresholds = {
 };
 
 const ESTIMATION_CODE = ESTIMATION_METHOD_CODE.resolved ? ESTIMATION_METHOD_CODE.code : null;
+const MEASURED_CODE = MEASURED_METHOD_CODE.resolved ? MEASURED_METHOD_CODE.code : null;
 
 function generate(name: ScenarioName, overrides: { seed?: number; now?: Date } = {}) {
   return generateScenario(name, {
     oidcSubject: `invariants-${name}`,
     now: overrides.now ?? NOW,
     estimationMethodCode: ESTIMATION_CODE,
+    measuredMethodCode: MEASURED_CODE,
     ...(overrides.seed === undefined ? {} : { seed: overrides.seed }),
   });
 }

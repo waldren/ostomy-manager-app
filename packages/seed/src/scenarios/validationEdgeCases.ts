@@ -69,7 +69,14 @@ import {
   type SeedObservation,
 } from '../types.js';
 import { createRng, deterministicUuid, type Rng } from '../rng.js';
-import { addDays, assertInPast, entryInstant, observationAt, startOfUtcDay } from './shared.js';
+import {
+  addDays,
+  assertInPast,
+  entryInstant,
+  observationAt,
+  startOfUtcDay,
+  type GeneratorCodes,
+} from './shared.js';
 
 const SCENARIO = 'validation-edge-cases';
 // Arbitrary but distinct — see `highOutputDehydration.ts` on why that matters.
@@ -80,12 +87,24 @@ const HISTORY_DAYS = 21;
 const SURGERY_DAYS_AGO = 150;
 
 /**
- * Comfortably above the seeded 2,000 mL soft warning and comfortably below
- * #93's 3,000 mL settable ceiling, so this stays a warning rather than becoming
- * a value no admin could configure a bound around.
+ * Above the seeded 2,000 mL soft warning, and only just — which is the honest
+ * range and not the one this file shipped with.
+ *
+ * It was 2,300-2,800, and review was right to call that physically implausible
+ * for a SINGLE emptying: a drainable pouch holds 400-900 mL and even an
+ * overnight drainage bag tops out around 1,500-2,000. That is the same
+ * reasoning used to set #93's settable floor at 1,000 mL, so this file was
+ * contradicting a bound chosen in the same sprint.
+ *
+ * It also exposes a real tension worth recording rather than papering over:
+ * SRS AC 2.1 AC2 fixes the single-entry default at 2,000 mL, which sits at the
+ * very top of what one emptying can physically be. Tripping it therefore
+ * requires an unusually large night-bag collection — plausible, but rare. A
+ * value just over the line is the only *legitimate* way to trip it, and
+ * "legitimately" is the word the scenario's own purpose turns on.
  */
-const OVER_THRESHOLD_ML_MIN = 2300;
-const OVER_THRESHOLD_ML_MAX = 2800;
+const OVER_THRESHOLD_ML_MIN = 2050;
+const OVER_THRESHOLD_ML_MAX = 2400;
 
 /** Just under, so the boundary is visible from both sides. */
 const UNDER_THRESHOLD_ML_MIN = 1600;
@@ -97,7 +116,18 @@ const ORDINARY_ML_MAX = 400;
 const ORDINARY_ENTRIES_MIN = 3;
 const ORDINARY_ENTRIES_MAX = 5;
 
-const OVER_THRESHOLD_DAY_IN_N = 3;
+/**
+ * Roughly a third of days carry an unusual entry. The rest are ordinary.
+ *
+ * This constant existed and was not used as a gate: the generator appended an
+ * unusual entry to EVERY day — the over-threshold one on a third, a
+ * just-under-threshold one on the other two thirds. Mean daily output came out
+ * at 3,168 mL against ~375 mL of logged intake, a net balance near -2,800 mL
+ * every day for three weeks, which is worse than `high-output-dehydration`'s
+ * worst day and makes any §3.7 or §3.9 view pegged at maximum alarm. The
+ * docstring said "roughly a third of the days" throughout; the code did not.
+ */
+const UNUSUAL_DAY_IN_N = 3;
 
 /**
  * Four decimal places exactly — the most the canonical `DECIMAL(12,4)` column
@@ -109,7 +139,7 @@ const OVER_THRESHOLD_DAY_IN_N = 3;
 const MAX_PRECISION_ML = '1234.5678';
 
 export function generateValidationEdgeCases(
-  options: ScenarioOptions & { readonly estimationMethodCode: string | null },
+  options: ScenarioOptions & GeneratorCodes,
 ): SeedDataset {
   const rng = createRng(options.seed ?? DEFAULT_SEED);
   const timeZone = options.timeZone ?? DEFAULT_TIME_ZONE;
@@ -122,35 +152,43 @@ export function generateValidationEdgeCases(
   for (let dayOffset = HISTORY_DAYS; dayOffset >= 1; dayOffset -= 1) {
     const context = { rng, patientId, timeZone, options, dayOffset };
 
-    for (
-      let entry = 0;
-      entry < rng.intBetween(ORDINARY_ENTRIES_MIN, ORDINARY_ENTRIES_MAX);
-      entry += 1
-    ) {
+    // Drawn once, not in the loop condition — see `colostomyBaseline.ts`.
+    const ordinaryEntries = rng.intBetween(ORDINARY_ENTRIES_MIN, ORDINARY_ENTRIES_MAX);
+    for (let entry = 0; entry < ordinaryEntries; entry += 1) {
       observations.push(
         outputEntry(context, rng.floatBetween(ORDINARY_ML_MIN, ORDINARY_ML_MAX, 1).toFixed(1)),
       );
     }
 
-    if (rng.intBetween(1, OVER_THRESHOLD_DAY_IN_N) === 1) {
+    // One unusual entry on roughly a third of days, and nothing added on the
+    // rest — so most days are an ordinary history and the boundary is legible
+    // against it. Over and just-under alternate within those days, because a
+    // dataset of only warnings cannot show the bound as a boundary.
+    if (rng.intBetween(1, UNUSUAL_DAY_IN_N) === 1) {
+      const overThreshold = rng.intBetween(1, 2) === 1;
       observations.push(
         outputEntry(
           context,
-          rng.floatBetween(OVER_THRESHOLD_ML_MIN, OVER_THRESHOLD_ML_MAX, 1).toFixed(1),
-        ),
-      );
-    } else {
-      observations.push(
-        outputEntry(
-          context,
-          rng.floatBetween(UNDER_THRESHOLD_ML_MIN, UNDER_THRESHOLD_ML_MAX, 1).toFixed(1),
+          overThreshold
+            ? rng.floatBetween(OVER_THRESHOLD_ML_MIN, OVER_THRESHOLD_ML_MAX, 1).toFixed(1)
+            : rng.floatBetween(UNDER_THRESHOLD_ML_MIN, UNDER_THRESHOLD_ML_MAX, 1).toFixed(1),
         ),
       );
     }
 
-    // One intake a day, so the §3.7 balance has both sides and the warning is
-    // not the only thing on the screen.
-    observations.push(intakeEntry(context));
+    /**
+     * Enough intake for the balance to be plausible, not just present.
+     *
+     * One entry a day left ~350 mL against ~1,900 mL of output — a deficit near
+     * -1,500 mL every day for three weeks, which pegs any §3.7 or §3.9 view at
+     * maximum alarm and makes this useless as the dataset someone reaches for
+     * when testing WARNING behaviour. The warnings should be the unusual thing
+     * here; everything else should look ordinary.
+     */
+    const intakeEntries = rng.intBetween(4, 6);
+    for (let entry = 0; entry < intakeEntries; entry += 1) {
+      observations.push(intakeEntry(context));
+    }
   }
 
   // The precision boundary, once. A value rather than a range because the point
@@ -172,6 +210,7 @@ export function generateValidationEdgeCases(
       code: VOIDED_URINE_LOINC_CODE,
       effectiveDatetime: instantFor({ rng, patientId, timeZone, options, dayOffset: 3 }),
       timeZone,
+      codes: options,
       urineColorCode: 'dark_yellow',
     }),
   );
@@ -195,12 +234,12 @@ interface EntryInput {
   readonly rng: Rng;
   readonly patientId: string;
   readonly timeZone: string;
-  readonly options: ScenarioOptions & { readonly estimationMethodCode: string | null };
+  readonly options: ScenarioOptions & GeneratorCodes;
   readonly dayOffset: number;
 }
 
 function instantFor(input: EntryInput): Date {
-  const instant = entryInstant(input.rng, input.options.now, input.dayOffset);
+  const instant = entryInstant(input.rng, input.options.now, input.dayOffset, input.timeZone);
   assertInPast(SCENARIO, instant, input.options.now, input.dayOffset);
   return instant;
 }
@@ -213,11 +252,11 @@ function outputEntry(input: EntryInput, valueQuantityValue: string): SeedObserva
     effectiveDatetime: instantFor(input),
     timeZone: input.timeZone,
     valueQuantityValue,
+    codes: input.options,
     // Measured throughout. An estimated qualifier on a 2,500 mL entry invites
     // the reading that the warning fired because the number was guessed, when
     // §3.8's position is that a real 2,500 mL day is the data point the care
     // team most needs — the warning must be about the value, not its provenance.
-    method: null,
   });
 }
 
@@ -230,6 +269,7 @@ function intakeEntry(input: EntryInput): SeedObservation {
     code: FLUID_INTAKE_LOINC_CODE,
     effectiveDatetime: instantFor(input),
     timeZone: input.timeZone,
+    codes: input.options,
     valueQuantityValue: rng.floatBetween(250, 500, 1).toFixed(1),
     fluidTypeCode: 'water',
   });
