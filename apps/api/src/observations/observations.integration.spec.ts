@@ -563,11 +563,25 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
     it('reads the threshold from validation_thresholds rather than a constant', async () => {
       // Lower the admin-managed threshold and watch a previously-clean value
       // start warning, with no deploy and no code change.
+      //
+      // 1,200 and not 300, and the reason is a real constraint rather than a
+      // style preference: #93 bounds this key to 1,000-3,000 mL and the
+      // `value_within_settable_range` CHECK applies to the owner role too, so a
+      // direct `UPDATE ... SET value = 300` is now rejected by the database.
+      // That is the bound doing its job — a 300 mL single-entry warning fires on
+      // essentially every emptying, which is the configuration the floor exists
+      // to prevent. Any test that writes a threshold value must stay inside the
+      // key's settable range.
+      //
+      // The demonstration is unchanged: 1,300 mL is clean against the seeded
+      // 2,000 and warns against 1,200.
+      const LOWERED_THRESHOLD_ML = 1200;
       const owner = new PgClient({ connectionString: container.getConnectionUri() });
       await owner.connect();
       try {
-        await owner.query(`UPDATE validation_thresholds SET value = 300 WHERE threshold_key = $1`, [
+        await owner.query(`UPDATE validation_thresholds SET value = $2 WHERE threshold_key = $1`, [
           THRESHOLD_KEY.STOMA_OUTPUT_SOFT_WARNING_ML,
+          LOWERED_THRESHOLD_ML,
         ]);
       } finally {
         await owner.end();
@@ -586,7 +600,7 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
       await freshApp.init();
 
       try {
-        const body = validPayload({ valueQuantity: { value: 400, unit: 'mL' } });
+        const body = validPayload({ valueQuantity: { value: 1300, unit: 'mL' } });
         const response = await request(freshApp.getHttpServer())
           .post('/api/v1/observations')
           .set('Authorization', `Bearer ${patientA.token}`)
