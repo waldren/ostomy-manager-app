@@ -249,6 +249,11 @@ export const createDefaultRangeSchema = z
     maxDaysPostOp: z.number().int().min(0).max(MAX_DAYS_POST_OP).nullable().meta({
       description: 'Last post-operative day, inclusive. Null means unbounded — "and beyond".',
     }),
+    // Still accepted on the wire, and now checked against the limits row rather
+    // than against whatever a sibling happened to say (#102). Kept on the
+    // request because a body that states its own unit is self-describing in an
+    // audit snapshot, and because silently substituting one would hide a
+    // caller's mistaken model of the type.
     unit: z.string().min(1).max(RANGE_UNIT_MAX_LENGTH).meta({
       description:
         'The unit both bounds are in. Permanent: editing it alone would redefine every value in the row. Rows sharing a rangeType must agree on it, which the service enforces.',
@@ -302,8 +307,36 @@ export const adminDefaultRangeSchema = z.object({
   updatedAt: z.iso.datetime(),
 });
 
+/**
+ * What a range type permits, published alongside the rows (#102).
+ *
+ * Returned because the refusal is the backstop and SEEING the range is what
+ * prevents the mistake — the 400 deliberately names only the field and a rule
+ * code, never the numbers, so a caller that wants them has to be given them
+ * here. The same reasoning as #93's settable range on a threshold.
+ *
+ * `basis` is deliberately NOT published. It is the migration's reasoning for a
+ * reader of the schema, often a paragraph, and an API response is the wrong
+ * place for it — a console would have to render prose it cannot lay out, and
+ * the text names open issues.
+ */
+export const adminRangeTypeLimitsSchema = z.object({
+  rangeType: z.string(),
+  minValue: z.number(),
+  maxValue: z.number(),
+  unit: z.string(),
+});
+
+export type AdminRangeTypeLimits = z.infer<typeof adminRangeTypeLimitsSchema>;
+
 export const adminDefaultRangesResponseSchema = z.object({
   defaultRanges: z.array(adminDefaultRangeSchema),
+  /**
+   * Every known range type, not just the ones with rows — the table starts
+   * empty, so a console with nothing to list still needs to know what it may
+   * create and within what bounds.
+   */
+  rangeTypeLimits: z.array(adminRangeTypeLimitsSchema),
 });
 
 /**

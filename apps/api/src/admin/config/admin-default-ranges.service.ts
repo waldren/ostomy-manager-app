@@ -15,7 +15,13 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { AuditService } from '../../audit/audit.service';
 import { Prisma } from '../../generated/prisma/client';
@@ -173,11 +179,23 @@ export class AdminDefaultRangesService {
       ],
     });
 
+    // Every known type, ordered, not only those with rows: the table starts
+    // empty and a console still has to know what it may create.
+    const limits = await this.prisma.clinicalDefaultRangeLimits.findMany({
+      orderBy: { rangeType: 'asc' },
+    });
+
     return {
       defaultRanges: rows.map((row) => ({
         ...toSnapshot(row),
         id: row.id,
         updatedAt: row.updatedAt.toISOString(),
+      })),
+      rangeTypeLimits: limits.map((row) => ({
+        rangeType: row.rangeType,
+        minValue: row.minValue.toNumber(),
+        maxValue: row.maxValue.toNumber(),
+        unit: row.unit,
       })),
     };
   }
@@ -270,8 +288,83 @@ export class AdminDefaultRangesService {
      * treat `rangeType` as naming the unit. Free to check, because the siblings are
      * already here.
      */
-    if (siblings.some((sibling) => sibling.unit !== candidate.unit)) {
+    /**
+     * The unit rule, now read from one place instead of compared across rows.
+     *
+     * This used to be `siblings.some((sibling) => sibling.unit !== candidate.unit)`
+     * — correct, and the kind of invariant that only holds while every writer
+     * goes through here. #97 made the other four rules database guarantees and
+     * could not make this one, because it is a cross-row invariant an exclusion
+     * constraint cannot partition; #102's limits table is the home it named.
+     *
+     * Comparing against the limits row is strictly stronger: the cross-row form
+     * agreed with whatever the FIRST row of a type happened to say, so a type
+     * whose rows were all in the wrong unit was self-consistent and accepted.
+     */
+    const limits = await this.limitsFor(tx, candidate.rangeType);
+    if (candidate.unit !== limits.unit) {
       throw new ConflictException({ error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } });
+    }
+  }
+
+  /**
+   * The limits row for a range type, which the foreign key guarantees exists.
+   *
+   * Throws a 400 rather than a 500 if it does not, because the one way to reach
+   * that is a `range_type` the FK would have refused — and this read happens
+   * before the insert, so the FK has not fired yet.
+   */
+  private async limitsFor(
+    tx: Prisma.TransactionClient,
+    rangeType: string,
+  ): Promise<{ minValue: number; maxValue: number; unit: string }> {
+    const row = await tx.clinicalDefaultRangeLimits.findUnique({ where: { rangeType } });
+    if (!row) {
+      throw new BadRequestException({
+        error: {
+          code: 'INVALID_DEFAULT_RANGE',
+          fields: [{ field: 'rangeType', rule: 'unknown_range_type' }],
+        },
+      });
+    }
+    return {
+      minValue: row.minValue.toNumber(),
+      maxValue: row.maxValue.toNumber(),
+      unit: row.unit,
+    };
+  }
+
+  /**
+   * Both bounds within what this range type permits (#102).
+   *
+   * The shape rules — numeric, fits `DECIMAL(12,4)` — cannot catch a value that
+   * is well-formed and still wrong for its type. The case that matters is the
+   * one #94 moved into this table: once `heart_rate_red_flag_bpm` is seeded, a
+   * high value silences a seek-care prompt with no symptom at all.
+   *
+   * Runs before the write, so an out-of-range bound answers a 400 naming the
+   * field rather than surfacing as a constraint violation and an opaque 500 —
+   * the same layering as #93 and #97, and the same reason: the constraint is
+   * the backstop, this is the interface. It names the field and a rule code and
+   * never the value or the bounds (CLAUDE.md), which is why `GET` returns the
+   * limits: a caller that wants the numbers has already been given them.
+   */
+  private assertWithinTypeLimits(
+    bounds: { lowValue: number | null; highValue: number | null },
+    limits: { minValue: number; maxValue: number },
+  ): void {
+    const offending = (['lowValue', 'highValue'] as const).filter((field) => {
+      const value = bounds[field];
+      return value !== null && (value < limits.minValue || value > limits.maxValue);
+    });
+
+    if (offending.length > 0) {
+      throw new BadRequestException({
+        error: {
+          code: 'INVALID_DEFAULT_RANGE',
+          fields: offending.map((field) => ({ field, rule: 'outside_type_limits' })),
+        },
+      });
     }
   }
 
@@ -282,6 +375,7 @@ export class AdminDefaultRangesService {
   ): Promise<DefaultRangeWrite> {
     return this.prisma.$transaction(async (tx) => {
       await this.assertNoOverlap(tx, request);
+      this.assertWithinTypeLimits(request, await this.limitsFor(tx, request.rangeType));
 
       /**
        * The constraint is the backstop and `assertNoOverlap` is the interface,
@@ -360,6 +454,13 @@ export class AdminDefaultRangesService {
       if (!existing) {
         throw new NotFoundException({ error: { code: 'DEFAULT_RANGE_NOT_FOUND' } });
       }
+
+      /**
+       * The update is where a bound is actually changed, so it is the path that
+       * matters most for #102 — a create with a sane bound followed by a `PUT`
+       * to a silencing one would otherwise walk straight past the check.
+       */
+      this.assertWithinTypeLimits(request, await this.limitsFor(tx, existing.rangeType));
 
       const before = toSnapshot(existing);
       const token = expectedUpdatedAt ?? existing.updatedAt;

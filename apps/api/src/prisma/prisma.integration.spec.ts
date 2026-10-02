@@ -111,6 +111,12 @@ const EXPECTED_TABLE_GRANTS: Readonly<Record<string, readonly string[]>> = {
   value_sets: ['DELETE', 'INSERT', 'SELECT', 'UPDATE'],
   clinical_default_ranges: ['DELETE', 'INSERT', 'SELECT', 'UPDATE'],
   validation_thresholds: ['DELETE', 'INSERT', 'SELECT', 'UPDATE'],
+  // #102. SELECT only, and that is the control rather than an omission: the
+  // per-range-type bounds and units are migration-owned, so "immutable through
+  // the admin API" is a grant the runtime role does not hold rather than a
+  // convention the service happens to follow. An INSERT here would let an admin
+  // widen the bound meant to stop them.
+  clinical_default_range_limits: ['SELECT'],
   // Tombstoned synced entities: no DELETE (S6).
   profiles: ['INSERT', 'SELECT', 'UPDATE'],
   observations: ['INSERT', 'SELECT', 'UPDATE'],

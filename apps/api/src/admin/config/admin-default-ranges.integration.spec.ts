@@ -119,6 +119,7 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       prisma as never,
       new AuditService(prisma as never) as never,
     );
+    await registerProbeRangeTypes();
   }, 180_000);
 
   afterAll(async () => {
@@ -137,6 +138,85 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
    * Parsing rather than casting also means the fixture travels the validation path the
    * suite otherwise never exercises, so a body this spec believes is valid provably is.
    */
+  /**
+   * Limits rows for the range types this spec invents (#102).
+   *
+   * Every test uses its own `range_type` so the overlap constraint cannot make
+   * tests interfere — and #102's foreign key means a type with no limits row
+   * does not exist as far as the database is concerned. So the fixtures
+   * register theirs, as the OWNER, which is what a migration does for the real
+   * types.
+   *
+   * Permissive on purpose: these exist to satisfy referential integrity, not to
+   * test the bounds. The bound tests below set their own narrow limits.
+   *
+   * No maintenance burden if this list goes stale: a test using an unregistered
+   * type fails immediately with `clinical_default_ranges_range_type_fkey`,
+   * which names the problem exactly.
+   */
+  const PROBE_RANGE_TYPES: readonly (readonly [string, string])[] = [
+    ['p97_adjacent', 'mL'],
+    ['p97_ceiling', 'mL'],
+    ['p97_floor', 'mL'],
+    ['p97_invbounds', 'mL'],
+    ['p97_inverted', 'mL'],
+    ['p97_nobound', 'mL'],
+    ['p97_nullwin', 'mL'],
+    ['p97_open', 'mL'],
+    ['p97_race', 'mL'],
+    ['p97_shape', 'mL'],
+    ['p97_touching', 'mL'],
+    ['p97_types', 'mL'],
+    ['p97_windows', 'mL'],
+    ['probe_adjacent_ml', 'mL'],
+    ['probe_audit_ml', 'mL'],
+    ['probe_concurrent_ml', 'mL'],
+    ['probe_contract_ml', 'mL'],
+    ['probe_correlated_ml', 'mL'],
+    ['probe_created_ml', 'mL'],
+    ['probe_delete_audit_ml', 'mL'],
+    ['probe_delete_concurrent_ml', 'mL'],
+    ['probe_delete_ml', 'mL'],
+    ['probe_delete_rollback_ml', 'mL'],
+    ['probe_immutable_audit_ml', 'mL'],
+    ['probe_order_ml', 'mL'],
+    ['probe_ostomy_ml', 'mL'],
+    ['probe_overlap_ml', 'mL'],
+    ['probe_recreate_ml', 'mL'],
+    ['probe_refused_ml', 'mL'],
+    ['probe_rollback_ml', 'mL'],
+    ['probe_same_shape_pct', '%'],
+    ['probe_scope_a_ml', 'mL'],
+    ['probe_scope_b_ml', 'mL'],
+    ['probe_snapshot_ml', 'mL'],
+    ['probe_touch_ml', 'mL'],
+    ['probe_tx_ml', 'mL'],
+    ['probe_unbounded_ml', 'mL'],
+    ['probe_undeletable_audit_ml', 'mL'],
+    ['probe_unit_ml', 'mL'],
+    ['probe_update_audit_ml', 'mL'],
+    ['probe_update_ml', 'mL'],
+    ['probe_window_shape_pct', '%'],
+  ];
+
+  async function registerProbeRangeTypes(): Promise<void> {
+    const owner = new PgClient({ connectionString: ownerUrl });
+    await owner.connect();
+    try {
+      for (const [rangeType, rangeUnit] of PROBE_RANGE_TYPES) {
+        await owner.query(
+          `INSERT INTO clinical_default_range_limits
+             (range_type, min_value, max_value, unit, basis, updated_at)
+           VALUES ($1, -99999999.9999, 99999999.9999, $2, 'integration-test fixture', now())
+           ON CONFLICT (range_type) DO NOTHING`,
+          [rangeType, rangeUnit],
+        );
+      }
+    } finally {
+      await owner.end();
+    }
+  }
+
   function body(
     rangeType: string,
     overrides: Partial<CreateDefaultRangeRequest> = {},
@@ -747,6 +827,302 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
    * session cannot create a state the API would reject. Before #97 all five
    * rules were application-only, and CLAUDE.md said so in terms.
    */
+  /**
+   * #102: what a range type permits.
+   *
+   * The shape rules — numeric, fits `DECIMAL(12,4)` — cannot catch a value that
+   * is well-formed and wrong for its type, and the consequential case is the one
+   * #94 moved into this table: once `heart_rate_red_flag_bpm` is seeded, a high
+   * value silences a seek-care prompt with no symptom at all.
+   */
+  describe('per-range-type limits (#102)', () => {
+    async function setLimits(
+      rangeType: string,
+      minValue: number,
+      maxValue: number,
+      rangeUnit = 'bpm',
+    ): Promise<void> {
+      const owner = new PgClient({ connectionString: ownerUrl });
+      await owner.connect();
+      try {
+        await owner.query(
+          `INSERT INTO clinical_default_range_limits
+             (range_type, min_value, max_value, unit, basis, updated_at)
+           VALUES ($1, $2, $3, $4, 'test', now())
+           ON CONFLICT (range_type) DO UPDATE
+             SET min_value = EXCLUDED.min_value,
+                 max_value = EXCLUDED.max_value,
+                 unit = EXCLUDED.unit`,
+          [rangeType, minValue, maxValue, rangeUnit],
+        );
+      } finally {
+        await owner.end();
+      }
+    }
+
+    it('seeds a limits row for every range type the schema names', async () => {
+      const limits = (await service.listDefaultRanges()).rangeTypeLimits;
+      const types = limits.map((entry) => entry.rangeType);
+
+      // The seven the model's comment lists, including the safety one #94 moved
+      // here. A type missing from this table cannot have a range at all, so the
+      // list is load-bearing rather than documentation.
+      expect(types).toEqual(
+        expect.arrayContaining([
+          'daily_output_ml',
+          'net_fluid_balance_ml',
+          'urine_output_adequacy_ml',
+          'weight_change_threshold_percent',
+          'resting_heart_rate_elevation_bpm',
+          'orthostatic_postural_rise_bpm',
+          'heart_rate_red_flag_bpm',
+        ]),
+      );
+    });
+
+    it('publishes the limits on the read, so a caller can see them first', async () => {
+      // The 400 names the field and a rule code and never the numbers, so this
+      // is the only place a caller can learn them. The refusal is the backstop;
+      // seeing the range is what prevents the mistake.
+      const limits = (await service.listDefaultRanges()).rangeTypeLimits;
+      const redFlag = limits.find((entry) => entry.rangeType === 'heart_rate_red_flag_bpm');
+
+      expect(redFlag).toMatchObject({ unit: 'bpm', maxValue: 300 });
+    });
+
+    /**
+     * The half of the control that works, stated as such.
+     *
+     * 300 bpm exceeds any achievable human heart rate, so a red-flag bound
+     * cannot be set above it — which is what stops the seek-care prompt being
+     * silenced, one of the two failures #102 names.
+     */
+    it('refuses a red-flag bound high enough to silence the prompt', async () => {
+      await expect(
+        service.createDefaultRange(
+          body('heart_rate_red_flag_bpm', {
+            minDaysPostOp: 0,
+            maxDaysPostOp: null,
+            lowValue: null,
+            highValue: 99_000,
+            unit: 'bpm',
+          }),
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({
+        response: {
+          error: {
+            code: 'INVALID_DEFAULT_RANGE',
+            fields: [{ field: 'highValue', rule: 'outside_type_limits' }],
+          },
+        },
+      });
+    });
+
+    it('accepts a clinically plausible red-flag bound', async () => {
+      const write = await service.createDefaultRange(
+        body('heart_rate_red_flag_bpm', {
+          minDaysPostOp: 200,
+          maxDaysPostOp: 260,
+          lowValue: null,
+          highValue: 130,
+          unit: 'bpm',
+        }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      expect(write.range.highValue).toBe(130);
+    });
+
+    it('names both bounds when both are outside', async () => {
+      await setLimits('p102_both', 10, 20);
+
+      await expect(
+        service.createDefaultRange(
+          body('p102_both', { lowValue: 1, highValue: 99, unit: 'bpm' }),
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({
+        response: {
+          error: {
+            fields: [
+              { field: 'lowValue', rule: 'outside_type_limits' },
+              { field: 'highValue', rule: 'outside_type_limits' },
+            ],
+          },
+        },
+      });
+    });
+
+    it('never echoes the value or the bounds in the refusal', async () => {
+      await setLimits('p102_noecho', 10, 20);
+
+      let captured: unknown;
+      try {
+        await service.createDefaultRange(
+          body('p102_noecho', { lowValue: null, highValue: 4242, unit: 'bpm' }),
+          ADMIN_SUBJECT,
+          undefined,
+        );
+      } catch (error) {
+        captured = error;
+      }
+
+      // CLAUDE.md: field identifiers and rule codes, never the offending value.
+      const serialised = JSON.stringify((captured as { response?: unknown }).response ?? {});
+      expect(serialised).not.toContain('4242');
+      expect(serialised).not.toContain('20');
+    });
+
+    it('checks the update too, which is where a bound actually changes', async () => {
+      // A create with a sane bound followed by a PUT to a silencing one would
+      // otherwise walk straight past the check.
+      await setLimits('p102_update', 10, 200);
+      const write = await service.createDefaultRange(
+        body('p102_update', { lowValue: null, highValue: 150, unit: 'bpm' }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      await expect(
+        service.updateDefaultRange(
+          write.rangeId,
+          { lowValue: null, highValue: 9_000 },
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({
+        response: { error: { fields: [{ field: 'highValue', rule: 'outside_type_limits' }] } },
+      });
+    });
+
+    it('allows a negative bound where the type is signed', async () => {
+      // `net_fluid_balance_ml` is intake minus output, so a deficit is a real
+      // and clinically important value. Giving it a positive floor would have
+      // been the most plausible-looking mistake in this table.
+      const write = await service.createDefaultRange(
+        body('net_fluid_balance_ml', {
+          minDaysPostOp: 300,
+          maxDaysPostOp: 360,
+          lowValue: -800,
+          highValue: 0,
+          unit: 'mL',
+        }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      expect(write.range.lowValue).toBe(-800);
+    });
+
+    describe('the unit, now read from one place', () => {
+      it('refuses a unit the type does not use', async () => {
+        // This used to be a cross-row comparison, which agreed with whatever the
+        // FIRST row of a type happened to say — so a type whose rows were all in
+        // the wrong unit was self-consistent and accepted.
+        await expect(
+          service.createDefaultRange(
+            body('daily_output_ml', { minDaysPostOp: 400, maxDaysPostOp: 460, unit: 'oz' }),
+            ADMIN_SUBJECT,
+            undefined,
+          ),
+        ).rejects.toMatchObject({
+          response: { error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } },
+        });
+      });
+
+      it('refuses the wrong unit even for the first row of a type', async () => {
+        await setLimits('p102_firstrow', -99_999, 99_999, 'mL');
+
+        await expect(
+          service.createDefaultRange(
+            body('p102_firstrow', { unit: 'oz' }),
+            ADMIN_SUBJECT,
+            undefined,
+          ),
+        ).rejects.toMatchObject({
+          response: { error: { code: 'DEFAULT_RANGE_UNIT_CONFLICTS' } },
+        });
+      });
+    });
+
+    describe('the foreign key on range_type', () => {
+      it('refuses an unknown type through the API, naming the field', async () => {
+        await expect(
+          service.createDefaultRange(
+            body('heart_rate_redflag_bpm', { unit: 'bpm' }),
+            ADMIN_SUBJECT,
+            undefined,
+          ),
+        ).rejects.toMatchObject({
+          response: {
+            error: {
+              code: 'INVALID_DEFAULT_RANGE',
+              fields: [{ field: 'rangeType', rule: 'unknown_range_type' }],
+            },
+          },
+        });
+      });
+
+      it('refuses an unknown type written directly as the owner', async () => {
+        // The typo hazard `admin-default-range-wire.ts` worries about, closed at
+        // the database rather than only at the API: `heart_rate_redflag_bpm` is
+        // a plausible misspelling of the safety type, and before #102 it created
+        // a row of a type nothing reads.
+        const owner = new PgClient({ connectionString: ownerUrl });
+        await owner.connect();
+        try {
+          await expect(
+            owner.query(
+              `INSERT INTO clinical_default_ranges
+                 (id, ostomy_type, range_type, min_days_post_op, max_days_post_op,
+                  low_value, high_value, unit, window_days, created_at, updated_at)
+               VALUES (gen_random_uuid(), 'ILEOSTOMY', 'heart_rate_redflag_bpm', 0, 30,
+                       NULL, 130, 'bpm', NULL, now(), now())`,
+            ),
+          ).rejects.toThrow(/clinical_default_ranges_range_type_fkey/);
+        } finally {
+          await owner.end();
+        }
+      });
+
+      it('refuses removing a limits row while ranges of its type exist', async () => {
+        await setLimits('p102_restrict', -99_999, 99_999, 'mL');
+        await service.createDefaultRange(
+          body('p102_restrict', { unit: 'mL' }),
+          ADMIN_SUBJECT,
+          undefined,
+        );
+
+        const owner = new PgClient({ connectionString: ownerUrl });
+        await owner.connect();
+        try {
+          await expect(
+            owner.query(`DELETE FROM clinical_default_range_limits WHERE range_type = $1`, [
+              'p102_restrict',
+            ]),
+          ).rejects.toThrow(/clinical_default_ranges_range_type_fkey/);
+        } finally {
+          await owner.end();
+        }
+      });
+    });
+
+    it('keeps the limits read-only for the runtime role', async () => {
+      // Migration-owned, like `tier` on a validation threshold. The grant is
+      // what makes "immutable through the admin API" structural rather than a
+      // convention the service happens to follow.
+      await expect(
+        prisma.$executeRawUnsafe(
+          `UPDATE clinical_default_range_limits SET max_value = 99999 WHERE range_type = 'heart_rate_red_flag_bpm'`,
+        ),
+      ).rejects.toThrow(/permission denied/i);
+    });
+  });
+
   describe('the database enforces what the API refuses (#97)', () => {
     async function asOwner<T>(run: (client: PgClient) => Promise<T>): Promise<T> {
       const owner = new PgClient({ connectionString: ownerUrl });
