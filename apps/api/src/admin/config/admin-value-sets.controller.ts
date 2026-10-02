@@ -47,6 +47,7 @@ import { stageCommittedAuditEntry } from '../../audit/audit-recorder';
 import { getRequestId } from '../../logging/request-id';
 import { getAdminActor } from '../admin-actor';
 import { AdminJwtAuthGuard } from '../admin-jwt-auth.guard';
+import { toAdminErrorFields } from './wire-errors';
 
 import {
   addValueSetMemberSchema,
@@ -153,10 +154,12 @@ export class AdminValueSetsController {
       throw new BadRequestException({
         error: {
           code: 'INVALID_VALUE_SET_MEMBER',
-          fields: parsed.error.issues.map((issue) => ({
-            field: issue.path.join('.'),
-            rule: issue.code,
-          })),
+          // `toAdminErrorFields` (#100). The mapping here carried the rule code but
+          // never expanded `unrecognized_keys`, so an unknown key still reported
+          // `field: ''` — the comment above describes adding the reason code, which
+          // it did, and not the field name, which it did not. This surface has no
+          // immutable fields of its own: every key it refuses is simply unknown.
+          fields: toAdminErrorFields(parsed.error),
         },
       });
     }

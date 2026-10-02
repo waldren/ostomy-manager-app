@@ -66,6 +66,7 @@ import { getRequestId } from '../../logging/request-id';
 import type { OpenApiSchemaObject } from '../../observations/observation-openapi';
 import { getAdminActor } from '../admin-actor';
 import { AdminJwtAuthGuard } from '../admin-jwt-auth.guard';
+import { toAdminErrorFields } from './wire-errors';
 
 import {
   IDENTITY_FIELDS,
@@ -109,37 +110,20 @@ const ERROR_CODE_SCHEMA: OpenApiSchemaObject = {
  */
 const IMMUTABLE_FIELDS = IDENTITY_FIELDS;
 
+/**
+ * The shape `wire-errors.ts` now generalises, and the only one of the three
+ * copies that was right — because #96's review looked at it closely. Moved out
+ * so the other two cannot keep drifting from it (#100).
+ *
+ * One visible change came with the move: an unrecognised key is reported as
+ * `(unrecognized)` rather than the empty string. `''` collides with the
+ * root-level case once anything renders these — a consumer doing
+ * `field || '(body)'`, which `scripts/admin-config.mjs` does, turned "you sent a
+ * key I do not know" into "the body itself is wrong".
+ */
 function refuse(code: string, error: z.ZodError): never {
   throw new BadRequestException({
-    error: {
-      code,
-      // Field names and reason codes, never values. `message` is dropped because it can
-      // quote the input; Zod's issue codes are a closed vocabulary and leak nothing.
-      fields: error.issues.flatMap((issue) => {
-        if (issue.code === 'unrecognized_keys') {
-          /**
-           * An identity field reported as `immutable_field`, anything else as
-           * `unrecognized_field` — rather than filtering the rest away.
-           *
-           * The first version intersected with `IMMUTABLE_FIELDS` and dropped the
-           * remainder, which made this branch DEAD on the create path: every identity
-           * field is a legitimate create field, so the filter always yielded `[]` and
-           * an admin who sent an unknown key to `POST` got a 400 naming nothing. Both
-           * names come from a closed vocabulary here — the key either is an identity
-           * field or is reported generically — so nothing of the caller's input is
-           * echoed either way.
-           */
-          return issue.keys.map((key) =>
-            IMMUTABLE_FIELDS.includes(key)
-              ? { field: key, rule: 'immutable_field' }
-              : { field: '', rule: 'unrecognized_field' },
-          );
-        }
-        // An empty path is a root-level problem (a body that is an array or a string),
-        // so it is named rather than reported as the empty string.
-        return [{ field: issue.path.join('.') || '(body)', rule: issue.code }];
-      }),
-    },
+    error: { code, fields: toAdminErrorFields(error, IMMUTABLE_FIELDS) },
   });
 }
 

@@ -46,6 +46,7 @@ import { getRequestId } from '../../logging/request-id';
 import type { OpenApiSchemaObject } from '../../observations/observation-openapi';
 import { getAdminActor } from '../admin-actor';
 import { AdminJwtAuthGuard } from '../admin-jwt-auth.guard';
+import { toAdminErrorFields } from './wire-errors';
 
 import {
   adminThresholdSchema,
@@ -155,26 +156,21 @@ export class AdminThresholdsController {
     const parsed = updateThresholdSchema.safeParse(body);
     if (!parsed.success) {
       /**
-       * Field names and reason codes, never values. `message` is dropped because it can
-       * quote the input; Zod's issue codes are a closed vocabulary and leak nothing.
+       * `toAdminErrorFields`, not a mapping written here. See `wire-errors.ts` for
+       * what it may and may not say.
        *
-       * An `unrecognized_keys` issue is expanded, because it carries `path: []` — so
-       * the previous version reported `field: ''` for the two most interesting
-       * rejections, and the comment here claimed a caller who sends `tier` "is told
-       * so" while the spec right next to it asserted the empty string. Both reviews
-       * caught that. The keys are intersected with `IMMUTABLE_FIELDS` rather than
-       * echoed, so the response cannot reflect arbitrary input back.
+       * This surface is where #100 was found: the version here intersected the
+       * unrecognised keys with `IMMUTABLE_FIELDS` and **dropped the remainder**, so
+       * a body carrying an unknown key that is not an immutable field —
+       * `{value, description, bogus}`, an ordinary typo — produced `fields: []`. A
+       * 400 naming nothing, for the commonest reason to get one. The filter looked
+       * right because the interesting rejections (`tier`, `unit`) are all immutable
+       * fields, so every case anyone thought to check was covered.
        */
       throw new BadRequestException({
         error: {
           code: 'INVALID_THRESHOLD_UPDATE',
-          fields: parsed.error.issues.flatMap((issue) =>
-            issue.code === 'unrecognized_keys'
-              ? issue.keys
-                  .filter((key) => IMMUTABLE_FIELDS.includes(key))
-                  .map((field) => ({ field, rule: 'immutable_field' }))
-              : [{ field: issue.path.join('.'), rule: issue.code }],
-          ),
+          fields: toAdminErrorFields(parsed.error, IMMUTABLE_FIELDS),
         },
       });
     }
