@@ -24,6 +24,15 @@ import { useAuth } from '../src/auth/AuthContext';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { countByStatus } from '../src/db/repositories/syncQueueRepository';
 import { tryCountUnsyncedEntries } from '../src/db/unsyncedCount';
+import { useCachedThresholds } from '../src/entry/useCachedThresholds';
+import { DEFAULT_MEASUREMENT_SYSTEM } from '../src/lib/units/measurementSystem';
+import { now as clockNow } from '../src/lib/utils/clock';
+import { decideQuickAdd } from '../src/quickadd/quickAddAction';
+import { draftHrefFor } from '../src/quickadd/draftParams';
+import { logQuickAdd } from '../src/quickadd/logQuickAdd';
+import { QuickAddWidgets } from '../src/quickadd/QuickAddWidgets';
+import { useQuickAddSuggestions } from '../src/quickadd/useQuickAddSuggestions';
+import type { QuickAddSuggestion } from '../src/quickadd/quickAddSuggestions';
 import { useSyncStatus } from '../src/sync/SyncProvider';
 import { BodyText } from '../src/ui/BodyText';
 import { Button } from '../src/ui/Button';
@@ -46,17 +55,34 @@ import { Screen } from '../src/ui/Screen';
  * destructive option is right there. What changes is that they are told the
  * cost first, with a number rather than "you may lose data" — they cannot
  * see the queue, so a vague warning is not something they can act on.
+ *
+ * ## Quick-Add (P3.S4, SRS §3.1)
+ *
+ * Above the four entry buttons, because a shortcut below them is a shortcut to
+ * scroll to. It renders nothing at all when there is nothing to suggest, so a
+ * patient on their first day meets exactly the screen they met before.
+ *
+ * A tap either logs or opens the draft — `decideQuickAdd` owns that choice and
+ * `quickAddAction.ts` has the reasoning. The two paths converge on the same
+ * confirmation this screen already shows for a form save (`?saved=1`), because
+ * a patient has no way to tell which code path saved their entry and should not
+ * be shown two different confirmations for one outcome.
  */
 export default function Home(): React.JSX.Element {
   const { phase, signOut } = useAuth();
   const { t } = useTranslation(['mobile', 'common']);
   const database = useDatabaseState();
-  const { lastRejected, lastStop, recoverStaleCursor } = useSyncStatus();
+  const { lastRejected, lastStop, recoverStaleCursor, requestSync } = useSyncStatus();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const params = useLocalSearchParams<{ saved?: string }>();
 
+  const cachedThresholds = useCachedThresholds(database);
+  const { suggestions, reload: reloadSuggestions } = useQuickAddSuggestions(database);
+  const measurementSystem = DEFAULT_MEASUREMENT_SYSTEM;
+
   const [pendingCount, setPendingCount] = useState<number | undefined>(undefined);
+  const [quickAddFailed, setQuickAddFailed] = useState(false);
   const [rejectedCount, setRejectedCount] = useState(0);
   const [confirmingSignOut, setConfirmingSignOut] = useState<number | undefined | 'unknown'>(
     undefined,
@@ -88,6 +114,73 @@ export default function Home(): React.JSX.Element {
   // `lastRejected` in the dependency list is what refreshes these counts
   // after a sync cycle settles, without this screen polling.
   useEffect(() => refreshCounts(), [refreshCounts, lastRejected]);
+
+  /**
+   * Opens the entry form for a suggestion, pre-filled.
+   *
+   * Epic 3's second Quick-Add story, and also the fallback for a tap that does
+   * not validate cleanly — which is why it is one function rather than two.
+   */
+  const openDraft = useCallback(
+    (suggestion: QuickAddSuggestion) => {
+      const href = draftHrefFor(suggestion, measurementSystem);
+      // `undefined` means the code has no entry screen, which cannot happen
+      // for the three codes `QUICK_ADD_CODES` generates over. Doing nothing is
+      // the right answer anyway: navigating to a route that does not exist
+      // would leave the patient on a blank screen.
+      if (href !== undefined) router.push(href);
+    },
+    [measurementSystem],
+  );
+
+  const onQuickAdd = useCallback(
+    async (suggestion: QuickAddSuggestion) => {
+      if (database.status !== 'ready') return;
+
+      const decision = decideQuickAdd({
+        suggestion,
+        thresholds: cachedThresholds?.thresholds ?? null,
+        // No local profile table yet, so no surgery date to bound against —
+        // the same position every entry screen is in until P4.S1.
+        surgeryDate: null,
+        now: clockNow(),
+      });
+
+      if (decision.kind === 'open-draft') {
+        openDraft(suggestion);
+        return;
+      }
+
+      setQuickAddFailed(false);
+      try {
+        await logQuickAdd(database.executor, suggestion, measurementSystem, clockNow);
+      } catch {
+        // The local write IS the save, so a failure here means nothing was
+        // recorded. Said plainly rather than swallowed — and the patient is
+        // left on this screen with the entry buttons, not sent to a
+        // confirmation for something that did not happen.
+        setQuickAddFailed(true);
+        return;
+      }
+
+      // Committed. Ask the worker to run and never wait on it (§9.5), then
+      // re-read the suggestions so the repeat count behind the widget matches
+      // the diary the patient just added to.
+      requestSync();
+      reloadSuggestions();
+      refreshCounts();
+      router.replace('/home?saved=1');
+    },
+    [
+      database,
+      cachedThresholds,
+      measurementSystem,
+      openDraft,
+      requestSync,
+      reloadSuggestions,
+      refreshCounts,
+    ],
+  );
 
   const beginSignOut = useCallback(async () => {
     if (database.status !== 'ready') {
@@ -202,12 +295,25 @@ export default function Home(): React.JSX.Element {
         </View>
       ) : null}
 
+      {quickAddFailed ? (
+        <BodyText tone="error">{t('mobile:home.quickAddFailedBody')}</BodyText>
+      ) : null}
+
       {params.saved === '1' ? (
         // §9.5: this confirms the LOCAL write, which has already committed.
         // `accessibilityLiveRegion` on the surrounding text is what makes it
         // announced rather than silently appearing above the fold.
         <BodyText tone="muted">{t('common:entry.savedConfirmation')}</BodyText>
       ) : null}
+
+      <QuickAddWidgets
+        suggestions={suggestions}
+        measurementSystem={measurementSystem}
+        onLog={(suggestion) => {
+          void onQuickAdd(suggestion);
+        }}
+        onEdit={openDraft}
+      />
 
       <Button
         label={t('mobile:home.addOutputButton')}

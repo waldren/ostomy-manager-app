@@ -156,6 +156,21 @@ export const mobile = {
   'home.pendingCount_one': '1 entry has not been sent yet.',
   'home.pendingCount_other': '{{count}} entries have not been sent yet.',
   'home.pendingCountNone': 'Everything is saved and sent.',
+  // The Quick-Add section (P3.S4). Shell copy only — the widgets' own labels
+  // are in `common`, because they state clinical values.
+  //
+  // "Log again" rather than "Quick-Add": the patient never chose a feature
+  // called Quick-Add, and the heading has to say what the buttons below it do.
+  // No empty state and no key for one: a patient with no repeated entries sees
+  // no section at all, because a heading explaining why there are no shortcuts
+  // yet is a worse use of the fold than the entry buttons.
+  'home.quickAddHeading': 'Log again',
+  'home.quickAddBody': 'Entries you have made more than once in the last two weeks.',
+  // The local write IS the save, so a failure here means nothing was recorded.
+  // It says so, and says what to do, rather than leaving the patient to guess
+  // from a shortcut that did nothing when tapped.
+  'home.quickAddFailedBody':
+    'We could not save that entry. Nothing was recorded. Try adding it with the buttons below.',
   'home.addOutputButton': 'Add a stoma entry',
   'home.addIntakeButton': 'Add a drink',
   // Reads as an ACTION, not a body function: "Add a urine entry" is what the

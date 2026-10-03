@@ -41,7 +41,7 @@ Twenty-one ADRs accepted (ADR-0001 to ADR-0021) — ADR-0020 Android-only v1, AD
 
 ### 2.2 What is not built, and is scheduled
 
-P3.S4 Quick-Add · all of P4–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
+all of P4–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
 
 ### 2.3 What is not built, and was owned by nobody until this revision
 
@@ -165,8 +165,18 @@ _Exit:_ every statement in CLAUDE.md and `docs/` that this review found stale is
 | ------ | ---- | ----- | ---- | --------- |
 | **P3.S2** _done 2026-09-25 (#64)_ | M | `expo-mobile-developer` + `nestjs-api-developer` (serial) | Voided urine: same Measured/Estimated contract, the pale-to-dark colour scale **with a text label on every step**, colour-without-volume as a valid entry, and **exclusion from Daily Net Fluid Balance** | §3.7, AC 12.1 AC1–AC4 |
 | **P3.S3** | M | `nestjs-api-developer` + `fhir-data-modeler` | `/api/v1/admin/...` config API at final shape: value sets (retire, never delete), default range tables, validation thresholds. Separate guard, separate audience, every change audit-logged. **Plus the maintenance script R7 promised and revision 1 never scheduled** — today a threshold can only be changed by editing a migration | §3.11, §5.2, ADR-0008 |
-| **P3.S4** | S | `expo-mobile-developer` | Quick-Add widgets generated from the patient's own recent entries. Must resolve on tap with **no loading state**. No spec AC — state exit criteria in the dispatch | §3.1, Epic 3 |
+| **P3.S4** _done_ | S | `expo-mobile-developer` | _done_ — Quick-Add widgets generated from the patient's own recent entries, tap-to-log and open-as-draft. Resolves with **no loading state** and needed no table: a widget is derived state, recomputed from `observations`. Exit criteria were written in the sprint rather than the dispatch, since the spec has no AC — see the outcome note below | §3.1, Epic 3 |
 | **P3.S5** | S | `fhir-data-modeler` | _done_ — `high-output-dehydration`, `new-post-op`, `colostomy-baseline`, `validation-edge-cases`. Larger than S: the seeder could express a stoma-output row and nothing else, so two of `high-output-dehydration`'s three curves were unrepresentable and `SeedObservation` had to catch up to a schema it had been behind since P3.S2. `deployment-development.md`'s "correlated intake, output, medication timing, appliance and skin data" was also unmeetable by any scenario — three of those five have no table — and is corrected rather than quietly missed | `deployment-development.md` |
+
+> **P3.S4 outcome.** Smaller than feared, because the feature needed **no persistence at all**: §3.10's review/edit/pin/remove is P4.S3's, and without it a widget is derived state recomputed from the local store, so there is no table, no migration and no sync surface to keep in step. The 14-day window substitutes for the management UI — a routine that stops disappears on its own.
+>
+> Two decisions the spec does not make, and both are about not inventing an answer where a one-tap button has no form to ask in. **The Measured/Estimated toggle is carried from the source entries and shown on the button**, because ADR-0018 makes it mandatory and either default asserts something the patient did not say. And **a tap that does not validate cleanly opens the pre-filled draft rather than logging**, which is what lets §5.1's "no loading state" and AC 13.2 AC1's "a warning must never block" both hold — the case that will actually occur is a high-output patient whose genuine routine trips the >2,000 mL warning.
+>
+> The earlier recommendation to defer this sprint was **half wrong and is recorded as such**: it tied "must resolve on tap with no loading state" to P4.S5's performance spike. P4.S5 measures p95 *save* latency; "no loading state" is an architectural property — resolve from the local store, never the network — decidable without any numbers. What was right is that the missing AC is real work: the exit criteria had to be written, and they are the rules now in `apps/mobile/src/quickadd/quickAddSuggestions.ts`.
+>
+> A mutation sweep of 16 mutants found one survivor, and it was a genuine finding rather than a missing test: an explicit `method === null` guard was **behaviourally redundant** with the unrecognised-qualifier rejection beside it, so the two are now one rule. The repo's usual lesson in a new place — a branch no test can distinguish reads as a second rule while being the same one.
+>
+> **Unverified as always on this client:** the screen wiring. `apps/mobile/app/*.tsx` has no test in this repo (the convention is logic in `src/`, screens untested), so the dashboard's handler and the three screens' prefill initialisers are exercised by nothing in CI. §4.1's lesson again: *this project's tests are good at logic and blind to whether the thing runs.*
 
 > **P3.S2 outcome.** It shipped, but **two review rounds found it did not work at all**, and both reviewers found it independently. A colour-only entry could not be saved from the phone, for two unrelated causes: the wire's `method: null` was read as "measured" so the server rejected an entry no correction could fix, and `urine_color` was never in `PUBLISHED_VALUE_SET_KEYS`, so the scale never reached the device — guarded by a test that asserted the *exclusion* of `urine_color_scale`, a key no migration ever created. A check that passes by matching nothing.
 >
