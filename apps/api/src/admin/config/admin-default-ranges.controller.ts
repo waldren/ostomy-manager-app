@@ -73,11 +73,11 @@ import {
   adminDefaultRangeSchema,
   adminDefaultRangesResponseSchema,
   createDefaultRangeSchema,
-  deletedDefaultRangeSchema,
+  withdrawnDefaultRangeSchema,
   updateDefaultRangeSchema,
   type AdminDefaultRange,
   type AdminDefaultRangesResponse,
-  type DeletedDefaultRange,
+  type WithdrawnDefaultRange,
 } from './admin-default-range-wire';
 import {
   AdminDefaultRangesService,
@@ -90,7 +90,7 @@ const toSchema = (schema: z.ZodType, io: 'input' | 'output' = 'output'): OpenApi
 const CREATE_BODY_SCHEMA = toSchema(createDefaultRangeSchema, 'input');
 const UPDATE_BODY_SCHEMA = toSchema(updateDefaultRangeSchema, 'input');
 const RANGE_RESPONSE_SCHEMA = toSchema(adminDefaultRangeSchema);
-const DELETED_RANGE_RESPONSE_SCHEMA = toSchema(deletedDefaultRangeSchema);
+const WITHDRAWN_RANGE_RESPONSE_SCHEMA = toSchema(withdrawnDefaultRangeSchema);
 const RANGES_RESPONSE_SCHEMA = toSchema(adminDefaultRangesResponseSchema);
 const ERROR_CODE_SCHEMA: OpenApiSchemaObject = {
   type: 'object',
@@ -251,22 +251,25 @@ export class AdminDefaultRangesController {
   @HttpCode(200)
   @Audited()
   @ApiParam({ name: 'id', type: String })
-  // `deletedDefaultRangeSchema`, not `adminDefaultRangeSchema`: the route used to
-  // advertise a body with `id` and `updatedAt` both required while returning neither,
-  // which both reviews caught. A row that no longer exists has no last-modified time.
-  @ApiOkResponse({ schema: DELETED_RANGE_RESPONSE_SCHEMA })
+  // The same shape `GET` publishes under `deletedRanges`, so a tombstone has one
+  // representation. The route used to advertise `adminDefaultRangeSchema` — `id` and
+  // `updatedAt` both required — while returning neither, which both reviews of PR C
+  // caught; the fix then was a DELETE-only schema omitting `updatedAt`, on the
+  // reasoning that a removed row has no last-modified time. True then, false since
+  // #98: the row survives, and its `updated_at` moved when the tombstone was written.
+  @ApiOkResponse({ schema: WITHDRAWN_RANGE_RESPONSE_SCHEMA })
   @ApiBadRequestResponse({ schema: ERROR_CODE_SCHEMA })
   @ApiConflictResponse({ schema: ERROR_CODE_SCHEMA })
   @ApiNotFoundResponse({ schema: ERROR_CODE_SCHEMA })
   @ApiOperation({
     summary: 'Remove a default range',
     description:
-      "A real delete, unlike the value-set surface where a member is retired. Nothing references a default range: a patient's effective range carries its own bounds with CLINICAL_DEFAULT provenance, which is a copy rather than a pointer, so removing a default cannot alter a range any patient already has. The audit row keeps what the row said. One exception: a safety-class range type answers 409 SAFETY_RANGE_NOT_DELETABLE (#98). Such a row is migration-owned — seeded one per ostomy type, day 0 onward, ceiling only — and this surface refuses to create or delete one, leaving PUT as the only mutation. An earlier version of this description claimed DELETE was the only operation that could switch off a seek-care prompt; it was not. A PUT removing the ceiling did the same thing while answering 200, which is why the ceiling is now required on this type.",
+      "Withdraws the row rather than removing it (#98), and answers with the tombstone — the same shape GET publishes under deletedRanges. POST :id/restore brings it back. This was a real delete until #98, unlike the value-set surface where a member is retired, and the argument for that is unchanged and still the reason a delete may exist here at all: nothing references a default range, because a patient's effective range carries its own bounds with CLINICAL_DEFAULT provenance, a copy rather than a pointer, so withdrawing a default cannot alter a range any patient already has. What that argument never covered was getting the row back, which is what changed. The audit row still keeps what the row said, as a DELETE with a before value and no after value. A second DELETE on an already-withdrawn row answers 409 DEFAULT_RANGE_ALREADY_DELETED rather than writing a duplicate audit row. One exception: a safety-class range type answers 409 SAFETY_RANGE_NOT_DELETABLE (#98). Such a row is migration-owned — seeded one per ostomy type, day 0 onward, ceiling only — and this surface refuses to create or delete one, leaving PUT as the only mutation. An earlier version of this description claimed DELETE was the only operation that could switch off a seek-care prompt; it was not. A PUT removing the ceiling did the same thing while answering 200, which is why the ceiling is now required on this type.",
   })
   async remove(
     @Param('id', rowIdPipe) id: string,
     @Req() request: Request,
-  ): Promise<DeletedDefaultRange> {
+  ): Promise<WithdrawnDefaultRange> {
     const admin = getAdminActor(request);
     const write = await this.service.deleteDefaultRange(id, admin.id, getRequestId(request));
     stageCommittedAuditEntry(
@@ -281,13 +284,53 @@ export class AdminDefaultRangesController {
       write.auditEventId,
     );
     /**
-     * The row as it was, plus its id.
+     * The tombstone.
      *
-     * Not a 204, and the reason is not obvious: this body is the admin's only
-     * non-audit copy of a row that no longer exists, and the audit log is not readable
-     * through any API. A 204 would mean an admin who deleted the wrong row has to ask
-     * an engineer to query `audit_events` to find out what to re-create.
+     * Still not a 204, but the reason has weakened and the comment should say so
+     * rather than keep overstating it. It used to read "this body is the admin's
+     * only non-audit copy of a row that no longer exists" — since #98 the row
+     * still exists, `GET` publishes it under `deletedRanges`, and
+     * `POST :id/restore` brings it back. The body is now a convenience for the
+     * admin who notices immediately, which is what it was always best at.
      */
-    return { ...write.range, id: write.rangeId };
+    return {
+      ...write.range,
+      id: write.rangeId,
+      updatedAt: write.updatedAt,
+      deletedAt: write.deletedAt,
+    };
+  }
+
+  @Post(':id/restore')
+  @HttpCode(200)
+  @Audited()
+  @ApiParam({ name: 'id', type: String })
+  @ApiOkResponse({ schema: RANGE_RESPONSE_SCHEMA })
+  @ApiBadRequestResponse({ schema: ERROR_CODE_SCHEMA })
+  @ApiConflictResponse({ schema: ERROR_CODE_SCHEMA })
+  @ApiNotFoundResponse({ schema: ERROR_CODE_SCHEMA })
+  @ApiOperation({
+    summary: 'Bring a withdrawn default range back',
+    description:
+      'Clears the tombstone a DELETE set (#98). Before this, recovering a withdrawn row meant reading beforeValue out of audit_events, which no API exposes. Answers 409 DEFAULT_RANGE_NOT_DELETED if the row is live, and 409 DEFAULT_RANGE_WINDOW_OVERLAPS if a replacement has since filled its day window — which is the ordinary sequence rather than an edge case, because a tombstone deliberately does not occupy its window, so that delete-and-create stays available as the correction path for an immutable window. Also answers 400 INVALID_DEFAULT_RANGE naming lowValue, highValue or unit: a restore is the one write on this surface whose content nobody reads, since the bounds come back off the tombstone, so they are re-validated against the current clinical_default_range_limits row for that range type rather than trusted as stored. Audited as a CREATE: from the table point of view a range of that shape exists again where none did.',
+  })
+  async restore(
+    @Param('id', rowIdPipe) id: string,
+    @Req() request: Request,
+  ): Promise<AdminDefaultRange> {
+    const admin = getAdminActor(request);
+    const write = await this.service.restoreDefaultRange(id, admin.id, getRequestId(request));
+    stageCommittedAuditEntry(
+      request,
+      {
+        actorType: 'ADMIN',
+        actorId: admin.id,
+        action: 'CREATE',
+        entityType: DEFAULT_RANGE_ENTITY_TYPE,
+        entityId: write.rangeId,
+      },
+      write.auditEventId,
+    );
+    return { ...write.range, id: write.rangeId, updatedAt: write.updatedAt };
   }
 }

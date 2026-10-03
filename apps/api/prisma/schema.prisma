@@ -1088,9 +1088,18 @@ model ValueSetMember {
 /// application-only, so a psql session can write a bound outside its type's
 /// limits even though it cannot write an overlapping window.
 model ClinicalDefaultRange {
-  /// The runtime role holds `DELETE` on this table and that is load-bearing, unlike
-  /// on the other two config tables: the admin surface (P3.S3 PR C) hard-deletes a
-  /// row. Recorded here rather than beside the grant, because the init migration is
+  /// The runtime role holds `DELETE` on this table, and since #98 **nothing uses
+  /// it**: the admin surface withdraws a row by writing `deleted_at`, which needs
+  /// only the `UPDATE` the role already had. It was load-bearing when P3.S3 PR C
+  /// hard-deleted, and the grant is left in place rather than revoked because
+  /// withdrawing it is a separate decision from this one — #98 makes a tombstone
+  /// recoverable, it does not claim one may never be hard-removed, and ADR-0017's
+  /// purge job runs as the owner role either way. Worth knowing when reading the
+  /// grant: an unused grant on a config table is a smaller thing than the same
+  /// grant on `audit_events`, where the absence of `UPDATE`/`DELETE` *is* the
+  /// append-only guarantee (ADR-0011).
+  ///
+  /// Recorded here rather than beside the grant, because the init migration is
   /// already applied and an applied migration must not be edited.
   ///
   /// The reason is worse than the one first written here, which said Prisma
@@ -1126,6 +1135,31 @@ model ClinicalDefaultRange {
   /// (weight/heart-rate baselines per §3.12/§3.13). NULL where not
   /// applicable (e.g. a flat daily-output ceiling).
   windowDays Int? @map("window_days")
+
+  /// Tombstone (#98). A withdrawn row, kept so it can be restored.
+  ///
+  /// This reverses CLAUDE.md's "the one admin surface that hard-deletes", and it
+  /// is a reversal rather than a contradiction: the hard delete was justified by
+  /// SAFETY — nothing references a default range, so removing one cannot alter a
+  /// range any patient already has — and all of that is still true. What it never
+  /// addressed was RECOVERABILITY, which is what #98 asked for. Before this, a
+  /// deleted row could be reconstructed only by reading `beforeValue` out of
+  /// `audit_events`, which no API exposes.
+  ///
+  /// **#97's exclusion constraint is partial on this column**
+  /// (`WHERE deleted_at IS NULL`), which is load-bearing in both directions. A
+  /// tombstone must not occupy its window, or deleting a row would block the
+  /// replacement that the window's immutability makes the only correction path —
+  /// the feature would have blocked the workflow it exists to serve. And because
+  /// tombstones are exempt, several may overlap each other and a live row, so a
+  /// RESTORE can legitimately fail where the window has since been refilled.
+  /// That is the ordinary sequence rather than an edge case, and the service
+  /// answers 409 for it.
+  ///
+  /// Every read must filter on this. A reader that picked up a tombstone would
+  /// seed a range an admin had withdrawn — which is why §3.9's seeding owes the
+  /// same filter, not just the list path.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)

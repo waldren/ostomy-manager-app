@@ -329,8 +329,38 @@ export const adminRangeTypeLimitsSchema = z.object({
 
 export type AdminRangeTypeLimits = z.infer<typeof adminRangeTypeLimitsSchema>;
 
+/**
+ * A withdrawn range, carrying when it was withdrawn (#98).
+ *
+ * One shape for a tombstone, used in both places it can appear: `GET`'s
+ * `deletedRanges` array and the body a `DELETE` answers with. Before #98 the
+ * DELETE had a schema of its own that omitted `updatedAt`, on the reasoning that
+ * "a row that no longer exists has no last-modified time" — true then, and false
+ * now that the row survives. Collapsing them is the point rather than a tidy-up:
+ * the alternative was two exported schemas for the same row whose names differed
+ * by one word, which is how a surface ends up advertising one and returning the
+ * other — the exact bug both reviews of PR C caught on this route.
+ *
+ * Published in a SEPARATE array from the live ones rather than mixed in with a
+ * nullable `deletedAt`, and that is the safety-relevant choice. §3.9's seeding
+ * will read this endpoint's live ranges; a single array with a nullable flag
+ * invites a consumer that forgets to filter, and the failure is silent — it would
+ * seed a range an admin had deliberately withdrawn. Two arrays make forgetting
+ * impossible rather than merely discouraged.
+ */
+export const withdrawnDefaultRangeSchema = adminDefaultRangeSchema.extend({
+  deletedAt: z.iso.datetime(),
+});
+
+export type WithdrawnDefaultRange = z.infer<typeof withdrawnDefaultRangeSchema>;
+
 export const adminDefaultRangesResponseSchema = z.object({
   defaultRanges: z.array(adminDefaultRangeSchema),
+  /**
+   * Withdrawn rows, so a restore is discoverable without reading the audit log.
+   * Never the input to anything that seeds a patient range.
+   */
+  deletedRanges: z.array(withdrawnDefaultRangeSchema),
   /**
    * Every known range type, not just the ones with rows — the table starts
    * empty, so a console with nothing to list still needs to know what it may
@@ -338,21 +368,6 @@ export const adminDefaultRangesResponseSchema = z.object({
    */
   rangeTypeLimits: z.array(adminRangeTypeLimitsSchema),
 });
-
-/**
- * What a DELETE returns: the row as it was, plus its id, and no `updatedAt`.
- *
- * Declared rather than reusing `adminDefaultRangeSchema`, which was the bug both
- * reviews caught: the route advertised that schema — `id` and `updatedAt` both
- * required, `additionalProperties: false` — while the handler returned neither. The
- * published document is the only contract this surface has, and a P8 console generated
- * from it would read `undefined` off a required field. `updatedAt` is genuinely absent
- * rather than omitted for convenience: a row that no longer exists has no last-modified
- * time, and the id is what lets a console reconcile which row went.
- */
-export const deletedDefaultRangeSchema = adminDefaultRangeSchema.omit({ updatedAt: true });
-
-export type DeletedDefaultRange = z.infer<typeof deletedDefaultRangeSchema>;
 
 export type AdminDefaultRange = z.infer<typeof adminDefaultRangeSchema>;
 

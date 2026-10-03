@@ -462,6 +462,24 @@ export function describeSettableRange(row) {
  * Printing `null to 1200 mL` would read as a defect in the data rather than as
  * what it is.
  */
+/**
+ * The two lines a default range reads as, live or withdrawn.
+ *
+ * Extracted when #98 added the withdrawn group, so the two renderings cannot
+ * drift — and exported because the render functions themselves are not, which
+ * had left every line this script prints about a range untested.
+ */
+export function describeRange(range) {
+  // A null `minDaysPostOp` means "from surgery" — day 0, not "unknown".
+  const from = range.minDaysPostOp ?? 0;
+  const to = range.maxDaysPostOp === null ? 'onward' : `day ${String(range.maxDaysPostOp)}`;
+  const window = range.windowDays === null ? '' : `, ${String(range.windowDays)}-day window`;
+  return [
+    `  ${range.ostomyType} ${range.rangeType}  (day ${String(from)} to ${to}${window})`,
+    `      ${describeBounds(range)}`,
+  ];
+}
+
 export function describeBounds(range) {
   const unit = range.unit;
   /**
@@ -524,15 +542,28 @@ const SURFACES = {
     path: '/admin/default-ranges',
     render: (body) => {
       for (const range of body.defaultRanges) {
-        // A null `minDaysPostOp` means "from surgery" — day 0, not "unknown".
-        const from = range.minDaysPostOp ?? 0;
-        const to = range.maxDaysPostOp === null ? 'onward' : `day ${String(range.maxDaysPostOp)}`;
-        const window = range.windowDays === null ? '' : `, ${String(range.windowDays)}-day window`;
-        console.log(
-          `  ${range.ostomyType} ${range.rangeType}  (day ${String(from)} to ${to}${window})`,
-        );
-        console.log(`      ${describeBounds(range)}`);
+        for (const line of describeRange(range)) console.log(line);
       }
+
+      /**
+       * Withdrawn rows, for the same reason the value-set surface marks retired
+       * members: an admin needs to see what was withdrawn.
+       *
+       * Their own group, because the API publishes them in their own array
+       * (#98) — and that separation is the safety-relevant part of #98's wire
+       * shape, so a reader of this listing should see the same split rather than
+       * one list with a marker. The count returned stays the live count: these
+       * are history, not configuration.
+       */
+      const withdrawn = body.deletedRanges ?? [];
+      if (withdrawn.length > 0) {
+        console.log(`  withdrawn (${String(withdrawn.length)}, restorable):`);
+        for (const range of withdrawn) {
+          for (const line of describeRange(range)) console.log(`  ${line}`);
+          console.log(`        withdrawn ${String(range.deletedAt)}`);
+        }
+      }
+
       return body.defaultRanges.length;
     },
   },

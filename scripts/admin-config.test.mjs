@@ -29,6 +29,7 @@ import assert from 'node:assert/strict';
 
 import {
   describeBounds,
+  describeRange,
   describeFailure,
   describeSettableRange,
   readClaims,
@@ -163,6 +164,50 @@ describe('describeSettableRange', () => {
       describeSettableRange({ minSettableValue: 0.0001, maxSettableValue: 3600 }),
       /to 3600/,
     );
+  });
+});
+
+describe('describeRange', () => {
+  const RANGE = {
+    ostomyType: 'ILEOSTOMY',
+    rangeType: 'daily_output_ml',
+    minDaysPostOp: 0,
+    maxDaysPostOp: 30,
+    lowValue: 500,
+    highValue: 1200,
+    unit: 'mL',
+    windowDays: null,
+  };
+
+  it('reads as a window and its bounds', () => {
+    assert.deepEqual(describeRange(RANGE), [
+      '  ILEOSTOMY daily_output_ml  (day 0 to day 30)',
+      '      500 to 1200 mL',
+    ]);
+  });
+
+  /**
+   * A null `minDaysPostOp` means "from surgery" — day 0 — and a null
+   * `maxDaysPostOp` means unbounded. Printing either as `null` would read as
+   * corrupt data to the one reader who could act on it, and printing "day null"
+   * for the lower end would hide that the row starts at surgery.
+   */
+  it('prints neither end as null', () => {
+    const rendered = describeRange({
+      ...RANGE,
+      minDaysPostOp: null,
+      maxDaysPostOp: null,
+    }).join('\n');
+
+    assert.match(rendered, /day 0 to onward/);
+    assert.doesNotMatch(rendered, /null/);
+  });
+
+  it('names the rolling window, which is part of the row identity', () => {
+    // Two rules for one range type are told apart by `windowDays` (#97's
+    // exclusion constraint coalesces it), so a listing that omitted it would
+    // show what looks like a duplicated row.
+    assert.match(describeRange({ ...RANGE, windowDays: 7 }).join('\n'), /7-day window/);
   });
 });
 

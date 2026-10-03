@@ -172,6 +172,11 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
     // Added when #98's tests merged with #102's: the foreign key is what
     // surfaced them, which is the registration requirement working.
     ['p98_ordinary_ml', 'mL'],
+    ['p98_tombstone', 'mL'],
+    ['p98_tombstone_back', 'mL'],
+    ['probe_restore_limits_ml', 'mL'],
+    ['probe_restore_ml', 'mL'],
+    ['probe_restore_unit_ml', 'mL'],
     ['probe_adjacent_ml', 'mL'],
     ['probe_audit_ml', 'mL'],
     ['probe_concurrent_ml', 'mL'],
@@ -236,6 +241,37 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       windowDays: null,
       ...overrides,
     });
+  }
+
+  /**
+   * Writes a type's limits as the owner role. The runtime role holds `SELECT`
+   * only on this table (#102), which is the point — these rows are migration-
+   * owned and no request handler may move them.
+   *
+   * Lived inside the #102 describe until #98's restore tests needed it too.
+   */
+  async function setLimits(
+    rangeType: string,
+    minValue: number,
+    maxValue: number,
+    rangeUnit = 'bpm',
+  ): Promise<void> {
+    const owner = new PgClient({ connectionString: ownerUrl });
+    await owner.connect();
+    try {
+      await owner.query(
+        `INSERT INTO clinical_default_range_limits
+           (range_type, min_value, max_value, unit, basis, updated_at)
+         VALUES ($1, $2, $3, $4, 'test', now())
+         ON CONFLICT (range_type) DO UPDATE
+           SET min_value = EXCLUDED.min_value,
+               max_value = EXCLUDED.max_value,
+               unit = EXCLUDED.unit`,
+        [rangeType, minValue, maxValue, rangeUnit],
+      );
+    } finally {
+      await owner.end();
+    }
   }
 
   async function auditRowsFor(rangeId: string) {
@@ -632,12 +668,19 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
   });
 
   /**
-   * The one admin surface with a real delete, because nothing references these rows: a
-   * patient's effective range carries its own bounds with `CLINICAL_DEFAULT` provenance,
-   * a copy rather than a pointer, and there is no foreign key from it to this table.
+   * A withdrawal, not a removal, since #98.
+   *
+   * It used to be the one admin surface with a real delete, and the argument was
+   * sound as far as it went: nothing references these rows, because a patient's
+   * effective range carries its own bounds with `CLINICAL_DEFAULT` provenance, a
+   * copy rather than a pointer with no foreign key back to this table. All of
+   * that is still true — it is an argument about SAFETY, and #98 was about
+   * RECOVERABILITY, which it never addressed. The row is now tombstoned and
+   * `POST :id/restore` brings it back.
    */
   describe('deleting a range', () => {
-    it('removes the row', async () => {
+    it('tombstones the row rather than removing it', async () => {
+      // Asserted `toBeNull()` until #98.
       const created = await service.createDefaultRange(
         body('probe_delete_ml'),
         ADMIN_SUBJECT,
@@ -646,9 +689,26 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
 
       await service.deleteDefaultRange(created.rangeId, ADMIN_SUBJECT, undefined);
 
-      expect(
-        await prisma.clinicalDefaultRange.findUnique({ where: { id: created.rangeId } }),
-      ).toBeNull();
+      const row = await prisma.clinicalDefaultRange.findUnique({
+        where: { id: created.rangeId },
+      });
+      expect(row).not.toBeNull();
+      expect(row!.deletedAt).toBeInstanceOf(Date);
+    });
+
+    it('drops the row from the live list and publishes it as withdrawn', async () => {
+      // The safety-relevant half. §3.9's seeding will read `defaultRanges`, and a
+      // tombstone reaching that array would seed a range an admin had withdrawn.
+      const created = await service.createDefaultRange(
+        body('probe_delete_ml', { minDaysPostOp: 700, maxDaysPostOp: 760 }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+      await service.deleteDefaultRange(created.rangeId, ADMIN_SUBJECT, undefined);
+
+      const listed = await service.listDefaultRanges();
+      expect(listed.defaultRanges.map((row) => row.id)).not.toContain(created.rangeId);
+      expect(listed.deletedRanges.map((row) => row.id)).toContain(created.rangeId);
     });
 
     it('keeps what the row said, in an audit row with no after state', async () => {
@@ -845,30 +905,6 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
    * value silences a seek-care prompt with no symptom at all.
    */
   describe('per-range-type limits (#102)', () => {
-    async function setLimits(
-      rangeType: string,
-      minValue: number,
-      maxValue: number,
-      rangeUnit = 'bpm',
-    ): Promise<void> {
-      const owner = new PgClient({ connectionString: ownerUrl });
-      await owner.connect();
-      try {
-        await owner.query(
-          `INSERT INTO clinical_default_range_limits
-             (range_type, min_value, max_value, unit, basis, updated_at)
-           VALUES ($1, $2, $3, $4, 'test', now())
-           ON CONFLICT (range_type) DO UPDATE
-             SET min_value = EXCLUDED.min_value,
-                 max_value = EXCLUDED.max_value,
-                 unit = EXCLUDED.unit`,
-          [rangeType, minValue, maxValue, rangeUnit],
-        );
-      } finally {
-        await owner.end();
-      }
-    }
-
     it('seeds a limits row for every range type the schema names', async () => {
       const limits = (await service.listDefaultRanges()).rangeTypeLimits;
       const types = limits.map((entry) => entry.rangeType);
@@ -1445,9 +1481,204 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
 
       await service.deleteDefaultRange(write.rangeId, ADMIN_SUBJECT, undefined);
 
-      expect(
-        await prisma.clinicalDefaultRange.findUnique({ where: { id: write.rangeId } }),
-      ).toBeNull();
+      const row = await prisma.clinicalDefaultRange.findUnique({
+        where: { id: write.rangeId },
+      });
+      expect(row!.deletedAt).toBeInstanceOf(Date);
+    });
+  });
+
+  /**
+   * #98's other half: a restore path.
+   *
+   * The issue's words for the gap — "recovering a row means a human reading JSON
+   * out of `audit_events` and retyping it. The audit log is not readable through
+   * any API."
+   */
+  describe('restoring a withdrawn range (#98)', () => {
+    async function withdraw(rangeType: string, min: number, max: number): Promise<string> {
+      const created = await service.createDefaultRange(
+        body(rangeType, { minDaysPostOp: min, maxDaysPostOp: max }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+      await service.deleteDefaultRange(created.rangeId, ADMIN_SUBJECT, undefined);
+      return created.rangeId;
+    }
+
+    it('brings the row back with its bounds intact', async () => {
+      const id = await withdraw('probe_restore_ml', 800, 860);
+
+      const restored = await service.restoreDefaultRange(id, ADMIN_SUBJECT, undefined);
+
+      expect(restored.range.lowValue).toBe(500);
+      expect(restored.range.highValue).toBe(1200);
+      const row = await prisma.clinicalDefaultRange.findUnique({ where: { id } });
+      expect(row!.deletedAt).toBeNull();
+    });
+
+    it('returns it to the live list', async () => {
+      const id = await withdraw('probe_restore_ml', 900, 960);
+      await service.restoreDefaultRange(id, ADMIN_SUBJECT, undefined);
+
+      const listed = await service.listDefaultRanges();
+      expect(listed.defaultRanges.map((row) => row.id)).toContain(id);
+      expect(listed.deletedRanges.map((row) => row.id)).not.toContain(id);
+    });
+
+    it('audits the restore as a CREATE with an after state and no before', async () => {
+      // From the table's point of view a range of that shape exists again where
+      // none did. Recording it as an UPDATE clearing a column would describe the
+      // mechanism rather than the event.
+      const id = await withdraw('probe_restore_ml', 1000, 1060);
+      await service.restoreDefaultRange(id, ADMIN_SUBJECT, undefined);
+
+      const rows = await auditRowsFor(id);
+      expect(rows.map((row) => row.action)).toEqual(['CREATE', 'DELETE', 'CREATE']);
+      const last = rows[rows.length - 1]!;
+      expect(last.afterValue).toMatchObject({ lowValue: 500, highValue: 1200 });
+      expect(last.beforeValue).toBeNull();
+      expect(last.actorId).toBe(ADMIN_SUBJECT);
+    });
+
+    /**
+     * The failure that is the ordinary sequence rather than an edge case.
+     *
+     * #97's exclusion constraint is partial on `deleted_at`, so a tombstone does
+     * not occupy its window — which is what keeps delete-and-create available as
+     * the correction path for an immutable window ('frees the window, so the
+     * corrected row can be created', above, is that path and now also covers the
+     * partial constraint). The consequence is that by the time anyone restores,
+     * the replacement may be in place.
+     *
+     * This one does NOT distinguish the layers, and that is worth stating rather
+     * than discovering: deleting the service's own `assertNoOverlap` call leaves
+     * it green, because #97's constraint then refuses the UPDATE and
+     * `isWindowOverlapViolation` translates it to the same 409. Both layers are
+     * kept deliberately — the service check is the interface (and the two tests
+     * below, on the limits, are the ones only it can answer), the constraint the
+     * backstop for writers that never take the advisory lock.
+     */
+    it('refuses when a replacement has filled the window', async () => {
+      const id = await withdraw('probe_restore_ml', 1100, 1160);
+      await service.createDefaultRange(
+        body('probe_restore_ml', { minDaysPostOp: 1100, maxDaysPostOp: 1160 }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      await expect(service.restoreDefaultRange(id, ADMIN_SUBJECT, undefined)).rejects.toMatchObject(
+        {
+          status: 409,
+          response: { error: { code: 'DEFAULT_RANGE_WINDOW_OVERLAPS' } },
+        },
+      );
+
+      // And it stays withdrawn, so the refusal left no half-state.
+      const row = await prisma.clinicalDefaultRange.findUnique({ where: { id } });
+      expect(row!.deletedAt).toBeInstanceOf(Date);
+    });
+
+    it('refuses restoring a live row', async () => {
+      const created = await service.createDefaultRange(
+        body('probe_restore_ml', { minDaysPostOp: 1300, maxDaysPostOp: 1360 }),
+        ADMIN_SUBJECT,
+        undefined,
+      );
+
+      await expect(
+        service.restoreDefaultRange(created.rangeId, ADMIN_SUBJECT, undefined),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { error: { code: 'DEFAULT_RANGE_NOT_DELETED' } },
+      });
+    });
+
+    it('refuses an unknown id as a 404', async () => {
+      await expect(
+        service.restoreDefaultRange(
+          '00000000-0000-4000-8000-000000000002',
+          ADMIN_SUBJECT,
+          undefined,
+        ),
+      ).rejects.toMatchObject({
+        status: 404,
+        response: { error: { code: 'DEFAULT_RANGE_NOT_FOUND' } },
+      });
+    });
+
+    /**
+     * A restore is the one write on this surface whose content nobody is looking
+     * at: the admin supplies an id and the bounds come back from the tombstone.
+     * So the limits have to be re-read, and these two are what distinguish the
+     * service's own check from #97's database constraints — which cover the
+     * window and the bound ordering and deliberately do not cover either of
+     * these (#102's interval check is application-only by design).
+     */
+    it('refuses a row whose bounds now sit outside its type limits', async () => {
+      const id = await withdraw('probe_restore_limits_ml', 1600, 1660);
+      // Narrowed after the row was withdrawn, which is the whole scenario:
+      // nothing re-examines a tombstone, so without this check #102's interval
+      // would be enforced on every path except the one with no human reading the
+      // numbers.
+      await setLimits('probe_restore_limits_ml', 0.0001, 900, 'mL');
+
+      await expect(service.restoreDefaultRange(id, ADMIN_SUBJECT, undefined)).rejects.toMatchObject(
+        {
+          status: 400,
+          response: {
+            error: {
+              code: 'INVALID_DEFAULT_RANGE',
+              fields: [{ field: 'highValue', rule: 'outside_type_limits' }],
+            },
+          },
+        },
+      );
+    });
+
+    it('refuses a row whose unit its type no longer declares', async () => {
+      const id = await withdraw('probe_restore_unit_ml', 1700, 1760);
+      await setLimits('probe_restore_unit_ml', -99_999_999.9999, 99_999_999.9999, 'oz');
+
+      await expect(service.restoreDefaultRange(id, ADMIN_SUBJECT, undefined)).rejects.toMatchObject(
+        {
+          status: 400,
+          response: {
+            error: {
+              code: 'INVALID_DEFAULT_RANGE',
+              fields: [{ field: 'unit', rule: 'wrong_unit_for_type' }],
+            },
+          },
+        },
+      );
+    });
+
+    it('refuses deleting an already-withdrawn row, rather than auditing it twice', async () => {
+      // 409 not 404: the row exists and `restore` is the operation the caller
+      // wants. Letting it through would write a second DELETE audit row with an
+      // identical before value, implying a change that did not happen.
+      const id = await withdraw('probe_restore_ml', 1400, 1460);
+      const auditBefore = await auditRowsFor(id);
+
+      await expect(service.deleteDefaultRange(id, ADMIN_SUBJECT, undefined)).rejects.toMatchObject({
+        status: 409,
+        response: { error: { code: 'DEFAULT_RANGE_ALREADY_DELETED' } },
+      });
+
+      expect(await auditRowsFor(id)).toHaveLength(auditBefore.length);
+    });
+
+    it('refuses editing a withdrawn row', async () => {
+      // Editing one would leave a tombstone whose snapshot no longer matches what
+      // was withdrawn, so a restore would bring back something nobody deleted.
+      const id = await withdraw('probe_restore_ml', 1500, 1560);
+
+      await expect(
+        service.updateDefaultRange(id, { lowValue: 100, highValue: 200 }, ADMIN_SUBJECT, undefined),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { error: { code: 'DEFAULT_RANGE_ALREADY_DELETED' } },
+      });
     });
   });
 
@@ -1523,6 +1754,50 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
           await expect(owner.query(insert('p97_nullwin', 10, 40, 500, 1200, null))).rejects.toThrow(
             /window_no_overlap/,
           );
+        });
+      });
+
+      /**
+       * The `WHERE deleted_at IS NULL` that #98 added, asserted at the database
+       * rather than inferred from the service passing.
+       *
+       * Without it, withdrawing a row would leave its window occupied and the
+       * replacement would be refused — so the soft delete would have broken
+       * delete-and-create, the one correction path an immutable window leaves.
+       * 'frees the window, so the corrected row can be created' covers that
+       * through the service; this covers the writers the service does not see,
+       * which is the whole reason #97 moved these rules into the schema.
+       */
+      it('exempts tombstoned rows, so a withdrawn window is free', async () => {
+        await asOwner(async (owner) => {
+          await owner.query(insert('p98_tombstone', 0, 30, 500, 1200));
+          await owner.query(
+            `UPDATE clinical_default_ranges SET deleted_at = now()
+              WHERE range_type = 'p98_tombstone'`,
+          );
+
+          await owner.query(insert('p98_tombstone', 0, 30, 400, 900));
+        });
+      });
+
+      it('still refuses the overlap once the withdrawn row is brought back', async () => {
+        // The other direction, and the reason a restore can fail: several
+        // tombstones may overlap each other and a live row, so bringing one back
+        // is a write the constraint has not yet had a chance to judge.
+        await asOwner(async (owner) => {
+          await owner.query(insert('p98_tombstone_back', 0, 30, 500, 1200));
+          await owner.query(
+            `UPDATE clinical_default_ranges SET deleted_at = now()
+              WHERE range_type = 'p98_tombstone_back'`,
+          );
+          await owner.query(insert('p98_tombstone_back', 0, 30, 400, 900));
+
+          await expect(
+            owner.query(
+              `UPDATE clinical_default_ranges SET deleted_at = NULL
+                WHERE range_type = 'p98_tombstone_back' AND deleted_at IS NOT NULL`,
+            ),
+          ).rejects.toThrow(/window_no_overlap/);
         });
       });
 
