@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { formatDateTime } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
-import { Redirect, router } from 'expo-router';
+import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { View } from 'react-native';
@@ -26,6 +26,7 @@ import { useAuth } from '../src/auth/AuthContext';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
+import { parseDraftParams } from '../src/quickadd/draftParams';
 import {
   amountError,
   checkEntry,
@@ -82,8 +83,23 @@ export default function AddOutput(): React.JSX.Element {
   const database = useDatabaseState();
   const { requestSync } = useSyncStatus();
 
-  const [amountText, setAmountText] = useState('');
-  const [method, setMethod] = useState<MeasuredOrEstimated | undefined>(undefined);
+  /**
+   * Pre-filled from a Quick-Add widget's "Change before saving" (P3.S4,
+   * Epic 3), when opened that way.
+   *
+   * `useState`'s initialiser, so it is the screen's starting state and then
+   * ordinary state — a patient who clears the field is not re-filled on the
+   * next render, which an effect synchronising params into state would do.
+   *
+   * Every param is validated by `parseDraftParams`: a value it does not
+   * recognise is dropped, so this screen behaves exactly as it does when
+   * opened from the dashboard button rather than half-filling from a stale or
+   * hand-typed link. And nothing here is trusted on save — a prefill is as
+   * untrusted as typing, and the same two tiers run either way.
+   */
+  const draft = parseDraftParams(useLocalSearchParams());
+  const [amountText, setAmountText] = useState(draft.amount ?? '');
+  const [method, setMethod] = useState<MeasuredOrEstimated | undefined>(draft.method);
   const [effectiveDateTime, setEffectiveDateTime] = useState(() => clockNow());
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
   const [saving, setSaving] = useState(false);

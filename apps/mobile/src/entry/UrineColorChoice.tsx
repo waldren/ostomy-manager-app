@@ -67,7 +67,8 @@ import { ChoiceGroup, type Choice } from '../ui/ChoiceGroup';
 import { labelKeyFor, type ValueSetOptionsState } from './useValueSetOptions';
 
 /** The i18n namespace the colour labels live under (`urineColor.<code>`). */
-const URINE_COLOR_LABEL_NAMESPACE = 'urineColor';
+/** Exported since P3.S4: the Quick-Add widget labels a colour-only entry and must resolve it through the same namespace. */
+export const URINE_COLOR_LABEL_NAMESPACE = 'urineColor';
 
 const SWATCHES: Readonly<Record<string, string>> = tokens.urineColorSwatch;
 

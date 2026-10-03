@@ -34,6 +34,35 @@ export const common = {
   'method.measured': 'Measured',
   'method.estimated': 'Estimated',
 
+  // Quick-Add widget copy (P3.S4, SRS §3.1). `common` rather than `mobile`:
+  // a widget's accessible name states a volume, a Measured/Estimated
+  // assertion and a fluid type, all of which carry clinical meaning, and the
+  // web client will eventually offer the same thing.
+  //
+  // The visible label is composed by `QuickAddWidgets` from these keys plus
+  // `formatVolumeQuantity`, never from a hand-written unit string — ADR-0006,
+  // and the same reason this catalog has no `unit.mL` key.
+  //
+  // What the ACCESSIBLE NAME must carry that the visible label need not:
+  // the Measured/Estimated answer is rendered visibly as a separate line, but
+  // a screen-reader user hearing only "350 millilitres, button" would be one
+  // tap from asserting a measurement they did not make. So the hint spells out
+  // what tapping does, including the toggle.
+  'quickAdd.volumeLabel': '{{amount}} · {{method}}',
+  'quickAdd.volumeWithTypeLabel': '{{amount}} {{fluidType}} · {{method}}',
+  // A colour-only urine entry (AC 12.1 AC2) has no amount at all. Naming the
+  // colour alone, without an amount, is the honest rendering — and "no amount"
+  // is said out loud rather than left as an absence, because a missing volume
+  // is never zero.
+  'quickAdd.colorOnlyLabel': '{{color}} · no amount',
+  'quickAdd.logHint': 'Records this entry now, with the time set to right now.',
+  // Said plainly, because the number is the patient's own and the honesty of
+  // it is what makes the widget trustworthy.
+  'quickAdd.repeatCount_one': 'You logged this once recently.',
+  'quickAdd.repeatCount_other': 'You logged this {{count}} times recently.',
+  'quickAdd.editButton': 'Change before saving',
+  'quickAdd.editHint': 'Opens the entry form with these details filled in, so you can adjust them.',
+
   // Entry-form copy. Clinical meaning, so `common` rather than `mobile`:
   // the web client will eventually ask the same questions, and the two
   // must not drift into wording them differently.

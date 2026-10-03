@@ -43,8 +43,17 @@ import {
  * running it here is to tell the patient now rather than after a round-trip.
  */
 
-/** The LOINC code for stoma output. P2 accepts only this one (docs/sync-contract.md §7.2). */
-export const STOMA_OUTPUT_LOINC_CODE = '79560-9';
+/**
+ * The LOINC code for stoma output. P2 accepts only this one
+ * (docs/sync-contract.md §7.2).
+ *
+ * Re-exported rather than declared here since P3.S4: `./observationCodes.ts`
+ * owns the three codes this client writes, because Quick-Add generates over
+ * all of them and three literals in three files is the shape that lets two
+ * disagree. Kept as an export from this module so its callers did not have to
+ * change.
+ */
+export { STOMA_OUTPUT_LOINC_CODE } from './observationCodes';
 
 /** The field id Tier 1 errors are reported against — the wire spelling, so a local error and a server rejection name the same thing. */
 export const STOMA_OUTPUT_VALUE_FIELD = 'valueQuantity.value';

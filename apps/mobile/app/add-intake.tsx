@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { formatDateTime, formatVolumeQuantity } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
-import { Redirect, router } from 'expo-router';
+import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { View } from 'react-native';
@@ -27,6 +27,8 @@ import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
+import { parseDraftParams } from '../src/quickadd/draftParams';
+import { FLUID_INTAKE_LOINC_CODE } from '../src/entry/observationCodes';
 import {
   amountError,
   checkEntry,
@@ -47,9 +49,6 @@ import { ChoiceGroup } from '../src/ui/ChoiceGroup';
 import { Heading } from '../src/ui/Heading';
 import { NumericField } from '../src/ui/NumericField';
 import { Screen } from '../src/ui/Screen';
-
-/** LOINC 9000-1 — oral fluid intake. The second code the API accepts (P3.S1). */
-const FLUID_INTAKE_LOINC_CODE = '9000-1';
 
 /**
  * The Add Intake screen (SRS §3.1, AC 2.3).
@@ -85,9 +84,24 @@ export default function AddIntake(): React.JSX.Element {
   const database = useDatabaseState();
   const { requestSync } = useSyncStatus();
 
-  const [amountText, setAmountText] = useState('');
-  const [method, setMethod] = useState<MeasuredOrEstimated | undefined>(undefined);
-  const [fluidTypeCode, setFluidTypeCode] = useState<string | undefined>(undefined);
+  /**
+   * Pre-filled from a Quick-Add widget's "Change before saving" (P3.S4,
+   * Epic 3), when opened that way.
+   *
+   * `useState`'s initialiser, so it is the screen's starting state and then
+   * ordinary state — a patient who clears the field is not re-filled on the
+   * next render, which an effect synchronising params into state would do.
+   *
+   * Every param is validated by `parseDraftParams`: a value it does not
+   * recognise is dropped, so this screen behaves exactly as it does when
+   * opened from the dashboard button rather than half-filling from a stale or
+   * hand-typed link. And nothing here is trusted on save — a prefill is as
+   * untrusted as typing, and the same two tiers run either way.
+   */
+  const draft = parseDraftParams(useLocalSearchParams());
+  const [amountText, setAmountText] = useState(draft.amount ?? '');
+  const [method, setMethod] = useState<MeasuredOrEstimated | undefined>(draft.method);
+  const [fluidTypeCode, setFluidTypeCode] = useState<string | undefined>(draft.fluidType);
   const [effectiveDateTime] = useState(() => clockNow());
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
   const [saving, setSaving] = useState(false);
