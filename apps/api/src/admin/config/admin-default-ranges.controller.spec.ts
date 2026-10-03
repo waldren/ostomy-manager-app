@@ -63,18 +63,32 @@ function makeController() {
     range: SNAPSHOT,
     rangeId: ROW_ID,
     auditEventId: 'audit-delete',
+    updatedAt: '2026-10-01T02:00:00.000Z',
+    deletedAt: '2026-10-01T02:00:00.000Z',
+  }));
+  const restoreDefaultRange = vi.fn(async () => ({
+    range: SNAPSHOT,
+    rangeId: ROW_ID,
+    auditEventId: 'audit-restore',
+    updatedAt: '2026-10-01T03:00:00.000Z',
   }));
   const service = {
     createDefaultRange,
     updateDefaultRange,
     deleteDefaultRange,
-    listDefaultRanges: vi.fn(async () => ({ defaultRanges: [] })),
+    restoreDefaultRange,
+    listDefaultRanges: vi.fn(async () => ({
+      defaultRanges: [],
+      deletedRanges: [],
+      rangeTypeLimits: [],
+    })),
   };
   return {
     controller: new AdminDefaultRangesController(service as never),
     createDefaultRange,
     updateDefaultRange,
     deleteDefaultRange,
+    restoreDefaultRange,
   };
 }
 
@@ -204,6 +218,23 @@ describe('every mutating route stages its audit entry', () => {
     });
   });
 
+  /**
+   * A restore writes a row that reads as a create, so an unstaged entry would mean
+   * the `@Audited()` coverage check passes while the log shows a withdrawal with
+   * nothing after it — a row that looks gone and is live.
+   */
+  it('stages a restore as a CREATE', async () => {
+    const { controller } = makeController();
+    const request = adminRequest();
+
+    await controller.restore(ROW_ID, request);
+
+    expect(request.auditEntries?.[0]).toMatchObject({
+      action: 'CREATE',
+      auditEventId: 'audit-restore',
+    });
+  });
+
   it('passes the verified admin subject through, never a value from the body', async () => {
     const { controller, createDefaultRange } = makeController();
 
@@ -224,12 +255,29 @@ describe('the success bodies', () => {
     });
   });
 
-  it('returns what a deleted row said, which is otherwise only in the audit log', async () => {
+  it('returns the tombstone, in the shape GET publishes it', async () => {
     const { controller } = makeController();
 
-    // Plus the id, so a console can reconcile which row went. `updatedAt` is
-    // genuinely absent: a row that no longer exists has no last-modified time.
-    expect(await controller.remove(ROW_ID, adminRequest())).toEqual({ ...SNAPSHOT, id: ROW_ID });
+    // `updatedAt` used to be genuinely absent, on the reasoning that a removed row
+    // has no last-modified time. Since #98 the row survives and its `updated_at`
+    // moved when the tombstone was written, so the body carries both it and
+    // `deletedAt` — one shape for a withdrawn row, here and in `deletedRanges`.
+    expect(await controller.remove(ROW_ID, adminRequest())).toEqual({
+      ...SNAPSHOT,
+      id: ROW_ID,
+      updatedAt: '2026-10-01T02:00:00.000Z',
+      deletedAt: '2026-10-01T02:00:00.000Z',
+    });
+  });
+
+  it('returns the restored row with a fresh concurrency token', async () => {
+    const { controller } = makeController();
+
+    expect(await controller.restore(ROW_ID, adminRequest())).toEqual({
+      ...SNAPSHOT,
+      id: ROW_ID,
+      updatedAt: '2026-10-01T03:00:00.000Z',
+    });
   });
 });
 

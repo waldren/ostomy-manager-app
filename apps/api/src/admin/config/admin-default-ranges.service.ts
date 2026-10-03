@@ -41,6 +41,12 @@ import { toNumericValue } from './decimal';
 /** What `audit_events.entity_type` carries for these rows. Greppable and stable. */
 export const DEFAULT_RANGE_ENTITY_TYPE = 'clinical_default_range';
 
+/** A withdrawal: the row as it was, plus when it was withdrawn (#98). */
+export interface DefaultRangeWithdrawal extends DefaultRangeWrite {
+  /** `deleted_at`, ISO 8601. Non-null by construction — this is the tombstone. */
+  readonly deletedAt: string;
+}
+
 /** A completed write and the id of the audit row committed with it. See PR A and B. */
 export interface DefaultRangeWrite {
   readonly range: DefaultRangeSnapshot;
@@ -167,6 +173,9 @@ export class AdminDefaultRangesService {
    */
   async listDefaultRanges(): Promise<AdminDefaultRangesResponse> {
     const rows = await this.prisma.clinicalDefaultRange.findMany({
+      // Live rows only. §3.9's seeding will read this array, and a tombstone
+      // reaching it would seed a range an admin had withdrawn.
+      where: { deletedAt: null },
       // `nulls: 'first'`, because Postgres `ASC` is NULLS LAST and a null
       // `minDaysPostOp` means "from surgery" — day 0, the FIRST window. It was sorting
       // after day 3650, which contradicted this route's own claim that the windows read
@@ -186,11 +195,29 @@ export class AdminDefaultRangesService {
       orderBy: { rangeType: 'asc' },
     });
 
+    /**
+     * Withdrawn rows, newest first, so a restore is discoverable without the
+     * audit log — which #98 names as the gap: "recovering a row means a human
+     * reading JSON out of `audit_events` and retyping it".
+     */
+    const withdrawn = await this.prisma.clinicalDefaultRange.findMany({
+      where: { deletedAt: { not: null } },
+      orderBy: { deletedAt: 'desc' },
+    });
+
     return {
       defaultRanges: rows.map((row) => ({
         ...toSnapshot(row),
         id: row.id,
         updatedAt: row.updatedAt.toISOString(),
+      })),
+      deletedRanges: withdrawn.map((row) => ({
+        ...toSnapshot(row),
+        id: row.id,
+        updatedAt: row.updatedAt.toISOString(),
+        // Non-null by the query's own filter; the schema requires it, so the
+        // assertion is where the two meet rather than a convenience.
+        deletedAt: (row.deletedAt as Date).toISOString(),
       })),
       rangeTypeLimits: limits.map((row) => ({
         rangeType: row.rangeType,
@@ -256,13 +283,22 @@ export class AdminDefaultRangesService {
      */
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${candidate.ostomyType}:${candidate.rangeType}`}))`;
 
-    // Only `create` calls this, and there is no `excludeId` parameter, because an
-    // update cannot produce an overlap: every identity field — the ostomy type, the
-    // range type, both window bounds and `windowDays` — is immutable, so the only row
-    // whose window could move is one that cannot. A first draft carried that parameter
-    // and nothing passed it.
+    // `create` and `restore` call this. There is still no `excludeId` parameter,
+    // because neither caller has a row among the siblings: every identity field —
+    // the ostomy type, the range type, both window bounds and `windowDays` — is
+    // immutable, so no live row's window can move, and a restoring row is a
+    // tombstone, which the filter below excludes. (A first draft carried that
+    // parameter and nothing passed it; `update` still does not call this at all.)
     const siblings = await tx.clinicalDefaultRange.findMany({
-      where: { ostomyType: candidate.ostomyType, rangeType: candidate.rangeType },
+      // Live rows only, matching #98's partial exclusion constraint. Without the
+      // filter this check would be STRICTER than the database and would refuse a
+      // replacement for a withdrawn row — blocking the delete-and-create
+      // correction path that the window's immutability makes necessary.
+      where: {
+        ostomyType: candidate.ostomyType,
+        rangeType: candidate.rangeType,
+        deletedAt: null,
+      },
     });
 
     /**
@@ -448,6 +484,123 @@ export class AdminDefaultRangesService {
     }
   }
 
+  /**
+   * Brings a withdrawn range back (#98).
+   *
+   * The half of #98 the delete guard did not address: "recovering a row means a
+   * human reading JSON out of `audit_events` and retyping it. The audit log is
+   * not readable through any API."
+   *
+   * ## The restore can legitimately fail, and that is the ordinary case
+   *
+   * #97's exclusion constraint is partial on `deleted_at`, so a tombstone does
+   * not occupy its window — which is what lets an admin withdraw a row and
+   * create a replacement, the correction path the window's immutability makes
+   * necessary. The consequence is that by the time someone restores, the window
+   * may be filled by exactly that replacement. So this re-runs the overlap check
+   * against live rows and answers `409 DEFAULT_RANGE_WINDOW_OVERLAPS` — the same
+   * code a create would give, because it is the same rule and an admin should
+   * not have to learn two.
+   *
+   * Audited as `CREATE`, with the restored row as `afterValue` and no before
+   * state. From the table's point of view a range of that shape exists again
+   * where none did, which is what a reader of the log needs to see; recording it
+   * as an `UPDATE` clearing a column would describe the mechanism instead of the
+   * event.
+   */
+  async restoreDefaultRange(
+    id: string,
+    adminId: string,
+    correlationId: string | undefined,
+  ): Promise<DefaultRangeWrite> {
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.clinicalDefaultRange.findUnique({ where: { id } });
+      if (!existing) {
+        throw new NotFoundException({ error: { code: 'DEFAULT_RANGE_NOT_FOUND' } });
+      }
+      if (existing.deletedAt === null) {
+        // Not an error worth inventing a new code for: the caller wanted a live
+        // row of this id and there is one.
+        throw new ConflictException({ error: { code: 'DEFAULT_RANGE_NOT_DELETED' } });
+      }
+
+      /**
+       * Re-validated against the limits as they are NOW, not as they were when the
+       * row was written.
+       *
+       * A restore is the one write on this surface whose content nobody is
+       * looking at — the admin supplies an id and the bounds come back from the
+       * tombstone. So a row withdrawn before #102 narrowed its type's limits
+       * would come back outside them, and the limits table's whole purpose is
+       * that no stored bound sits outside the clinically sensible interval for
+       * its key. `assertNoOverlap` carries the unit half of the same argument,
+       * comparing the row's unit against the type's declared one.
+       *
+       * This is also what the database cannot do for us here: #97's constraints
+       * cover the window and the bound ordering, and #102's limits are
+       * application-enforced by design (the FK buys referential integrity, not
+       * the interval check).
+       */
+      await this.assertNoOverlap(tx, {
+        ostomyType: existing.ostomyType,
+        rangeType: existing.rangeType,
+        minDaysPostOp: existing.minDaysPostOp,
+        maxDaysPostOp: existing.maxDaysPostOp,
+        windowDays: existing.windowDays,
+        unit: existing.unit,
+      });
+      this.assertWithinTypeLimits(
+        {
+          lowValue: toNumericValue(existing.lowValue),
+          highValue: toNumericValue(existing.highValue),
+        },
+        await this.limitsFor(tx, existing.rangeType),
+      );
+
+      let restored;
+      try {
+        restored = await tx.clinicalDefaultRange.update({
+          where: { id: existing.id, updatedAt: existing.updatedAt },
+          data: { deletedAt: null },
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+          throw new ConflictException({ error: { code: 'DEFAULT_RANGE_MODIFIED_CONCURRENTLY' } });
+        }
+        if (isWindowOverlapViolation(error)) {
+          // The database's own answer, for a row that filled the window without
+          // taking the advisory lock.
+          throw new ConflictException({ error: { code: 'DEFAULT_RANGE_WINDOW_OVERLAPS' } });
+        }
+        throw error;
+      }
+
+      const after = toSnapshot(restored);
+      const auditEvent = await this.audit.record(
+        {
+          actorType: 'ADMIN',
+          actorId: adminId,
+          action: 'CREATE',
+          entityType: DEFAULT_RANGE_ENTITY_TYPE,
+          entityId: restored.id,
+          reasonCode: 'admin_config_change',
+          ...(correlationId !== undefined ? { correlationId } : {}),
+          afterValue: after,
+        },
+        tx,
+      );
+
+      return {
+        range: after,
+        rangeId: restored.id,
+        auditEventId: auditEvent.id,
+        // The new concurrency token, same as every other write on this surface:
+        // without it a caller must re-GET before it can make the next change.
+        updatedAt: restored.updatedAt.toISOString(),
+      };
+    });
+  }
+
   async createDefaultRange(
     request: CreateDefaultRangeRequest,
     adminId: string,
@@ -567,6 +720,13 @@ export class AdminDefaultRangesService {
        * matters most for #102 — a create with a sane bound followed by a `PUT`
        * to a silencing one would otherwise walk straight past the check.
        */
+      if (existing.deletedAt !== null) {
+        // A withdrawn row is history. Editing one would produce a tombstone
+        // whose snapshot no longer matches what was withdrawn, and a restore
+        // would then bring back something nobody deleted.
+        throw new ConflictException({ error: { code: 'DEFAULT_RANGE_ALREADY_DELETED' } });
+      }
+
       this.assertSafetyRowShape({ ...request, rangeType: existing.rangeType });
       this.assertWithinTypeLimits(request, await this.limitsFor(tx, existing.rangeType));
 
@@ -622,9 +782,11 @@ export class AdminDefaultRangesService {
   }
 
   /**
-   * Removes a default range.
+   * Withdraws a default range.
    *
-   * A real delete, which neither of the other two surfaces has, and the asymmetry is
+   * ## It used to remove the row, and the old argument still holds as far as it went
+   *
+   * A real delete, which neither of the other two surfaces had, and the asymmetry was
    * deliberate. A value-set member is referenced by stored clinical records, so deleting
    * one makes a patient's history unreadable; a threshold is read by code that throws
    * without it. A default range is referenced by nothing — `effective_ranges` carries
@@ -632,18 +794,25 @@ export class AdminDefaultRangesService {
    * pointer, and no foreign key exists from it to this table. So deleting one cannot
    * alter a range any patient already has.
    *
-   * It also has to exist: the overlap rule makes a wrong window something that must be
-   * removable, and the identity fields are immutable, so delete-and-create is the
-   * correction path.
+   * Every word of that is still true. It is an argument about **safety**, and #98 was
+   * about **recoverability**, which it never addressed: the row's only surviving copy
+   * was `beforeValue` in an audit row no API exposes. So the row is now tombstoned,
+   * `GET` publishes it under `deletedRanges`, and `restoreDefaultRange` brings it back.
    *
-   * The audit row carries `beforeValue` and no `afterValue` — the inverse of a create,
-   * and the only record of what the row said.
+   * The delete still has to exist, for the reason it always did: the overlap rule makes
+   * a wrong window something that must be removable, the identity fields are immutable,
+   * and so delete-and-create is the correction path. #97's constraint is partial on
+   * `deleted_at` precisely so a tombstone does not keep occupying that window.
+   *
+   * The audit action stays `DELETE`, with `beforeValue` and no `afterValue`. Recording
+   * it as an `UPDATE` setting a column would bury a withdrawal among ordinary bound
+   * edits in the one record meant to make it findable.
    */
   async deleteDefaultRange(
     id: string,
     adminId: string,
     correlationId: string | undefined,
-  ): Promise<{ range: DefaultRangeSnapshot; rangeId: string; auditEventId: string }> {
+  ): Promise<DefaultRangeWithdrawal> {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.clinicalDefaultRange.findUnique({ where: { id } });
       if (!existing) {
@@ -668,22 +837,44 @@ export class AdminDefaultRangesService {
         throw new ConflictException({ error: { code: 'SAFETY_RANGE_NOT_DELETABLE' } });
       }
 
+      /**
+       * Already withdrawn (#98): a conflict, not a second delete.
+       *
+       * 409 rather than 404 because the row exists and an admin can still act on
+       * it — `restoreDefaultRange` is the operation they want. A 404 would
+       * suggest it was gone for good, which is the opposite of what soft delete
+       * provides. Letting it through would also write a second DELETE audit row
+       * with an identical before value, implying a change that did not happen.
+       */
+      if (existing.deletedAt !== null) {
+        throw new ConflictException({ error: { code: 'DEFAULT_RANGE_ALREADY_DELETED' } });
+      }
+
       const before = toSnapshot(existing);
 
       /**
-       * Conditional on the row not having moved since it was snapshotted.
+       * A tombstone write, conditional on the row not having moved since it was
+       * snapshotted (#98 changed the statement; the predicate is kept verbatim).
        *
-       * `findUnique` then `delete({ where: { id } })` are two statements with their own
-       * snapshots at READ COMMITTED. If another admin's `PUT` commits between them,
-       * Prisma's delete re-reads at the newer snapshot and removes **v2** while
-       * `beforeValue` records **v1** — and this is the one path where that is
-       * unrecoverable, because after the delete the audit row is the only surviving
-       * record of what the row said. `updateDefaultRange` already guards this shape;
-       * the delete did not, which is the asymmetry a reviewer caught.
+       * `findUnique` then the write are two statements with their own snapshots at
+       * READ COMMITTED. If another admin's `PUT` commits between them, the write
+       * lands on **v2** while `beforeValue` records **v1**. That used to be
+       * unrecoverable, because the audit row was then the only surviving record;
+       * now the row survives and could be read back, which makes the consequence
+       * smaller but not the guard optional — a `beforeValue` describing a version
+       * nobody withdrew is a false entry in the one log that is supposed to be
+       * the record. `updateDefaultRange` guards the same shape; the delete did
+       * not, which is the asymmetry a reviewer caught.
+       *
+       * The audit action stays `DELETE`, with `beforeValue` and no `afterValue`:
+       * recording it as an `UPDATE` setting a column would bury a withdrawal among
+       * ordinary bound edits.
        */
+      let withdrawn;
       try {
-        await tx.clinicalDefaultRange.delete({
+        withdrawn = await tx.clinicalDefaultRange.update({
           where: { id: existing.id, updatedAt: existing.updatedAt },
+          data: { deletedAt: new Date() },
         });
       } catch (error) {
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
@@ -706,7 +897,14 @@ export class AdminDefaultRangesService {
         tx,
       );
 
-      return { range: before, rangeId: existing.id, auditEventId: auditEvent.id };
+      return {
+        range: before,
+        rangeId: existing.id,
+        auditEventId: auditEvent.id,
+        updatedAt: withdrawn.updatedAt.toISOString(),
+        // Non-null: this statement is what set it.
+        deletedAt: (withdrawn.deletedAt as Date).toISOString(),
+      };
     });
   }
 }
