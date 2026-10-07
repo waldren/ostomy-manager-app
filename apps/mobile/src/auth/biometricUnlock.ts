@@ -66,8 +66,10 @@ export async function enrolledSecurityLevel(): Promise<LocalAuthentication.Secur
  * route into their own diary, on the one client that exists to work offline.
  *
  * Nothing else in the design agreed with that check. `authenticate()` below
- * passes `disableDeviceFallback: false` on purpose, so the OS would have
- * accepted the passcode had it been asked; `login.unlockHint` promises "Use
+ * passes `disableDeviceFallback: false` on purpose, so the OS accepts the
+ * passcode — though note that it had to be passed EXPLICITLY to be true at all
+ * (#116): this comment asserted it while the call omitted the option, and the
+ * documented default did not supply it. `login.unlockHint` promises "Use
  * your face, fingerprint, or phone passcode"; and `login.unlockUnavailableBody`
  * tells the patient their phone has no "passcode unlock turned on" — a claim
  * the code never checked. ADR-0015 had already rejected
@@ -90,6 +92,36 @@ export async function isLocalUnlockAvailable(): Promise<boolean> {
  * bandaged hand, and this app has no weaker "PIN" flow of its own to fall
  * back to instead.
  */
+/**
+ * ## What this gate does NOT cover (#116)
+ *
+ * Passing the passcode here is necessary and not always sufficient. The
+ * refresh token is stored with `requireAuthentication: true` (ADR-0015, see
+ * `tokenStorage.ts`), and reading it raises a **second** OS prompt — one
+ * `expo-secure-store` builds itself:
+ *
+ * ```kotlin
+ * PromptInfo.Builder()
+ *   .setTitle(title)
+ *   .setNegativeButtonText(context.getString(android.R.string.cancel))
+ *   .build()
+ * ```
+ *
+ * It sets no allowed authenticators and does set a negative button, and Android
+ * forbids combining a negative button with `DEVICE_CREDENTIAL`. That prompt is
+ * therefore **biometric-only by construction**, with no passcode route at any
+ * setting. Observed on a device as a second dialog at `authenticators: 15`
+ * immediately after this one succeeded at 32783.
+ *
+ * So on a device whose token is GATED, a patient who unlocks here with their
+ * passcode is still stopped one layer down, and `unlock()` reads the failure as
+ * `unreadable` and re-locks — which looks like the unlock silently doing
+ * nothing. On a device with no biometric enrolled the token is stored ungated
+ * (#74), this is the only gate, and the fix above is sufficient.
+ *
+ * Closing the gated case is a change to ADR-0015's posture, not a bug fix, and
+ * is tracked in #116.
+ */
 export async function authenticate(promptMessage: string): Promise<LocalUnlockOutcome> {
   if (!(await isLocalUnlockAvailable())) {
     return { outcome: 'unavailable' };
@@ -102,6 +134,34 @@ export async function authenticate(promptMessage: string): Promise<LocalUnlockOu
     // phone that would be what stands between a stranger and the
     // patient's full clinical history.
     biometricsSecurityLevel: 'strong',
+    /**
+     * Passed explicitly, and it is NOT redundant with the documented default
+     * (#116).
+     *
+     * `expo-local-authentication` documents `disableDeviceFallback` as
+     * defaulting to `false`, and its Kotlin record declares
+     * `val disableDeviceFallback: Boolean = false`. Omitting it nevertheless
+     * reaches the native layer as **true**. Measured on an Android 16 emulator,
+     * reading what the OS was actually asked for:
+     *
+     * ```
+     * omitted:          authenticators: 15,    credentialAllowed: false
+     * passed as false:  authenticators: 32783, credentialAllowed: true
+     * ```
+     *
+     * 15 is `BIOMETRIC_STRONG` alone; 32783 is `BIOMETRIC_STRONG | DEVICE_CREDENTIAL`
+     * (0x8000). So with it omitted the OS is told the passcode is not acceptable,
+     * and a patient who cannot present a biometric has no way in — which is the
+     * configuration ADR-0015 (amended at #74) calls supported, and the population
+     * the ADR named when it rejected `disableDeviceFallback: true`:
+     * "post-surgical hands, dry skin, tremor".
+     *
+     * The comment on `isLocalUnlockAvailable` above used to assert this call
+     * "passes `disableDeviceFallback: false` on purpose". It did not pass it at
+     * all, and the default did not supply it. Now it does, so the comment and the
+     * code say the same thing.
+     */
+    disableDeviceFallback: false,
     promptMessage,
   });
   return result.success ? { outcome: 'success' } : { outcome: 'failed' };

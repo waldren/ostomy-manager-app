@@ -66,6 +66,39 @@ describe('biometricUnlock', () => {
     expect(mockAuthenticateAsync).toHaveBeenCalled();
   });
 
+  /**
+   * The assertion that would have caught #116, and the reason the two tests
+   * either side of it could not.
+   *
+   * They mock `authenticateAsync` to resolve `{ success: true }` and then assert
+   * that `authenticate()` succeeds — which asserts that a mock returns what it
+   * was told to return. The question actually at issue is whether the OS would
+   * accept a **passcode** given the options this app passes, and a mocked
+   * resolution answers that by assumption.
+   *
+   * On a device it did not. `expo-local-authentication` documents
+   * `disableDeviceFallback` as defaulting to `false` and its Kotlin record
+   * declares that default, but omitting the option reached the native layer as
+   * `true`: the OS was asked for `authenticators: 15` (`BIOMETRIC_STRONG` alone)
+   * rather than `32783` (`| DEVICE_CREDENTIAL`), so a patient with a passcode and
+   * no usable biometric could not unlock their own diary — the configuration
+   * ADR-0015 (amended at #74) calls supported.
+   *
+   * Asserting the OPTIONS rather than the outcome is what makes this testable at
+   * all without a device: the options are the app's half of the contract, and
+   * they are what regressed.
+   */
+  it('asks the OS to accept the device passcode, not biometrics alone', async () => {
+    mockGetEnrolledLevelAsync.mockResolvedValue(1); // SECRET
+    mockAuthenticateAsync.mockResolvedValue({ success: true });
+
+    await authenticate('prompt');
+
+    expect(mockAuthenticateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ disableDeviceFallback: false }),
+    );
+  });
+
   it('is unavailable with hardware but nothing enrolled at all', async () => {
     mockHasHardwareAsync.mockResolvedValue(true);
     mockGetEnrolledLevelAsync.mockResolvedValue(0);
@@ -114,15 +147,28 @@ describe('biometricUnlock', () => {
 
     const result = await authenticate('Unlock your diary');
     expect(result).toEqual({ outcome: 'success' });
-    // Class 3 asserted explicitly, not incidentally. The default is
-    // 'weak', which admits Android Class 2 — including 2D camera face
-    // unlock, defeatable with a photograph on many implementations. That
-    // would be what stands between a stranger and the patient's full
-    // clinical history, so it is worth a test that fails if the option is
-    // ever dropped.
+    /**
+     * Both options, and the exact match is deliberate — but note what it cost
+     * (#116).
+     *
+     * Class 3 is asserted explicitly, not incidentally: the default is `'weak'`,
+     * which admits Android Class 2 — including 2D camera face unlock, defeatable
+     * with a photograph on many implementations. That would be what stands
+     * between a stranger and the patient's full clinical history.
+     *
+     * The hazard is that `toHaveBeenCalledWith` against an object literal is an
+     * EXACT match, so a test written to fail when an option is *dropped* also
+     * fails when one is *added* — and this one did exactly that. It pinned an
+     * option set with no `disableDeviceFallback`, which is the set that locked a
+     * passcode-only patient out of their diary, and it would have failed the fix
+     * for it. A test can hold a defect in place as firmly as it holds a
+     * guarantee; the difference is only whether the pinned shape is the right
+     * one, which the assertion itself cannot tell you.
+     */
     expect(mockAuthenticateAsync).toHaveBeenCalledWith({
       promptMessage: 'Unlock your diary',
       biometricsSecurityLevel: 'strong',
+      disableDeviceFallback: false,
     });
   });
 
