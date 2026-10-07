@@ -42,7 +42,7 @@ Ranked by the product's own judgement, not a scored matrix.
 ## The honest gaps
 
 - **No penetration test has been performed** (`penetration-testing.md`).
-- **No device-side control is verified on hardware.** jest runs no keychain and cannot simulate biometric enrolment invalidation, so a green `pnpm verify` proves nothing about ADR-0014 or ADR-0015.
+- **No device-side control is verified on hardware.** jest runs no keychain and cannot present a biometric or a passcode to an OS prompt, so a green `pnpm verify` proves nothing about ADR-0014 or ADR-0015. #116 is the demonstration: a patient who could not present a biometric was locked out of their own diary, every unit test passed throughout, and two of those tests actively held the defect in place.
 - **No usability review with representative patients**, which SRS_v2 §5.4 requires pre-launch. The accessibility reviewer made the point directly: no computation can tell you that copy reads wrong for its reader.
 - **No formal likelihood/impact scoring.** Deliberate — a scored matrix assembled by the person who wrote the code tends to confirm what that person already believes.
 - **Nothing here has been reviewed by anyone outside the build.**

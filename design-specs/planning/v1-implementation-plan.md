@@ -37,7 +37,7 @@ Sequence the remaining work from today's repository through complete v1, as boun
 | **P2** — stoma output slice | **Complete, gate passed** | P2.S0 sync contract; P2.S1a/b observations + sync endpoints; P2.S2a/b mobile substrate, entry screen, sync worker, correction inbox; P2.S3 web SPA; P2.S4 seed generator. **Gate B passed on run 4, 2026-09-23**, all six clauses, recorded in `docs/gate-b-walkthrough.md` — on an emulator, so it closes no HW step |
 | **P3** — entry types + config | **S1, S1b, S2 done; S3 next** | P3.S1 fluid intake and meals (PRs A–E); P3.S1b Daily Net Fluid Balance on web; P3.S2 voided urine — the colour scale, colour-without-volume, and its exclusion from the balance (#64) |
 
-Twenty-one ADRs accepted (ADR-0001 to ADR-0021) — ADR-0020 Android-only v1, ADR-0021 the redirect route completing the OIDC exchange, and ADR-0015 amended at #74 for a device with no biometric enrolled. `docs/sync-contract.md` is normative and governs its implementations.
+Twenty-one ADRs accepted (ADR-0001 to ADR-0021) — ADR-0020 Android-only v1, ADR-0021 the redirect route completing the OIDC exchange, and **ADR-0015 amended twice**: at #74 for a device with no biometric enrolled, and at #116 making the device passcode a **peer** of the biometric rather than a fallback, which removes the refresh token's `requireAuthentication` gating. The second amendment changes the decision rather than extending it; SRS is at **v2.7** for the same change. `docs/sync-contract.md` is normative and governs its implementations.
 
 ### 2.2 What is not built, and is scheduled
 
@@ -50,6 +50,9 @@ This is the finding that motivated the re-baseline. Each item below was recorded
 | Item | Recorded in | Now |
 | ---- | ----------- | --- |
 | Device-side controls unverified on hardware (HW-1..HW-11) | ADR-0014, ADR-0015, CLAUDE.md, `docs/gate-b-hardware-verification.md` | Debt lane, #39. Rescoped to Android by R.S2; HW-11 added by #74, and two of its parts need hardware an emulator cannot imitate |
+| Make the device passcode a peer of the biometric in code (ADR-0015 Amendment 2) | #116, ADR-0015 Amendment 2 | **Next up**, #116. Docs and the ADR landed first; the code change removes `requireAuthentication` and the enrolment-rise purge. HW-6 and HW-11 parts 3/5/6 change with it |
+| Seed scenarios produce no repeated entry, so Quick-Add shows RNG coincidences | #114, P3.S4 | Debt lane, `debt` |
+| Emulator tooling: corrupt metro-file-map cache, `fingerprint` PIN bug, display wedge | #115 | Debt lane, `debt`. The cache one cost two sessions and presents as a networking fault |
 | An OS-invalidated refresh token has no route back to sign-in | Read from `AuthContext.tsx` during this review | **Fixed** — #74 for the invalidated key, #40 for a token the issuer rejects. The prediction was right, and HW-6 now verifies the fix instead of expecting the failure |
 | iOS backup exclusion plugin | ADR-0014 "known gap" | **Closed by decision** — out of v1 scope (§3.2) |
 | WCAG 1.4.4: SVG tick labels do not scale with text zoom | P2.S3 reviewer deferral | Debt lane, `accessibility` |
@@ -355,7 +358,7 @@ _Sharpened by R.S3, which is the strongest evidence for this risk in the documen
 
 **F6 — Nine reviewer deferrals were recorded in commit bodies and never re-read.** Addressed by decision 4 and the §5.4 rule. The deferrals were the right call each time; the failure was that a commit body is a write-only medium.
 
-**F7 — A predicted defect in the biometric invalidation path.** `AuthContext.unlock()` reads the refresh token inside a `try` with a deliberately silent `catch`, and `hasStoredRefreshToken()` answers from a marker key that an OS invalidation does not clear. So when the OS invalidates the key after a biometric enrolment change, the app unlocks, reports an authenticated session, holds no access token, syncs nothing, and offers no route to sign-in. ADR-0015's "forces a full OIDC re-login" describes an intention the build does not implement. Read from the code, not observed — HW-6a is the step that settles it.
+**F7 — A predicted defect in the biometric invalidation path.** _Closed by ADR-0015 Amendment 2 (#116): the invalidation path this risk is about no longer exists, because the token is no longer gated. The prediction was right while it stood — #40 fixed the behaviour, and the hedge about whether an invalidated key reads as `null` or throws is now moot._ `AuthContext.unlock()` reads the refresh token inside a `try` with a deliberately silent `catch`, and `hasStoredRefreshToken()` answers from a marker key that an OS invalidation does not clear. So when the OS invalidates the key after a biometric enrolment change, the app unlocks, reports an authenticated session, holds no access token, syncs nothing, and offers no route to sign-in. ADR-0015's "forces a full OIDC re-login" describes an intention the build does not implement. Read from the code, not observed — HW-6a is the step that settles it.
 
 **F8 — `apps/web` has no patient-facing entry surface and no physician access route.** It renders the signed-in account's own records; `GET /api/v1/observations` takes no patient identifier anywhere, so there is no physician identity and no patient-selection path, and the copy deliberately claims neither. That is correct today and it means the web client's role in v1 is decided by P5.S6's share link. Do not let a P5.S2 "physician view" sprint reintroduce an audience the API cannot authorize.
 

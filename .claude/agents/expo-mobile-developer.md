@@ -30,7 +30,7 @@ Every data-entry action writes to local `expo-sqlite` **first** and appends to a
 
 ## Platform capabilities
 
-Biometric login via `expo-local-authentication`, unlocking a refresh token held in `expo-secure-store` — never store PHI or tokens in AsyncStorage. Reminders via `expo-notifications` behind a provider adapter (Expo in production, log-only in development). Skin-condition photos via `expo-image-picker`/`expo-camera`, uploaded through short-lived presigned URLs; never write patient identifiers or clinical values into a filename or object key.
+Local unlock via `expo-local-authentication`, accepting the **device passcode or a biometric as peers** (ADR-0015 Amendment 2) and releasing a refresh token held in `expo-secure-store` — never store PHI or tokens in AsyncStorage. Two rules that are easy to undo: pass `disableDeviceFallback: false` **explicitly** (the documented default does not hold — #117), and do **not** set `requireAuthentication` on the token, because the prompt it raises on read is biometric-only by construction and locks out any patient who cannot present a finger (#116). Reminders via `expo-notifications` behind a provider adapter (Expo in production, log-only in development). Skin-condition photos via `expo-image-picker`/`expo-camera`, uploaded through short-lived presigned URLs; never write patient identifiers or clinical values into a filename or object key.
 
 Prefer Expo Router file-based routing, FlashList for long history lists, `expo-image` for photo rendering, and Reanimated for animation. Stay inside the managed workflow — reach for a config plugin before a bare-workflow ejection, and say so explicitly if a requirement genuinely forces one.
 

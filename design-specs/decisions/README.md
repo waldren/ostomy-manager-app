@@ -33,7 +33,7 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0012](0012-entered-measurement-system-provenance.md) | Store the entered measurement system on every observation | Accepted |
 | [0013](0013-delta-cursor-visibility-mechanism.md) | Close the delta cursor's visibility gap by withholding the in-flight transaction window | Accepted |
 | [0014](0014-local-phi-encryption-and-device-ownership.md) | Encrypt the on-device clinical store, and bind it to one patient | Accepted |
-| [0015](0015-biometric-local-access.md) | Biometric alone unlocks local data, but an enrolment change invalidates the token | Accepted |
+| [0015](0015-biometric-local-access.md) | The device passcode or a biometric unlocks local data, as peers | Accepted (amended twice; **Amendment 2 changes the decision**) |
 | [0016](0016-patient-local-day-boundary.md) | A "day" is the patient's local day, captured at write time | Accepted |
 | [0017](0017-phi-retention-deletion-and-the-audit-exception.md) | PHI lives for the account's lifetime, and deletion reaches the audit log | Accepted |
 | [0018](0018-estimation-method-snomed-code.md) | The Measured/Estimated toggle is an explicit SNOMED qualifier both ways: 414135002 estimated, 258104002 measured | Accepted (amended 2026-09-18) |
@@ -45,7 +45,7 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 
 **ADR-0020 narrows ADR-0014** rather than superseding it. ADR-0014's reasoning stands in full for the platform it was written about; the iOS backup gap it recorded is closed by removing that platform, not by implementing the exclusion. ADR-0014 is not edited, per the immutability rule above.
 
-**ADR-0021 narrows ADR-0015.** The biometric gate ADR-0015 places on stored auth secrets does not extend to the short-lived PKCE verifier: that value is read while a session is being established, when there is no enrolled identity to authenticate against, so gating it would deadlock the flow it exists to complete. ADR-0015 is not edited, per the immutability rule above. Keychain accessibility and device binding are unchanged — the narrowing is to the biometric gate alone.
+**ADR-0021 narrows ADR-0015, and Amendment 2 has since made the point moot.** ADR-0015 no longer places a biometric gate on the stored refresh token at all (Amendment 2, #116), so the narrowing below now describes a rule with nothing left to narrow. It is kept because the reasoning is still the right reasoning, and because ADRs are not edited to match later decisions. Historically: the biometric gate ADR-0015 placed on stored auth secrets did not extend to the short-lived PKCE verifier: that value is read while a session is being established, when there is no enrolled identity to authenticate against, so gating it would deadlock the flow it exists to complete. ADR-0015 is not edited, per the immutability rule above. Keychain accessibility and device binding are unchanged — the narrowing is to the biometric gate alone.
 
 **ADR-0020 changed the spec.** SRS_v2 was updated to v2.6 in the same change: §2 Cross-Platform Availability and §4.2 now name Android for v1, with iOS deferred.
 

@@ -1,9 +1,9 @@
-# ADR-0015: Biometric alone unlocks local data, but an enrolment change invalidates the token
+# ADR-0015: The device passcode or a biometric unlocks local data, as peers
 
-- **Status:** Accepted (amended 2026-09-25 — see "Amendment")
+- **Status:** Accepted (amended 2026-09-25 and **2026-10-07** — read both amendments; the second one CHANGES the decision rather than extending it)
 - **Date:** 2026-09-12
 - **Deciders:** Steven Waldren
-- **Related:** SRS_v2 §4.2, §5.2 | [ADR-0014](0014-local-phi-encryption-and-device-ownership.md) | PR #15 | issue #74
+- **Related:** SRS_v2 §4.2, §5.2 | [ADR-0014](0014-local-phi-encryption-and-device-ownership.md) | PR #15 | issue #74 | issues #116, #117
 
 ## Context
 
@@ -23,6 +23,11 @@ So someone who covertly or coercively adds their own biometric to the patient's 
 `expo-secure-store` supplies exactly the missing signal. `requireAuthentication: true` maps to iOS `biometryCurrentSet` and Android `setUserAuthenticationRequired(true)`, and the module documents the effect: *"Keys are invalidated by the system when biometrics change, such as adding a new fingerprint or changing the face profile used for face recognition. After a key has been invalidated, it becomes impossible to read its value."* This is an OS guarantee the app cannot reimplement.
 
 ## Decision
+
+> **Superseded in part by Amendment 2 (2026-10-07).** The passcode is now a peer of the
+> biometric and the refresh token is stored **without** `requireAuthentication`. Read this
+> section for the threat model and the reasoning, which still stand; read Amendment 2 for
+> what is actually built.
 
 We will keep biometric unlock as the sole gate on local data, with no issuer round trip — and we will set `requireAuthentication: true` on the stored refresh token so that a biometric enrolment change invalidates it and forces a full OIDC re-login.
 
@@ -53,7 +58,7 @@ The SQLCipher database key deliberately does **not** take `requireAuthentication
 | Accept the original design and record the risk only | The exposure is silent and indefinite, with no audit trail by construction, and the fix is one option flag that preserves the offline property in full. |
 
 
-## Amendment (2026-09-25): a device with no biometric enrolled
+## Amendment 1 (2026-09-25): a device with no biometric enrolled
 
 Issue #74. The decision above is unchanged for any device that can honour it. This amendment covers the case it did not consider: a device with **no Class 3 biometric enrolled at all**.
 
@@ -111,3 +116,75 @@ A second defect had the same root and a wider reach. `isBiometricUnlockAvailable
 **It can also sign a patient out at a bad moment.** The purge lands them on a full OIDC login, which needs connectivity; a patient who enrols a fingerprint and next opens the app offline cannot complete it, and their diary is on the device the whole time. This ADR already accepted that cost where the OS forced it, but here the app chooses it, so it is worth stating: the choice is between that and leaving a credential readable by whoever added the biometric. The mitigation is copy, not timing — `login.unlockChangedHeading`/`Body` say what happened and that nothing they wrote is lost, and the reason is persisted rather than held in memory precisely because the patient will close the app and come back.
 
 **Verification gap, unchanged and now larger.** Everything above needs a device. Nothing in jest can create the state that produced #74, and the emulator used for Gate B could not either, because it had an enrolment. `docs/gate-b-hardware-verification.md` carries the walkthrough as **HW-11**; until it is run, treat this amendment as a decision with a tested implementation of its *logic* and no verification of its behaviour on hardware.
+
+## Amendment 2 (2026-10-07): the device passcode is a peer, not a fallback
+
+Issue #116. This amendment **changes** the decision above rather than extending it, and the title of this ADR changes with it: biometric is no longer the gate, it is one of two accepted gates.
+
+### What went wrong
+
+#117 found that the app was asking the OS to refuse the passcode outright — `disableDeviceFallback` reached the native layer as `true` despite being documented, and declared in Expo's own Kotlin record, as defaulting to `false`. Measured at the OS boundary: `authenticators: 15` (`BIOMETRIC_STRONG` alone) with the option omitted, `32783` (`| DEVICE_CREDENTIAL`) with it passed. That is fixed.
+
+Fixing it was not enough, and the reason is this ADR's own decision. `requireAuthentication: true` makes `expo-secure-store` raise its **own** prompt when the refresh token is read, and that prompt is built with a negative button and no allowed authenticators — a combination Android forbids pairing with `DEVICE_CREDENTIAL`. It is **biometric-only by construction, at any setting**. Observed as a second dialog at `authenticators: 15` immediately after the app's own prompt succeeded at `32783`:
+
+```
+showAuthenticationDialog, authenticators: 32783, credentialAllowed: true   <- the app's gate
+unlockUser finished                                                        <- passcode accepted
+pendingCallback: 7                                                         <- DISMISSED_CREDENTIAL_AUTHENTICATED
+showAuthenticationDialog, authenticators: 15, credentialAllowed: false     <- SecureStore's gate
+```
+
+So a patient cleared the gate this app controls, using the passcode this ADR deliberately preserved, and was stopped by a gate it does not control. `unlock()` read that failure as `unreadable` and re-locked, which presents as the unlock button silently doing nothing, and pressing it again doing nothing.
+
+**This ADR had already rejected that exclusion twice.** The alternatives table above rejects `disableDeviceFallback: true` because it "excludes patients whose biometrics fail to enrol or read — post-surgical hands, dry skin, tremor". Amendment 1 rejects requiring enrolment because "shipping the same exclusion through a different mechanism would contradict a decision already made here". The gated read was a third mechanism delivering the same exclusion, and it had shipped.
+
+### Decision
+
+**Unlocking the diary accepts either the device credential or a Class 3 biometric, as equal peers.** Neither is primary and neither is a fallback from the other.
+
+1. A patient who prefers not to use biometrics uses their passcode and never enrols. A patient whose finger is wet or bandaged, or whose sensor has locked out, uses their passcode for that attempt and their biometric the next. Both are ordinary supported paths rather than degraded ones.
+2. **The refresh token is stored without `requireAuthentication`**, on every device, because that flag is what makes the passcode impossible one layer down. `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY` is unaffected and still applies.
+3. **Amendment 1's enrolment-level rise purge is removed** — see below for why it stops being a security control under this decision rather than merely becoming inconvenient.
+4. ADR-0014 is unchanged, and is now *consistent* with this one: the SQLCipher key was always ungated, so the diary already opened without a biometric. Only the credential was gated.
+
+### Why the invalidation guarantee stops being worth its cost
+
+The Decision section above bought one thing with `requireAuthentication`: the OS invalidates the key when biometric enrolment changes, so a covert or coerced enrolment — "an abusive partner, a family member, a border or custody enrolment" — costs the attacker the stored credential instead of granting indefinite silent access.
+
+That guarantee defended against a **privilege escalation**. It was worth paying for precisely because biometric was the only authenticator the gate accepted, so adding one granted an authenticator the attacker did not previously have.
+
+Once the passcode is a peer, the escalation disappears: **enrolling a biometric on Android requires the device credential already**. Amendment 1 says this in as many words — "the exposure is narrow, since enrolling requires the device credential, which already satisfies this app's own prompt" — and used it to accept the same exposure on `BIOMETRIC_WEAK` devices. An attacker who can enrol can already unlock. The invalidation now fires on a transition that grants nothing, and its only reliable effect is to sign out a legitimate patient who added a fingerprint, pushing them into an OIDC login that needs network they may not have.
+
+The same argument retires Amendment 1's level-rise purge. It exists to reimplement the invalidation signal where the OS could not provide it, and it detects exactly one transition — `NONE`/`SECRET` to enrolled. Under this decision that transition is not an escalation either, so the purge signs patients out for no gain.
+
+### What this gives up, stated plainly
+
+**An attacker who knows the device passcode and has no enrolled biometric now obtains the refresh token.** Before this amendment they could not: the gate was biometric-only, and enrolling one to get past it would have invalidated the key. That is a real reduction in protection and it is accepted rather than argued away.
+
+What bounds it:
+
+- They could already read **the entire local diary**, because ADR-0014 leaves the SQLCipher key ungated and this app's own gate has accepted the passcode since #117. The new exposure is the account credential, not the clinical history.
+- `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY` still stops the token riding a backup onto a second phone, so the exposure requires the physical device.
+- ADR-0014's subject binding still destroys the local store when a different OIDC subject signs in.
+- The device passcode was already the trust boundary for PHI at rest on this client. This puts the credential at the same boundary as the data it protects rather than one notch above it.
+
+**The residual risk in the Decision section is unchanged and now reads more simply:** local unlock grants the diary without contacting the issuer, so anyone who can unlock the device can read it. No client-side control addresses that, and the offline requirement rules out the one that would.
+
+### Alternatives considered
+
+| Alternative | Why not |
+|---|---|
+| Keep `requireAuthentication` and tell the patient to sign in again when the biometric fails | Makes the offline client require network at exactly the moment it is used offline — a public restroom, travelling. That is the failure this app exists to avoid, imposed on the population this ADR twice refused to exclude. |
+| Keep `requireAuthentication` and admit the patient to the diary without reading the token | Preserves invalidation and fixes the lockout, and was the leading candidate before this decision. Rejected because it rests on a fact the code itself flags as unverified — whether an invalidated key surfaces as `null` or as a throw. If it throws, the attacker lands in the same branch as the wet finger and is admitted. The distinction is testable, but the design would be one device-behaviour discovery away from being wrong. |
+| A custom keystore key with `AUTH_BIOMETRIC_STRONG or AUTH_DEVICE_CREDENTIAL` | Including `AUTH_DEVICE_CREDENTIAL` means the key is **not** invalidated by biometric enrolment, so it buys the passcode peer and loses the guarantee anyway — the same trade as this decision, reached through a native module replacing `expo-secure-store` on the security-critical path in a managed workflow, with its own hardware-verification burden. |
+| Require a biometric and offer no passcode | Already rejected twice above. Recorded again only because this amendment is where someone will look for it. |
+
+### Consequences
+
+**Simpler, and that is a security property too.** The gated/ungated branch in `tokenStorage.ts`, the stored enrolment level, the rise detection and the purge all exist to manage a guarantee this decision retires. Amendment 1 records four distinct defects found in that machinery across two reviews — a live level read mistaken for proof, a `hasHardwareAsync` short-circuit that locked out sensorless phones, a false-positive purge on sensor lockout, and a gap on `BIOMETRIC_WEAK` devices. Removing it removes that surface.
+
+**One forced re-login on upgrade.** An entry written with `requireAuthentication` cannot be read without it, so an install holding a gated token must purge it and sign in once. v1 has not shipped and there is no production (CLAUDE.md), so this costs development installs a sign-in and nothing else. It is named because it would be a migration if discovered later rather than decided now.
+
+**What is NOT decided here: a persisted "passcode only" preference.** The OS prompt shows the biometric affordance first with the passcode one tap away, so a patient who never enrols sees only the passcode, and a patient who has enrolled chooses per unlock. That delivers the capability in this amendment's first clause. What it does not deliver is a patient with an enrolled biometric telling the app to stop offering it — `expo-local-authentication` exposes no credential-only mode, so that needs a preference and a different call. It belongs with the rest of SRS §3.10 preferences at **P4.S3**, and is deliberately not invented here.
+
+**Verification gap, unchanged in kind.** Everything above still needs a device. What changes is which steps: HW-6 tested a guarantee that no longer exists, and HW-11's purge half goes with it. `docs/gate-b-hardware-verification.md` is updated in the same change rather than left describing the old rule.
