@@ -492,6 +492,67 @@ CREATE INDEX IF NOT EXISTS idx_meals_deleted_at
   ON meals (deleted_at);
 `;
 
+/**
+ * Migration 8: the local `profiles` row (P4.S1, SRS §3.0).
+ *
+ * The three fields that must exist before a patient can log anything — ostomy
+ * type, surgery date, measurement system — kept on the device because both of
+ * the last two are read on paths that must work with no network: the surgery
+ * date is the Tier 1 lower timestamp bound every offline entry is checked
+ * against, and the measurement system decides what every amount on every
+ * screen is rendered as.
+ *
+ * ## One row, because the database is already one patient's
+ *
+ * `id INTEGER PRIMARY KEY CHECK (id = 1)`, the shape `sync_cursor` and
+ * `validation_thresholds_cache` use. ADR-0014 binds this store to a single OIDC
+ * subject and destroys it when a different one signs in, so "which patient's
+ * profile is this" is not a question this file can be asked. A `patient_id`
+ * column would invite the answer "whichever row you looked up", which is how
+ * one patient's surgery date ends up bounding another's entries.
+ *
+ * ## No sync bookkeeping columns yet, deliberately
+ *
+ * `Profile` IS a synced entity server-side, and its EDITS go through sync at
+ * P4.S3 "like any other write" (`docs/sync-contract.md` §414). Today nothing on
+ * this device authors a profile change: provisioning is a REST call that
+ * happens once, online, and what lands here is the response. So this is a cache
+ * — `fetched_at`, like the threshold and value-set caches — and NOT a row with
+ * `client_updated_at`, `server_sequence` and `deleted_at` that no code path
+ * writes or reads. Columns nothing exercises are the unexercised-migration
+ * risk `schema.ts`'s own header warns about, and migration 6's `meals` carries
+ * that bookkeeping precisely because meals are synced from the device today.
+ *
+ * P4.S3 adds those columns in its own migration, where its own tests exercise
+ * them. It will need one more thing this table cannot have yet: the server's
+ * `Profile.id`, as the sync `entity_id`. `GET /api/v1/profile` publishes no id
+ * (the caller is the patient; nothing needed one), so that sprint adds it to
+ * the response — additive, per §8 — rather than this migration inventing a
+ * local identifier the server would not recognise.
+ *
+ * ## Not seeded, and the absence means something
+ *
+ * No row means "this device does not know this patient's profile" — which is
+ * what routes a signed-in patient to onboarding instead of the dashboard. The
+ * threshold cache's argument applies with more force here: a seeded `metric`
+ * default would be ADR-0012's measurement system invented rather than asserted,
+ * and a seeded surgery date would be a Tier 1 bound nobody chose.
+ *
+ * The CHECK constraints mirror the server enums for the same belt-and-braces
+ * reason `entered_measurement_system`'s does: every write goes through
+ * `repositories/profileRepository.ts`, but a constraint fails loudly in a test
+ * rather than leaving a row this app cannot render.
+ */
+const MIGRATION_8_PROFILE = `
+CREATE TABLE IF NOT EXISTS profiles (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  ostomy_type TEXT NOT NULL CHECK (ostomy_type IN ('colostomy', 'ileostomy')),
+  surgery_date TEXT NOT NULL,
+  measurement_system TEXT NOT NULL CHECK (measurement_system IN ('metric', 'imperial')),
+  fetched_at TEXT NOT NULL
+);
+`;
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
@@ -527,5 +588,11 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     version: 7,
     description: 'voided urine: nullable volume, urine_color_code (SRS AC 12.1 AC2)',
     sql: () => MIGRATION_7_VOIDED_URINE,
+  },
+  {
+    version: 8,
+    description:
+      "profiles — the patient's ostomy type, surgery date and measurement system (SRS §3.0)",
+    sql: () => MIGRATION_8_PROFILE,
   },
 ];

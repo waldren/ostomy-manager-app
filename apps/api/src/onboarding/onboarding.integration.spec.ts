@@ -261,15 +261,28 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
       // Otherwise the app accepts onboarding and then refuses the first entry the
       // patient tries to make, with a message about a date they chose on a screen
       // they have already left.
+      //
+      // Two days out rather than one, deliberately. The check tolerates
+      // `MAX_TIMEZONE_HOURS_AHEAD_OF_UTC` (see the next test for why), so
+      // "tomorrow" is inside the allowance for part of every UTC day — a test
+      // asserting a refusal there would pass or fail depending on the hour the
+      // suite happens to run at, which is worse than not asserting it.
       const { token } = await newSubject();
-      const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const inTwoDays = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-      const response = await onboard(token, body({ surgeryDate: tomorrow }));
+      const response = await onboard(token, body({ surgeryDate: inTwoDays }));
 
       expect(response.status).toBe(400);
       expect(response.body.error.fields).toEqual([{ field: 'surgeryDate', rule: 'in_the_future' }]);
     });
 
+    /**
+     * The timezone allowance on that bound is NOT asserted here. It depends on the
+     * hour of the UTC day, so a test against the ambient clock would exercise
+     * whichever side of it the suite started on and pass either way — the kind of
+     * green that means less than it looks. `surgery-date.spec.ts` states both
+     * sides against a fixed instant instead.
+     */
     it('refuses a date implausibly far in the past', async () => {
       // A slipped century passes every shape rule and silently disables the bound
       // for the life of the account, and nothing downstream reports a rule that

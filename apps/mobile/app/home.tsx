@@ -256,16 +256,28 @@ export default function Home(): React.JSX.Element {
       {/*
         No patient record on the server (#80). Above the entry buttons for the
         same reason the stale-cursor notice is: it changes what everything below
-        it means. Nothing is offered to tap, because there is nothing the
-        patient can do from here — and offering a "try again" for a condition
-        that does not resolve by trying is what the old `UNAUTHENTICATED`
-        mapping effectively did.
+        it means.
+
+        P4.S1 makes this actionable, which it deliberately was not before: there
+        was no onboarding screen, so a "try again" would have been an offer for a
+        condition that does not resolve by trying. Now there is one, and reaching
+        this state while the device HOLDS a profile means the server lost it — a
+        development reset, or an ADR-0017 purge — so re-provisioning is exactly
+        the fix. `again=1` is what keeps the onboarding route from bouncing
+        straight back here, and it pre-fills from the local row so the patient
+        confirms rather than retypes.
       */}
       {lastStop?.kind === 'not-provisioned' ? (
         <View accessibilityLiveRegion="polite">
           <Heading level={2}>{t('common:notProvisioned.heading')}</Heading>
           <BodyText>{t('common:notProvisioned.body')}</BodyText>
           <BodyText tone="muted">{t('common:notProvisioned.contact')}</BodyText>
+          <Button
+            label={t('common:notProvisioned.finishSetupButton')}
+            onPress={() => {
+              router.push('/onboarding?again=1');
+            }}
+          />
         </View>
       ) : null}
 

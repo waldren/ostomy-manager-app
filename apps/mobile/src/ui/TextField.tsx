@@ -28,6 +28,19 @@ export interface TextFieldProps {
   /** Grows to several lines, for free text like a meal description. */
   readonly multiline?: boolean;
   /**
+   * A whole number, not prose — the day, month or year of a surgery date.
+   *
+   * Opens the number pad, which for a patient typing three short numbers is the
+   * difference between three taps and three keyboard switches. `'number-pad'`
+   * rather than `NumericField`'s `'decimal-pad'`: a date part has no fractional
+   * form, and offering a decimal separator invites a character this field refuses.
+   *
+   * Here rather than in `NumericField` because that component is volume-shaped —
+   * it requires a `unitLabel` and preserves decimals for ADR-0005 — and a date
+   * part has no unit to render.
+   */
+  readonly wholeNumber?: boolean;
+  /**
    * A hard cap on what the patient can type, matching the column bound.
    *
    * Present so the field cannot produce a value the server will refuse —
@@ -63,6 +76,7 @@ export function TextField({
   errorMessage,
   multiline = false,
   maxLength,
+  wholeNumber = false,
 }: TextFieldProps) {
   const labelId = useId();
   const errorId = useId();
@@ -90,6 +104,11 @@ export function TextField({
         aria-errormessage={invalid ? errorId : undefined}
         multiline={multiline}
         textAlignVertical={multiline ? 'top' : 'center'}
+        // Plain attributes rather than a conditional spread, so these read the way
+        // `NumericField`'s own `keyboardType` does — and so `no-literal-string`,
+        // which checks JSX attribute positions, is not asked about an object.
+        keyboardType={wholeNumber ? 'number-pad' : undefined}
+        inputMode={wholeNumber ? 'numeric' : undefined}
         {...(maxLength === undefined ? {} : { maxLength })}
         allowFontScaling
       />

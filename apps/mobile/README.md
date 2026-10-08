@@ -143,6 +143,35 @@ except when it produces something to correct.
 - **`src/db/repositories/thresholdsRepository.ts`** — the offline cache behind
   `GET /api/v1/thresholds`. Deliberately unseeded; see its header.
 
+### Onboarding (P4.S1)
+
+- **`src/onboarding/ProfileProvider.tsx`** — the gate. Reads the LOCAL row first
+  and asks the server only when there is none, so a provisioned patient reaches
+  their diary offline and a server outage cannot lock them out of entries that
+  live on their own phone. It distinguishes `absent` (the server said
+  `PATIENT_NOT_PROVISIONED`) from `unreachable` (nobody knows) — §9.3's split,
+  applied to the gate, because a device with no local row is not evidence of a
+  new patient.
+- **`app/onboarding.tsx`** — decides which of three screens an un-set-up patient
+  sees; **`src/onboarding/OnboardingForm.tsx`** is the three questions. The form
+  mounts only once the gate has settled, which is what makes its `prefill` work:
+  `useState` initialisers run once, so a form mounted while the gate was still
+  checking would keep the blanks.
+- **`src/onboarding/provisionProfile.ts`** — the one write in this app that is
+  not queued, and the outcomes that follow from that. A 409 `ALREADY_ONBOARDED`
+  is a **success**: it reads the profile the server holds and adopts THAT, never
+  the answers just submitted, which is what makes a retry after an unreachable
+  attempt safe.
+- **`src/onboarding/surgeryDateParts.ts`** — three labelled number fields rather
+  than a picker (no DD/MM ambiguity, no native module to rebuild), and the
+  device-side half of a deliberately asymmetric rule: the device knows its own
+  timezone so it compares calendar dates exactly, while the server has to allow
+  the furthest-ahead zone. The fifty-year bound is server-side only; this module
+  carries the reasoning.
+- **`src/db/repositories/profileRepository.ts`** — the single local `profiles`
+  row. A cache, with no sync bookkeeping columns until P4.S3 adds the write path
+  that would exercise them.
+
 ### Still owed
 
 - **§5.4's `CURSOR_TOO_OLD` recovery is reported, not performed.** The worker
@@ -152,9 +181,13 @@ except when it produces something to correct.
 - **The entry timestamp can be reset to now but not freely edited.** A date and
   time picker is the remaining piece of AC 2.1 AC3; the Tier 1 bounds that
   govern it are implemented and tested.
-- **No surgery-date bound.** There is no local profile table yet, so
-  `EFFECTIVE_DATE_TIME_BEFORE_SURGERY` is enforced server-side only. It lands
-  here at P4.S1 when onboarding captures the date.
+- **The surgery date is captured but not yet enforced locally.** P4.S1 slice 2
+  added the `profiles` row and the onboarding screen that fills it, so the date
+  is on the device — but the four entry screens and `decideQuickAdd` still pass
+  `surgeryDate: null`, so `EFFECTIVE_DATE_TIME_BEFORE_SURGERY` remains a
+  server-side rule in practice. Slice 3 wires it through, together with
+  `measurementSystem` in place of `DEFAULT_MEASUREMENT_SYSTEM` — which is the
+  first time ADR-0004's imperial path is reachable in the running app.
 
 ## What the test suite cannot prove about this app
 

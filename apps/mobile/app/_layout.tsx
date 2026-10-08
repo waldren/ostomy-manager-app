@@ -24,17 +24,19 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider } from '../src/auth/AuthContext';
 import { DatabaseProvider } from '../src/db/DatabaseProvider';
+import { ProfileProvider } from '../src/onboarding/ProfileProvider';
 import { SyncProvider } from '../src/sync/SyncProvider';
 
 /**
  * Root layout (Expo Router). Everything under `app/` renders inside these
- * three providers — `AuthProvider` (checking/signedOut/locked/authenticated),
+ * four providers — `AuthProvider` (checking/signedOut/locked/authenticated),
  * `DatabaseProvider` (the local `expo-sqlite` connection, opened and fully
- * migrated once here, never per-screen), and `SyncProvider` (the background
- * push/pull worker). `headerShown: false`: this sprint's two screens
- * (`login`, `home`) render their own headings, and a default React Navigation
- * header would either duplicate that or show a route's file name as a title —
- * not patient-facing copy from the catalog either way.
+ * migrated once here, never per-screen), `ProfileProvider` (whether this patient
+ * has onboarded, which decides what `index` routes to), and `SyncProvider` (the
+ * background push/pull worker). `headerShown: false`: every screen renders its
+ * own heading, and a default React Navigation header would either duplicate that
+ * or show a route's file name as a title — not patient-facing copy from the
+ * catalog either way.
  *
  * `SyncProvider` is innermost of the three because it reads both of the
  * others, and it wraps the navigator rather than sitting beside it so a cycle
@@ -52,9 +54,18 @@ export default function RootLayout(): React.JSX.Element {
     <SafeAreaProvider>
       <AuthProvider>
         <DatabaseProvider>
-          <SyncProvider>
-            <Stack screenOptions={{ headerShown: false }} />
-          </SyncProvider>
+          {/*
+            `ProfileProvider` sits between the database and the sync worker, and the
+            position is deliberate rather than arbitrary: it reads the local profile
+            row, so it must be inside `DatabaseProvider`, and the worker does not read
+            it, so it must not be inside `SyncProvider` — a profile lookup waiting on a
+            sync cycle would delay the gate every launch.
+          */}
+          <ProfileProvider>
+            <SyncProvider>
+              <Stack screenOptions={{ headerShown: false }} />
+            </SyncProvider>
+          </ProfileProvider>
         </DatabaseProvider>
       </AuthProvider>
     </SafeAreaProvider>

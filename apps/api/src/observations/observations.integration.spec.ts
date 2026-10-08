@@ -1845,7 +1845,7 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
       // Read deliberately, through the accessor named for the one legitimate
       // destination. The rejection is still fully available to a correction
       // queue — this is not a redaction.
-      expect(error.rejectionForCorrectionQueue()).toMatchObject({
+      expect(error.refusalForPatientOnThisDevice()).toMatchObject({
         error: {
           code: 'OBSERVATION_VALIDATION_BLOCKED',
           errors: [{ field: 'valueQuantity.value', reasonCode: 'VALUE_NOT_POSITIVE' }],

@@ -29,12 +29,14 @@ import {
 } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
+  ApiBearerAuth,
   ApiBody,
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiTags,
 } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { z } from 'zod';
@@ -72,7 +74,17 @@ const ERROR_RESPONSE = { schema: OBSERVATION_ERROR_RESPONSE_SCHEMA } as const;
  * verified token — never from the body. There is no patient identifier anywhere
  * in this surface, in either direction, which is the same property
  * `GET /api/v1/observations` holds and for the same reason.
+ *
+ * `@ApiBearerAuth('patient-oidc')` is not documentation. It is what puts
+ * `security` on the operation, and `generate-api-client.mjs` reads that to decide
+ * whether the generated method attaches an `Authorization` header: without it the
+ * client emits `requiresAuth: false` and sends no credential, so both routes 401
+ * for a signed-in patient while the guard, the tests and the OpenAPI document all
+ * look correct. That is what happened when this controller first landed, and
+ * `route-guard-coverage.spec.ts` now fails on a guarded route that omits it.
  */
+@ApiTags('onboarding')
+@ApiBearerAuth('patient-oidc')
 @Controller()
 @UseGuards(JwtAuthGuard)
 export class OnboardingController {

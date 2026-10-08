@@ -2169,7 +2169,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       expect(error).toBeInstanceOf(ApiError);
       const apiError = error as ApiError;
       expect(apiError.status).toBe(400);
-      expect(apiError.rejectionForCorrectionQueue()).toEqual({
+      expect(apiError.refusalForPatientOnThisDevice()).toEqual({
         error: { code: 'MALFORMED_REQUEST' },
       });
       // §6.3 applies here as it does everywhere: nothing derived from the
