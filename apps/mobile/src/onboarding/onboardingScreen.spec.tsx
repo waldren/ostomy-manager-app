@@ -91,6 +91,20 @@ jest.mock('../lib/utils/clock', () => ({
   toWireInstant: (date: Date) => date.toISOString(),
 }));
 
+/**
+ * Above jest's 5-second default, for this file only.
+ *
+ * The FIRST test here pays the whole cold-start cost — Babel transforming the
+ * route and its import graph, i18next initialising, the React tree mounting, and a
+ * real SQLite file opening — and on a cold CI runner that alone exceeded 5s while
+ * the remaining eighteen tests finished in well under a second each. The timeout
+ * was reporting runner speed, not a defect.
+ *
+ * Deliberately per-file rather than raised in `jest.config.js`: every other suite
+ * keeps the tighter bound, where a 5-second test really does mean something hung.
+ */
+jest.setTimeout(30_000);
+
 const notProvisioned = () =>
   Promise.reject(new ApiError(403, { error: { code: 'PATIENT_NOT_PROVISIONED' } }));
 
