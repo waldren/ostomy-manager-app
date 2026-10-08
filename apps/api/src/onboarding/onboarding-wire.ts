@@ -120,3 +120,30 @@ export type ProfileResponse = z.infer<typeof profileResponseSchema>;
  * century.
  */
 export const MAX_SURGERY_DATE_AGE_YEARS = 50;
+
+/**
+ * How far ahead of UTC the "not in the future" check must tolerate, and why a
+ * bound that looks like slack is actually correctness.
+ *
+ * The surgery date is a **calendar date** chosen on the patient's own device,
+ * and this request carries no timezone — three fields, per SRS §3.0, and adding
+ * a fourth to answer this would be the wrong trade. So the server compares a
+ * date against an instant, and for every patient whose local date is already
+ * ahead of the UTC date, the honest answer "today" looks like tomorrow.
+ *
+ * Measured, not assumed: at 08:00 in Tokyo, 09:00 in Auckland or 02:00 in
+ * Kiritimati, `YYYY-MM-DD` for the patient's own today parses to a UTC midnight
+ * later than `now`, so a strict comparison answered 400 `in_the_future`. That is
+ * nine hours of every day in Tokyo and fourteen in Kiritimati, and it refused
+ * precisely the patient SRS §3.0 describes — someone setting the app up in a
+ * hospital bed on the day of their surgery, who has no way to interpret the
+ * refusal and no reason to wait nine hours and try again.
+ *
+ * Fourteen hours is the maximum UTC offset in use anywhere (UTC+14), so this
+ * admits every real "today" and nothing beyond one calendar day. The residual
+ * cost is accepting a date up to a day ahead for a patient at or behind UTC, and
+ * that is the cheaper error by a wide margin: a surgery date one day ahead only
+ * blocks entries the patient backdates into that day, while a refusal blocks
+ * setup entirely. The client, which DOES know its own zone, checks exactly.
+ */
+export const MAX_TIMEZONE_HOURS_AHEAD_OF_UTC = 14;

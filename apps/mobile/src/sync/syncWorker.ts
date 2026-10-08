@@ -587,7 +587,7 @@ async function quarantineSingle(
 /**
  * Reads the §6.1 body — `{ "error": { "code": ... } }` — off an `ApiError`.
  *
- * Through `rejectionForCorrectionQueue()`, which is the only accessor for
+ * Through `refusalForPatientOnThisDevice()`, which is the only accessor for
  * that body: it is non-enumerable precisely so the things that carry an
  * error off-device by default cannot see it (§6.3). Reading it here is the
  * sanctioned path — the code stays on the device and is never forwarded
@@ -608,7 +608,7 @@ async function quarantineSingle(
  * not be expressed against `protocolErrorCode` alone (#80).
  */
 function rawProtocolErrorCode(error: ApiError): string | undefined {
-  const body = error.rejectionForCorrectionQueue();
+  const body = error.refusalForPatientOnThisDevice();
   if (typeof body !== 'object' || body === null) return undefined;
   const wrapper = (body as { error?: unknown }).error;
   if (typeof wrapper !== 'object' || wrapper === null) return undefined;
@@ -617,7 +617,7 @@ function rawProtocolErrorCode(error: ApiError): string | undefined {
 }
 
 function protocolErrorCode(error: ApiError): SyncProtocolErrorCode | undefined {
-  const body = error.rejectionForCorrectionQueue();
+  const body = error.refusalForPatientOnThisDevice();
   if (typeof body !== 'object' || body === null) return undefined;
   const wrapper = (body as { error?: unknown }).error;
   if (typeof wrapper !== 'object' || wrapper === null) return undefined;

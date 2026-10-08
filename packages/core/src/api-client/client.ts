@@ -82,8 +82,8 @@ export interface ApiClientOptions {
  * error off-device by default no longer see it: `JSON.stringify(error)`,
  * React Native's LogBox and `console.error(error)`, `util.inspect`, and
  * Sentry's `ExtraErrorData` integration all enumerate own properties. Read
- * it deliberately, through `rejectionForCorrectionQueue()`, at the one place
- * that routes a rejection into the correction inbox.
+ * it deliberately, through `refusalForPatientOnThisDevice()`, at the places
+ * that show the patient what to change.
  */
 export class ApiError extends Error {
   readonly status: number;
@@ -103,11 +103,16 @@ export class ApiError extends Error {
   }
 
   /**
-   * The rejection body, for the one caller that routes it into the patient's
-   * correction queue. Named for that purpose so a call site that is doing
-   * anything else — logging, reporting, bundling — reads as obviously wrong.
+   * The refusal body, for the callers that turn it into something the patient can
+   * act on **on this device** — the correction inbox, and a field-level message on
+   * the form they are still looking at.
+   *
+   * Named for that purpose rather than for one of those callers, because the rule
+   * is about where the content goes, not which screen asked: a call site that is
+   * logging, reporting or bundling reads as obviously wrong against this name and
+   * would have read as merely unusual against a narrower one.
    */
-  rejectionForCorrectionQueue(): unknown {
+  refusalForPatientOnThisDevice(): unknown {
     return Object.getOwnPropertyDescriptor(this, 'body')?.value;
   }
 }
@@ -268,7 +273,7 @@ export function createApiClient(options: ApiClientOptions) {
         }>({
           method: 'GET',
           path: `/api/v1/profile`,
-          requiresAuth: false,
+          requiresAuth: true,
         }),
 
       /**
@@ -296,7 +301,7 @@ export function createApiClient(options: ApiClientOptions) {
           method: 'POST',
           path: `/api/v1/onboarding`,
           body,
-          requiresAuth: false,
+          requiresAuth: true,
         }),
     },
 

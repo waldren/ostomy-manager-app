@@ -272,11 +272,79 @@ export const common = {
   // It also does not name onboarding, because onboarding does not exist yet
   // (P4). When it does, this becomes a route rather than a sentence, and the
   // heading can stay.
+  /**
+   * Onboarding — the three questions SRS §3.0 makes mandatory (P4.S1).
+   *
+   * In `common` rather than `mobile` because every one of these has clinical
+   * meaning: an ostomy type, a surgery date, and the units every clinical amount
+   * in the app is rendered in. ADR-0006's rule is that such copy lives in a shared
+   * namespace so one reviewer reads all of it in one place, and it does not turn on
+   * which app happens to show it.
+   *
+   * Each hint says what the answer is FOR. §3.0's reason for keeping this to three
+   * questions is that a newly discharged patient may be setting the app up in a
+   * hospital bed, and a question whose purpose is invisible is one they stall on.
+   *
+   * Nothing here promises these can be changed later. Editing a profile is P4.S3,
+   * and copy that offers it now would be a promise this build does not keep.
+   */
+  'onboarding.heading': 'Set up your diary',
+  'onboarding.intro': 'Three questions, then you can start logging.',
+
+  'onboarding.ostomyTypeLabel': 'What kind of ostomy do you have?',
+  'onboarding.ostomyTypeHint':
+    'This sets the amounts the app expects, so it can tell you when something looks unusual.',
+  'onboarding.ostomyTypeRequired': 'Choose the kind of ostomy you have.',
+  'ostomyType.colostomy': 'Colostomy',
+  'ostomyType.ileostomy': 'Ileostomy',
+
+  'onboarding.surgeryDateLabel': 'When was your surgery?',
+  // Says what the date does, because it is the one answer here with a consequence
+  // the patient will meet later: an entry dated before it cannot be saved.
+  'onboarding.surgeryDateHint':
+    'The app uses this so an entry from before your surgery is not saved by mistake.',
+  'onboarding.surgeryDateDayLabel': 'Day',
+  'onboarding.surgeryDateMonthLabel': 'Month',
+  'onboarding.surgeryDateYearLabel': 'Year',
+  'onboarding.surgeryDateYearHint': 'All four numbers, like 2026.',
+  'onboarding.surgeryDateRequired': 'Fill in the day, month and year of your surgery.',
+  // Keyed to `SURGERY_DATE_RULE_CODE`, and mapped by a Record in
+  // `apps/mobile/src/onboarding/onboardingCopy.ts` so a new code with no copy is a
+  // compile error rather than a raw key in front of a patient.
+  'onboarding.surgeryDateNotADate': 'That is not a real date. Check the day and month.',
+  'onboarding.surgeryDateInTheFuture': 'Choose a date that has already happened.',
+  'onboarding.surgeryDateImplausiblyOld': 'Check the year — that date is a long time ago.',
+
+  'onboarding.measurementSystemLabel': 'Which units do you want to use?',
+  'onboarding.measurementSystemHint':
+    'One choice covers amounts and weight. The app shows every amount this way.',
+  'onboarding.measurementSystemRequired': 'Choose the units you want to use.',
+  'measurementSystem.metric': 'Millilitres and kilograms (mL, kg)',
+  'measurementSystem.imperial': 'Ounces and pounds (oz, lb)',
+
+  'onboarding.saveButton': 'Finish setting up',
+  'onboarding.savingLabel': 'Setting up your diary',
+  // Unknown fate, not failure: the request may have landed. Says what to do, and
+  // the retry is safe — a second attempt for a patient who IS set up finds their
+  // profile instead of failing.
+  'onboarding.unreachableHeading': 'We could not reach your account',
+  'onboarding.unreachableBody':
+    'Your phone needs a connection for this one step. Check your connection, then try again.',
+  'onboarding.retryButton': 'Try again',
+  'onboarding.failedBody':
+    'Your diary could not be set up. Please try again, and contact your care team if it keeps happening.',
+  'onboarding.checkingLabel': 'Checking your account',
+
   'notProvisioned.heading': 'Your account is not set up yet',
+  // P4.S1: this is now a route rather than a sentence, which is what the earlier
+  // version of this comment said it would become. The entries really are safe
+  // on the phone — that half has not changed — but the patient can now act, so
+  // the copy stops telling them to wait for something that will not happen.
   'notProvisioned.body':
-    'Your entries are saved on this phone and will send on their own once your account is ready. You do not need to sign in again.',
+    'Your entries are saved on this phone. Finish setting up your account and they will send on their own.',
   'notProvisioned.contact':
-    'If this does not clear up, contact your care team — they can finish setting up your account.',
+    'If this keeps happening, contact your care team — they can help finish setting up your account.',
+  'notProvisioned.finishSetupButton': 'Finish setting up',
 
   'corrections.heading': 'Entries that need your attention',
   'corrections.empty': 'Nothing needs fixing.',

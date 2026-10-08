@@ -18,6 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { randomUUID } from 'node:crypto';
 
 import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
+import { type SurgeryDateRuleCode } from '@ostomy/core/validation';
 
 import { AuditService } from '../audit/audit.service';
 import type { PatientActor } from '../auth/patient-actor';
@@ -25,11 +26,8 @@ import { MeasurementSystem, OstomyType, Prisma } from '../generated/prisma/clien
 import { patientNotProvisioned } from '../observations/observation-rejection';
 import { PrismaService } from '../prisma/prisma.service';
 
-import {
-  MAX_SURGERY_DATE_AGE_YEARS,
-  type OnboardingRequest,
-  type ProfileResponse,
-} from './onboarding-wire';
+import { type OnboardingRequest, type ProfileResponse } from './onboarding-wire';
+import { surgeryDateViolation, toSurgeryDate } from './surgery-date';
 
 /** What `audit_events.entity_type` carries for these rows. Greppable and stable. */
 export const PROFILE_ENTITY_TYPE = 'profile';
@@ -217,45 +215,25 @@ export class OnboardingService {
   }
 
   /**
-   * The surgery date, bounded at both ends, and both bounds are load-bearing.
+   * The surgery date, bounded at both ends, with the rules themselves in
+   * `./surgery-date.ts` — pure, and taking the clock as an argument, so both
+   * sides of the timezone allowance can be tested outright rather than whichever
+   * one the suite's start time happens to land in.
    *
-   * **No future date.** This value becomes the Tier 1 lower timestamp bound, so
-   * a surgery date in the future makes every entry the patient can make fail
-   * that rule — the app would accept onboarding and then refuse the first thing
-   * they tried to log, with a message about a date they chose on a screen they
-   * have already left.
-   *
-   * **Nothing absurdly old.** A typo of `1025-03-04` passes every shape rule and
-   * silently disables the bound for the life of the account, and nothing
-   * downstream reports a rule that never fires. See `MAX_SURGERY_DATE_AGE_YEARS`.
-   *
-   * Reported as a field and a rule code, never echoing the offending value —
-   * CLAUDE.md's standing rule for validation errors, and a surgery date is
-   * clinical.
+   * Refusals name the field and the rule code and never echo the offending value
+   * — CLAUDE.md's standing rule for validation errors, and a surgery date is
+   * clinical. The codes are `@ostomy/core/validation`'s `SURGERY_DATE_RULE_CODE`,
+   * shared with the onboarding screen that has to turn each one into something
+   * the patient can act on.
    */
   private parseSurgeryDate(value: string): Date {
-    // `z.iso.date()` has already fixed the shape, so this parses rather than
-    // validates. `T00:00:00Z` explicitly: `new Date('2026-01-02')` is UTC
-    // midnight by spec, but being explicit is what stops a later edit to a
-    // non-ISO format silently becoming local midnight and shifting the date by a
-    // day for half the world.
-    const parsed = new Date(`${value}T00:00:00.000Z`);
-    const today = new Date();
-
-    if (parsed.getTime() > today.getTime()) {
-      throw this.invalidSurgeryDate('in_the_future');
-    }
-
-    const oldest = new Date(today);
-    oldest.setUTCFullYear(oldest.getUTCFullYear() - MAX_SURGERY_DATE_AGE_YEARS);
-    if (parsed.getTime() < oldest.getTime()) {
-      throw this.invalidSurgeryDate('implausibly_old');
-    }
-
-    return parsed;
+    const surgeryDate = toSurgeryDate(value);
+    const violation = surgeryDateViolation(surgeryDate, new Date());
+    if (violation !== null) throw this.invalidSurgeryDate(violation);
+    return surgeryDate;
   }
 
-  private invalidSurgeryDate(rule: string): BadRequestException {
+  private invalidSurgeryDate(rule: SurgeryDateRuleCode): BadRequestException {
     return new BadRequestException({
       error: { code: 'INVALID_ONBOARDING', fields: [{ field: 'surgeryDate', rule }] },
     });

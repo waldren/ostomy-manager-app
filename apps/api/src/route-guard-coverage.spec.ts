@@ -43,6 +43,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * mutating route actually *require* it — a POST/PUT/PATCH/DELETE/ALL handler
  * with no `@Audited()` fails this test the same way an unguarded route
  * does above, rather than shipping as a silently-unaudited PHI write.
+ *
+ * P4.S1 adds a fifth: a guarded route must also DECLARE its scheme with
+ * `@ApiBearerAuth('patient-oidc'|'admin-oidc')`. That decorator looks like
+ * documentation and is not — it is what puts `security` on the OpenAPI
+ * operation, and `scripts/generate-api-client.mjs` reads that to decide whether
+ * the generated client method sends an `Authorization` header. Omit it and the
+ * client emits `requiresAuth: false`: every call 401s for a correctly
+ * signed-in patient while the guard is present, this test's other four
+ * assertions pass, and the OpenAPI document looks right. `POST /api/v1/onboarding`
+ * and `GET /api/v1/profile` shipped that way, and nothing failed until the
+ * first client went to use them. The scheme name is compared, not merely its
+ * presence, because declaring `admin-oidc` on a patient route would produce a
+ * client that reaches for the wrong token — the ADR-0008 boundary undone in the
+ * generated code rather than in the guard.
  */
 import { RequestMethod, type Type } from '@nestjs/common';
 import { GUARDS_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
@@ -51,11 +65,14 @@ import { Test } from '@nestjs/testing';
 import type { INestApplicationContext } from '@nestjs/common';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import type { OpenAPIObject } from '@nestjs/swagger';
+
 import { AdminJwtAuthGuard } from './admin/admin-jwt-auth.guard';
 import { AppModule } from './app.module';
 import { AUDITED_KEY } from './audit/audited.decorator';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import type { AppConfig } from './config/env.schema';
+import { buildOpenApiDocument } from './openapi/build-openapi-document';
 
 function testConfig(): AppConfig {
   return {
@@ -107,6 +124,38 @@ interface DiscoveredRoute {
   httpMethod: RequestMethod;
   guards: unknown[];
   audited: boolean;
+}
+
+/**
+ * Every operation's declared security schemes, read out of the real OpenAPI
+ * document — the artifact `scripts/generate-api-client.mjs` consumes.
+ *
+ * Deliberately NOT read from `@ApiBearerAuth`'s own reflect metadata. That key
+ * lives behind `@nestjs/swagger/dist/constants`, which the package does not
+ * export, and reflecting it would assert that the decorator was *written*
+ * rather than that the document the generator reads actually carries
+ * `security`. Those are the same thing only while every step between them
+ * works, and this test exists because one of those steps silently did not.
+ *
+ * Keyed `METHOD /path` with `{param}` rewritten to Nest's `:param`, so the
+ * keys match `discoverRoutes`'.
+ */
+function securitySchemesByRoute(document: OpenAPIObject): Map<string, string[]> {
+  const byRoute = new Map<string, string[]>();
+  for (const [path, operations] of Object.entries(document.paths)) {
+    const nestPath = path.replace(/\{([^}]+)\}/g, ':$1');
+    for (const [method, operation] of Object.entries(operations ?? {})) {
+      if (typeof operation !== 'object' || operation === null) continue;
+      const security = (operation as { security?: unknown }).security;
+      const names = Array.isArray(security)
+        ? security.flatMap((entry) =>
+            typeof entry === 'object' && entry !== null ? Object.keys(entry) : [],
+          )
+        : [];
+      byRoute.set(`${method.toUpperCase()} ${nestPath}`, names);
+    }
+  }
+  return byRoute;
 }
 
 /**
@@ -204,17 +253,28 @@ describe('route guard coverage — every route is guarded or explicitly public',
       imports: [AppModule.register(testConfig()), DiscoveryModule],
     }).compile();
 
-    app = moduleRef.createNestApplication();
-    await app.init();
+    // Held in its own `INestApplication`-typed local as well as in `app`: the
+    // outer variable is the broader `INestApplicationContext` that `afterEach`
+    // closes, and `buildOpenApiDocument` needs the HTTP application.
+    const httpApp = moduleRef.createNestApplication();
+    app = httpApp;
+    // Mirrors `main.ts` and `emit-openapi.ts`: without it the document's paths
+    // carry no `/api/v1`, and every lookup below would miss and report every
+    // guarded route as undeclared — a test that fails for its own reason
+    // rather than the code's.
+    httpApp.setGlobalPrefix('api/v1');
+    await httpApp.init();
 
-    const discovery = app.get(DiscoveryService);
+    const discovery = httpApp.get(DiscoveryService);
     const routes = discoverRoutes(discovery);
+    const declaredSchemes = securitySchemesByRoute(buildOpenApiDocument(httpApp));
 
     // Sanity check on the discovery mechanism itself: if this is ever zero,
     // the test below would vacuously pass having checked nothing.
     expect(routes.length).toBeGreaterThan(0);
 
     for (const route of routes) {
+      const securitySchemes = declaredSchemes.get(route.key) ?? [];
       const hasPatientGuard = route.guards.includes(JwtAuthGuard);
       const hasAdminGuard = route.guards.includes(AdminJwtAuthGuard);
       const isAdminSurface = /^[A-Z]+ \/api\/v1\/admin\//.test(route.key);
@@ -228,6 +288,13 @@ describe('route guard coverage — every route is guarded or explicitly public',
           hasAdminGuard,
           `${route.key} is on PUBLIC_ROUTES but also carries AdminJwtAuthGuard — remove it from the allowlist or the guard`,
         ).toBe(false);
+        // A public route declaring a scheme would generate a client method
+        // that demands a token the route never reads, so the one honest
+        // state here is no declaration at all.
+        expect(
+          securitySchemes,
+          `${route.key} is on PUBLIC_ROUTES but declares a security scheme (${securitySchemes.join(', ')}) — a public route must declare none`,
+        ).toEqual([]);
         continue;
       }
 
@@ -261,6 +328,21 @@ describe('route guard coverage — every route is guarded or explicitly public',
             'did you forget it, or does this route genuinely never write PHI (in which case, does it need to mutate at all)?',
         ).toBe(true);
       }
+
+      /**
+       * P4.S1: the guard and the DECLARED scheme must agree, or the generated
+       * client sends the wrong credential — or none.
+       *
+       * Asserted as exact set equality rather than "contains", so a patient
+       * route cannot quietly also declare `admin-oidc` and generate a client
+       * method that reaches for an admin token.
+       */
+      const expectedScheme = isAdminSurface ? 'admin-oidc' : 'patient-oidc';
+      expect(
+        [...new Set(securitySchemes)],
+        `${route.key} is guarded but its declared OpenAPI security scheme is [${securitySchemes.join(', ')}] rather than exactly ['${expectedScheme}'] — ` +
+          `add @ApiBearerAuth('${expectedScheme}') to the controller. Without it the generated client emits requiresAuth: false and sends no Authorization header, so every call 401s while the guard looks correct.`,
+      ).toEqual([expectedScheme]);
     }
   });
 });

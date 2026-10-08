@@ -36,6 +36,13 @@ export { evaluateTier1 } from './tier1.js';
 export { TIER2_RULE_CODE } from './tier2.js';
 
 /**
+ * The onboarding surgery-date vocabulary, shared so `apps/api`'s refusal and
+ * `apps/mobile`'s screen name the same three problems. Deliberately not part of
+ * `TIER1_RULE_CODE` — see that module for why.
+ */
+export { SURGERY_DATE_RULE_CODE, type SurgeryDateRuleCode } from './surgeryDateRuleCodes.js';
+
+/**
  * The timestamp half of Tier 1, usable by an entry type that has no value —
  * a meal (SRS AC 2.4). Composed by `evaluateTier1` too, so a volumetric entry
  * and a meal cannot disagree about what "in the future" means.
