@@ -52,7 +52,6 @@ import {
   readSignedOutReason,
   recordSignedOutReason,
   setRefreshToken,
-  storedTokenIsStaleForEnrolment,
   type SignedOutReason,
 } from './tokenStorage';
 
@@ -199,44 +198,21 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
   useEffect(() => {
     let cancelled = false;
     /**
-     * #74. A refresh token stored without the biometric gate carries the
-     * enrolment level it was written at, and a rise means a biometric was
-     * enrolled since — the transition ADR-0015 exists to respond to, and the one
-     * case an app CAN observe (see `storedTokenIsStaleForEnrolment`).
+     * No enrolment check here any more (ADR-0015 Amendment 2, #116).
      *
-     * Purging here rather than at the point of enrolment because there is no
-     * point of enrolment to hook: the OS offers no change signal, so the next
-     * cold start is the first moment this app can know. The consequence for the
-     * patient is ADR-0015's stated one either way — a full OIDC re-login — and
-     * the token that login stores IS gated, because the level now allows it.
+     * This effect used to purge the session when `getEnrolledLevelAsync()` had
+     * RISEN since the token was written — #74's stand-in for the OS invalidation an
+     * ungated entry does not get. Amendment 2 removed it, and removing it is the
+     * point rather than a simplification: enrolling a biometric on Android requires
+     * the device credential, which now unlocks this app, so the rise grants an
+     * attacker nothing and the purge only signed out a patient who added a
+     * fingerprint — into a network login they may not be able to complete.
      *
-     * Answering `false` on failure is deliberate. A keychain that cannot be read
-     * says nothing about enrolment, and purging a session on that evidence would
-     * push an offline patient into a network login they cannot complete. The
-     * `hasStoredRefreshToken` call below fails toward `locked` for the same
-     * reason.
+     * A token stored by a build that gated it is handled one layer down instead, by
+     * `getRefreshToken()` recognising the old marker and clearing it. That is a
+     * migration, not a security response, and it belongs with the storage.
      */
-    const tokenIsStale = async (): Promise<boolean> => {
-      try {
-        return await storedTokenIsStaleForEnrolment();
-      } catch {
-        return false;
-      }
-    };
-
-    tokenIsStale()
-      .then(async (stale) => {
-        if (stale) {
-          // Not `endSession`: this runs before the phase is derived at all, and the
-          // derivation below is what decides it. Same order and same reasoning as
-          // that helper — reason first, because an explanation for a sign-out that
-          // did not happen is merely confusing, while a sign-out with no explanation
-          // is the defect being fixed.
-          await recordSignedOutReason('unlock-settings-changed');
-          await clearRefreshToken();
-        }
-        return Promise.all([hasStoredRefreshToken(), readSignedOutReason()]);
-      })
+    Promise.all([hasStoredRefreshToken(), readSignedOutReason()])
       .then(([hasToken, reason]) => {
         if (cancelled) return;
         setSignedOutReason(reason ?? undefined);
@@ -592,31 +568,6 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     const outcome = await authenticate(i18next.t('mobile:login.unlockPromptMessage'));
     if (outcome.outcome !== 'success') return outcome;
 
-    /**
-     * #74. Checked here as well as at cold start, because an Android process can
-     * live for days and the cold-start check is otherwise the only one.
-     *
-     * Without this, an attacker who enrols their own biometric while the process is
-     * alive can open the app at the lock screen, satisfy the OS prompt with the
-     * print they just added, and have `getRefreshToken()` below hand them a live
-     * bearer credential — no purge, no issuer round trip, no record anywhere. The
-     * gated case has no such window: the OS invalidates the key the moment the
-     * enrolment lands. Two native calls close most of the difference.
-     *
-     * The outcome still reports `success`, because it describes the PROMPT, which
-     * did succeed. The phase is what routes the patient, and it goes to `signedOut`
-     * with the reason recorded, so the login screen can say why.
-     */
-    try {
-      if (await storedTokenIsStaleForEnrolment()) {
-        await endSession('unlock-settings-changed');
-        return outcome;
-      }
-    } catch {
-      // Unreadable keychain says nothing about enrolment — fall through and unlock,
-      // for the same reason the cold-start check answers `false` on failure.
-    }
-
     setPhase('authenticated');
 
     /**
@@ -627,11 +578,28 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
      */
     const renewal = await renewAccessToken();
     if (renewal.outcome === 'unreadable') {
-      // Re-locks rather than signing out. An unreadable keychain says nothing about
-      // whether a session exists — the same argument the cold-start fallback makes —
-      // and the patient can simply press Unlock again. Signing them out would push an
-      // offline patient into a network login for a condition that may clear.
-      lock();
+      /**
+       * Stays unlocked. This used to call `lock()`, and that is what made #116
+       * present as a button that silently does nothing: the patient authenticated,
+       * the gated read then raised a biometric-only prompt they could not satisfy,
+       * and they were returned to the lock screen with no message and no way
+       * forward. Pressing Unlock again repeated it forever.
+       *
+       * The comment above this call already described the behaviour now
+       * implemented — "a failure never reverts the phase transition above; it
+       * means `accessToken` stays unset until something asks for one again, which
+       * blocks a sync network call and nothing else" — while the code did the
+       * opposite. The two no longer disagree.
+       *
+       * It is also the right answer on its own terms. ADR-0014 deliberately leaves
+       * the SQLCipher key ungated, so the diary does not need this token to open;
+       * only sync does. Re-locking punished the patient for a credential problem by
+       * withholding data that was never behind the credential.
+       *
+       * With the gate removed there is no OS prompt behind this read at all, so
+       * reaching here means a genuine keychain failure — rare, and plausibly
+       * transient. The next thing that wants a token will try again.
+       */
       return outcome;
     }
     if (renewal.outcome === 'no-session') {
@@ -642,7 +610,7 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     // offline fallback; 'renewed' is the happy path.
 
     return outcome;
-  }, [renewAccessToken, endSession, lock]);
+  }, [renewAccessToken, endSession]);
 
   /**
    * Ends the session locally, at the issuer, and on disk.

@@ -94,11 +94,19 @@ The converse of HW-4, and not the same test. ADR-0014 claims a same-device resto
 
 **A failure means** a patient who restores their own phone loses their whole diary with no message saying so — SQLCipher reports a wrong key as a generic "file is not a database".
 
-### HW-6 — a biometric enrolment change invalidates the stored token
+### HW-6 — RETIRED by ADR-0015 Amendment 2; now: adding a biometric does not disturb the session
 
-The centre of ADR-0015, and the one OS guarantee this design depends on and has never observed.
+**This step used to verify that a biometric enrolment change invalidated the stored token.** That guarantee no longer exists and is not coming back: Amendment 2 (#116) removed `requireAuthentication` from the refresh token, because the prompt it raised on read was biometric-only by construction and locked out any patient who could not present a finger. The ID is kept rather than deleted, per this document's own rule that IDs never move — issue #39 and the implementation plan cite it by number.
 
-Enrol one fingerprint, sign in, add a second fingerprint in Settings, cold-start the app.
+**What to check instead, and it is the inverse of the old step.** Enrol one fingerprint, sign in, add a *second* fingerprint in Settings, cold-start the app.
+
+**Pass:** the app still unlocks and the session survives. Under the old decision this signed the patient out and demanded a network login; under Amendment 2 that purge is removed deliberately, because enrolling a biometric on Android requires the device credential — which already unlocks this app — so the enrolment grants nothing and signing the patient out costs them their offline route for no gain.
+
+**A failure here means** leftover invalidation machinery is still firing: either `requireAuthentication` survived somewhere, or the enrolment-level rise purge was not fully removed. Report it against Amendment 2.
+
+The paragraphs below are kept because they record how the old path behaved and why #40 existed; read them as history, not as the current expectation.
+
+---
 
 (This step was HW-6a while iOS was in scope. Its iOS half, HW-6b, is retained in ADR-0020's reinstatement list and is not open work. Older references to "HW-6a" mean this step; issue #39 now cites it as HW-6.)
 
@@ -117,7 +125,9 @@ So the step now verifies a fix rather than an expected failure. **A failure here
 
 ### HW-7 — a Class 2-only handset falls back to the passcode instead of dead-ending
 
-`authenticate()` demands `biometricsSecurityLevel: 'strong'`, so on a handset whose only enrolment is Class 2 face unlock the OS may refuse the biometric. `disableDeviceFallback` is left at its default precisely so the device credential is there to catch this.
+`authenticate()` demands `biometricsSecurityLevel: 'strong'`, so on a handset whose only enrolment is Class 2 face unlock the OS refuses the biometric and the device credential is what catches it.
+
+**Corrected at #117:** `disableDeviceFallback` is **passed explicitly as `false`**, not "left at its default". Expo documents the default as `false` and declares it in its Kotlin record, but omitting the option reached the native layer as `true` — measured as `authenticators: 15` (`BIOMETRIC_STRONG` alone) versus `32783` (`| DEVICE_CREDENTIAL`). So for the whole period this step described the fallback as present, the OS was being asked to refuse it. That is the defect this step was written to catch and could not, because it reads as a configuration that is already correct.
 
 This step used to describe the availability check as the risk — it asked `isEnrolledAsync()`, which does not discriminate biometric class. That prediction was right and the dead-end turned out to be wider than Class 2: it caught every handset with no biometric enrolled at all. Fixed under #74, so the step is now checking a fix rather than an expected failure. `isLocalUnlockAvailable()` asks `getEnrolledLevelAsync() !== NONE`.
 
@@ -159,19 +169,21 @@ Start from a wiped device with **a screen lock set and no biometric enrolled** (
 
 1. **Sign in.** Complete the OIDC flow.
 2. **Cold-start and open the diary with the PIN**, offline. Turn the radios off first, so nothing can succeed by reaching the network.
-3. **Enrol a fingerprint in Settings, then cold-start again.**
+3. **Enrol a fingerprint in Settings, then cold-start again.** _(Expectation inverted by ADR-0015 Amendment 2 — see part 3 below.)_
 
 **Pass, all three:**
 
 1. Sign-in completes and reaches the home screen. Before #74 it failed here with `Could not Authenticate the user: No biometrics are currently enrolled`, showing the patient "We could not sign you in. Please try again." — so this part alone is the regression test for the reported defect.
 2. The lock screen offers **Unlock my diary**, the device-credential prompt appears, and the diary opens with the network off. What must NOT happen is the screen offering only "Sign in again instead": that is a network login, and offering it to an offline patient is the second defect #74 fixed.
-3. The app routes to a **full OIDC sign-in** rather than unlocking, **and the local diary survives** — same two halves as HW-6, for the same ADR-0014 reason. This is the reimplemented invalidation signal, so a pass here is the only evidence that it works: the level rise is detected at cold start, the ungated token is purged, and the token stored by the re-login is gated.
+3. **The session survives and the app unlocks normally** — with the passcode or the newly enrolled finger, the patient's choice. **This expectation is the inverse of what it was**, and the change is deliberate: ADR-0015 Amendment 2 removed the enrolment-level rise purge, because enrolling a biometric on Android requires the device credential, which already unlocks this app, so the rise is not a privilege escalation and signing the patient out buys nothing. The old text read "the level rise is detected at cold start, the ungated token is purged, and the token stored by the re-login is gated" — none of which should now happen.
 
-**A failure in part 3 specifically** means an ungated token outlives the enrolment that should have killed it, which is ADR-0015's covert-enrolment threat left open rather than closed by a different mechanism. Report it against the amendment, not against the OS — nothing here depends on an OS guarantee, which is the whole reason it needs observing.
+**A failure in part 3 specifically** means the purge machinery is still live and is signing patients out on an ordinary enrolment, which costs an offline patient their diary until they find network. Report it against Amendment 2.
 
 **Part 4, and it needs different hardware: a handset with NO biometric sensor at all.** An AVD reports biometric hardware, so the emulator cannot produce this state and neither can parts 1 to 3. The first fix for #74 gated the enrolment level on `hasHardwareAsync()` — which reports whether a *scanner* exists — and so locked every sensorless phone out of its own offline diary while reporting "This phone does not have face, fingerprint, or passcode unlock turned on", which was false. **Pass:** with a PIN set and no sensor, the patient reaches the device-credential prompt from **Unlock my diary** and opens the diary offline. Cheap Android handsets and many tablets are this configuration, and it skews toward this patient population rather than away from it.
 
-**Part 5.** Enrol a fingerprint, sign in, then REMOVE the fingerprint in Settings and open the app. **Pass:** the passcode unlock works and the app either syncs or routes to a sign-in explaining it — what must NOT happen is reaching the home screen with sync silently dead forever. That is a gated token whose key the OS invalidated, and it became reachable only once local unlock started accepting the passcode.
+**Part 5.** Enrol a fingerprint, sign in, then REMOVE the fingerprint in Settings and open the app. **Pass:** the passcode unlock works, the diary opens, and sync continues — the token is no longer gated, so removing an enrolment destroys nothing. Before Amendment 2 this was the case that reached the home screen with sync silently dead forever, because the OS had invalidated a key the app still believed in.
+
+**Part 6, and it is the one this whole amendment exists for.** On a handset with a fingerprint enrolled and working, open the app, press **Unlock my diary**, and take the **passcode** rather than the finger. **Pass:** the diary opens. This is the path a patient uses with a wet or bandaged hand, and it is what #116 found broken — the app's own prompt accepted the passcode and `expo-secure-store`'s gated read then raised a second, biometric-only prompt that no passcode could satisfy, returning the patient to "Welcome back" with no way forward. It is also the opt-out path for a patient who has enrolled a biometric but would rather not use it.
 
 **Also record** whether the patient is shown anything about the weaker protection. Nothing is shown today, deliberately (no copy was invented for it), and a run is the first chance to judge whether that is right.
 

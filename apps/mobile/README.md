@@ -71,8 +71,14 @@ sprint records.
   re-deriving: both inserts commit together via
   `SqliteExecutor.withTransactionAsync`, matching the "local write is the
   save confirmation" rule.
+- **Local unlock accepts the device passcode OR a Class 3 biometric, as
+  peers** (ADR-0015 Amendment 2, #116). Neither is a fallback from the other:
+  a patient may decline biometrics entirely, or take the passcode on a single
+  attempt when a finger will not read. `disableDeviceFallback: false` is passed
+  **explicitly** — omitting it reaches the native layer as `true` despite the
+  documented default, which is #117.
 - `src/auth/AuthContext.tsx` exposes `phase: 'checking' | 'signedOut' |
-  'locked' | 'authenticated'` and treats a successful biometric unlock as
+  'locked' | 'authenticated'` and treats a successful local unlock as
   sufficient for **local** app access regardless of whether the subsequent
   refresh-token network call succeeds — see that file's header comment. A
   missing or expired access token only ever blocks a sync network call, never
@@ -152,8 +158,9 @@ except when it produces something to correct.
 
 ## What the test suite cannot prove about this app
 
-jest runs no keychain, cannot simulate a biometric enrolment change, and has
-no backup transport, so the device-side controls this app carries —
+jest runs no keychain, cannot present a biometric or a passcode to an OS
+prompt, and has no backup transport, so the device-side controls this app
+carries —
 ADR-0014's SQLCipher store and device binding, ADR-0015's
 `requireAuthentication` invalidation and Class 3 requirement — are unproven
 by a green `pnpm test`. The emulator harness

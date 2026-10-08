@@ -13,7 +13,7 @@ Everything below applies as written. Where a requirement traces to a HIPAA admin
 ## From the SRS (design-specs/requirements/)
 
 - Encryption of PHI at rest and in transit (TLS 1.3+) — on-device at rest is ADR-0014; see "On-device PHI" below
-- OAuth 2.0 / OpenID Connect authentication, with biometric login support on mobile (ADR-0015)
+- OAuth 2.0 / OpenID Connect authentication, with local unlock on mobile by device passcode **or** biometric, as peers (ADR-0015 Amendment 2)
 - Automated session timeouts — implemented on both clients; see "On-device PHI" below
 - Business Associate Agreements with cloud providers — **not currently required** (amended by ADR-0017; see SRS §4.6). The service list below is still maintained: it is the list of services in the PHI path, which is what matters whether or not anything is signed.
 
@@ -31,7 +31,8 @@ What is implemented (ADR-0014, ADR-0015):
 - **The database is bound to one OIDC subject.** A different subject signing in, or any sign-out, destroys the database file. Without this, the next person to sign in on a shared phone reads the previous patient's diary — and their queued entries are pushed under the new person's identity, producing an audit row that names the wrong author for a clinical entry.
 - **Android cloud backup is disabled** (`allowBackup: false`). Consumer iCloud and Google Drive backup can never be BAA-covered, so they must not receive PHI.
 - **Sessions re-lock** on return from background past a grace period, and on foreground idle.
-- **The refresh token is invalidated by the OS on biometric enrolment change** (`requireAuthentication`), and is device-bound so it cannot ride a backup onto another phone.
+- **The refresh token is device-bound** (`AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`) so it cannot ride a backup onto another phone.
+- **It is no longer gated on biometric enrolment** (ADR-0015 Amendment 2, #116). `requireAuthentication` made the OS invalidate the key when enrolment changed — but it also made reading the token raise a biometric-only prompt, which locked out any patient who could not present a finger, and which contradicted the same ADR's twice-stated refusal to exclude that population. The guarantee defended against privilege escalation by covert enrolment, and enrolling a biometric on Android requires the device credential already, so once the passcode is an accepted peer the escalation no longer exists. **What this gives up, plainly: someone who knows the device passcode and has no enrolled biometric now obtains the refresh token as well as the local diary, which they could already read.**
 - **Sign-out purges the local database, and warns with a count first** when entries are unsent. The warning closed the gap ADR-0014 recorded: purging unconditionally protected the next patient on a shared phone at the cost of the previous one's unsynced entries.
 
 Known gaps, recorded rather than implied to be closed:

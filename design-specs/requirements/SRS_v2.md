@@ -1,4 +1,4 @@
-# Software Requirements Specification — Ostomy Patient Management Application (v2.6)
+# Software Requirements Specification — Ostomy Patient Management Application (v2.7)
 
 Prepared by: Steven E. Waldren, MD, MS
 Supersedes: `Ostomy_App_Specification_v1.pdf` (v1.0), which is retained only as a historical reference — this document is fully self-contained and does not require consulting the v1.0 PDF.
@@ -25,6 +25,8 @@ Status: all six discussion phases complete.
 - **AC 2.1 AC 2**'s prompt copy read "This is a high volume for a single entry. Please confirm this amount is correct." The second sentence made saving read as conditional on the amount being "correct," centring error language for what Section 3.8 identifies as "precisely the data point the care team most needs to see." Corrected to "This amount is higher than most entries. If it is right, save it. Your care team needs to see days like this." The warning remains soft and always-overridable; only the wording changed.
 
 **v2.6 scope change (2026-09-19).** No new phase. v1's mobile client targets **Android only**; iOS is deferred. Recorded in [ADR-0020](../decisions/0020-android-only-v1.md).
+
+**v2.7 change (2026-10-07).** No new phase. Local unlock on mobile accepts **either the device passcode or a biometric, as peers** — a patient may decline biometrics entirely and use their passcode, or use the passcode on any single attempt when a finger will not read. Recorded in [ADR-0015](../decisions/0015-biometric-local-access.md) Amendment 2, which also removes the refresh token's `requireAuthentication` gating and explains what that gives up. The wording below said "biometric login" throughout, which is how the implementation came to exclude the passcode one layer down (#116).
 
 - `apps/mobile` had never been built for iOS — no build path existed, and the device-side security controls that platform would run (the SQLCipher config plugin, the keychain accessibility class, `biometryCurrentSet` invalidation) had therefore never compiled, let alone been verified. A platform claim nothing tests is the failure mode [ADR-0014](../decisions/0014-local-phi-encryption-and-device-ownership.md) and [ADR-0015](../decisions/0015-biometric-local-access.md) exist to prevent. Sections 2 and 4.2 are corrected; iPhone users reach the product through the browser SPA, which is online-only and holds no PHI at rest, so what is deferred is offline capture rather than access. This is a platform deferral, not a feature deferral, and it is deliberately **not** listed in Appendix A alongside urostomy.
 
@@ -258,7 +260,7 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 - **Object storage (S3)** — peristomal skin-condition photos (Section 3.2) and generated physician-view PDF exports (Section 3.5).
 - **Push notification delivery** — for reminders (Section 3.4), via Expo's push notification service (built on APNs/FCM), invoked by the backend on a schedule.
 - **Admin console** (React SPA, internal-only) — manages clinical value sets, default range tables, and validation thresholds (Section 3.11). Deployed separately from the patient web app, backed by its own identity pool, with no API route to PHI.
-- **Identity provider** — issues and validates OAuth 2.0/OIDC tokens for both patient clients (and, via a separate pool, for admin users); backs biometric login on mobile by unlocking a securely stored refresh token (device Keychain/Keystore via Expo SecureStore) rather than storing biometric data itself.
+- **Identity provider** — issues and validates OAuth 2.0/OIDC tokens for both patient clients (and, via a separate pool, for admin users); backs **local unlock** on mobile by releasing a securely stored refresh token (device Keychain/Keystore via Expo SecureStore) rather than storing biometric data itself. Unlock is satisfied by the device passcode **or** a biometric, as peers (ADR-0015 Amendment 2) — the provider never sees which, and no biometric data leaves the device either way.
 
 ```
 [Mobile App] --local SQLite--> (offline-capable)
@@ -363,7 +365,7 @@ Carries forward and expands the v1.0 HIPAA baseline into a full compliance progr
 
 *Carried forward from v1.0:*
 - Encryption of PHI at rest and in transit (TLS 1.3+).
-- Secure authentication (OAuth 2.0 / OpenID Connect) with biometric login support on mobile, and MFA for password reset.
+- Secure authentication (OAuth 2.0 / OpenID Connect) with **local unlock on mobile by device passcode or biometric, as peers** (ADR-0015 Amendment 2), and MFA for password reset. "Biometric login" was the original wording and is avoided deliberately: it is what made excluding the passcode look like an implementation detail rather than a decision.
 - Automated session timeouts.
 - Executed Business Associate Agreements (BAAs) with all cloud providers handling PHI — **conditional**, see the BAA amendment in §4.6. Required only once a provider relationship makes HIPAA apply.
 
@@ -396,7 +398,7 @@ Ostomy patients skew older and post-surgical, which raises the stakes for access
 ## 6. User Stories
 
 ### Epic 1: Authentication, Security & HIPAA Compliance
-- As a user, I want to securely log in using biometric authentication (FaceID/TouchID) on my mobile device so that I can access my diary quickly without compromising my health data.
+- As a user, I want to unlock my diary quickly on my phone with **my device passcode or a biometric, whichever I choose**, so that I can get to it without compromising my health data — including when I would rather not enrol a biometric at all, and when a finger is wet, bandaged, or simply will not read.
 - As a user, I want my active session to automatically time out after a period of inactivity so that my health information remains secure if I leave my device unattended.
 - As a system administrator, I need all Protected Health Information (PHI) to be encrypted at rest and in transit so that the application fully complies with HIPAA standards.
 - As a user, I want to be able to reset my password securely using a multi-factor authentication (MFA) process so that I can regain access to my account safely.

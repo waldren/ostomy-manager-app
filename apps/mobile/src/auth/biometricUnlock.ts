@@ -93,34 +93,19 @@ export async function isLocalUnlockAvailable(): Promise<boolean> {
  * back to instead.
  */
 /**
- * ## What this gate does NOT cover (#116)
+ * ## This is the only gate on the diary, and that is deliberate (#116)
  *
- * Passing the passcode here is necessary and not always sufficient. The
- * refresh token is stored with `requireAuthentication: true` (ADR-0015, see
- * `tokenStorage.ts`), and reading it raises a **second** OS prompt — one
- * `expo-secure-store` builds itself:
+ * It used not to be. The refresh token was stored with `requireAuthentication`,
+ * so reading it raised a SECOND prompt that `expo-secure-store` builds itself —
+ * with a negative button and no allowed authenticators, which Android forbids
+ * pairing with `DEVICE_CREDENTIAL`. That prompt was biometric-only by
+ * construction, so a patient who cleared this gate with their passcode was
+ * stopped one layer down and returned to the lock screen with no message.
  *
- * ```kotlin
- * PromptInfo.Builder()
- *   .setTitle(title)
- *   .setNegativeButtonText(context.getString(android.R.string.cancel))
- *   .build()
- * ```
- *
- * It sets no allowed authenticators and does set a negative button, and Android
- * forbids combining a negative button with `DEVICE_CREDENTIAL`. That prompt is
- * therefore **biometric-only by construction**, with no passcode route at any
- * setting. Observed on a device as a second dialog at `authenticators: 15`
- * immediately after this one succeeded at 32783.
- *
- * So on a device whose token is GATED, a patient who unlocks here with their
- * passcode is still stopped one layer down, and `unlock()` reads the failure as
- * `unreadable` and re-locks — which looks like the unlock silently doing
- * nothing. On a device with no biometric enrolled the token is stored ungated
- * (#74), this is the only gate, and the fix above is sufficient.
- *
- * Closing the gated case is a change to ADR-0015's posture, not a bug fix, and
- * is tracked in #116.
+ * ADR-0015 Amendment 2 removed that gating. `tokenStorage.ts` carries the
+ * reasoning and the warning not to restore the flag; the consequence here is
+ * simply that passing the passcode is now sufficient, which is what this
+ * function's options have always claimed.
  */
 export async function authenticate(promptMessage: string): Promise<LocalUnlockOutcome> {
   if (!(await isLocalUnlockAvailable())) {
