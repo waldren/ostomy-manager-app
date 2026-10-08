@@ -25,11 +25,18 @@ export interface UnitToggleProps {
 }
 
 /**
- * A display-only metric/imperial switch for this page. `apps/web` has no
- * preferences endpoint yet (that lands with Preference Management, P4), so
- * this is local view state, not the patient's persisted measurement-system
- * preference (SRS §3.10) — it never rewrites any stored value, only how
- * this screen renders the canonical mL figures it already has.
+ * A display-only metric/imperial switch for this page.
+ *
+ * Since P4.S1 slice 4 it **opens on the patient's persisted measurement system**,
+ * read from `GET /api/v1/profile` — before that there was nothing to read it
+ * from, so it started on metric for everyone and an imperial patient's first
+ * figure was in units they had not chosen.
+ *
+ * Changing it is still local view state and persists nothing: it never rewrites
+ * any stored value, only how this screen renders the canonical mL figures it
+ * already has. Writing a changed preference back is SRS §3.10's profile edit,
+ * which is P4.S3 — and `physicianView.unitsHint` says so to the reader, because
+ * a clinician can reasonably read a unit switch as changing what was recorded.
  */
 export function UnitToggle({ value, onChange }: UnitToggleProps) {
   const { t } = useTranslation();

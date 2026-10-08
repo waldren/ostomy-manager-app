@@ -143,6 +143,17 @@ export const web = {
   // the other.
   'physicianView.dateNavLabel': 'Choose which day to show',
   'physicianView.selectedDate': 'Date shown',
+  // P4.S1 slice 4. `common:notProvisioned.*`'s body cannot be reused here: it
+  // says entries "are saved on this phone", which is true of the mobile client
+  // and not of a browser. Shell copy with no clinical meaning, so the `web`
+  // namespace is its home (ADR-0006); the heading stays shared.
+  'physicianView.notProvisionedBody':
+    'Set up your diary in the mobile app first. Your entries and your unit choice will show here once you have.',
+  // Separate from `loadError` because the two are different failures with
+  // different offers: a day's entries can be retried, and this page cannot show
+  // amounts at all until it knows which units to show them in.
+  'physicianView.profileLoadError':
+    'We could not load your settings, so volumes are not shown. Please reload the page.',
   'physicianView.unitsLabel': 'Show volumes in',
   // Says plainly that the toggle is display-only. Without it a clinician can
   // reasonably read a unit switch as changing what was recorded.
