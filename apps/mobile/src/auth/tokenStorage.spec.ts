@@ -22,19 +22,28 @@ import {
   getRefreshToken,
   hasStoredRefreshToken,
   setRefreshToken,
-  storedTokenIsStaleForEnrolment,
 } from './tokenStorage';
 
 /**
- * The mock preserves the OPTIONS argument, which the previous version
- * discarded.
+ * ## What changed here, and why most of this file is shorter than it was
  *
- * That mattered: this module's whole security posture lives in those
- * options, and the old suite passed whether the accessibility class was
- * device-bound or backup-migrating, and whether `requireAuthentication` was
- * set at all. It also defined `AFTER_FIRST_UNLOCK` while the module used
- * `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`, so the value under test was
- * `undefined`.
+ * ADR-0015 Amendment 2 (#116) removed `requireAuthentication` from the refresh
+ * token, and with it the gated/ungated branch, the recorded enrolment level, and
+ * `storedTokenIsStaleForEnrolment`. The suites that exercised those are deleted
+ * rather than adapted: they assert a decision that no longer exists, and an
+ * adapted test tends to keep asserting the old shape in a new costume.
+ *
+ * ## The mock preserves the OPTIONS argument, and that is the point
+ *
+ * This module's entire security posture lives in those options. An earlier version
+ * of this mock discarded them, and the suite then passed whether the accessibility
+ * class was device-bound or backup-migrating, and whether `requireAuthentication`
+ * was set at all.
+ *
+ * That is not a historical note. **#116 was a defect in exactly this shape**: the
+ * app asked the OS for the wrong authenticators, every test was green, and two of
+ * them actively pinned the wrong option set in place. Assert what the app asks the
+ * platform for — it is the half the app controls and the half that regressed.
  */
 jest.mock('expo-secure-store', () => ({
   AFTER_FIRST_UNLOCK: 'AFTER_FIRST_UNLOCK',
@@ -44,19 +53,6 @@ jest.mock('expo-secure-store', () => ({
   deleteItemAsync: jest.fn(async () => undefined),
 }));
 
-/**
- * The enrolment level decides which option set the token is written with (#74),
- * so it has to be controllable here. Real numeric values: the module compares
- * them by ORDER, and a mock of symbolic strings would let a reversed comparison
- * pass.
- */
-const mockGetEnrolledLevelAsync = jest.fn(async () => 3);
-jest.mock('expo-local-authentication', () => ({
-  SecurityLevel: { NONE: 0, SECRET: 1, BIOMETRIC_WEAK: 2, BIOMETRIC_STRONG: 3 },
-  hasHardwareAsync: jest.fn(async () => true),
-  getEnrolledLevelAsync: () => mockGetEnrolledLevelAsync(),
-}));
-
 const mockSet = SecureStore.setItemAsync as jest.Mock;
 const mockGet = SecureStore.getItemAsync as jest.Mock;
 const mockDelete = SecureStore.deleteItemAsync as jest.Mock;
@@ -64,386 +60,197 @@ const mockDelete = SecureStore.deleteItemAsync as jest.Mock;
 const TOKEN_KEY = 'ostomy.auth.refreshToken';
 const MARKER_KEY = 'ostomy.auth.refreshTokenPresent';
 
-const GATED = {
-  keychainAccessible: 'AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY',
-  requireAuthentication: true,
-};
-const UNGATED = { keychainAccessible: 'AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY' };
+/** The one option set this build uses. No `requireAuthentication` — see #116. */
+const OPTIONS = { keychainAccessible: 'AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY' };
 
-/** Makes the marker read answer, so the read path has something to route on. */
-function markerSays(protection: 'gated' | 'ungated', enrolledLevel: number): void {
-  mockGet.mockImplementation(async (key: string) =>
-    key === MARKER_KEY ? JSON.stringify({ protection, enrolledLevel }) : null,
-  );
-}
+/** What this build writes to say "a token is here and this build can read it". */
+const CURRENT_MARKER = '2';
 
-function markerWrittenBy(): { protection: string; enrolledLevel: number } {
-  const call = mockSet.mock.calls.find((c) => c[0] === MARKER_KEY);
-  return JSON.parse(call?.[1] as string) as { protection: string; enrolledLevel: number };
+function markerReads(value: string | null): void {
+  mockGet.mockImplementation(async (key: string) => (key === MARKER_KEY ? value : 'the-token'));
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockGet.mockImplementation(async () => null);
-  mockGetEnrolledLevelAsync.mockResolvedValue(3);
 });
 
-describe('the refresh token is device-bound and biometrically gated', () => {
-  it('writes it with requireAuthentication and a non-migrating accessibility class', async () => {
-    await setRefreshToken('rt');
+describe('the refresh token is device-bound and NOT biometrically gated', () => {
+  /**
+   * The direct regression test for #116, and the reason it asserts the options
+   * rather than a round trip.
+   *
+   * `requireAuthentication` makes `expo-secure-store` raise its own prompt on
+   * read, built with a negative button and no allowed authenticators — which
+   * Android forbids pairing with `DEVICE_CREDENTIAL`. That prompt is biometric-only
+   * by construction, so setting this flag locks out any patient who cannot present
+   * a finger, which is the population ADR-0015 twice refused to exclude. It reads
+   * like an obvious hardening, which is exactly why it needs a test that fails when
+   * someone restores it.
+   */
+  it('writes it WITHOUT requireAuthentication', async () => {
+    await setRefreshToken('abc');
 
-    expect(mockSet).toHaveBeenCalledWith(TOKEN_KEY, 'rt', {
-      keychainAccessible: 'AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY',
-      requireAuthentication: true,
-    });
+    const call = mockSet.mock.calls.find((c) => c[0] === TOKEN_KEY);
+    expect(call?.[2]).toEqual(OPTIONS);
+    expect(call?.[2]).not.toHaveProperty('requireAuthentication');
   });
 
-  it('reads it with the SAME options it was written with', async () => {
-    // Not pedantry. `expo-secure-store` looks an entry up by key AND
-    // options, and a mismatch returns null rather than erroring — which
-    // would present as "the patient is signed out" on every cold start,
-    // with nothing to debug.
-    markerSays('gated', 3);
+  /**
+   * The half of the posture Amendment 2 did NOT change, asserted separately
+   * because it is easy to lose while deleting its neighbours.
+   *
+   * Not plain `AFTER_FIRST_UNLOCK`: that variant migrates to a new device on a
+   * backup restore, so an encrypted backup restored onto a second phone would hand
+   * that phone a live bearer credential for the patient's account.
+   */
+  it('is not stored with a class that migrates to another device on backup restore', async () => {
+    await setRefreshToken('abc');
+
+    const call = mockSet.mock.calls.find((c) => c[0] === TOKEN_KEY);
+    expect(call?.[2]).toMatchObject({
+      keychainAccessible: 'AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY',
+    });
+    expect(call?.[2]).not.toMatchObject({ keychainAccessible: 'AFTER_FIRST_UNLOCK' });
+  });
+
+  it('reads it with the same options it was written with', async () => {
+    markerReads(CURRENT_MARKER);
+
     await getRefreshToken();
 
-    expect(mockGet).toHaveBeenCalledWith(TOKEN_KEY, GATED);
-  });
-
-  it('is not stored with a class that migrates to another device on backup restore', async () => {
-    // The plain `AFTER_FIRST_UNLOCK` variant rides an encrypted backup onto
-    // a new phone, handing that phone a live bearer credential for the
-    // patient's account.
-    await setRefreshToken('rt');
-
-    const options = mockSet.mock.calls.find((call) => call[0] === TOKEN_KEY)?.[2];
-    expect(options.keychainAccessible).not.toBe('AFTER_FIRST_UNLOCK');
+    expect(mockGet).toHaveBeenCalledWith(TOKEN_KEY, OPTIONS);
   });
 });
 
 describe('presence is answered without reading the token', () => {
-  /**
-   * The defect this closes, in full:
-   *
-   * `hasStoredRefreshToken` used to answer by reading the token, which
-   * after `requireAuthentication` became a biometric-gated read. So the OS
-   * auth sheet appeared at COLD START — before the app had rendered its own
-   * unlock affordance, with OS default copy — and the patient then
-   * authenticated a second time when they pressed Unlock. And when that
-   * read rejected (cancelled sheet, biometry locked out, key invalidated),
-   * the caller had no error path and the app sat on a spinner forever.
-   */
   it('checks the marker, never the token', async () => {
-    // With no marker present `readMarker` short-circuits, so this passed even for an
-    // implementation that answered by READING the token — the very mutation it
-    // names. Seed the marker so the token read is reachable and its absence means
-    // something.
-    markerSays('gated', 3);
+    markerReads(CURRENT_MARKER);
+
     await hasStoredRefreshToken();
 
-    const keysRead = mockGet.mock.calls.map((call) => call[0]);
-    expect(keysRead).toContain(MARKER_KEY);
-    expect(keysRead).not.toContain(TOKEN_KEY);
+    expect(mockGet).toHaveBeenCalledWith(MARKER_KEY, expect.anything());
+    expect(mockGet).not.toHaveBeenCalledWith(TOKEN_KEY, expect.anything());
+  });
+
+  it('reports true when a marker exists and false when it does not', async () => {
+    markerReads(CURRENT_MARKER);
+    expect(await hasStoredRefreshToken()).toBe(true);
+
+    mockGet.mockImplementation(async () => null);
+    expect(await hasStoredRefreshToken()).toBe(false);
   });
 
   it('writes the token BEFORE the marker', async () => {
-    // The mirror of the delete-order test below. A marker written first, followed by
-    // a rejected token write, leaves the app believing it has a session and routing
-    // to an unlock that can never succeed.
-    await setRefreshToken('rt');
+    // A rejected token write must not leave a marker behind: the app would then
+    // believe it has a session and route to an unlock that can never succeed.
+    await setRefreshToken('abc');
 
-    const order = mockSet.mock.calls.map((call) => call[0]);
-    expect(order).toEqual([TOKEN_KEY, MARKER_KEY]);
-  });
-
-  it('reads the marker WITHOUT requireAuthentication, so it cannot prompt', async () => {
-    // The property that actually keeps the prompt off the launch path. A
-    // marker read that carried the flag would reintroduce the defect while
-    // every other assertion here still passed.
-    await hasStoredRefreshToken();
-
-    const options = mockGet.mock.calls.find((call) => call[0] === MARKER_KEY)?.[1];
-    expect(options.requireAuthentication).toBeUndefined();
-  });
-
-  it('reports true when the marker exists and false when it does not', async () => {
-    mockGet.mockResolvedValueOnce('1');
-    await expect(hasStoredRefreshToken()).resolves.toBe(true);
-
-    mockGet.mockResolvedValueOnce(null);
-    await expect(hasStoredRefreshToken()).resolves.toBe(false);
-  });
-
-  it('writes the marker alongside the token, so the two cannot disagree', async () => {
-    await setRefreshToken('rt');
-
-    const keysWritten = mockSet.mock.calls.map((call) => call[0]);
-    expect(keysWritten).toEqual(expect.arrayContaining([TOKEN_KEY, MARKER_KEY]));
+    const keys = mockSet.mock.calls.map((c) => c[0] as string);
+    expect(keys.indexOf(TOKEN_KEY)).toBeLessThan(keys.indexOf(MARKER_KEY));
   });
 
   it('clears the marker BEFORE the token', async () => {
-    // Ordering matters on a partial failure. Marker gone but token present
-    // routes to a full sign-in, which works. Token gone but marker present
-    // routes to an unlock that can never succeed — a patient locked out of
-    // an app that believes it has a session.
+    // The reverse of the write, for the reverse reason: a marker with no token
+    // routes to an unlock that can never succeed, while a token with no marker is
+    // merely garbage the next sign-in overwrites.
     await clearRefreshToken();
 
-    // Exact sequence, not indexOf ordering: `indexOf` passes as `-1 < 0`
-    // if the marker delete is removed entirely, which is precisely the
-    // mutation this is supposed to catch.
-    const order = mockDelete.mock.calls.map((call) => call[0]);
-    expect(order).toEqual([MARKER_KEY, TOKEN_KEY, TOKEN_KEY]);
-  });
-
-  it('deletes the token under BOTH option sets', async () => {
-    // The marker naming which set wrote it has just been deleted, and lookup is
-    // by key AND options. Deleting under one set only would leave a live bearer
-    // credential on a device the patient believes they have signed out of.
-    await clearRefreshToken();
-
-    const optionSets = mockDelete.mock.calls.filter((c) => c[0] === TOKEN_KEY).map((c) => c[1]);
-    expect(optionSets).toEqual(expect.arrayContaining([GATED, UNGATED]));
+    expect(mockDelete.mock.calls[0]?.[0]).toBe(MARKER_KEY);
   });
 });
 
 /**
- * #74. `requireAuthentication` cannot be written on a device with no Class 3
- * biometric enrolled — the keystore key it creates specifies
- * `AUTH_BIOMETRIC_STRONG`, so `setItemAsync` rejects:
+ * ADR-0015 Amendment 2's "one forced re-login on upgrade".
  *
- * ```
- * 'ExpoSecureStore.setValueWithKeyAsync' has been rejected.
- * → Caused by: Could not Authenticate the user: No biometrics are currently enrolled
- * ```
- *
- * That came out of `AuthContext`'s `completeLogin` AFTER a successful code
- * exchange, so the patient could not sign in AT ALL — online or off — and was
- * told "We could not sign you in. Please try again.", advice that cannot work
- * however many times it is followed.
+ * An entry written by an earlier build carries `requireAuthentication`, and this
+ * build does not set it. On iOS the keychain query includes the accessibility
+ * class, so a mismatched read misses the entry; on Android it silently resolves.
+ * Either way the token behind an old marker is not something this build should
+ * report as a usable session — so the marker is a version, and anything that is
+ * not the current one is discarded.
  */
-describe('a device with no biometric enrolled can still store a session (#74)', () => {
-  it('writes the token ungated rather than failing the sign-in', async () => {
-    mockGetEnrolledLevelAsync.mockResolvedValue(1); // SECRET: a passcode, no biometric
+describe('a token written by a build that gated it (#116 migration)', () => {
+  it('is not returned, whatever the old marker said', async () => {
+    markerReads('1'); // the pre-#74 literal
 
-    await expect(setRefreshToken('rt')).resolves.toBeUndefined();
-
-    expect(mockSet).toHaveBeenCalledWith(TOKEN_KEY, 'rt', UNGATED);
+    expect(await getRefreshToken()).toBeNull();
   });
 
-  it('keeps the iOS accessibility class that blocks backup migration', async () => {
-    // Dropping `requireAuthentication` must not quietly drop the other option with
-    // it. Named for what it actually asserts: `keychainAccessible` is iOS-only and
-    // is discarded on Android, where the no-migration property comes instead from
-    // the non-exportable AndroidKeyStore key. So this pins the constant for the
-    // phase that reinstates iOS, and pins nothing about today's platform.
-    mockGetEnrolledLevelAsync.mockResolvedValue(0);
-    await setRefreshToken('rt');
+  it('is treated the same when the marker is #74-era JSON', async () => {
+    markerReads(JSON.stringify({ protection: 'gated', enrolledLevel: 3 }));
 
-    const options = mockSet.mock.calls.find((c) => c[0] === TOKEN_KEY)?.[2];
-    expect(options.keychainAccessible).toBe('AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY');
+    expect(await getRefreshToken()).toBeNull();
   });
 
-  it('records the protection mode and the enrolment level it was written at', async () => {
-    mockGetEnrolledLevelAsync.mockResolvedValue(1);
-    await setRefreshToken('rt');
+  it('clears the stale entry rather than leaving it to be found again', async () => {
+    // Left on disk it would be re-read on the next call and found stale again; left
+    // WITH its marker it would route the patient to an unlock that can never
+    // succeed — which is #116's symptom, reintroduced by the code meant to retire
+    // it.
+    markerReads('1');
 
-    expect(markerWrittenBy()).toEqual({ protection: 'ungated', enrolledLevel: 1 });
-  });
-
-  it('reads an ungated token back with ungated options', async () => {
-    // The failure this prevents is silent: mismatched options return null, which
-    // presents as the patient being signed out of a session they still have.
-    markerSays('ungated', 1);
     await getRefreshToken();
 
-    expect(mockGet).toHaveBeenCalledWith(TOKEN_KEY, UNGATED);
-  });
-
-  it('gates it as soon as the device can, with no code path of its own', async () => {
-    mockGetEnrolledLevelAsync.mockResolvedValue(3);
-    await setRefreshToken('rt');
-
-    expect(mockSet).toHaveBeenCalledWith(TOKEN_KEY, 'rt', GATED);
-    expect(markerWrittenBy()).toEqual({ protection: 'gated', enrolledLevel: 3 });
+    expect(mockDelete).toHaveBeenCalledWith(MARKER_KEY, expect.anything());
+    expect(mockDelete).toHaveBeenCalledWith(TOKEN_KEY, expect.anything());
   });
 
   /**
-   * A Class 2 sensor reports an enrolment but cannot back an
-   * `AUTH_BIOMETRIC_STRONG` key, so it must take the ungated path too — the
-   * distinction the old `isEnrolledAsync()` check could not make.
-   */
-  it('treats a weak-biometric-only device as ungated', async () => {
-    mockGetEnrolledLevelAsync.mockResolvedValue(2); // BIOMETRIC_WEAK
-    await setRefreshToken('rt');
-
-    expect(mockSet).toHaveBeenCalledWith(TOKEN_KEY, 'rt', UNGATED);
-  });
-});
-
-/**
- * Code reviewer finding 2. A live level read is not proof the device cannot gate.
- *
- * `getEnrolledLevelAsync` reports `BIOMETRIC_STRONG` only while
- * `canAuthenticate(BIOMETRIC_STRONG)` answers SUCCESS, so a sensor locked out after
- * failed attempts, `BIOMETRIC_ERROR_HW_UNAVAILABLE`, or the documented post-OTA
- * `BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED` all read as `SECRET` on a phone that
- * has a fingerprint enrolled. Deciding from that read alone downgraded a gatable
- * token AND recorded a `SECRET` baseline, so the next cold start saw a rise and
- * purged — signing the patient out, and telling them their unlock settings changed,
- * for something that never happened.
- */
-describe('a transient low enrolment read cannot downgrade a gated token', () => {
-  it('keeps gating when the marker says this device has gated before', async () => {
-    markerSays('gated', 3);
-    mockGetEnrolledLevelAsync.mockResolvedValue(1); // transiently unavailable
-
-    await setRefreshToken('rt');
-
-    expect(mockSet).toHaveBeenCalledWith(TOKEN_KEY, 'rt', GATED);
-  });
-
-  it('does not record a baseline that would manufacture a purge', async () => {
-    markerSays('gated', 3);
-    mockGetEnrolledLevelAsync.mockResolvedValue(1);
-
-    await setRefreshToken('rt');
-
-    // Were this `{ ungated, 1 }`, the next cold start would see a rise to 3.
-    expect(markerWrittenBy()).toEqual({ protection: 'gated', enrolledLevel: 3 });
-  });
-
-  it('still writes ungated on a device with no gated history', async () => {
-    // The counterpart, so the rule above cannot pass by gating everything — which
-    // would restore #74 exactly.
-    mockGet.mockImplementation(async () => null);
-    mockGetEnrolledLevelAsync.mockResolvedValue(1);
-
-    await setRefreshToken('rt');
-
-    expect(mockSet).toHaveBeenCalledWith(TOKEN_KEY, 'rt', UNGATED);
-  });
-
-  it('writes ungated once a genuinely-lost biometric has purged the marker', async () => {
-    // How a real downgrade resolves without a special case: the cold-start check
-    // purges the gated token and its marker, so the next sign-in has no history to
-    // stand on and stores ungated.
-    mockGet.mockImplementation(async () => null);
-    mockGetEnrolledLevelAsync.mockResolvedValue(1);
-
-    await setRefreshToken('rt');
-
-    expect(markerWrittenBy()).toEqual({ protection: 'ungated', enrolledLevel: 1 });
-  });
-});
-
-/**
- * What replaces the OS invalidation an ungated entry does not get.
- *
- * ADR-0015 says an app cannot detect an enrolment change, which is true where a
- * biometric already exists. But an ungated token was stored with NONE enrolled,
- * so any enrolment RAISES the level — observable, and exactly ADR-0015's threat
- * of someone covertly adding their own biometric to the patient's phone.
- */
-describe('an enrolment appearing after the fact invalidates an ungated token', () => {
-  it('reports stale when the level has risen', async () => {
-    markerSays('ungated', 0);
-    mockGetEnrolledLevelAsync.mockResolvedValue(3);
-
-    await expect(storedTokenIsStaleForEnrolment()).resolves.toBe(true);
-  });
-
-  it('reports fresh when the level is unchanged', async () => {
-    markerSays('ungated', 1);
-    mockGetEnrolledLevelAsync.mockResolvedValue(1);
-
-    await expect(storedTokenIsStaleForEnrolment()).resolves.toBe(false);
-  });
-
-  it('reports fresh when the level has FALLEN', async () => {
-    // A patient who removes their passcode has not handed anyone anything, and
-    // signing them out of an offline diary on that basis would be a lockout with
-    // no threat behind it.
-    markerSays('ungated', 3);
-    mockGetEnrolledLevelAsync.mockResolvedValue(0);
-
-    await expect(storedTokenIsStaleForEnrolment()).resolves.toBe(false);
-  });
-
-  it('leaves a GATED token alone while the biometric is still there', async () => {
-    // Answering true here would sign the patient out on every launch of a device
-    // that is behaving correctly. A second fingerprint added to a device that
-    // already had one does not move the level, and the OS owns that case.
-    markerSays('gated', 3);
-    mockGetEnrolledLevelAsync.mockResolvedValue(3);
-
-    await expect(storedTokenIsStaleForEnrolment()).resolves.toBe(false);
-  });
-
-  /**
-   * A gated token is never judged from the level, and this is the assertion that
-   * keeps it that way.
+   * The patient must be told, not merely signed out.
    *
-   * The obvious rule — "gated and the level fell means the OS invalidated the key"
-   * — purges a perfectly good session every time a sensor is locked out after a few
-   * failed presses, because `getEnrolledLevelAsync` reports `SECRET` while
-   * `canAuthenticate(BIOMETRIC_STRONG)` is not SUCCESS. `AuthContext`'s `unlock()`
-   * detects the real thing by reading the token instead.
+   * `hasStoredRefreshToken` answers from the marker, and a stale marker still means
+   * a session exists on disk — so the cold start routes to the lock screen, where
+   * `unlock()` finds it stale and ends the session with a reason the login screen
+   * can show. Answering `false` here would drop them on a bare sign-in screen, and
+   * CLAUDE.md records what that reads as: "a patient who meets a bare sign-in
+   * screen assumes their diary is gone".
    */
-  it('never judges a GATED token from the level, in either direction', async () => {
-    markerSays('gated', 3);
+  it('still reports a session, so the sign-out can be explained', async () => {
+    markerReads('1');
 
-    for (const level of [0, 1, 2, 3]) {
-      mockGetEnrolledLevelAsync.mockResolvedValue(level);
-      await expect(storedTokenIsStaleForEnrolment()).resolves.toBe(false);
-    }
-  });
-
-  it('reports fresh when there is no token at all', async () => {
-    mockGet.mockImplementation(async () => null);
-
-    await expect(storedTokenIsStaleForEnrolment()).resolves.toBe(false);
+    expect(await hasStoredRefreshToken()).toBe(true);
   });
 });
 
-describe('a marker written by a build from before #74', () => {
+describe('clearing removes the token under every option set that could have written it', () => {
+  it('deletes with this build options AND the gated options of older builds', async () => {
+    await clearRefreshToken();
+
+    const tokenDeletes = mockDelete.mock.calls.filter((c) => c[0] === TOKEN_KEY);
+    expect(tokenDeletes).toHaveLength(2);
+    expect(tokenDeletes.map((c) => c[1])).toEqual(
+      expect.arrayContaining([OPTIONS, { ...OPTIONS, requireAuthentication: true }]),
+    );
+  });
+
   /**
-   * Those builds wrote the literal `'1'`, and every token they wrote was gated —
-   * an ungated one could not exist yet. Reading it as anything else would pick
-   * the wrong options, and mismatched options return null silently, which
-   * presents as a patient being signed out of a session they still have.
+   * One failed delete must not skip the other.
+   *
+   * The point of deleting twice is not leaving a live bearer credential on a device
+   * the patient believes they have signed out of, and a first rejection
+   * short-circuiting the second attempt would be that outcome produced by the code
+   * meant to prevent it.
    */
-  it('is read as a gated token rather than as no token', async () => {
-    mockGet.mockImplementation(async (key: string) => (key === MARKER_KEY ? '1' : null));
+  it('attempts both even when the first rejects', async () => {
+    mockDelete.mockImplementation(
+      async (key: string, options: { requireAuthentication?: true }) => {
+        if (key === TOKEN_KEY && options.requireAuthentication !== true) throw new Error('nope');
+      },
+    );
 
-    await expect(hasStoredRefreshToken()).resolves.toBe(true);
-    await getRefreshToken();
-    expect(mockGet).toHaveBeenCalledWith(TOKEN_KEY, GATED);
+    await clearRefreshToken();
+
+    expect(mockDelete.mock.calls.filter((c) => c[0] === TOKEN_KEY)).toHaveLength(2);
   });
 
-  it('is not reported stale, so an in-place upgrade does not sign everyone out', async () => {
-    // Read as gated at `BIOMETRIC_STRONG`, which is what those builds required in
-    // order to write at all, so a device still in that state is not stale.
-    mockGet.mockImplementation(async (key: string) => (key === MARKER_KEY ? '1' : null));
-    mockGetEnrolledLevelAsync.mockResolvedValue(3);
+  it('rethrows only when NEITHER delete got anywhere', async () => {
+    // One success means the entry is gone; a caller only needs to learn about it
+    // when the token may still be there.
+    mockDelete.mockImplementation(async (key: string) => {
+      if (key === TOKEN_KEY) throw new Error('nope');
+    });
 
-    await expect(storedTokenIsStaleForEnrolment()).resolves.toBe(false);
-  });
-
-  it('is not reported stale even if the level has since dropped', async () => {
-    // It reads as gated, and a gated token is never judged from the level — a
-    // locked-out sensor would otherwise sign these patients out on upgrade.
-    mockGet.mockImplementation(async (key: string) => (key === MARKER_KEY ? '1' : null));
-    mockGetEnrolledLevelAsync.mockResolvedValue(1);
-
-    await expect(storedTokenIsStaleForEnrolment()).resolves.toBe(false);
-  });
-
-  it('falls back to gated for a marker this build cannot parse', async () => {
-    // Either guess costs one re-login and neither can lock the patient out, so
-    // the fallback is the one every earlier build actually wrote.
-    mockGet.mockImplementation(async (key: string) => (key === MARKER_KEY ? '{nonsense' : null));
-
-    await expect(hasStoredRefreshToken()).resolves.toBe(true);
-    await getRefreshToken();
-    expect(mockGet).toHaveBeenCalledWith(TOKEN_KEY, GATED);
+    await expect(clearRefreshToken()).rejects.toThrow('nope');
   });
 });

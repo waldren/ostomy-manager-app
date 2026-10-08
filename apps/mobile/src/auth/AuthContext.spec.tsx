@@ -33,7 +33,6 @@ const mockHasStored = jest.fn(async () => true);
 const mockGetRefresh = jest.fn(async () => 'rt' as string | null);
 const mockClearRefresh = jest.fn(async () => undefined);
 const mockSetRefresh = jest.fn(async (_token: string) => undefined);
-const mockTokenIsStale = jest.fn(async () => false);
 const mockRecordReason = jest.fn(async (_reason: string) => undefined);
 const mockReadReason = jest.fn(async () => null as string | null);
 const mockClearReason = jest.fn(async () => undefined);
@@ -43,7 +42,6 @@ jest.mock('./tokenStorage', () => ({
   getRefreshToken: () => mockGetRefresh(),
   clearRefreshToken: () => mockClearRefresh(),
   setRefreshToken: (t: string) => mockSetRefresh(t),
-  storedTokenIsStaleForEnrolment: () => mockTokenIsStale(),
   recordSignedOutReason: (r: string) => mockRecordReason(r),
   readSignedOutReason: () => mockReadReason(),
   clearSignedOutReason: () => mockClearReason(),
@@ -194,7 +192,6 @@ beforeEach(() => {
   mockGetRefresh.mockResolvedValue('rt');
   mockGetOwner.mockResolvedValue(null);
   mockAuthenticate.mockResolvedValue({ outcome: 'success' });
-  mockTokenIsStale.mockResolvedValue(false);
   mockReadReason.mockResolvedValue(null);
   // No expiry by default: the provider is allowed to omit `expires_in`, and that
   // means "does not expire" rather than "expired" — so the default keeps every test
@@ -448,29 +445,26 @@ describe('unlock is gated by this app, not by the keychain read (#74)', () => {
  * because the OS invalidates the key the moment the enrolment lands.
  */
 describe('unlock re-checks enrolment, not only cold start', () => {
-  it('purges and routes to sign-in instead of unlocking', async () => {
+  /**
+   * The inverse of the two tests that were here (ADR-0015 Amendment 2, #116).
+   *
+   * They asserted that an enrolment appearing while the process was alive purged
+   * the session mid-unlock. That window mattered while biometric was the only
+   * authenticator the gate accepted, because enrolling one was then a privilege
+   * escalation. It is not one now: enrolling on Android requires the device
+   * credential, which unlocks this app.
+   */
+  it('unlocks normally when a biometric was enrolled while the app was running', async () => {
     await renderProvider();
     await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
 
-    // Becomes true only after the app is already running, which is the point.
-    mockTokenIsStale.mockResolvedValue(true);
     await act(async () => {
       screen.getByTestId('unlock').props.onPress();
     });
 
-    expect(screen.getByTestId('phase')).toHaveTextContent('signedOut');
-    expect(mockClearRefresh).toHaveBeenCalled();
-  });
-
-  it('does not hand over the stored token', async () => {
-    await renderProvider();
-    mockTokenIsStale.mockResolvedValue(true);
-
-    await act(async () => {
-      screen.getByTestId('unlock').props.onPress();
-    });
-
-    expect(mockGetRefresh).not.toHaveBeenCalled();
+    expect(screen.getByTestId('phase')).toHaveTextContent('authenticated');
+    expect(mockClearRefresh).not.toHaveBeenCalled();
+    expect(mockRecordReason).not.toHaveBeenCalled();
   });
 
   /**
@@ -503,12 +497,18 @@ describe('unlock re-checks enrolment, not only cold start', () => {
    * possibly an invalidated key — whether that surfaces as `null` or a rejection is
    * unverified, so this path has to be right either way.
    *
-   * It re-LOCKS rather than signing out: an unreadable keychain says nothing about
-   * whether a session exists, and the patient can press Unlock again. Signing them
-   * out would push an offline patient into a network login for a condition that may
-   * clear on the next press.
+   * It now STAYS UNLOCKED (#116). This used to re-lock, which is what made the
+   * defect present as a button that silently does nothing: the patient
+   * authenticated, the gated read raised a prompt they could not satisfy, and they
+   * were returned to the lock screen with no message. Pressing Unlock repeated it
+   * forever.
+   *
+   * ADR-0014 leaves the SQLCipher key ungated, so the diary never needed this
+   * token — only sync does. Re-locking withheld data that was not behind the
+   * credential at all. The file's own comment above the call already said a failure
+   * here "never reverts the phase transition"; now the code agrees with it.
    */
-  it('re-locks, rather than signing out, when the token read throws', async () => {
+  it('stays unlocked, rather than re-locking, when the token read throws', async () => {
     mockGetRefresh.mockRejectedValue(new Error('keychain unavailable'));
 
     await renderProvider();
@@ -516,60 +516,32 @@ describe('unlock re-checks enrolment, not only cold start', () => {
       screen.getByTestId('unlock').props.onPress();
     });
 
-    expect(screen.getByTestId('phase')).toHaveTextContent('locked');
+    expect(screen.getByTestId('phase')).toHaveTextContent('authenticated');
     expect(mockClearRefresh).not.toHaveBeenCalled();
     expect(mockRecordReason).not.toHaveBeenCalled();
-  });
-
-  it('still unlocks when the check itself fails', async () => {
-    // An unreadable keychain says nothing about enrolment, and refusing to unlock on
-    // that evidence would strand an offline patient.
-    await renderProvider();
-    mockTokenIsStale.mockRejectedValue(new Error('keychain unavailable'));
-
-    await act(async () => {
-      screen.getByTestId('unlock').props.onPress();
-    });
-
-    expect(screen.getByTestId('phase')).toHaveTextContent('authenticated');
   });
 });
 
 /**
- * #74. An ungated token records the enrolment level it was written at, and a rise
- * means a biometric was enrolled since — ADR-0015's covert-enrolment threat, and
- * the one form of the change an app can actually observe.
+ * What cold start does now, and what it deliberately no longer does.
+ *
+ * Two tests here used to assert #74's enrolment-rise purge — that a stored token
+ * was discarded and the patient routed to a network sign-in when
+ * `getEnrolledLevelAsync()` had risen since it was written. ADR-0015 Amendment 2
+ * removed that check, so a stored session simply routes to the lock screen.
+ *
+ * The signed-out-reason tests below are unrelated to the purge and are kept: the
+ * issuer can still reject a refresh token, which still needs explaining.
  */
-describe('a token invalidated by a new enrolment does not survive the next launch', () => {
-  it('purges it and routes to a full sign-in', async () => {
-    mockTokenIsStale.mockResolvedValue(true);
-    // Answers from whether the purge has actually run, rather than a static
-    // `false`: with a static answer this test cannot tell "the phase was derived
-    // after the purge" from "the two raced and the presence check happened to lose",
-    // which is the whole thing it is here to pin.
-    mockHasStored.mockImplementation(async () => mockClearRefresh.mock.calls.length === 0);
+describe('cold start routes a stored session to the lock screen', () => {
+  it('does not purge anything on the way', async () => {
+    mockHasStored.mockResolvedValue(true);
 
     await renderProvider();
 
-    expect(mockClearRefresh).toHaveBeenCalled();
-    expect(mockClearRefresh.mock.invocationCallOrder[0]!).toBeLessThan(
-      mockHasStored.mock.invocationCallOrder[0]!,
-    );
-    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('signedOut'));
-  });
-
-  it('records why, so the login screen is not a bare sign-in prompt', async () => {
-    mockTokenIsStale.mockResolvedValue(true);
-    mockHasStored.mockImplementation(async () => mockClearRefresh.mock.calls.length === 0);
-
-    await renderProvider();
-
-    expect(mockRecordReason).toHaveBeenCalledWith('unlock-settings-changed');
-    // Before the purge: a recorded reason for a sign-out that did not happen is
-    // merely confusing, while a sign-out with no reason is the defect being fixed.
-    expect(mockRecordReason.mock.invocationCallOrder[0]!).toBeLessThan(
-      mockClearRefresh.mock.invocationCallOrder[0]!,
-    );
+    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
+    expect(mockClearRefresh).not.toHaveBeenCalled();
+    expect(mockRecordReason).not.toHaveBeenCalled();
   });
 
   it('surfaces a reason persisted by an earlier launch', async () => {
@@ -596,18 +568,6 @@ describe('a token invalidated by a new enrolment does not survive the next launc
   });
 
   it('leaves the session alone when nothing has changed', async () => {
-    await renderProvider();
-
-    expect(mockClearRefresh).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByTestId('phase')).toHaveTextContent('locked'));
-  });
-
-  it('keeps the session when the staleness check itself fails', async () => {
-    // A keychain that cannot be read says nothing about enrolment. Purging on
-    // that evidence would push an offline patient into a network login they
-    // cannot complete — the same failure the cold-start fallback above avoids.
-    mockTokenIsStale.mockRejectedValue(new Error('keychain unavailable'));
-
     await renderProvider();
 
     expect(mockClearRefresh).not.toHaveBeenCalled();
@@ -688,8 +648,11 @@ describe('a refresh token the issuer rejects ends the session (#40)', () => {
     });
     expect(screen.getByTestId('token')).toHaveTextContent('opaque-access-token');
 
-    // Now end the session from under it.
-    mockTokenIsStale.mockResolvedValue(true);
+    // Now end the session from under it. The purge this used to trigger is gone
+    // (ADR-0015 Amendment 2), so the session is ended the way it still can be: the
+    // stored token is no longer there, which `renewAccessToken` reports as
+    // `no-session` and `unlock()` turns into a real sign-out.
+    mockGetRefresh.mockResolvedValue(null);
     await act(async () => {
       screen.getByTestId('unlock').props.onPress();
     });
