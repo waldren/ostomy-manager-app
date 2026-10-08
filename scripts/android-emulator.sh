@@ -42,12 +42,46 @@
 #   scripts/android-emulator.sh status    # device state and forwarded ports
 #   scripts/android-emulator.sh logcat    # this app's logs only
 #   scripts/android-emulator.sh fingerprint  # PIN + fingerprint enrolment (ADR-0015)
+#   scripts/android-emulator.sh metro-reset  # clear Metro's file-map cache (#115)
 #   scripts/android-emulator.sh stop      # shut the emulator down
 #   scripts/android-emulator.sh wipe      # cold-boot with factory-reset data
 #
 # `create`, `start` and `wire` are each idempotent — running `up` twice is a
 # no-op the second time, which is what lets a session call it without first
 # checking whether it already ran.
+#
+# ## Three failures that present as something else (#115)
+#
+# Each of these cost hours during the R.S1 emulator pass, and each sends you
+# somewhere other than its cause. They are named here because the section above
+# is exactly where the first one sends you.
+#
+# **A wedged bundler looks like a networking fault.** The app crashes with
+# "Unable to load script ... Failed to connect to /10.0.2.2:8081", which reads as
+# a reachability problem — and everything above this line is about reachability.
+# It is not that: a corrupt `@expo/metro-file-map` disk cache makes Metro bind
+# 8081, answer `/status`, and never finish a bundle. `--clear` does NOT clear
+# that cache. Use `metro-reset`, which explains the rest.
+#
+# **A black screenshot looks like an app that rendered nothing.** After a host
+# sleep/resume the emulator's display wedges while still reporting Awake.
+# `status` now names this outright rather than leaving it to be inferred.
+#
+# **The device-credential unlock cannot be driven by `adb`, at all.** This is a
+# limit, not a bug to route around, and it is why a device walkthrough cannot be
+# unattended:
+#
+#   - `input text` into the system credential screen is rejected; it is a secure
+#     window.
+#   - On the lock screen, `input swipe` upward opens the notification shade
+#     rather than the bouncer. `input keyevent 82` then `input text` is what
+#     actually unlocks the device.
+#   - BiometricPrompt RELABELS the same coordinate: "Use PIN" at (178,2253)
+#     becomes "Cancel" at (178,2253) after a failed fingerprint, so a replayed
+#     tap silently cancels instead of falling back.
+#
+# So budget a human at the screen for the unlock step. `docs/gate-b-hardware-
+# verification.md` says the same thing where the steps are written down.
 
 set -euo pipefail
 
@@ -695,6 +729,61 @@ cmd_status() {
     printf '  %s is NOT installed — build it with:\n' "${APP_PACKAGE}"
     printf '    pnpm --filter @ostomy/mobile android:build\n'
   fi
+
+  step "Display"
+  report_display_health
+}
+
+# How small a `screencap` PNG has to be before it is reporting a wedged display
+# rather than a dark screen (#115).
+#
+# Measured on a Pixel 8 AVD at 1080x2400: an all-black framebuffer compresses to
+# a constant ~15 KB, while a rendering screen is upwards of several hundred KB
+# and a populated one is ~1.2 MB. 64 KB sits an order of magnitude clear of the
+# black case and well under the smallest real one, so it does not have to be
+# exact to be useful.
+readonly BLACK_FRAMEBUFFER_MAX_BYTES=65536
+
+# Reports the display, because "the screenshot is black" reads as "the app
+# rendered nothing" and usually is not (#115).
+#
+# After a host sleep/resume the emulator's display wedges: `dumpsys power` keeps
+# reporting mWakefulness=Awake, the focused window is a real activity, and
+# `screencap` returns an all-black framebuffer anyway. Nothing in the app is
+# wrong, and no amount of looking at the app will show that — which is why this
+# is a status line rather than a note in a document.
+report_display_health() {
+  local wakefulness capture_bytes focus
+  wakefulness="$("${ADB}" -s "${EMULATOR_SERIAL}" shell dumpsys power 2>/dev/null |
+    sed -n 's/.*mWakefulness=\([A-Za-z]*\).*/\1/p' | head -1 | tr -d '\r')"
+  capture_bytes="$("${ADB}" -s "${EMULATOR_SERIAL}" exec-out screencap -p 2>/dev/null | wc -c | tr -d ' ')"
+
+  printf '  wakefulness %s, framebuffer %s bytes\n' "${wakefulness:-unknown}" "${capture_bytes}"
+
+  if [[ "${wakefulness}" != "Awake" ]]; then
+    printf '  screen is off — wake it with: %s -s %s shell input keyevent KEYCODE_WAKEUP\n' \
+      "${ADB}" "${EMULATOR_SERIAL}"
+    return 0
+  fi
+
+  if (( capture_bytes > BLACK_FRAMEBUFFER_MAX_BYTES )); then
+    return 0
+  fi
+
+  focus="$("${ADB}" -s "${EMULATOR_SERIAL}" shell dumpsys window 2>/dev/null |
+    sed -n 's/.*mCurrentFocus=Window{[^ ]* [^ ]* \(.*\)}.*/\1/p' | head -1 | tr -d '\r')"
+
+  cat <<EOF
+  WEDGED: the display reports Awake and renders nothing.
+
+  Focused window: ${focus:-unknown}
+
+  This is the emulator, not the app — it happens after the host sleeps and
+  resumes. A screenshot taken now is black whatever the app is doing, so do not
+  read one as evidence about the app. Clear it with:
+
+    $(basename "$0") stop && $(basename "$0") up
+EOF
 }
 
 # --- logcat -------------------------------------------------------------------
@@ -724,6 +813,59 @@ cmd_logcat() {
 
 # --- fingerprint --------------------------------------------------------------
 
+# Sets the device PIN, or confirms it is already the one we want (#115).
+#
+# `locksettings set-pin <pin>` works exactly ONCE per AVD: from then on the
+# device has a credential, and the command refuses with
+#
+#   User has a lock credential, but old credential was not provided
+#
+# which it reports on stderr while exiting non-zero. The old version of this
+# step piped that into `sed` and carried on, so every run after the first failed
+# at the first line and never reached enrolment — and the output looked like a
+# warning rather than the reason nothing else happened.
+#
+# `verify` first, because this command is meant to be re-runnable like every
+# other one here. Three outcomes, and they are genuinely different:
+#
+#   - the credential is already ours        -> nothing to do
+#   - there is no credential                -> `set-pin` with no `--old`
+#   - the credential is someone ELSE's      -> we cannot supply `--old`, so say
+#                                              so rather than failing obscurely
+#
+# That last case is reachable: a PIN set by hand in Settings, or an
+# ANDROID_DEVICE_PIN changed between runs.
+ensure_device_pin() {
+  local pin="$1"
+
+  if "${ADB}" -s "${EMULATOR_SERIAL}" shell locksettings verify --old "${pin}" >/dev/null 2>&1; then
+    step "Device PIN is already ${pin}"
+    return 0
+  fi
+
+  if "${ADB}" -s "${EMULATOR_SERIAL}" shell locksettings set-pin "${pin}" >/dev/null 2>&1; then
+    step "Set the device PIN to ${pin}"
+    return 0
+  fi
+
+  cat >&2 <<EOF
+
+ERROR: this device already has a lock credential, and it is not ${pin}.
+
+locksettings needs the CURRENT credential to change it (set-pin --old), and
+this script does not know it. Either:
+
+  tell it the real one   ANDROID_DEVICE_PIN=<pin> $(basename "$0") fingerprint
+  clear it by hand       ${ADB} -s ${EMULATOR_SERIAL} shell locksettings clear --old <pin>
+  start over             $(basename "$0") wipe
+
+Clearing the credential invalidates every auth-bound key on the device, which
+destroys this app's local store (ADR-0014) — that is the behaviour under test in
+HW-5, not a side effect to be surprised by.
+EOF
+  return 1
+}
+
 cmd_fingerprint() {
   if ! emulator_is_running; then
     printf 'ERROR: %s is not running.\n' "${EMULATOR_SERIAL}" >&2
@@ -737,8 +879,9 @@ cmd_fingerprint() {
   # a device with no secure lock screen. Without this the app's biometric path
   # does not fail — it reports biometrics unavailable and falls through, which
   # looks like a passing test of a code path that never ran (ADR-0015).
-  step "Setting a device PIN (${pin})"
-  "${ADB}" -s "${EMULATOR_SERIAL}" shell "locksettings set-pin ${pin}" 2>&1 | sed 's/^/  /'
+  if ! ensure_device_pin "${pin}"; then
+    exit 1
+  fi
 
   step "Opening fingerprint enrolment"
   "${ADB}" -s "${EMULATOR_SERIAL}" shell am start -a android.settings.FINGERPRINT_ENROLL >/dev/null 2>&1 || \
@@ -764,6 +907,80 @@ cmd_fingerprint() {
   reports no android.hardware.strongbox_keystore, so this is KeyMint in
   software — it exercises the LOGIC of ADR-0014/ADR-0015, not the hardware
   guarantee behind them. "Verified on hardware" still needs hardware.
+EOF
+}
+
+# --- metro-reset --------------------------------------------------------------
+
+cmd_metro_reset() {
+  # Deletes Metro's FILE-MAP cache, which `expo start --clear` does not touch
+  # (#115).
+  #
+  # The symptom this clears does not look like a cache problem. The app crashes
+  # with
+  #
+  #   java.lang.RuntimeException: Unable to load script.
+  #     ... Failed to connect to /10.0.2.2:8081
+  #
+  # which reads as networking and sends you to `adb reverse`, localhost vs
+  # 10.0.2.2, and the firewall — this script's own header is largely about that,
+  # which is exactly why the trap costs hours. It is none of those. Metro's log
+  # has the real cause:
+  #
+  #   Error while reading cache, falling back to a full crawl:
+  #    Error: Unable to deserialize cloned data.
+  #       at DiskCacheManager.read (@expo/metro-file-map/.../DiskCacheManager.js)
+  #
+  # Metro then binds 8081 and answers `/status` while NEVER completing a bundle:
+  # the fallback full crawl of a hoisted monorepo on Windows does not finish. So
+  # every reachability probe passes while nothing works, and the one signal that
+  # would tell you is a line in Metro's own output.
+  #
+  # `--clear` clears the TRANSFORMER cache (`metro-cache`), a different
+  # directory. Deleting the file-map cache took a first bundle from "never" to
+  # HTTP 200 in 0.83s.
+  # Asked of Node, not of the shell, because `os.tmpdir()` is the function Metro
+  # itself used to choose this directory — so this cannot disagree with it.
+  #
+  # Reading $TEMP looks equivalent and is not: `pnpm --filter @ostomy/mobile
+  # emulator:metro-reset` runs with TEMP=/tmp on Windows, so the shell version
+  # searched an empty directory and reported "none found — nothing to clear"
+  # while the corrupt cache sat in %LOCALAPPDATA%\Temp. A clear-cache command
+  # that cheerfully clears nothing is worse than no command, because it moves
+  # the search somewhere else.
+  local temp
+  temp="$(node -p "require('os').tmpdir()" 2>/dev/null || true)"
+  if [[ -z "${temp}" ]]; then
+    printf 'ERROR: could not ask node for the temp directory. Is node on PATH?\n' >&2
+    return 1
+  fi
+  local found=0
+
+  step "Looking for Metro file-map caches in ${temp}"
+  for cache in "${temp}"/metro-file-map-*; do
+    [[ -e "${cache}" ]] || continue
+    found=1
+    printf '  removing %s\n' "${cache}"
+    rm -rf "${cache}"
+  done
+
+  if (( found == 0 )); then
+    printf '  none found — nothing to clear\n'
+  fi
+
+  cat <<EOF
+
+  Restart the bundler after this:
+
+    pnpm --filter @ostomy/mobile start
+
+  If a bundle still never completes, the next thing to try is NOT this script:
+
+    npx expo export --platform android
+
+  That runs the same transform pipeline with no dev server, so it separates "my
+  code does not bundle" from "the dev server is wedged". It built a 3.9 MB Hermes
+  bundle while \`expo start\` was serving nothing.
 EOF
 }
 
@@ -844,6 +1061,7 @@ case "${1:-}" in
   status) cmd_status ;;
   logcat) cmd_logcat ;;
   fingerprint) cmd_fingerprint ;;
+  metro-reset) cmd_metro_reset ;;
   stop)   cmd_stop ;;
   wipe)   cmd_wipe ;;
   *)
