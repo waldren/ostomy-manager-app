@@ -35,9 +35,13 @@ import { PhysicianOutputView } from './PhysicianOutputView.js';
 import '../i18n/index.js';
 
 const listMock = vi.fn();
+const profileMock = vi.fn();
 
 vi.mock('../api/client.js', () => ({
-  createWebApiClient: () => ({ observations: { list: listMock } }),
+  createWebApiClient: () => ({
+    observations: { list: listMock },
+    onboarding: { profile: profileMock },
+  }),
 }));
 
 // One stable object, not a fresh one per render. `PhysicianOutputView`
@@ -109,6 +113,15 @@ function deferred<T>() {
 
 beforeEach(() => {
   listMock.mockReset();
+  profileMock.mockReset();
+  // A metric profile by default, because nothing clinical renders until the
+  // patient's measurement system is known (P4.S1 slice 4) — the cases about the
+  // profile itself override this.
+  profileMock.mockResolvedValue({
+    ostomyType: 'ileostomy',
+    surgeryDate: '2026-01-15',
+    measurementSystem: 'metric',
+  });
   authValue.signOut.mockReset();
 });
 
@@ -499,5 +512,159 @@ describe('PhysicianOutputView — announcements and unrecoverable states', () =>
 
     expect(await screen.findByRole('button', { name: /try again/i })).toBeVisible();
     expect(authValue.signOut).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * P4.S1 slice 4: the page opens in the patient's own measurement system.
+ *
+ * Until onboarding existed there was nothing to read it from, so the toggle
+ * started on metric for everyone and an imperial patient's first figure was in
+ * units they had not chosen. `350` read as ounces rather than millilitres is a
+ * sevenfold misreading of a clinical value.
+ */
+describe('PhysicianOutputView — the patient’s measurement system', () => {
+  it('opens in ounces for an imperial patient', async () => {
+    profileMock.mockResolvedValue({
+      ostomyType: 'ileostomy',
+      surgeryDate: '2026-01-15',
+      measurementSystem: 'imperial',
+    });
+    listMock.mockResolvedValue({
+      observations: [observation({ valueQuantity: { value: 350, unit: 'mL' } })],
+    });
+
+    render(<PhysicianOutputView />);
+
+    // ADR-0005: a converted volume is rounded to a whole unit for display.
+    // `findAll`, because the figure appears in the chart's accessible
+    // description, the table row and the day's total — all three of which must
+    // agree, which is why they come from one memo.
+    expect(await screen.findAllByText(/12 fl oz/)).not.toHaveLength(0);
+    expect(screen.queryAllByText(/350 mL/)).toHaveLength(0);
+  });
+
+  it('opens in millilitres for a metric patient — the same data, the other branch', async () => {
+    listMock.mockResolvedValue({
+      observations: [observation({ valueQuantity: { value: 350, unit: 'mL' } })],
+    });
+
+    render(<PhysicianOutputView />);
+
+    expect(await screen.findAllByText(/350 mL/)).not.toHaveLength(0);
+    expect(screen.queryAllByText(/12 fl oz/)).toHaveLength(0);
+  });
+
+  it('preselects the patient’s system in the toggle rather than a default', async () => {
+    profileMock.mockResolvedValue({
+      ostomyType: 'ileostomy',
+      surgeryDate: '2026-01-15',
+      measurementSystem: 'imperial',
+    });
+    listMock.mockResolvedValue({ observations: [observation()] });
+
+    render(<PhysicianOutputView />);
+
+    const imperial = await screen.findByRole('radio', { name: /ounces/i });
+    expect(imperial).toBeChecked();
+    expect(screen.getByRole('radio', { name: /milliliters/i })).not.toBeChecked();
+  });
+
+  it('lets the reader override it, without persisting anything', async () => {
+    listMock.mockResolvedValue({
+      observations: [observation({ valueQuantity: { value: 350, unit: 'mL' } })],
+    });
+    render(<PhysicianOutputView />);
+    expect(await screen.findAllByText(/350 mL/)).not.toHaveLength(0);
+
+    await userEvent.click(screen.getByRole('radio', { name: /ounces/i }));
+
+    expect(await screen.findAllByText(/12 fl oz/)).not.toHaveLength(0);
+    // The toggle is display-only (SRS §3.10's edit is P4.S3). Nothing is written,
+    // and a clinician can reasonably read a unit switch as changing the record —
+    // which is what `unitsHint` says it does not.
+    expect(profileMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The ordering case. The profile arrives after the first paint, so a page that
+   * seeded the toggle from it in an effect would overwrite a reader who had
+   * already switched. `undefined` meaning "the patient's preference" and a
+   * touched toggle winning from then on is what avoids needing that effect.
+   */
+  it('does not overwrite a choice the reader made before the profile arrived', async () => {
+    const profile = deferred<{ measurementSystem: string }>();
+    profileMock.mockReturnValue(profile.promise);
+    listMock.mockResolvedValue({
+      observations: [observation({ valueQuantity: { value: 350, unit: 'mL' } })],
+    });
+
+    render(<PhysicianOutputView />);
+    // No toggle yet: the system is not known, so there is no selection to show.
+    expect(screen.queryByRole('radio', { name: /ounces/i })).not.toBeInTheDocument();
+
+    profile.resolve({ measurementSystem: 'metric' });
+    await userEvent.click(await screen.findByRole('radio', { name: /ounces/i }));
+
+    expect(await screen.findAllByText(/12 fl oz/)).not.toHaveLength(0);
+  });
+
+  it('fetches the profile once, not once per day viewed', async () => {
+    listMock.mockResolvedValue({ observations: [observation()] });
+    render(<PhysicianOutputView />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole('button', { name: /previous day/i }));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+
+    expect(profileMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe('when the system cannot be known', () => {
+    /**
+     * No amounts at all, rather than amounts in a guessed system. This app is
+     * online-only by explicit decision, so a failed profile fetch is a failure to
+     * KNOW — there is no cache to fall back on and no honest default.
+     */
+    it('shows no volumes when the profile cannot be loaded', async () => {
+      profileMock.mockRejectedValue(new Error('network down'));
+      listMock.mockResolvedValue({
+        observations: [observation({ valueQuantity: { value: 350, unit: 'mL' } })],
+      });
+
+      render(<PhysicianOutputView />);
+
+      expect(await screen.findByText(/could not load your settings/i)).toBeVisible();
+      expect(screen.queryAllByText(/350 mL/)).toHaveLength(0);
+      expect(screen.queryAllByText(/12 fl oz/)).toHaveLength(0);
+    });
+
+    /**
+     * `PATIENT_NOT_PROVISIONED` is not an error and not fixable here: onboarding
+     * is in the mobile app (ADR-0020). So this says what to do rather than
+     * offering a retry for a condition that does not resolve by trying — and the
+     * body is web-specific, because the shared copy says entries are saved "on
+     * this phone".
+     */
+    it('tells a patient with no profile to set up in the app, and offers no retry', async () => {
+      profileMock.mockRejectedValue(
+        new ApiError(403, { error: { code: 'PATIENT_NOT_PROVISIONED' } }),
+      );
+      listMock.mockResolvedValue({ observations: [] });
+
+      render(<PhysicianOutputView />);
+
+      expect(await screen.findByText(/set up your diary in the mobile app/i)).toBeVisible();
+      expect(screen.queryByText(/could not load your settings/i)).not.toBeInTheDocument();
+    });
+
+    it('signs out when the profile request is rejected as unauthenticated', async () => {
+      profileMock.mockRejectedValue(new ApiError(401, { error: { code: 'UNAUTHENTICATED' } }));
+      listMock.mockResolvedValue({ observations: [] });
+
+      render(<PhysicianOutputView />);
+
+      await waitFor(() => expect(authValue.signOut).toHaveBeenCalledWith('session_expired'));
+    });
   });
 });

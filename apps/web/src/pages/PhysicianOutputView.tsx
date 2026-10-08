@@ -29,6 +29,7 @@ import { DateNav } from '../components/DateNav.js';
 import { OutputChart } from '../components/OutputChart.js';
 import { OutputTable } from '../components/OutputTable.js';
 import { UnitToggle } from '../components/UnitToggle.js';
+import { useProfile } from '../profile/useProfile.js';
 import { UrineSignalNotice } from '../components/UrineSignalNotice.js';
 import {
   toDisplayDailyTotal,
@@ -119,6 +120,17 @@ function todayIsoDate(): string {
  * composite status here, and there will not be one even once the other
  * three hydration signals exist — this view keeps them separate and
  * uncombined, always.
+ *
+ * **Volumes open in the patient's own measurement system** (P4.S1 slice 4).
+ * Until onboarding existed there was nothing to read it from, so the toggle
+ * started on metric for everyone — which for an imperial patient meant the first
+ * figure they saw was in units they had not chosen. The toggle remains a
+ * display-only override; persisting a change to it is P4.S3's preference edit.
+ *
+ * Nothing clinical renders until the system is known. This app is online-only by
+ * explicit decision, so a failed profile fetch is a failure to KNOW rather than
+ * something a cache can cover, and "350" read as ounces instead of millilitres is
+ * a sevenfold misreading of a clinical value.
  */
 export function PhysicianOutputView() {
   const { t } = useTranslation();
@@ -126,7 +138,16 @@ export function PhysicianOutputView() {
   const apiClient = useMemo(() => createWebApiClient(getAccessToken), [getAccessToken]);
 
   const [isoDate, setIsoDate] = useState(todayIsoDate);
-  const [displaySystem, setDisplaySystem] = useState<MeasurementSystem>('metric');
+  /**
+   * `undefined` means "whatever the patient's preference is", and it is what the
+   * page starts on.
+   *
+   * Deliberately not seeded from the profile by an effect: the profile arrives
+   * after the first paint, and a seeding effect would overwrite the choice of a
+   * patient who had already touched the toggle. Touching it is what makes the
+   * value explicit, and from then on it wins.
+   */
+  const [chosenSystem, setChosenSystem] = useState<MeasurementSystem | undefined>(undefined);
   const [state, setState] = useState<LoadState>({ status: 'loading' });
 
   /**
@@ -202,7 +223,29 @@ export function PhysicianOutputView() {
 
   const load = useCallback(() => setReloadNonce((n) => n + 1), []);
 
-  const targetSystem = unitsForMeasurementSystem(displaySystem);
+  /**
+   * The 401 response is the same here as for the observations fetch, and for the
+   * same reason: `getAccessToken` would hand back the token the server just
+   * rejected, so a retry button could be pressed forever.
+   */
+  const onUnauthenticated = useCallback(() => signOut('session_expired'), [signOut]);
+  const profileState = useProfile({ apiClient, onUnauthenticated });
+
+  const profileSystem =
+    profileState.status === 'loaded' ? profileState.profile.measurementSystem : undefined;
+  const displaySystem = chosenSystem ?? profileSystem;
+
+  /**
+   * `undefined` until the system is known, which is what the render gates on.
+   *
+   * A fallback to metric here would be the defect P4.S1 slice 3 removed from the
+   * entry screens, in its read-only form: an imperial patient reading "2366"
+   * where they expect "80". It is visible rather than silent — the toggle and the
+   * axis both name the unit — but a figure in the wrong system is still a figure a
+   * clinician may act on before noticing the label.
+   */
+  const targetSystem =
+    displaySystem === undefined ? undefined : unitsForMeasurementSystem(displaySystem);
 
   // Computed once. `toDisplayOutputEntries` was called twice per render —
   // once for the chart, once for the table — converting and sorting the
@@ -227,28 +270,33 @@ export function PhysicianOutputView() {
     [observations],
   );
 
-  const entries = useMemo(
-    () => toDisplayOutputEntries(outputObservations, targetSystem),
-    [outputObservations, targetSystem],
-  );
-
-  const balance = useMemo(
-    () =>
-      hasFluidBalanceInputs(observations)
+  /**
+   * Everything rendered in a unit, computed together, and `undefined` until the
+   * patient's measurement system is known.
+   *
+   * One memo rather than four, because they must agree: a page showing a chart in
+   * millilitres beside a balance in ounces would be worse than showing neither.
+   * And `undefined` rather than a metric fallback, because this page has already
+   * been bitten by a well-formed figure nobody asserted — see the note below on
+   * `toDisplayDailyTotal([])` returning `0 mL` for a day with no output.
+   *
+   * The second hydration signal is kept beside the balance and out of it (SRS
+   * §3.7): `toDisplayNetFluidBalance` is handed the SAME undifferentiated
+   * `observations` and excludes urine by LOINC code in `packages/core`, so the
+   * separation is one rule in one place rather than a filter each caller has to
+   * remember.
+   */
+  const view = useMemo(() => {
+    if (targetSystem === undefined) return undefined;
+    return {
+      entries: toDisplayOutputEntries(outputObservations, targetSystem),
+      balance: hasFluidBalanceInputs(observations)
         ? toDisplayNetFluidBalance(observations, targetSystem)
         : undefined,
-    [observations, targetSystem],
-  );
-
-  // The second hydration signal, kept beside the balance and out of it
-  // (SRS §3.7). `toDisplayNetFluidBalance` is handed the SAME undifferentiated
-  // `observations` and excludes urine by LOINC code in `packages/core`, so the
-  // separation is one rule in one place rather than a filter each caller has
-  // to remember.
-  const urine = useMemo(
-    () => toUrineDaySummary(observations, targetSystem),
-    [observations, targetSystem],
-  );
+      urine: toUrineDaySummary(observations, targetSystem),
+      total: toDisplayDailyTotal(outputObservations, targetSystem),
+    };
+  }, [observations, outputObservations, targetSystem]);
 
   return (
     <>
@@ -274,15 +322,49 @@ export function PhysicianOutputView() {
         <p>{t('physicianView.intro')}</p>
 
         <DateNav isoDate={isoDate} onChangeDate={setIsoDate} />
-        <UnitToggle value={displaySystem} onChange={setDisplaySystem} />
 
-        <DailyBalanceNotice
-          balance={balance}
-          hasIntake={observations.some(isFluidBalanceIntake)}
-          hasOutput={observations.some(isFluidBalanceOutput)}
-        />
+        {/*
+          Only once the patient's system is known, so the control never shows a
+          selection the patient did not make. It opens on their own preference and
+          changing it is a local override — the hint says as much.
+        */}
+        {displaySystem === undefined ? null : (
+          <UnitToggle value={displaySystem} onChange={setChosenSystem} />
+        )}
 
-        <UrineSignalNotice summary={urine} />
+        {/*
+          No profile at all. Not an error and not fixable here: onboarding is in
+          the mobile app (ADR-0020), so this says what to do rather than offering
+          a "try again" for a condition that does not resolve by trying — the trap
+          #80 recorded on the mobile dashboard, in this app's version.
+        */}
+        {profileState.status === 'not-provisioned' ? (
+          <InlineNotice
+            variant="info"
+            title={t('common:notProvisioned.heading', { ns: 'common' })}
+            live="polite"
+          >
+            <p>{t('physicianView.notProvisionedBody')}</p>
+          </InlineNotice>
+        ) : null}
+
+        {profileState.status === 'error' ? (
+          <InlineNotice variant="error" icon={<NoticeIcon />} live="assertive">
+            <p>{t('physicianView.profileLoadError')}</p>
+          </InlineNotice>
+        ) : null}
+
+        {view === undefined ? null : (
+          <>
+            <DailyBalanceNotice
+              balance={view.balance}
+              hasIntake={observations.some(isFluidBalanceIntake)}
+              hasOutput={observations.some(isFluidBalanceOutput)}
+            />
+
+            <UrineSignalNotice summary={view.urine} />
+          </>
+        )}
 
         {/*
           ONE region, mounted for every state (WCAG 4.1.3).
@@ -318,13 +400,13 @@ export function PhysicianOutputView() {
           </InlineNotice>
         ) : null}
 
-        {state.status === 'loaded' && observations.length === 0 ? (
+        {state.status === 'loaded' && view !== undefined && observations.length === 0 ? (
           <InlineNotice variant="info" title={t('physicianView.emptyState.heading')}>
             <p>{t('physicianView.emptyState.body')}</p>
           </InlineNotice>
         ) : null}
 
-        {state.status === 'loaded' && observations.length > 0 ? (
+        {state.status === 'loaded' && view !== undefined && observations.length > 0 ? (
           <>
             {selection.undatable > 0 ? (
               <InlineNotice
@@ -358,7 +440,7 @@ export function PhysicianOutputView() {
               mirrored: this sprint is what made a urine-only day an ordinary
               case rather than a curiosity.
             */}
-            {entries.length === 0 ? (
+            {view.entries.length === 0 ? (
               <>
                 <h2>{t('physicianView.table.heading')}</h2>
                 <p>{t('physicianView.table.noOutput')}</p>
@@ -377,12 +459,9 @@ export function PhysicianOutputView() {
                   the same defect as having no heading at all, which is what the
                   urine and balance regions were fixed for in this same change.
                 */}
-                <OutputChart entries={entries} />
+                <OutputChart entries={view.entries} />
                 <h2>{t('physicianView.table.heading')}</h2>
-                <OutputTable
-                  entries={entries}
-                  total={toDisplayDailyTotal(outputObservations, targetSystem)}
-                />
+                <OutputTable entries={view.entries} total={view.total} />
               </>
             )}
           </>
