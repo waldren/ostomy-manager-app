@@ -23,6 +23,8 @@ import { useTranslation } from 'react-i18next';
 import { View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
+import type { LocalProfile } from '../src/db/repositories/profileRepository';
+import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import {
@@ -40,10 +42,7 @@ import {
   type EntryCheck,
 } from '../src/entry/useVoidedUrineEntry';
 import { useValueSetOptions } from '../src/entry/useValueSetOptions';
-import {
-  DEFAULT_MEASUREMENT_SYSTEM,
-  unitsForMeasurementSystem,
-} from '../src/lib/units/measurementSystem';
+import { unitsForMeasurementSystem } from '../src/lib/units/measurementSystem';
 import { deviceTimeZone, now as clockNow, toWireInstant } from '../src/lib/utils/clock';
 import { useSyncStatus } from '../src/sync/SyncProvider';
 import { BodyText } from '../src/ui/BodyText';
@@ -100,7 +99,7 @@ import { Screen } from '../src/ui/Screen';
  * §9.5, unchanged from the other two screens: the local transaction is the
  * confirmation and no network response is ever waited on.
  */
-export default function AddUrine(): React.JSX.Element {
+function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.Element {
   const { phase } = useAuth();
   const { t } = useTranslation(['common', 'mobile', 'validationErrors', 'validationWarnings']);
   const database = useDatabaseState();
@@ -129,7 +128,9 @@ export default function AddUrine(): React.JSX.Element {
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
 
-  const measurementSystem = DEFAULT_MEASUREMENT_SYSTEM;
+  // Destructured so the callbacks below depend on these VALUES rather than on
+  // `profile`, whose identity the gate controls.
+  const { measurementSystem, surgeryDate } = profile;
   const units = unitsForMeasurementSystem(measurementSystem);
   const colors = useValueSetOptions(VALUE_SET_KEY.URINE_COLOR);
 
@@ -151,7 +152,8 @@ export default function AddUrine(): React.JSX.Element {
         draft: { amountText, method, urineColorCode, effectiveDateTime },
         measurementSystem,
         thresholds: cached.thresholds,
-        surgeryDate: null,
+        surgeryDate,
+        enteredTimezone: deviceTimeZone(),
         now: clockNow(),
       });
       setCheck(outcome);
@@ -221,6 +223,7 @@ export default function AddUrine(): React.JSX.Element {
       database,
       cached,
       measurementSystem,
+      surgeryDate,
       requestSync,
     ],
   );
@@ -400,3 +403,12 @@ export default function AddUrine(): React.JSX.Element {
     </Screen>
   );
 }
+
+/**
+ * The profile arrives as a prop, never read inside — see `withProfile`. Two
+ * fields come off it, and a fallback for either would be worse than not
+ * rendering: `measurementSystem` is what every amount is rendered AND recorded
+ * as (ADR-0012, permanent per row), and `surgeryDate` is the Tier 1 lower bound
+ * that silently stops applying when it is absent.
+ */
+export default withProfile(AddUrineScreen);

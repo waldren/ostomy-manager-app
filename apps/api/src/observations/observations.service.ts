@@ -57,6 +57,7 @@ import { AuditPersistenceError, AuditService } from '../audit/audit.service';
 import { stageCommittedAuditEntry } from '../audit/audit-recorder';
 import type { PatientActor } from '../auth/patient-actor';
 import { getRequestId } from '../logging/request-id';
+import { toWireSurgeryDate } from '../onboarding/surgery-date';
 import { PrismaService } from '../prisma/prisma.service';
 import { ThresholdsService } from '../thresholds/thresholds.service';
 import { ObservationStatus, type Prisma, type Observation } from '../generated/prisma/client';
@@ -113,7 +114,8 @@ export interface ObservationListResult {
 
 interface ResolvedPatient {
   readonly patientId: string;
-  readonly surgeryDate: Date;
+  /** `YYYY-MM-DD`. A calendar date, because the Tier 1 rule it feeds compares calendar days — see `entryTimestamp.ts`. */
+  readonly surgeryDate: string;
   readonly measurementSystem: ReturnType<typeof toWireMeasurementSystem>;
 }
 
@@ -157,6 +159,9 @@ export class ObservationsService {
             method: toMeasuredOrEstimated(input.method),
             effectiveDateTime: input.effectiveDateTime,
             surgeryDate: patient.surgeryDate,
+            // The zone the patient's device asserted, so the surgery-date rule
+            // compares THEIR calendar day rather than UTC's.
+            enteredTimezone: input.enteredTimezone,
             now: new Date(),
           },
           thresholds,
@@ -168,6 +173,7 @@ export class ObservationsService {
             method: toMeasuredOrEstimated(input.method),
             effectiveDateTime: input.effectiveDateTime,
             surgeryDate: patient.surgeryDate,
+            enteredTimezone: input.enteredTimezone,
             now: new Date(),
           } satisfies VolumetricEntryInput,
           thresholds,
@@ -387,7 +393,7 @@ export class ObservationsService {
 
     return {
       patientId: patient.id,
-      surgeryDate: patient.profile.surgeryDate,
+      surgeryDate: toWireSurgeryDate(patient.profile.surgeryDate),
       measurementSystem: toWireMeasurementSystem(patient.profile.measurementSystem),
     };
   }

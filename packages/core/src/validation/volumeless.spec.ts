@@ -23,7 +23,7 @@ import { isBlocked } from './types.js';
 import { validateVolumelessObservation, type VolumelessObservationInput } from './volumeless.js';
 
 const NOW = new Date('2026-06-15T12:00:00.000Z');
-const SURGERY_DATE = new Date('2026-01-01T00:00:00.000Z');
+const SURGERY_DATE = '2026-01-01';
 
 // A test fixture, not an engine constant — the same boundary
 // `volumetric.spec.ts` draws.
@@ -39,6 +39,7 @@ function colourOnlyEntry(
     field: 'urineColorCode',
     effectiveDateTime: new Date('2026-06-15T09:00:00.000Z'),
     surgeryDate: SURGERY_DATE,
+    enteredTimezone: 'UTC',
     now: NOW,
     method: null,
     ...overrides,

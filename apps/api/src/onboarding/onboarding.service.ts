@@ -27,7 +27,7 @@ import { patientNotProvisioned } from '../observations/observation-rejection';
 import { PrismaService } from '../prisma/prisma.service';
 
 import { type OnboardingRequest, type ProfileResponse } from './onboarding-wire';
-import { surgeryDateViolation, toSurgeryDate } from './surgery-date';
+import { surgeryDateViolation, toSurgeryDate, toWireSurgeryDate } from './surgery-date';
 
 /** What `audit_events.entity_type` carries for these rows. Greppable and stable. */
 export const PROFILE_ENTITY_TYPE = 'profile';
@@ -249,7 +249,7 @@ function toProfileResponse(row: {
     ostomyType: WIRE_BY_OSTOMY_TYPE[row.ostomyType],
     // `@db.Date` comes back as a Date at UTC midnight; the wire carries the
     // calendar date it has always been, not an instant.
-    surgeryDate: row.surgeryDate.toISOString().slice(0, 10),
+    surgeryDate: toWireSurgeryDate(row.surgeryDate),
     measurementSystem: WIRE_BY_MEASUREMENT_SYSTEM[row.measurementSystem],
   };
 }

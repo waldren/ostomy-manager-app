@@ -31,7 +31,10 @@ import {
 } from './index.js';
 
 const NOW = new Date('2026-06-15T12:00:00.000Z');
-const SURGERY_DATE = new Date('2026-01-01T00:00:00.000Z');
+/** A calendar date, which is what the rule compares — see `entryTimestamp.ts`. */
+const SURGERY_DATE = '2026-01-01';
+/** UTC for the ordinary cases; the zone-sensitive ones state their own. */
+const UTC = 'UTC';
 
 // A test fixture, not an engine constant — see thresholds.ts and
 // no-hardcoded-thresholds.spec.ts for the boundary this sprint draws
@@ -49,6 +52,7 @@ function validEntry(overrides: Partial<VolumetricEntryInput> = {}): VolumetricEn
     method: 'measured',
     effectiveDateTime: new Date('2026-06-15T11:00:00.000Z'),
     surgeryDate: SURGERY_DATE,
+    enteredTimezone: UTC,
     now: NOW,
     ...overrides,
   };
@@ -232,9 +236,11 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
   });
 
   describe('dates before the surgery date', () => {
-    it('blocks a timestamp before the surgery date', () => {
-      const beforeSurgery = new Date(SURGERY_DATE.getTime() - 24 * 60 * 60 * 1000);
-      const result = evaluateTier1(validEntry({ effectiveDateTime: beforeSurgery }), THRESHOLDS);
+    it('blocks a timestamp on the day before the surgery', () => {
+      const result = evaluateTier1(
+        validEntry({ effectiveDateTime: new Date('2025-12-31T23:00:00.000Z') }),
+        THRESHOLDS,
+      );
       expect(result).toMatchObject({
         outcome: 'blocked',
         errors: [{ ruleCode: TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_BEFORE_SURGERY }],
@@ -242,8 +248,52 @@ describe('Tier 1 — hard block on structurally impossible input (SRS §3.8)', (
     });
 
     it('accepts a timestamp on the surgery date itself', () => {
-      const result = evaluateTier1(validEntry({ effectiveDateTime: SURGERY_DATE }), THRESHOLDS);
+      const result = evaluateTier1(
+        validEntry({ effectiveDateTime: new Date('2026-01-01T00:00:00.000Z') }),
+        THRESHOLDS,
+      );
       expect(result.outcome).toBe('pass');
+    });
+
+    /**
+     * The comparison is between calendar days in the ENTRY's zone, which is what
+     * makes these two cases come out right. Comparing the instant against the
+     * surgery date's UTC midnight got the first one wrong — and wrong in the
+     * direction that hard-blocks a real entry.
+     *
+     * 2026-01-01T02:00+13:00 (Auckland) is 2025-12-31T13:00Z: an instant BEFORE
+     * the surgery date's UTC midnight, on a local day that is the surgery day.
+     */
+    it('accepts an entry made on the surgery day in a zone ahead of UTC', () => {
+      const result = evaluateTier1(
+        validEntry({
+          effectiveDateTime: new Date('2025-12-31T13:00:00.000Z'),
+          enteredTimezone: 'Pacific/Auckland',
+          now: new Date('2025-12-31T13:30:00.000Z'),
+        }),
+        THRESHOLDS,
+      );
+      expect(result.outcome).toBe('pass');
+    });
+
+    /**
+     * And the mirror, which the instant comparison got wrong the other way:
+     * 2025-12-31T20:00-08:00 (Los Angeles) is 2026-01-01T04:00Z — an instant AFTER
+     * the surgery date's UTC midnight, on a local day before the surgery.
+     */
+    it('blocks an entry made the day before the surgery in a zone behind UTC', () => {
+      const result = evaluateTier1(
+        validEntry({
+          effectiveDateTime: new Date('2026-01-01T04:00:00.000Z'),
+          enteredTimezone: 'America/Los_Angeles',
+          now: new Date('2026-01-01T04:30:00.000Z'),
+        }),
+        THRESHOLDS,
+      );
+      expect(result).toMatchObject({
+        outcome: 'blocked',
+        errors: [{ ruleCode: TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_BEFORE_SURGERY }],
+      });
     });
 
     it('accepts any timestamp when no surgery date is known yet (onboarding-incomplete patient)', () => {

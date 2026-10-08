@@ -383,7 +383,10 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
    * permitting that, this suite would fail here rather than silently proving
    * something about a more privileged connection.
    */
-  async function seedPatient(measurementSystem: 'METRIC' | 'IMPERIAL'): Promise<SeededPatient> {
+  async function seedPatient(
+    measurementSystem: 'METRIC' | 'IMPERIAL',
+    surgeryDate = '2026-01-15',
+  ): Promise<SeededPatient> {
     const patientId = randomUUID();
     const subject = `patient-${randomUUID()}`;
     await db.query(`INSERT INTO patients (id, oidc_subject, updated_at) VALUES ($1, $2, now())`, [
@@ -392,8 +395,8 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
     ]);
     await db.query(
       `INSERT INTO profiles (id, patient_id, ostomy_type, surgery_date, measurement_system, client_updated_at, updated_at)
-       VALUES ($1, $2, 'ILEOSTOMY', DATE '2026-01-15', $3, now(), now())`,
-      [randomUUID(), patientId, measurementSystem],
+       VALUES ($1, $2, 'ILEOSTOMY', $3::date, $4, now(), now())`,
+      [randomUUID(), patientId, surgeryDate, measurementSystem],
     );
     const token = await issuer.sign({ issuer: ISSUER, audience: AUDIENCE, subject });
     return { patientId, subject, token };
@@ -1072,6 +1075,68 @@ describe.skipIf(!dockerAvailable)('P2.S1a — POST/GET /api/v1/observations', ()
         { field: 'method', reasonCode: 'PAYLOAD_FIELD_INVALID' },
       ]);
       expect(await observationRows(body.id as string)).toHaveLength(0);
+    });
+  });
+
+  /**
+   * The surgery-date bound, against a real profile and a real column.
+   *
+   * These two cases are the same instant and the same surgery date, and they come
+   * out differently because the ENTRY's zone decides whose calendar day is being
+   * compared. That is the whole rule, and it is worth an integration test rather
+   * than only a unit one because three things have to agree for it to hold: the
+   * `@db.Date` column, the conversion back out of it, and
+   * `packages/core`'s comparison.
+   *
+   * Before P4.S1 slice 3 the first of these was a 400: the rule compared the entry
+   * instant against the surgery date's UTC midnight, so every patient east of UTC
+   * was hard-blocked from logging on the day of their surgery — nine hours of it
+   * in Tokyo, fourteen in Kiritimati. SRS §3.0's hospital-bed patient is exactly
+   * who that hit.
+   */
+  describe('the surgery-date bound compares the patient’s calendar day, not UTC’s', () => {
+    const SURGERY_DATE = '2026-09-08';
+    /** 2026-09-08 08:00 in Tokyo; still 2026-09-07 16:00 in Los Angeles. */
+    const INSTANT = '2026-09-07T23:00:00.000Z';
+
+    it('accepts an entry made on the surgery day in a zone ahead of UTC', async () => {
+      const patient = await seedPatient('METRIC', SURGERY_DATE);
+
+      const response = await post(
+        patient,
+        validPayload({ effectiveDateTime: INSTANT, enteredTimezone: 'Asia/Tokyo' }),
+      );
+
+      expect(response.status).toBe(201);
+    });
+
+    it('rejects the same instant when the entry was made the day before, behind UTC', async () => {
+      const patient = await seedPatient('METRIC', SURGERY_DATE);
+
+      const response = await post(
+        patient,
+        validPayload({ effectiveDateTime: INSTANT, enteredTimezone: 'America/Los_Angeles' }),
+      );
+
+      expect(response.status).toBe(422);
+      const codes = (response.body.error.errors as Array<{ reasonCode: string }>).map(
+        (detail) => detail.reasonCode,
+      );
+      expect(codes).toContain('EFFECTIVE_DATE_TIME_BEFORE_SURGERY');
+    });
+
+    it('still rejects an entry a clear day before the surgery, in any zone', async () => {
+      const patient = await seedPatient('METRIC', SURGERY_DATE);
+
+      const response = await post(
+        patient,
+        validPayload({
+          effectiveDateTime: '2026-09-06T12:00:00.000Z',
+          enteredTimezone: 'Asia/Tokyo',
+        }),
+      );
+
+      expect(response.status).toBe(422);
     });
   });
 

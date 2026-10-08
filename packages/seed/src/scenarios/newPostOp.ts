@@ -48,6 +48,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * which is why `assertInPast` is not the only guard below.
  */
 
+import { toLocalDate } from '@ostomy/core/units';
+import { checkEntryNotBeforeSurgery } from '@ostomy/core/validation';
+
 import {
   FLUID_INTAKE_LOINC_CODE,
   STOMA_OUTPUT_LOINC_CODE,
@@ -176,14 +179,36 @@ interface EntryInput {
  * The guard the other scenarios do not need.
  *
  * With ninety days of history, an entry can never approach the surgery date. In
- * a fourteen-day window it can, and `ENTRY_BEFORE_SURGERY_DATE` is a Tier 1
- * block — so the generator refuses rather than handing the writer a row the
- * application would reject.
+ * a fourteen-day window it can, and `EFFECTIVE_DATE_TIME_BEFORE_SURGERY` is a
+ * Tier 1 block — so the generator refuses rather than handing the writer a row
+ * the application would reject.
+ *
+ * It calls the real rule rather than comparing the two values itself. The hand
+ * comparison it used to do (`instant < surgeryDate`) was a second definition, and
+ * once the rule became a calendar-day comparison in the entry's own zone the two
+ * disagreed: for a scenario zone ahead of UTC, an entry made on the surgery day
+ * is valid and the instant comparison refused it, failing generation for a reason
+ * that was not true.
+ *
+ * `now` is required by the input type and unused by this check, so the instant
+ * itself is passed — there is no third value here that could be meaningful.
  */
-function assertAfterSurgery(instant: Date, surgeryDate: Date, dayOffset: number): void {
-  if (instant.getTime() < surgeryDate.getTime()) {
+function assertAfterSurgery(
+  instant: Date,
+  surgeryDate: Date,
+  timeZone: string,
+  dayOffset: number,
+): void {
+  const violation = checkEntryNotBeforeSurgery({
+    field: 'effectiveDateTime',
+    effectiveDateTime: instant,
+    surgeryDate: toLocalDate(surgeryDate, 'UTC'),
+    enteredTimezone: timeZone,
+    now: instant,
+  });
+  if (violation !== null) {
     throw new Error(
-      `${SCENARIO} generated an entry before the surgery date (day offset ${String(dayOffset)}). Tier 1 would reject it as ENTRY_BEFORE_SURGERY_DATE.`,
+      `${SCENARIO} generated an entry before the surgery date (day offset ${String(dayOffset)}). Tier 1 would reject it as ${violation.ruleCode}.`,
     );
   }
 }
@@ -191,7 +216,7 @@ function assertAfterSurgery(instant: Date, surgeryDate: Date, dayOffset: number)
 function instantFor(input: EntryInput): Date {
   const instant = entryInstant(input.rng, input.options.now, input.dayOffset, input.timeZone);
   assertInPast(SCENARIO, instant, input.options.now, input.dayOffset);
-  assertAfterSurgery(instant, input.surgeryDate, input.dayOffset);
+  assertAfterSurgery(instant, input.surgeryDate, input.timeZone, input.dayOffset);
   return instant;
 }
 

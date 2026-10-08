@@ -41,6 +41,7 @@ import {
 import { AuditService } from '../audit/audit.service';
 import type { PatientActor } from '../auth/patient-actor';
 import { getRequestId } from '../logging/request-id';
+import { toWireSurgeryDate } from '../onboarding/surgery-date';
 import {
   MeasurementSystem,
   ObservationStatus,
@@ -94,7 +95,8 @@ const MEAL_ENTITY_TYPE = 'meal';
 interface PatientContext {
   readonly patientId: string;
   readonly actorId: string;
-  readonly surgeryDate: Date | null;
+  /** `YYYY-MM-DD`. A calendar date, because the Tier 1 rule it feeds compares calendar days — see `packages/core/src/validation/entryTimestamp.ts`. */
+  readonly surgeryDate: string | null;
 }
 
 /**
@@ -180,7 +182,10 @@ export class SyncPushService {
       // matching the direct write path (`ObservationsService`) so one
       // patient's rows carry one actor identity whichever endpoint wrote them.
       actorId: actor.id,
-      surgeryDate: patient.profile.surgeryDate,
+      surgeryDate:
+        patient.profile.surgeryDate === null
+          ? null
+          : toWireSurgeryDate(patient.profile.surgeryDate),
     };
 
     const results: SyncOperationResult[] = [];
@@ -447,6 +452,11 @@ export class SyncPushService {
         field: MEAL_FIELD.EFFECTIVE_DATE_TIME,
         effectiveDateTime: input.effectiveDateTime,
         surgeryDate: context.surgeryDate,
+        // The zone the device asserted, so the surgery-date rule compares the
+        // PATIENT's calendar day. A queued meal from a travelling patient carries
+        // the zone they were in when they made it, which is the whole point of
+        // ADR-0016's per-row zone.
+        enteredTimezone: input.enteredTimezone,
         now: new Date(),
       },
       thresholds,
@@ -755,6 +765,7 @@ export class SyncPushService {
             method: toMeasuredOrEstimated(input.method),
             effectiveDateTime: input.effectiveDateTime,
             surgeryDate: context.surgeryDate,
+            enteredTimezone: input.enteredTimezone,
             now: new Date(),
           },
           thresholds,
@@ -766,6 +777,7 @@ export class SyncPushService {
             method: toMeasuredOrEstimated(input.method),
             effectiveDateTime: input.effectiveDateTime,
             surgeryDate: context.surgeryDate,
+            enteredTimezone: input.enteredTimezone,
             now: new Date(),
           },
           thresholds,

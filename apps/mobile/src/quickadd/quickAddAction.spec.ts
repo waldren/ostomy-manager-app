@@ -61,6 +61,7 @@ function decide(overrides: Partial<Parameters<typeof decideQuickAdd>[0]> = {}) {
     suggestion: VOLUMETRIC,
     thresholds: THRESHOLDS,
     surgeryDate: null,
+    enteredTimezone: 'UTC',
     now: NOW,
     ...overrides,
   });
@@ -129,14 +130,43 @@ describe('a tap that does not validate cleanly opens the draft instead', () => {
   });
 
   it('routes an entry that predates the surgery date to the draft', () => {
-    // Lands for real at P4.S1, when onboarding captures the date. Asserted now
-    // because a Quick-Add tap is the one write with no date field in front of
-    // it, so this rule has to be enforced by the decision rather than by the
-    // patient seeing a date picker.
-    expect(decide({ surgeryDate: new Date('2026-12-01T00:00:00.000Z') })).toEqual({
+    // A Quick-Add tap is the one write with no date field in front of it, so this
+    // rule has to be enforced by the decision rather than by the patient seeing a
+    // date picker. Live since P4.S1 slice 3, which supplies the date.
+    expect(decide({ surgeryDate: '2026-12-01' })).toEqual({
       kind: 'open-draft',
       reason: 'blocked',
     });
+  });
+
+  /**
+   * The zone is the patient's, not UTC's, and on this path it decides whether a
+   * tap logs or opens a draft.
+   *
+   * `NOW` is 2026-10-02T09:00Z, which is 2026-10-02 22:00 in Auckland and still
+   * 2026-10-02 02:00 in Los Angeles — so a surgery date of 2026-10-02 is "today"
+   * in both, and the tap must log. Comparing the instant against that date's UTC
+   * midnight would have blocked neither; comparing it in the WRONG zone is what
+   * the next case covers.
+   */
+  it("logs a tap made on the patient's surgery day, in a zone ahead of UTC", () => {
+    expect(
+      decide({
+        surgeryDate: '2026-10-03',
+        enteredTimezone: 'Pacific/Auckland',
+        now: new Date('2026-10-02T13:00:00.000Z'),
+      }),
+    ).toEqual({ kind: 'log' });
+  });
+
+  it('opens the draft for a tap on the day before surgery, in a zone behind UTC', () => {
+    expect(
+      decide({
+        surgeryDate: '2026-10-03',
+        enteredTimezone: 'America/Los_Angeles',
+        now: new Date('2026-10-03T04:00:00.000Z'),
+      }),
+    ).toEqual({ kind: 'open-draft', reason: 'blocked' });
   });
 });
 

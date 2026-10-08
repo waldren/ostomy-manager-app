@@ -21,12 +21,13 @@ import { useTranslation } from 'react-i18next';
 import { View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
+import type { LocalProfile } from '../src/db/repositories/profileRepository';
+import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { countByStatus } from '../src/db/repositories/syncQueueRepository';
 import { tryCountUnsyncedEntries } from '../src/db/unsyncedCount';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
-import { DEFAULT_MEASUREMENT_SYSTEM } from '../src/lib/units/measurementSystem';
-import { now as clockNow } from '../src/lib/utils/clock';
+import { deviceTimeZone, now as clockNow } from '../src/lib/utils/clock';
 import { decideQuickAdd } from '../src/quickadd/quickAddAction';
 import { draftHrefFor } from '../src/quickadd/draftParams';
 import { logQuickAdd } from '../src/quickadd/logQuickAdd';
@@ -68,7 +69,7 @@ import { Screen } from '../src/ui/Screen';
  * a patient has no way to tell which code path saved their entry and should not
  * be shown two different confirmations for one outcome.
  */
-export default function Home(): React.JSX.Element {
+function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.Element {
   const { phase, signOut } = useAuth();
   const { t } = useTranslation(['mobile', 'common']);
   const database = useDatabaseState();
@@ -79,7 +80,9 @@ export default function Home(): React.JSX.Element {
 
   const cachedThresholds = useCachedThresholds(database);
   const { suggestions, reload: reloadSuggestions } = useQuickAddSuggestions(database);
-  const measurementSystem = DEFAULT_MEASUREMENT_SYSTEM;
+  // Destructured so the callbacks below depend on these VALUES rather than on
+  // `profile`, whose identity the gate controls.
+  const { measurementSystem, surgeryDate } = profile;
 
   const [pendingCount, setPendingCount] = useState<number | undefined>(undefined);
   const [quickAddFailed, setQuickAddFailed] = useState(false);
@@ -142,7 +145,8 @@ export default function Home(): React.JSX.Element {
         thresholds: cachedThresholds?.thresholds ?? null,
         // No local profile table yet, so no surgery date to bound against —
         // the same position every entry screen is in until P4.S1.
-        surgeryDate: null,
+        surgeryDate,
+        enteredTimezone: deviceTimeZone(),
         now: clockNow(),
       });
 
@@ -175,6 +179,7 @@ export default function Home(): React.JSX.Element {
       database,
       cachedThresholds,
       measurementSystem,
+      surgeryDate,
       openDraft,
       requestSync,
       reloadSuggestions,
@@ -387,3 +392,12 @@ export default function Home(): React.JSX.Element {
     </Screen>
   );
 }
+
+/**
+ * The profile arrives as a prop, never read inside — see `withProfile`. Two
+ * fields come off it, and a fallback for either would be worse than not
+ * rendering: `measurementSystem` is what every amount is rendered AND recorded
+ * as (ADR-0012, permanent per row), and `surgeryDate` is the Tier 1 lower bound
+ * that silently stops applying when it is absent.
+ */
+export default withProfile(HomeScreen);

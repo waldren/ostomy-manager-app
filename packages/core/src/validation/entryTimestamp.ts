@@ -15,6 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { toLocalDate } from '../units/localDate.js';
+
 import type { ValidationError } from './types.js';
 import type { VolumetricValidationThresholds } from './thresholds.js';
 import { TIER1_RULE_CODE } from './ruleCodes.js';
@@ -62,8 +64,24 @@ export interface EntryTimestampInput {
   readonly field: string;
   /** The clinical moment the entry describes. */
   readonly effectiveDateTime: Date;
-  /** The patient's surgery date, or `null` when it is not yet known (no local profile until P4.S1). */
-  readonly surgeryDate: Date | null;
+  /**
+   * The patient's surgery date as `YYYY-MM-DD`, or `null` when it is not known
+   * (no profile, which `apps/api` refuses to write against and a client routes to
+   * onboarding).
+   *
+   * A **calendar date**, not an instant, and the type says so because the
+   * previous `Date` was the whole defect: see `checkEntryNotBeforeSurgery`.
+   */
+  readonly surgeryDate: string | null;
+  /**
+   * The IANA zone the entry was made in (ADR-0016), client-asserted exactly as
+   * `enteredMeasurementSystem` is.
+   *
+   * Required by `checkEntryNotBeforeSurgery`, which compares calendar days and
+   * therefore has to know whose day. Every caller already has it: it travels on
+   * the wire (`docs/sync-contract.md` §7.2) and is stored per row.
+   */
+  readonly enteredTimezone: string;
   /** Injected, never read from the ambient clock — the same discipline `VolumetricEntryInput.now` keeps, so these stay pure functions. */
   readonly now: Date;
 }
@@ -87,10 +105,37 @@ export function checkEntryNotInFuture(
   return null;
 }
 
-/** An entry cannot predate the patient's surgery — there was no stoma yet. */
+/**
+ * An entry cannot predate the patient's surgery — there was no stoma yet.
+ *
+ * ## Calendar days, not instants, and the difference is a Tier 1 block
+ *
+ * A surgery happened on a DAY. Comparing the entry's instant against that day's
+ * UTC midnight is wrong by the patient's UTC offset, and wrong in the direction
+ * that refuses real entries for everyone east of UTC: a patient in Tokyo who
+ * onboards at 08:00 on their surgery day stores `2026-10-09`, which is
+ * `2026-10-09T00:00:00Z`, while the entry they make a minute later is
+ * `2026-10-08T23:01:00Z` — *earlier*, by the clock, than a surgery that had
+ * already happened. They were hard-blocked from logging anything for an hour,
+ * and a patient in Kiritimati (UTC+14) for fourteen hours. SRS §3.0's
+ * hospital-bed patient is precisely the one this hit.
+ *
+ * So the comparison is `YYYY-MM-DD` against `YYYY-MM-DD`, in the zone the entry
+ * was made in. ISO dates sort lexicographically, both sides are the same shape,
+ * and no offset enters the arithmetic at all. It is also stricter in the
+ * direction that matters: an entry backdated to the day before the surgery is
+ * still refused, in every zone.
+ *
+ * ADR-0016 called `local_date` "a grouping key only"; this is the one rule that
+ * also compares it, and the ADR carries an amendment saying so. Derived here
+ * rather than taken as a parameter, through the same `toLocalDate` the server
+ * uses to populate the column, so a caller cannot pass a local date that
+ * disagrees with the instant beside it.
+ */
 export function checkEntryNotBeforeSurgery(input: EntryTimestampInput): ValidationError | null {
   if (input.surgeryDate === null) return null;
-  if (input.effectiveDateTime.getTime() < input.surgeryDate.getTime()) {
+  const entryLocalDate = toLocalDate(input.effectiveDateTime, input.enteredTimezone);
+  if (entryLocalDate < input.surgeryDate) {
     return { field: input.field, ruleCode: TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_BEFORE_SURGERY };
   }
   return null;

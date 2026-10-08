@@ -51,6 +51,14 @@ import { TextField } from '../src/ui/TextField';
  * both regardless (`evaluateEntryTimestamp`), which is what makes that safe
  * rather than merely convenient.
  *
+ * That claim was **not true until P4.S1 slice 3**, which is why it is worth
+ * stating rather than assuming. The surgery-date rule used to compare the entry
+ * instant against the surgery date's UTC midnight, so a meal logged "now" on the
+ * day of surgery was refused for every patient east of UTC — a screen that could
+ * not trip the rule by construction, tripping it anyway. The rule now compares
+ * calendar days in the patient's own zone, and "now is on or after today" holds
+ * everywhere.
+ *
  * The one client-side rule is AC 2.4 AC2's: **the size is mandatory**, and it
  * starts unanswered. `size` is the only stored representation of that choice,
  * so a default would be indistinguishable afterwards from a deliberate answer

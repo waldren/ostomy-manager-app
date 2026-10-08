@@ -181,13 +181,10 @@ except when it produces something to correct.
 - **The entry timestamp can be reset to now but not freely edited.** A date and
   time picker is the remaining piece of AC 2.1 AC3; the Tier 1 bounds that
   govern it are implemented and tested.
-- **The surgery date is captured but not yet enforced locally.** P4.S1 slice 2
-  added the `profiles` row and the onboarding screen that fills it, so the date
-  is on the device — but the four entry screens and `decideQuickAdd` still pass
-  `surgeryDate: null`, so `EFFECTIVE_DATE_TIME_BEFORE_SURGERY` remains a
-  server-side rule in practice. Slice 3 wires it through, together with
-  `measurementSystem` in place of `DEFAULT_MEASUREMENT_SYSTEM` — which is the
-  first time ADR-0004's imperial path is reachable in the running app.
+The surgery-date bound is no longer owed. P4.S1 slice 3 wired both profile
+fields through — the entry screens and `decideQuickAdd` take the patient's
+surgery date and measurement system from the local profile, and
+`DEFAULT_MEASUREMENT_SYSTEM` is deleted rather than left as a fallback.
 
 ## What the test suite cannot prove about this app
 
