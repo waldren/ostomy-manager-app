@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { unitsForMeasurementSystem, type MeasurementSystem } from '@ostomy/core/units';
+import { unitsForMeasurementSystem } from '@ostomy/core/units';
 
 /**
  * Re-exports the single-preference type from `@ostomy/core/units` under
@@ -33,4 +33,18 @@ import { unitsForMeasurementSystem, type MeasurementSystem } from '@ostomy/core/
 export type { MeasurementSystem, MeasurementSystemUnits } from '@ostomy/core/units';
 export { unitsForMeasurementSystem };
 
-export const DEFAULT_MEASUREMENT_SYSTEM: MeasurementSystem = 'metric';
+/**
+ * There is deliberately no default, since P4.S1 slice 3.
+ *
+ * `DEFAULT_MEASUREMENT_SYSTEM = 'metric'` lived here from P2.S2b until onboarding
+ * existed to supply the real answer, and it was always a placeholder: ADR-0012
+ * makes `entered_measurement_system` the client's assertion about what the
+ * patient typed, `NOT NULL` with no default, and permanent per row — "no later
+ * migration can recover the truth if it is stored wrongly". A constant that
+ * satisfies that field without the patient having answered writes metric
+ * provenance onto an imperial patient's entry, and nothing downstream can tell.
+ *
+ * It is **deleted rather than left unused** on purpose: a constant that still
+ * compiles is one the next screen reaches for. Screens take the profile as a
+ * required prop instead — see `src/onboarding/withProfile.tsx`.
+ */

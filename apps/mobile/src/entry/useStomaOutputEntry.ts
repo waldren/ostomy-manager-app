@@ -90,7 +90,10 @@ export interface CheckInput {
   readonly draft: EntryDraft;
   readonly measurementSystem: MeasurementSystem;
   readonly thresholds: VolumetricValidationThresholds;
-  readonly surgeryDate: Date | null;
+  /** The patient's surgery date as `YYYY-MM-DD`, from the local profile, or `null` when there is none. A calendar date, because the Tier 1 rule compares calendar days (`entryTimestamp.ts`). */
+  readonly surgeryDate: string | null;
+  /** The zone this entry is being made in (ADR-0016), so the surgery-date rule compares the patient's own calendar day. */
+  readonly enteredTimezone: string;
   readonly now: Date;
 }
 
@@ -114,6 +117,7 @@ export function checkEntry(input: CheckInput): EntryCheck {
       method: input.draft.method ?? null,
       effectiveDateTime: input.draft.effectiveDateTime,
       surgeryDate: input.surgeryDate,
+      enteredTimezone: input.enteredTimezone,
       now: input.now,
     },
     input.thresholds,

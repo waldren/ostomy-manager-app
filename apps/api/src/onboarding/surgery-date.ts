@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { toLocalDate } from '@ostomy/core/units';
 import { SURGERY_DATE_RULE_CODE, type SurgeryDateRuleCode } from '@ostomy/core/validation';
 
 import { MAX_SURGERY_DATE_AGE_YEARS, MAX_TIMEZONE_HOURS_AHEAD_OF_UTC } from './onboarding-wire';
@@ -80,4 +81,24 @@ export function surgeryDateViolation(surgeryDate: Date, now: Date): SurgeryDateR
  */
 export function toSurgeryDate(value: string): Date {
   return new Date(`${value}T00:00:00.000Z`);
+}
+
+/**
+ * The inverse: the `@db.Date` column back to the ten characters everything
+ * downstream compares.
+ *
+ * Shared by the onboarding response and by every write path that feeds the Tier 1
+ * surgery-date bound, because that rule compares CALENDAR DATES — handing it an
+ * instant is what blocked real entries for patients east of UTC
+ * (`packages/core/src/validation/entryTimestamp.ts` carries the measurements). A
+ * second `.toISOString().slice(0, 10)` somewhere else is how one of those call
+ * sites drifts back to an instant.
+ */
+export function toWireSurgeryDate(stored: Date): string {
+  // `toLocalDate(_, 'UTC')` rather than `.toISOString().slice(0, 10)`: the column
+  // is `@db.Date`, which Prisma hands back as UTC midnight, and this is the same
+  // function that derives every `local_date` the rule compares against. One
+  // definition of "which calendar day is this instant", used on both sides of
+  // that comparison.
+  return toLocalDate(stored, 'UTC');
 }

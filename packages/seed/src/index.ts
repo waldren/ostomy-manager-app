@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { toLocalDate } from '@ostomy/core/units';
 import {
   isBlocked,
   validateVolumelessObservation,
@@ -193,7 +194,14 @@ function evaluateSeedObservation(
   const timestamps = {
     field: 'valueQuantity.value' as const,
     effectiveDateTime: observation.effectiveDatetime,
-    surgeryDate: dataset.profile.surgeryDate,
+    // The surgery date as a CALENDAR date, which is what the rule compares.
+    // `toLocalDate(_, 'UTC')` is the same derivation the server uses on the
+    // `@db.Date` column it hands back at UTC midnight.
+    surgeryDate: toLocalDate(dataset.profile.surgeryDate, 'UTC'),
+    // Per observation, not per dataset: a scenario may place entries in more than
+    // one zone, and the rule is about the patient's day at the moment of entry
+    // (ADR-0016).
+    enteredTimezone: observation.enteredTimezone,
     now,
   };
 

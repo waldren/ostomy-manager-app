@@ -48,6 +48,7 @@ function check(
     measurementSystem,
     thresholds: THRESHOLDS,
     surgeryDate: null,
+    enteredTimezone: 'UTC',
     now: NOW,
   });
 }

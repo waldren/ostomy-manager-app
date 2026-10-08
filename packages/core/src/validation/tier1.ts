@@ -52,8 +52,10 @@ export interface VolumetricEntryInput {
   /** The mandatory Measured/Estimated toggle (SRS AC 2.2 AC1). `null` means "not selected yet". */
   readonly method: MeasuredOrEstimated | null;
   readonly effectiveDateTime: Date;
-  /** `null` when the patient's surgery date is not yet known (onboarding-incomplete). */
-  readonly surgeryDate: Date | null;
+  /** The patient's surgery date as `YYYY-MM-DD`, or `null` when it is not known. A calendar date, not an instant — see `checkEntryNotBeforeSurgery` for why that distinction is a Tier 1 block. */
+  readonly surgeryDate: string | null;
+  /** The IANA zone the entry was made in (ADR-0016). Needed because the surgery-date rule compares calendar days, and therefore has to know whose day. */
+  readonly enteredTimezone: string;
   /** Injected "current time," never read from the ambient clock, so this module stays a pure function of its inputs and is trivially testable. */
   readonly now: Date;
 }

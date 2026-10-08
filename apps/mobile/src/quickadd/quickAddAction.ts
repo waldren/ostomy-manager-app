@@ -96,7 +96,10 @@ export interface QuickAddDecisionInput {
    * the entry screens have to avoid cannot arise here. An unused field would
    * read as if the decision consulted the preference.
    */
-  readonly surgeryDate: Date | null;
+  /** The patient's surgery date as `YYYY-MM-DD`, from the local profile, or `null` when there is none. A calendar date, because the Tier 1 rule compares calendar days (`entryTimestamp.ts`). */
+  readonly surgeryDate: string | null;
+  /** The zone this entry is being made in (ADR-0016), so the surgery-date rule compares the patient's own calendar day. */
+  readonly enteredTimezone: string;
   readonly now: Date;
 }
 
@@ -126,6 +129,7 @@ export function decideQuickAdd(input: QuickAddDecisionInput): QuickAddDecision {
         method: null,
         effectiveDateTime: input.now,
         surgeryDate: input.surgeryDate,
+        enteredTimezone: input.enteredTimezone,
         now: input.now,
       },
       input.thresholds,
@@ -148,6 +152,7 @@ export function decideQuickAdd(input: QuickAddDecisionInput): QuickAddDecision {
       method: input.suggestion.method,
       effectiveDateTime: input.now,
       surgeryDate: input.surgeryDate,
+      enteredTimezone: input.enteredTimezone,
       now: input.now,
     },
     input.thresholds,

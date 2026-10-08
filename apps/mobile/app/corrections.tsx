@@ -23,6 +23,8 @@ import { useTranslation } from 'react-i18next';
 import { View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
+import type { LocalProfile } from '../src/db/repositories/profileRepository';
+import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { discardRejectedCreate, reenqueueCorrectedObservation } from '../src/db/offlineWrites';
 import { getObservationById } from '../src/db/repositories/observationsRepository';
@@ -45,10 +47,7 @@ import {
 } from '../src/entry/useStomaOutputEntry';
 import { useValueSetOptions } from '../src/entry/useValueSetOptions';
 import { checkUrineEntry } from '../src/entry/useVoidedUrineEntry';
-import {
-  DEFAULT_MEASUREMENT_SYSTEM,
-  unitsForMeasurementSystem,
-} from '../src/lib/units/measurementSystem';
+import { unitsForMeasurementSystem } from '../src/lib/units/measurementSystem';
 import { deviceTimeZone, now as clockNow } from '../src/lib/utils/clock';
 import { useSyncStatus } from '../src/sync/SyncProvider';
 import { BodyText } from '../src/ui/BodyText';
@@ -99,7 +98,7 @@ interface RejectedEntry {
   readonly observation: LocalObservation;
 }
 
-export default function Corrections(): React.JSX.Element {
+function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.Element {
   const { phase } = useAuth();
   const { t } = useTranslation(['common', 'mobile', 'validationErrors']);
   const database = useDatabaseState();
@@ -113,7 +112,9 @@ export default function Corrections(): React.JSX.Element {
   const [urineColorCode, setUrineColorCode] = useState<string | undefined>(undefined);
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
 
-  const measurementSystem = DEFAULT_MEASUREMENT_SYSTEM;
+  // Destructured so the callbacks below depend on these VALUES rather than on
+  // `profile`, whose identity the gate controls.
+  const { measurementSystem, surgeryDate } = profile;
   const units = unitsForMeasurementSystem(measurementSystem);
   const colors = useValueSetOptions(VALUE_SET_KEY.URINE_COLOR);
 
@@ -168,14 +169,16 @@ export default function Corrections(): React.JSX.Element {
             draft: { amountText: '', method, urineColorCode, effectiveDateTime },
             measurementSystem,
             thresholds: cached.thresholds,
-            surgeryDate: null,
+            surgeryDate,
+            enteredTimezone: deviceTimeZone(),
             now: clockNow(),
           })
         : checkEntry({
             draft: { amountText, method, effectiveDateTime },
             measurementSystem,
             thresholds: cached.thresholds,
-            surgeryDate: null,
+            surgeryDate,
+            enteredTimezone: deviceTimeZone(),
             now: clockNow(),
           });
       setCheck(outcome);
@@ -225,7 +228,17 @@ export default function Corrections(): React.JSX.Element {
       requestSync();
       await load();
     },
-    [amountText, method, urineColorCode, database, cached, measurementSystem, requestSync, load],
+    [
+      amountText,
+      method,
+      urineColorCode,
+      database,
+      cached,
+      measurementSystem,
+      surgeryDate,
+      requestSync,
+      load,
+    ],
   );
 
   const discard = useCallback(
@@ -393,3 +406,12 @@ export default function Corrections(): React.JSX.Element {
     </Screen>
   );
 }
+
+/**
+ * The profile arrives as a prop, never read inside — see `withProfile`. Two
+ * fields come off it, and a fallback for either would be worse than not
+ * rendering: `measurementSystem` is what every amount is rendered AND recorded
+ * as (ADR-0012, permanent per row), and `surgeryDate` is the Tier 1 lower bound
+ * that silently stops applying when it is absent.
+ */
+export default withProfile(CorrectionsScreen);

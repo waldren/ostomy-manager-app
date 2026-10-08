@@ -34,7 +34,7 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0013](0013-delta-cursor-visibility-mechanism.md) | Close the delta cursor's visibility gap by withholding the in-flight transaction window | Accepted |
 | [0014](0014-local-phi-encryption-and-device-ownership.md) | Encrypt the on-device clinical store, and bind it to one patient | Accepted |
 | [0015](0015-biometric-local-access.md) | The device passcode or a biometric unlocks local data, as peers | Accepted (amended twice; **Amendment 2 changes the decision**) |
-| [0016](0016-patient-local-day-boundary.md) | A "day" is the patient's local day, captured at write time | Accepted |
+| [0016](0016-patient-local-day-boundary.md) | A "day" is the patient's local day, captured at write time | Accepted (amended 2026-10-08: `local_date` is also compared by the surgery-date bound) |
 | [0017](0017-phi-retention-deletion-and-the-audit-exception.md) | PHI lives for the account's lifetime, and deletion reaches the audit log | Accepted |
 | [0018](0018-estimation-method-snomed-code.md) | The Measured/Estimated toggle is an explicit SNOMED qualifier both ways: 414135002 estimated, 258104002 measured | Accepted (amended 2026-09-18) |
 | [0019](0019-clock-skew-allowance.md) | A synced operation's clientTimestamp may run five minutes ahead before it is refused | Accepted |

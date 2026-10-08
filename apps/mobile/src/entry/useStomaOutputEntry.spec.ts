@@ -53,6 +53,7 @@ function check(overrides: {
     measurementSystem: overrides.measurementSystem ?? 'metric',
     thresholds: THRESHOLDS,
     surgeryDate: null,
+    enteredTimezone: 'UTC',
     now: NOW,
   });
 }
