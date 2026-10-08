@@ -250,6 +250,56 @@ export function createApiClient(options: ApiClientOptions) {
         }),
     },
 
+    onboarding: {
+      /**
+       * Read the signed-in patient's profile
+       *
+       * How a client decides whether to show onboarding. Answers 403 PATIENT_NOT_PROVISIONED when there is no profile — the same code every write gives for the same state (#80), rather than a second vocabulary for it. A read, so no audit row (SRS 5.2), and it carries no patient identifier: the caller is the patient.
+       */
+      profile: (): Promise<{
+        readonly ostomyType: 'colostomy' | 'ileostomy';
+        readonly surgeryDate: string;
+        readonly measurementSystem: 'metric' | 'imperial';
+      }> =>
+        request<{
+          readonly ostomyType: 'colostomy' | 'ileostomy';
+          readonly surgeryDate: string;
+          readonly measurementSystem: 'metric' | 'imperial';
+        }>({
+          method: 'GET',
+          path: `/api/v1/profile`,
+          requiresAuth: false,
+        }),
+
+      /**
+       * Create this patient and their profile
+       *
+       * The three fields SRS 3.0 makes mandatory before a patient can log anything: ostomy type, surgery date, measurement system. Each drives something that cannot be safely defaulted — expected-range selection, post-operative context, and every volume and weight display. Creates the patient row and the profile in ONE transaction, so a patient with no profile is not a reachable state. Answers 409 ALREADY_ONBOARDED for a subject that already has one: this endpoint means "I am new", and profile EDITS are a separate path (P4.S3). Rejects a surgery date in the future, which would make every entry the patient could make fail the Tier 1 bound this date becomes, and one implausibly far in the past, which would silently disable that bound for the life of the account.
+       */
+      provision: (body: {
+        /** Drives clinically appropriate default expected-output ranges rather than a one-size-fits-all baseline (SRS 3.0). v1 is colostomy or ileostomy; urostomy is out of scope. */
+        readonly ostomyType: 'colostomy' | 'ileostomy';
+        /** The ostomy creation date, as YYYY-MM-DD. Becomes the lower timestamp bound for Tier 1 entry validation (SRS 3.0, 3.8). */
+        readonly surgeryDate: string;
+        /** Governs every volume AND weight (SRS 3.0, revised in Phase 5, ADR-0004). One choice for both dimensions, so incoherent pairings such as mL with pounds are unrepresentable rather than merely unselectable. */
+        readonly measurementSystem: 'metric' | 'imperial';
+      }): Promise<{
+        readonly ostomyType: 'colostomy' | 'ileostomy';
+        readonly surgeryDate: string;
+        readonly measurementSystem: 'metric' | 'imperial';
+      }> =>
+        request<{
+          readonly ostomyType: 'colostomy' | 'ileostomy';
+          readonly surgeryDate: string;
+          readonly measurementSystem: 'metric' | 'imperial';
+        }>({
+          method: 'POST',
+          path: `/api/v1/onboarding`,
+          body,
+          requiresAuth: false,
+        }),
+    },
+
     sync: {
       /**
        * Pull changes since a cursor
