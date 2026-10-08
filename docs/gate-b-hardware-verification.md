@@ -193,6 +193,22 @@ A step is closed by a recorded run naming the handset, the OS version, the build
 
 When every **in-scope** step is closed — HW-1, HW-2, HW-3, HW-6, HW-7, HW-8, HW-10, HW-11 — CLAUDE.md's "none of the mobile device-side controls are verified on hardware" is the sentence to change, in the same commit. The out-of-scope iOS steps do not hold it open.
 
-| Step           | Device | OS  | Build | Date | Outcome |
-| -------------- | ------ | --- | ----- | ---- | ------- |
-| _none run yet_ |        |     |       |      |         |
+| Step                 | Device                        | OS                  | Build     | Date       | Outcome                                                                                       |
+| -------------------- | ----------------------------- | ------------------- | --------- | ---------- | --------------------------------------------------------------------------------------------- |
+| **HW-11 part 6**     | Pixel\_8 AVD (emulator)       | Android 16, API 36  | `43f7e50` | 2026-10-08 | **PASS** — the device passcode opened the diary on a handset with a working enrolled fingerprint |
+| HW-11 parts 1-5      | —                             | —                   | —         | —          | not run                                                                                         |
+| HW-1, 2, 3, 6, 7, 8, 10 | —                          | —                   | —         | —          | not run                                                                                         |
+
+### HW-11 part 6 — 2026-10-08, emulator
+
+Run after #119 merged, on the device that produced #116 in the first place.
+
+**What passed.** From a cold start the app showed "Welcome back / Unlock my diary". The OS prompt was requested at `authenticators: 32783, credentialAllowed: true` — `BIOMETRIC_STRONG | DEVICE_CREDENTIAL`, confirming #117's explicit `disableDeviceFallback: false` reaches the native layer. Taking **Use PIN** and entering the device passcode opened the diary. Before #119 this returned the patient to "Welcome back" with no message, however many times they tried.
+
+A fingerprint was enrolled and working on this device throughout, so this is the opt-out path and the wet-finger path, not the no-biometric path.
+
+**The Amendment 2 migration was exercised on the way, and it worked.** The install was holding a token written by a gated build. The first passcode unlock was accepted, the stale marker was recognised, the token was cleared, and the patient was routed to a sign-out **with an explanation** rather than a bare sign-in screen — which is the behaviour `tokenStorage.ts` describes. One re-login, as ADR-0015 Amendment 2 says.
+
+**One defect found, filed separately.** The explanation shown is `login.unlockChangedBody`: "The fingerprint, face, or screen lock on this phone changed." Nothing about the phone had changed — this was an app upgrade discarding a token it can no longer read. The copy is reused from a path where it is true, and on this path it tells the patient something false about their own device.
+
+**What this run does NOT close.** Parts 1 to 5, and every other step. An emulator reports `android.hardware.fingerprint` and a `hardware_keystore` but no `strongbox_keystore`, so this exercised the LOGIC of the passcode path, not a hardware guarantee. Per this document's own rule, that is "exercised on an emulator", not "verified on hardware", and CLAUDE.md's standing caveat is unchanged.
