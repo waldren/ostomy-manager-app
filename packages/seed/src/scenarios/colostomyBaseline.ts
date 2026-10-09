@@ -57,6 +57,8 @@ import {
   assertInPast,
   entryInstant,
   observationAt,
+  routineHappensToday,
+  routineInstant,
   startOfUtcDay,
   type GeneratorCodes,
 } from './shared.js';
@@ -98,6 +100,55 @@ const HEALTHY_URINE_COLORS = ['pale_straw', 'straw', 'yellow'] as const;
 
 const ESTIMATED_IN_N = 8;
 
+/**
+ * This patient's habits (#114).
+ *
+ * Three of them, one per Quick-Add path, because the three paths fail
+ * differently and the one most worth eyeballing is the one a random dataset
+ * never produces:
+ *
+ * - **A morning emptying.** The volumetric path.
+ * - **A morning coffee.** The fluid-type path: the widget has to say *coffee*,
+ *   because a 250 mL coffee and a 250 mL water are different entries and a tap
+ *   that logged the wrong one would be logging something the patient did not do.
+ * - **A first-of-the-day urine with a colour and no volume** (SRS §3.7, AC 12.1
+ *   AC2). The volumeless path — the one entry this system stores with no
+ *   `valueQuantity`, and the one whose widget must not render as `0 mL`.
+ *
+ * Quick-Add shows at most three, ordered by occurrence count, so these three
+ * fill the dashboard and the incidental RNG collisions that used to fill it
+ * cannot reach it.
+ *
+ * The fourth is deliberately rarer than the other three: the SAME 250 mL at the
+ * same hour, as water rather than coffee. It clears the floor of two, so the
+ * data proves fluid type is part of the grouping key, while ranking below the
+ * three above so the dashboard still demonstrates one path each. A test asserts
+ * both halves of that.
+ */
+const ROUTINE_SKIP_ONE_IN_N = 7;
+
+const MORNING_EMPTYING_HOUR = 7;
+const MORNING_EMPTYING_ML = '150.0';
+
+const MORNING_DRINK_HOUR = 8;
+const MORNING_DRINK_ML = '250.0';
+const MORNING_DRINK_FLUID = 'coffee_or_tea';
+
+/**
+ * Rarer, so it ranks fourth: same volume and hour, different fluid. See above.
+ *
+ * Every OTHER day rather than two in three, and the margin is the point. At
+ * one-in-three it landed 9 occurrences against the stoma-output routine's 10 in
+ * a real fourteen-day window — one entry apart, so a different "now" could flip
+ * them and the dashboard would show two intake widgets and no output one. The
+ * ranking has to hold for every window, not for the one a test happens to pick.
+ */
+const WATER_CHASER_SKIP_ONE_IN_N = 2;
+const WATER_CHASER_FLUID = 'water';
+
+const FIRST_URINE_HOUR = 7;
+const FIRST_URINE_COLOR = 'straw';
+
 export function generateColostomyBaseline(options: ScenarioOptions & GeneratorCodes): SeedDataset {
   const rng = createRng(options.seed ?? DEFAULT_SEED);
   const timeZone = options.timeZone ?? DEFAULT_TIME_ZONE;
@@ -123,6 +174,27 @@ export function generateColostomyBaseline(options: ScenarioOptions & GeneratorCo
     const outputEntries = rng.intBetween(ENTRIES_PER_DAY_MIN, ENTRIES_PER_DAY_MAX);
     const intakeEntries = rng.intBetween(INTAKE_ENTRIES_MIN, INTAKE_ENTRIES_MAX);
     const urineEntries = rng.intBetween(URINE_ENTRIES_MIN, URINE_ENTRIES_MAX);
+
+    /**
+     * The habits first, so they sit at the start of the day they belong to.
+     *
+     * Each draws from the same `rng` as everything else, so adding or removing
+     * one changes every subsequent entry in the dataset. That is the point of a
+     * seeded generator rather than a defect of it — the output stays
+     * byte-identical for a given seed, and `determinism` asserts it.
+     */
+    if (routineHappensToday(rng, ROUTINE_SKIP_ONE_IN_N)) {
+      observations.push(morningEmptying(context));
+    }
+    if (routineHappensToday(rng, ROUTINE_SKIP_ONE_IN_N)) {
+      observations.push(morningDrink(context, MORNING_DRINK_FLUID));
+    }
+    if (routineHappensToday(rng, WATER_CHASER_SKIP_ONE_IN_N)) {
+      observations.push(morningDrink(context, WATER_CHASER_FLUID));
+    }
+    if (routineHappensToday(rng, ROUTINE_SKIP_ONE_IN_N)) {
+      observations.push(firstUrine(context));
+    }
 
     for (let entry = 0; entry < outputEntries; entry += 1) {
       observations.push(outputEntry(context));
@@ -160,6 +232,73 @@ interface EntryInput {
 
 function instantFor(input: EntryInput): Date {
   const instant = entryInstant(input.rng, input.options.now, input.dayOffset, input.timeZone);
+  assertInPast(SCENARIO, instant, input.options.now, input.dayOffset);
+  return instant;
+}
+
+/**
+ * The habits. Every grouped field is a constant here, which is what makes these
+ * one repeated entry rather than ninety similar ones — see `routineInstant`.
+ *
+ * `estimated: false` is stated rather than drawn: the Measured/Estimated answer
+ * is part of the grouping key (ADR-0018), so a routine that sometimes estimated
+ * would split into two groups and each might fall below the floor.
+ */
+function morningEmptying(input: EntryInput): SeedObservation {
+  return observationAt({
+    rng: input.rng,
+    patientId: input.patientId,
+    code: STOMA_OUTPUT_LOINC_CODE,
+    effectiveDatetime: routineInstantFor(input, MORNING_EMPTYING_HOUR),
+    timeZone: input.timeZone,
+    valueQuantityValue: MORNING_EMPTYING_ML,
+    codes: input.options,
+    estimated: false,
+  });
+}
+
+function morningDrink(input: EntryInput, fluidTypeCode: string): SeedObservation {
+  return observationAt({
+    rng: input.rng,
+    patientId: input.patientId,
+    code: FLUID_INTAKE_LOINC_CODE,
+    effectiveDatetime: routineInstantFor(input, MORNING_DRINK_HOUR),
+    timeZone: input.timeZone,
+    valueQuantityValue: MORNING_DRINK_ML,
+    codes: input.options,
+    estimated: false,
+    fluidTypeCode,
+  });
+}
+
+/**
+ * A colour and no volume — the one observation this system stores without a
+ * `valueQuantity` (SRS §3.7, AC 12.1 AC2).
+ *
+ * Seeded as a routine deliberately: it is the Quick-Add widget most likely to be
+ * got wrong, because a volumeless entry rendered through the volumetric path
+ * shows `0 mL`, which is a reading nobody took.
+ */
+function firstUrine(input: EntryInput): SeedObservation {
+  return observationAt({
+    rng: input.rng,
+    patientId: input.patientId,
+    code: VOIDED_URINE_LOINC_CODE,
+    effectiveDatetime: routineInstantFor(input, FIRST_URINE_HOUR),
+    timeZone: input.timeZone,
+    codes: input.options,
+    urineColorCode: FIRST_URINE_COLOR,
+  });
+}
+
+function routineInstantFor(input: EntryInput, hour: number): Date {
+  const instant = routineInstant(
+    input.rng,
+    input.options.now,
+    input.dayOffset,
+    input.timeZone,
+    hour,
+  );
   assertInPast(SCENARIO, instant, input.options.now, input.dayOffset);
   return instant;
 }

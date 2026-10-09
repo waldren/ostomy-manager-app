@@ -159,6 +159,45 @@ export function entryInstant(
   const hour = rng.intBetween(hours[0], hours[1]);
   const minute = rng.intBetween(0, 59);
 
+  /**
+   * Walked back an hour at a time until the entry is actually in the past.
+   *
+   * Not defensive — this fires, and when it does the generator throws and
+   * `dev-reset.sh` fails outright. A local hour late in the evening on the most
+   * recent day can still be in the FUTURE in UTC: at 02:51Z, 22:00 in
+   * `America/Chicago` on day-offset 1 is 03:00Z, nine minutes away. Measured
+   * across a UTC day, four hours in twenty-four are affected for a UTC-5
+   * scenario zone, and whether it fires on any of them depends on the RNG draw
+   * — so it is intermittent, which is what kept it unnoticed.
+   *
+   * Clamping the hour rather than moving the entry to an earlier day, because a
+   * day is load-bearing in both directions here: `assertInPast` guards one end
+   * and `assertAfterSurgery` the other, and `new-post-op`'s fourteen-day window
+   * sits close enough to its surgery date that shifting an entry a day earlier
+   * could cross it. Capping the hour keeps every entry on the day its caller
+   * chose.
+   *
+   * It is also what real data looks like: you cannot have logged something at
+   * 22:00 when it is only 21:00. The descent terminates because the loop is
+   * bounded by the hour range, and the clash only ever arises when the local
+   * clock is late in the evening — so there is always an earlier hour in range
+   * that works.
+   */
+  for (let candidateHour = hour; candidateHour >= hours[0]; candidateHour -= 1) {
+    const instant = instantAtLocalHour(day, candidateHour, minute, timeZone);
+    if (instant.getTime() < now.getTime()) return instant;
+  }
+
+  // Every hour in range is still ahead of `now` on this day. Unreachable for
+  // `dayOffset >= 1` with the default range — see above — and a caller passing
+  // a narrow late-evening window for today would land here. Returning the
+  // earliest hour keeps the failure loud (`assertInPast` throws) rather than
+  // silently seeding a future row.
+  return instantAtLocalHour(day, hours[0], minute, timeZone);
+}
+
+/** One local wall-clock time, resolved through the zone's offset. */
+function instantAtLocalHour(day: Date, hour: number, minute: number, timeZone: string): Date {
   const wallClock = Date.UTC(
     day.getUTCFullYear(),
     day.getUTCMonth(),
@@ -178,6 +217,59 @@ export function entryInstant(
   const candidate = new Date(wallClock - firstOffset);
   const settledOffset = zoneOffsetMs(candidate, timeZone);
   return settledOffset === firstOffset ? candidate : new Date(wallClock - settledOffset);
+}
+
+/**
+ * An entry at the same local hour every day — the timing half of a habit (#114).
+ *
+ * ## Why any scenario seeds a routine at all
+ *
+ * Quick-Add (SRS §3.1) generates the dashboard's one-tap widgets from entries
+ * the patient has **repeated**: the same code, value, Measured/Estimated answer,
+ * fluid type, urine colour and entered system, at least twice in fourteen days.
+ * Until this existed, no scenario modelled anyone with a habit, so a freshly
+ * seeded stack had nothing for that rule to find — and what it did find was two
+ * RNG collisions at 0.1 mL granularity, which the dashboard then described as
+ * "you logged this 2 times recently".
+ *
+ * That is worse than no coverage: the first impression of the feature was a
+ * coincidence presented as a routine, and it changed on every reseed, which is
+ * the one thing ADR-0009 promises seeded data will not do.
+ *
+ * ## What a routine entry has to be
+ *
+ * **Identical in every grouped field**, not merely similar. A volume drawn from
+ * a range is a different entry each day no matter how narrow the range, because
+ * the grouping key is the exact canonical value — that is deliberate
+ * (`quickAddSuggestions.ts`: bucketing 345/350/355 into "350" would put a number
+ * on a one-tap button that the patient never recorded). So a routine's value is
+ * a constant, and its Measured/Estimated answer is fixed too.
+ *
+ * The hour is fixed for realism rather than for the rule — Quick-Add does not
+ * look at the time of day — but it is what makes the dataset read like a person:
+ * a 7am emptying and a 9pm drink, rather than entries scattered uniformly.
+ */
+export function routineInstant(
+  rng: Rng,
+  now: Date,
+  dayOffset: number,
+  timeZone: string,
+  hour: number,
+): Date {
+  return entryInstant(rng, now, dayOffset, timeZone, [hour, hour]);
+}
+
+/**
+ * Whether a habit happened on this particular day.
+ *
+ * Nobody does the same thing every single day for ninety days, and a dataset
+ * that says they did reads as generated. Skipping roughly one day in
+ * `skipOneInN` keeps it human while leaving the fourteen-day window far above
+ * Quick-Add's floor of two — `routine.spec.ts` asserts that rather than assuming
+ * it, because the margin is what makes the widgets reproducible across reseeds.
+ */
+export function routineHappensToday(rng: Rng, skipOneInN: number): boolean {
+  return rng.intBetween(1, skipOneInN) !== 1;
 }
 
 /**
