@@ -1108,23 +1108,38 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
       });
     });
 
+    /**
+     * Against `weight_change_threshold_percent` rather than `net_fluid_balance_ml`,
+     * which this used before #130 seeded the clinical defaults.
+     *
+     * Not a weakening — it is the same property on another signed type, and the
+     * reason for the move is worth knowing. The seeded net-balance row spans day 0
+     * onward, so every day window for that (type, ostomy type) is occupied and
+     * #97's exclusion constraint refuses a second one. The test was picking a high
+     * day range to stay clear of other tests' rows; there is no longer a free one.
+     *
+     * `net_fluid_balance_ml`'s own signedness is now pinned by the seeded-row
+     * tests below, which is a stronger statement than this one made: it asserts
+     * the shipped value rather than that a negative value is accepted.
+     */
     it('allows a negative bound where the type is signed', async () => {
-      // `net_fluid_balance_ml` is intake minus output, so a deficit is a real
-      // and clinically important value. Giving it a positive floor would have
-      // been the most plausible-looking mistake in this table.
+      // §3.12 measures percent change in either direction, so a negative floor is
+      // the point rather than an edge case. Giving a signed type a positive floor
+      // would be the most plausible-looking mistake in this table — and was made
+      // once, for this very type.
       const write = await service.createDefaultRange(
-        body('net_fluid_balance_ml', {
+        body('weight_change_threshold_percent', {
           minDaysPostOp: 300,
           maxDaysPostOp: 360,
-          lowValue: -800,
+          lowValue: -8,
           highValue: 0,
-          unit: 'mL',
+          unit: '%',
         }),
         ADMIN_SUBJECT,
         undefined,
       );
 
-      expect(write.range.lowValue).toBe(-800);
+      expect(write.range.lowValue).toBe(-8);
     });
 
     describe('the unit, now read from one place', () => {
@@ -1132,9 +1147,19 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
         // This used to be a cross-row comparison, which agreed with whatever the
         // FIRST row of a type happened to say — so a type whose rows were all in
         // the wrong unit was self-consistent and accepted.
+        //
+        // Against `resting_heart_rate_elevation_bpm` rather than `daily_output_ml`
+        // since #130 seeded the latter's day axis through to open-ended: the
+        // overlap check runs first, so a seeded window turns this into a 409 and
+        // the unit rule is never reached. A type with limits and no seeded rows
+        // keeps the test about the unit.
         await expect(
           service.createDefaultRange(
-            body('daily_output_ml', { minDaysPostOp: 400, maxDaysPostOp: 460, unit: 'oz' }),
+            body('resting_heart_rate_elevation_bpm', {
+              minDaysPostOp: 400,
+              maxDaysPostOp: 460,
+              unit: 'oz',
+            }),
             ADMIN_SUBJECT,
             undefined,
           ),
@@ -1241,6 +1266,201 @@ describe.skipIf(!dockerAvailable)('AdminDefaultRangesService — real PostgreSQL
           `UPDATE clinical_default_range_limits SET max_value = 99999 WHERE range_type = 'heart_rate_red_flag_bpm'`,
         ),
       ).rejects.toThrow(/permission denied/i);
+    });
+  });
+
+  /**
+   * P4.S2 slice 1: the clinical defaults §3.9 seeds suggestions from (#130).
+   *
+   * ## What these tests are for
+   *
+   * **The numbers are implementer-chosen and unratified by any clinician** — the
+   * same standing as the 120 bpm heart-rate bound (#102), recorded the same way.
+   * Pinning them here is what makes ratification a visible change to this
+   * repository: a clinician's value replaces one of these and this test fails
+   * until someone updates it deliberately. A quiet edit to the migration cannot
+   * pass.
+   *
+   * They are patient-facing by consequence rather than directly — a suggestion
+   * built from one of these rows is shown as what is "typical for a similar
+   * profile" (SRS §3.9's framing constraint), so a wrong number here becomes a
+   * wrong statement about what is normal.
+   */
+  describe('the seeded clinical defaults (#130)', () => {
+    /**
+     * Every seeded row, not a sample. The lesson of the limits test above, which
+     * pinned values for one type and let a wrong sign through for another: a
+     * sample proves the mechanism and says nothing about the data.
+     */
+    it.each([
+      ['ILEOSTOMY', 'daily_output_ml', 0, 30, 600, 1500],
+      ['ILEOSTOMY', 'daily_output_ml', 31, 90, 500, 1200],
+      ['ILEOSTOMY', 'daily_output_ml', 91, null, 500, 1000],
+      ['COLOSTOMY', 'daily_output_ml', 0, 30, 300, 800],
+      ['COLOSTOMY', 'daily_output_ml', 31, 90, 200, 600],
+      ['COLOSTOMY', 'daily_output_ml', 91, null, 200, 500],
+      ['ILEOSTOMY', 'urine_output_adequacy_ml', 0, null, 1000, null],
+      ['COLOSTOMY', 'urine_output_adequacy_ml', 0, null, 1000, null],
+      ['ILEOSTOMY', 'net_fluid_balance_ml', 0, null, 1500, null],
+      ['COLOSTOMY', 'net_fluid_balance_ml', 0, null, 1500, null],
+    ])(
+      'seeds %s %s for days %s-%s as %s-%s mL',
+      async (ostomyType, rangeType, minDays, maxDays, low, high) => {
+        const row = await prisma.clinicalDefaultRange.findFirst({
+          where: {
+            ostomyType: ostomyType as 'ILEOSTOMY' | 'COLOSTOMY',
+            rangeType: rangeType as string,
+            minDaysPostOp: minDays as number,
+            deletedAt: null,
+          },
+        });
+
+        expect(
+          row,
+          `no seeded row for ${ostomyType} ${rangeType} from day ${String(minDays)}`,
+        ).not.toBeNull();
+        expect(row?.maxDaysPostOp ?? null).toBe(maxDays);
+        expect(row?.lowValue === null ? null : Number(row?.lowValue)).toBe(low);
+        expect(row?.highValue === null ? null : Number(row?.highValue)).toBe(high);
+        expect(row?.unit).toBe('mL');
+      },
+    );
+
+    /**
+     * Day 0 onward, with no gap between windows.
+     *
+     * A gap is the failure that would not look like one: a patient whose surgery
+     * was 30 days ago finds a suggestion, one 31 days ago finds none, and the
+     * screen renders an empty field rather than an error. #97's exclusion
+     * constraint refuses OVERLAPS at the database level and says nothing about
+     * holes, so this is the half it cannot cover.
+     */
+    it.each([
+      ['ILEOSTOMY', 'daily_output_ml'],
+      ['COLOSTOMY', 'daily_output_ml'],
+      ['ILEOSTOMY', 'urine_output_adequacy_ml'],
+      ['COLOSTOMY', 'urine_output_adequacy_ml'],
+      ['ILEOSTOMY', 'net_fluid_balance_ml'],
+      ['COLOSTOMY', 'net_fluid_balance_ml'],
+    ])('covers every day since surgery for %s %s', async (ostomyType, rangeType) => {
+      const rows = await prisma.clinicalDefaultRange.findMany({
+        where: {
+          ostomyType: ostomyType as 'ILEOSTOMY' | 'COLOSTOMY',
+          rangeType,
+          deletedAt: null,
+        },
+        orderBy: { minDaysPostOp: 'asc' },
+      });
+
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows[0]?.minDaysPostOp).toBe(0);
+
+      // Contiguous: each window starts the day after the previous one ended.
+      rows.forEach((row, index) => {
+        if (index === 0) return;
+        const previous = rows[index - 1];
+        expect(previous?.maxDaysPostOp, 'only the LAST window may be open-ended').not.toBeNull();
+        expect(row.minDaysPostOp).toBe((previous?.maxDaysPostOp ?? 0) + 1);
+      });
+
+      // Open-ended at the end, so a patient years post-op still has one.
+      expect(rows[rows.length - 1]?.maxDaysPostOp).toBeNull();
+    });
+
+    /**
+     * Every seeded bound sits inside its type's limits.
+     *
+     * The limits are migration-owned and the bound check is application-only
+     * (#102) — there is no CHECK comparing a range against its limits row — so a
+     * migration CAN seed a row the admin API would refuse to create. That state
+     * is only discoverable by looking, which is what this does.
+     */
+    it('seeds no range outside its own type limits', async () => {
+      const limits = await prisma.clinicalDefaultRangeLimits.findMany();
+      const byType = new Map(limits.map((entry) => [entry.rangeType, entry]));
+      const ranges = await prisma.clinicalDefaultRange.findMany({ where: { deletedAt: null } });
+
+      for (const range of ranges) {
+        const limit = byType.get(range.rangeType);
+        expect(limit, `${range.rangeType} has no limits row`).toBeDefined();
+        expect(range.unit).toBe(limit?.unit);
+
+        for (const bound of [range.lowValue, range.highValue]) {
+          if (bound === null) continue;
+          expect(Number(bound)).toBeGreaterThanOrEqual(Number(limit?.minValue));
+          expect(Number(bound)).toBeLessThanOrEqual(Number(limit?.maxValue));
+        }
+      }
+    });
+
+    /**
+     * A floor of zero would say a balance of zero is adequate, and it is not: a
+     * patient whose intake merely matches their stoma output is dehydrating,
+     * because urine and insensible losses come out of the same intake.
+     *
+     * Asserted separately from the value pin above because it is the direction
+     * that matters rather than the number — if 1,500 is ratified down to 1,200
+     * this still has to hold, and if it is ever ratified to 0 that is a decision
+     * someone must make against this test rather than by editing a literal.
+     */
+    it('sets the net-balance floor above the urine floor it has to cover', async () => {
+      const balance = await prisma.clinicalDefaultRange.findFirst({
+        where: { rangeType: 'net_fluid_balance_ml', ostomyType: 'ILEOSTOMY', deletedAt: null },
+      });
+      const urine = await prisma.clinicalDefaultRange.findFirst({
+        where: {
+          rangeType: 'urine_output_adequacy_ml',
+          ostomyType: 'ILEOSTOMY',
+          deletedAt: null,
+        },
+      });
+
+      expect(Number(balance?.lowValue)).toBeGreaterThan(Number(urine?.lowValue));
+    });
+
+    /**
+     * An ileostomy drains before the colon absorbs water, so its volumes run
+     * roughly three times a colostomy's. That ratio is why this table is keyed on
+     * `ostomy_type` at all — a seeding that made the two equal would leave the
+     * keying technically exercised and clinically meaningless.
+     */
+    it('keeps ileostomy output above colostomy output in every window', async () => {
+      const windows = [0, 31, 91];
+      for (const minDaysPostOp of windows) {
+        const ileostomy = await prisma.clinicalDefaultRange.findFirst({
+          where: { rangeType: 'daily_output_ml', ostomyType: 'ILEOSTOMY', minDaysPostOp },
+        });
+        const colostomy = await prisma.clinicalDefaultRange.findFirst({
+          where: { rangeType: 'daily_output_ml', ostomyType: 'COLOSTOMY', minDaysPostOp },
+        });
+
+        expect(Number(ileostomy?.highValue)).toBeGreaterThan(Number(colostomy?.highValue));
+        expect(Number(ileostomy?.lowValue)).toBeGreaterThan(Number(colostomy?.lowValue));
+      }
+    });
+
+    /**
+     * The safety row is NOT a suggestion source, and this is the sprint that has
+     * to keep it that way.
+     *
+     * `heart_rate_red_flag_bpm` lives in this table (#94) because §3.11 manages it
+     * here, and it is deliberately not patient-adjustable. The table has no
+     * `patient_adjustable` column, so "not adjustable" has to be structural: the
+     * row exists and nothing derives a patient range from it. Asserted here as
+     * data — it has no post-operative windows to seed suggestions across — and
+     * enforced in the selection query by `SAFETY_RANGE_TYPES` in slice 2.
+     */
+    it('leaves the safety row with the single day-0 window it has always had', async () => {
+      const rows = await prisma.clinicalDefaultRange.findMany({
+        where: { rangeType: 'heart_rate_red_flag_bpm', deletedAt: null },
+      });
+
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.minDaysPostOp).toBe(0);
+        expect(row.maxDaysPostOp).toBeNull();
+        expect(Number(row.highValue)).toBe(120);
+      }
     });
   });
 
