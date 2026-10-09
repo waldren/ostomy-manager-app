@@ -13,6 +13,7 @@
     "emulator:status": "bash ../../scripts/android-emulator.sh status",
     "emulator:logcat": "bash ../../scripts/android-emulator.sh logcat",
     "emulator:fingerprint": "bash ../../scripts/android-emulator.sh fingerprint",
+    "emulator:metro-reset": "bash ../../scripts/android-emulator.sh metro-reset",
     "emulator:wipe": "bash ../../scripts/android-emulator.sh wipe",
     "emulator:stop": "bash ../../scripts/android-emulator.sh stop",
     "web": "expo start --web",

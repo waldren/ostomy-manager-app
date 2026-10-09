@@ -30,6 +30,14 @@ Sign-in, SQLCipher opening the store, the subject-binding purge, the unsent-entr
 
 **Synthetic data only.** A test handset is as much "outside production" as the dev host is. Nothing about holding a real phone relaxes that rule.
 
+**The unlock step needs a human at the screen, and cannot be scripted** ([#115](https://github.com/waldren/ostomy-manager-app/issues/115)). Budget for that before planning an unattended run — almost every step below passes through an unlock, and `adb` cannot drive one:
+
+- `input text` into the system credential screen is **rejected**: it is a secure window, by design.
+- On the lock screen, `input swipe` upward opens the **notification shade** rather than the bouncer. `input keyevent 82` followed by `input text` is what actually unlocks the device.
+- BiometricPrompt **relabels the same coordinate**: "Use PIN" at (178,2253) becomes "Cancel" at (178,2253) after a failed fingerprint. A replayed tap therefore cancels silently instead of falling back — which looks like the passcode path not existing, and is the exact confusion that produced #116's first wrong diagnosis.
+
+On an emulator, enrolment itself was also unreliable: "Can't complete fingerprint setup" after twelve `emu finger touch 1` sends. That is a property of the emulated sensor, not of the app.
+
 ## The steps
 
 ### HW-1 — the database on disk is ciphertext, and the key is not lying beside it

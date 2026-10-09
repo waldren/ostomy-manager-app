@@ -12,9 +12,10 @@ networking is shaped the way it is.
 ```
 scripts/android-emulator.sh doctor       what's installed, what's missing
 scripts/android-emulator.sh up           create + boot + wire  (idempotent)
-scripts/android-emulator.sh status       device state, forwarded ports, app installed?
+scripts/android-emulator.sh status       device state, ports, app, display health
 scripts/android-emulator.sh logcat       this app's process only
 scripts/android-emulator.sh fingerprint  device PIN + fingerprint enrolment
+scripts/android-emulator.sh metro-reset  clear Metro's file-map cache
 scripts/android-emulator.sh wipe         factory-reset data, then cold boot
 scripts/android-emulator.sh stop
 ```
@@ -124,6 +125,36 @@ not forward MinIO's console or the admin SPA: a patient device has no business
 reaching either, and forwarding them would let a device-side bug reach a
 surface the real topology denies it.
 
+### A wedged Metro looks exactly like a networking fault
+
+This one sends you to the section above, and the section above is not the
+problem. The app crashes with:
+
+```
+java.lang.RuntimeException: Unable to load script.
+  ... Failed to connect to /10.0.2.2:8081
+```
+
+A corrupt `@expo/metro-file-map` disk cache makes Metro bind 8081, answer
+`/status`, and **never finish a bundle** — the fallback full crawl of a hoisted
+monorepo on Windows does not complete. So every reachability probe you try will
+pass while nothing works. The only place the truth appears is Metro's own log:
+
+```
+Error while reading cache, falling back to a full crawl:
+ Error: Unable to deserialize cloned data.
+```
+
+`--clear` does **not** fix it: that clears the transformer cache, a different
+directory. Run `scripts/android-emulator.sh metro-reset`, which deletes the
+file-map cache and prints what to do next. Deleting it took a first bundle from
+"never" to HTTP 200 in 0.83 s.
+
+**Before blaming the device at all,** `npx expo export --platform android` runs
+the same transform pipeline with no dev server. It separates "my code does not
+bundle" from "the dev server is wedged" — it produced a 3.9 MB Hermes bundle
+while `expo start` was serving nothing.
+
 ### Metro collides with the admin SPA on 8081
 
 `infra/docker-compose.yml` publishes host `8081` for `admin`, which is also
@@ -218,6 +249,21 @@ you the file and `sqlite3` will refuse it, correctly. Debug the local store
 through the app's own code paths and the jest suite, which runs against Node's
 built-in SQLite — not by prying the file open. If you find a way to read it
 without the keystore, that is a security defect worth reporting.
+
+**A black screenshot is usually the emulator, not the app.** After the host
+sleeps and resumes, the display wedges: `dumpsys power` keeps reporting
+`mWakefulness=Awake`, the focused window is a real activity, and `screencap`
+returns an all-black framebuffer anyway. `status` reports this outright — a
+black frame compresses to ~15 KB against ~1.2 MB for anything rendering — so
+check it before concluding a screen rendered nothing. `stop && up` clears it.
+
+**The unlock cannot be driven by `adb`, and that is a limit rather than a
+puzzle.** `input text` into the system credential screen is rejected (secure
+window); on the lock screen `input swipe` opens the notification shade rather
+than the bouncer, so `input keyevent 82` then `input text` is what works; and
+BiometricPrompt relabels the same coordinate, turning "Use PIN" into "Cancel"
+after a failed fingerprint, so a replayed tap cancels silently. Plan a human at
+the screen for any step that passes through an unlock — which is most of Gate B.
 
 ## What the emulator does and does not prove
 
