@@ -47,6 +47,27 @@ compose() {
   docker compose --env-file .env -f infra/docker-compose.yml "$@"
 }
 
+# What the rebuilt stack will report at `/api/v1/health`, so
+# `scripts/dev-stack-status.sh` can compare it against this checkout rather than
+# answering UNVERIFIED.
+#
+# Derived here rather than required of the caller because this script REBUILDS
+# the stack from the working tree — it knows what it is deploying, and the
+# documented hand-deploy procedure runs exactly this command before its own
+# build (docs/deployment-development.md). An explicit export still wins, which
+# is what makes it possible to reproduce an older stack deliberately.
+#
+# Unsetting it is also fine now: the API treats an absent build commit as
+# "cannot say" and starts. It did not always — compose turned "unset" into the
+# empty string, which the config schema rejects, so this script died at the
+# health check with a timeout that read as slowness.
+export BUILD_COMMIT="${BUILD_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
+if [[ -n "${BUILD_COMMIT}" ]]; then
+  echo "==> Deploying commit ${BUILD_COMMIT}"
+else
+  echo "==> No git commit available; the stack will report none and dev-stack-status.sh will say UNVERIFIED."
+fi
+
 echo "==> Stopping the stack and removing its data volumes (pgdata, miniodata)..."
 compose down --volumes --remove-orphans
 

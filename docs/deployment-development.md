@@ -32,7 +32,11 @@ docker compose --env-file .env -f infra/docker-compose.yml up -d
 curl --fail --silent http://localhost:3000/api/v1/health && echo ' api is healthy'
 ```
 
-**`BUILD_COMMIT` is not optional bookkeeping.** It is what `/api/v1/health` reports and what makes staleness detectable at all; omit it and the stack cannot say which commit it is running. (Reported in development only — see `apps/api/src/health/health.controller.ts` for why it is withheld elsewhere.)
+**`BUILD_COMMIT` is not optional bookkeeping.** It is what `/api/v1/health` reports and what makes staleness detectable at all; omit it and the stack cannot say which commit it is running, and `dev-stack-status.sh` answers `UNVERIFIED` rather than comparing. (Reported in development only — see `apps/api/src/health/health.controller.ts` for why it is withheld elsewhere.)
+
+Omitting it is a *degraded* state, not a broken one — but it was broken until recently, and the shape of that bug is worth knowing because it is easy to recreate. `buildCommit` is `optional()` in the config schema, so an absent value has always been accepted; what was not accepted is an **empty** one, which `min(1)` refuses. `infra/docker-compose.yml` passed `${BUILD_COMMIT:-}`, and compose always *defines* a variable written that way — so every stack brought up without the export got an empty string and the API crash-looped, surfacing as `dev-reset.sh` reporting "api did not become healthy in time". The compose entry is now a bare `BUILD_COMMIT:`, which is how compose expresses "take it from the host, set nothing if it is absent".
+
+`scripts/dev-reset.sh` derives it from `git rev-parse --short HEAD` when it is not already set, because that script rebuilds the stack from the working tree and therefore knows what it is deploying. An explicit export still wins, which is what lets you reproduce an older stack deliberately.
 
 Then confirm it took:
 
