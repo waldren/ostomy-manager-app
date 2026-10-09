@@ -11,7 +11,28 @@
 # that would make that untrue (CLAUDE.md, docs/security-hipaa.md).
 #
 # Usage (from the repo root, or anywhere — this cds to the repo root itself):
-#   scripts/dev-reset.sh
+#   scripts/dev-reset.sh                        # colostomy-baseline
+#   scripts/dev-reset.sh stable-ileostomy       # or any scenario run.js takes
+#   DEV_SEED_SCENARIO=new-post-op scripts/dev-reset.sh
+#
+# ## Why the default is colostomy-baseline and not the ileostomy one
+#
+# It was `stable-ileostomy` until #114, which is the thinnest of the five: 90
+# days of a single LOINC code. A developer resetting the stack therefore got a
+# database that could not demonstrate several shipped features at all — no fluid
+# intake means no Daily Net Fluid Balance, and no urine means nothing for §3.7's
+# exclusion to exclude.
+#
+# Quick-Add was the sharpest case, because it did not merely show nothing. Its
+# rule looks for entries repeated at least twice in fourteen days, no scenario
+# modelled anyone with a habit, and so the only candidates were two RNG
+# collisions at 0.1 mL granularity — which the dashboard then described as "you
+# logged this 2 times recently", and which changed on every reseed.
+#
+# `colostomy-baseline` emits all three entry types and (since #114) seeds
+# deliberate daily routines, so a reset stack shows one Quick-Add widget per
+# path, the same ones every time. `stable-ileostomy` remains the ileostomy
+# baseline and is one argument away.
 
 set -euo pipefail
 
@@ -59,7 +80,12 @@ echo "==> api is healthy."
 # must match the subject your client's tokens carry, or every authenticated
 # request is PATIENT_NOT_PROVISIONED against a database that looks full.
 SEED_SUBJECT="${DEV_SEED_OIDC_SUBJECT:-dev-patient-1}"
-echo "==> Seeding stable-ileostomy for OIDC subject '${SEED_SUBJECT}'..."
-compose run --rm --no-deps -e ALLOW_SYNTHETIC_SEED=true migrate node dist/seed/run.js   --scenario stable-ileostomy --subject "${SEED_SUBJECT}"
+# Argument first, then the environment, then the default — so a one-off is a
+# word on the command line and a habit is a line in your shell profile. The
+# scenario name is passed through to `run.js`, which validates it; this script
+# deliberately holds no list of its own to go stale.
+SEED_SCENARIO="${1:-${DEV_SEED_SCENARIO:-colostomy-baseline}}"
+echo "==> Seeding ${SEED_SCENARIO} for OIDC subject '${SEED_SUBJECT}'..."
+compose run --rm --no-deps -e ALLOW_SYNTHETIC_SEED=true migrate node dist/seed/run.js   --scenario "${SEED_SCENARIO}" --subject "${SEED_SUBJECT}"
 
 echo "==> Reset complete."

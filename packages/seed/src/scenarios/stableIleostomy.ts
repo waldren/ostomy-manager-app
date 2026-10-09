@@ -20,6 +20,8 @@ import {
   assertInPast,
   entryInstant,
   observationAt,
+  routineHappensToday,
+  routineInstant,
   startOfUtcDay,
   type GeneratorCodes,
 } from './shared.js';
@@ -98,6 +100,26 @@ const ENTRY_ML_MAX = 320;
  */
 const ESTIMATED_IN_N = 6;
 
+/**
+ * A morning emptying at the same volume most days (#114).
+ *
+ * This scenario emits stoma output and nothing else, so it can seed exactly one
+ * of Quick-Add's three paths — the volumetric one. That is not a gap to fix
+ * here: the alternative is giving the baseline intake and urine, which would
+ * change what "the scenario every other one is read against" means. The other
+ * two paths are seeded in `colostomy-baseline`, which already models a patient
+ * who logs all three, and `scripts/dev-reset.sh` seeds that one by default for
+ * exactly this reason.
+ *
+ * What it does fix is the thing a routine is for: before it, the most repeated
+ * entry in ninety days of history was an RNG collision at 0.1 mL granularity,
+ * which the dashboard described as "you logged this 2 times recently" and which
+ * changed on every reseed.
+ */
+const ROUTINE_SKIP_ONE_IN_N = 7;
+const MORNING_EMPTYING_HOUR = 7;
+const MORNING_EMPTYING_ML = '240.0';
+
 export function generateStableIleostomy(options: ScenarioOptions & GeneratorCodes): SeedDataset {
   const rng = createRng(options.seed ?? DEFAULT_SEED);
   const timeZone = options.timeZone ?? DEFAULT_TIME_ZONE;
@@ -112,6 +134,23 @@ export function generateStableIleostomy(options: ScenarioOptions & GeneratorCode
   // scanning the output sees the history in the order it happened.
   for (let dayOffset = HISTORY_DAYS; dayOffset >= 1; dayOffset -= 1) {
     const entriesToday = rng.intBetween(ENTRIES_PER_DAY_MIN, ENTRIES_PER_DAY_MAX);
+
+    // The habit first, so it sits at the start of the day it belongs to. It is
+    // one of `entriesToday`'s siblings rather than an extra, which keeps the
+    // daily total inside the well-controlled band this scenario asserts.
+    if (routineHappensToday(rng, ROUTINE_SKIP_ONE_IN_N)) {
+      observations.push(
+        morningEmptying({
+          rng,
+          patientId,
+          now: options.now,
+          dayOffset,
+          timeZone,
+          codes: options,
+        }),
+      );
+    }
+
     for (let entry = 0; entry < entriesToday; entry += 1) {
       observations.push(
         generateEntry({
@@ -139,6 +178,44 @@ export function generateStableIleostomy(options: ScenarioOptions & GeneratorCode
     },
     observations,
   };
+}
+
+/**
+ * The habit. Every grouped field is a constant, which is what makes these one
+ * repeated entry rather than ninety similar ones — see `routineInstant`.
+ *
+ * `estimated: false` is stated rather than drawn, because the Measured/Estimated
+ * answer is part of the grouping key (ADR-0018): a routine that sometimes
+ * estimated would split into two groups, and each might fall below the floor of
+ * two that Quick-Add requires.
+ */
+function morningEmptying(input: {
+  rng: Rng;
+  patientId: string;
+  now: Date;
+  dayOffset: number;
+  timeZone: string;
+  codes: GeneratorCodes;
+}): SeedObservation {
+  const effectiveDatetime = routineInstant(
+    input.rng,
+    input.now,
+    input.dayOffset,
+    input.timeZone,
+    MORNING_EMPTYING_HOUR,
+  );
+  assertInPast('stable-ileostomy', effectiveDatetime, input.now, input.dayOffset);
+
+  return observationAt({
+    rng: input.rng,
+    patientId: input.patientId,
+    code: STOMA_OUTPUT_LOINC_CODE,
+    effectiveDatetime,
+    timeZone: input.timeZone,
+    valueQuantityValue: MORNING_EMPTYING_ML,
+    codes: input.codes,
+    estimated: false,
+  });
 }
 
 function generateEntry(input: {
