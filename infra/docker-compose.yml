@@ -446,8 +446,26 @@ services:
       # The runtime value wins, and `scripts/dev-stack-status.sh` compares it
       # against `git rev-parse`.
       #
-      # Empty when unset, which the config schema reads as absent (#76).
-      BUILD_COMMIT: ${BUILD_COMMIT:-}
+      # Passed through from the host, and genuinely ABSENT when unset there.
+      #
+      # This was `${BUILD_COMMIT:-}` with a comment claiming the schema read the
+      # result as absent. It does not: `buildCommit` is
+      # `z.string().trim().min(1).optional()`, so an absent value is accepted and
+      # an EMPTY one fails `min(1)`. Compose always defines a variable written
+      # that way, so every stack brought up without `BUILD_COMMIT` exported got an
+      # empty string, and the API refused to start:
+      #
+      #   Invalid or missing configuration:
+      #     - buildCommit: Too small: expected string to have >=1 characters
+      #
+      # It then crash-looped, so the symptom was `dev-reset.sh` reporting "api did
+      # not become healthy in time" — a timeout, which reads as slowness rather
+      # than as a rejected configuration.
+      #
+      # The bare key is how compose expresses "take it from the host environment,
+      # and set nothing if it is not there", which is what the comment above
+      # always claimed this did.
+      BUILD_COMMIT:
 
       # Browser origins allowed to read responses from this API.
       #

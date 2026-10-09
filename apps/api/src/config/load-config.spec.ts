@@ -66,6 +66,44 @@ describe('loadConfig', () => {
     expect(config.oidcClockToleranceSeconds).toBe(30);
   });
 
+  /**
+   * BUILD_COMMIT absent and BUILD_COMMIT empty are different things, and the
+   * difference stopped the whole development stack starting.
+   *
+   * `infra/docker-compose.yml` passed `${BUILD_COMMIT:-}`, which always DEFINES
+   * the variable — so every stack brought up without it exported in the shell got
+   * an empty string, `min(1)` refused it, and the API crash-looped. The symptom
+   * was `dev-reset.sh` reporting "api did not become healthy in time", a timeout
+   * that reads as slowness rather than as rejected configuration. The compose
+   * comment claimed the schema "reads [empty] as absent"; it never did.
+   *
+   * Both cases are pinned here because the compose fix depends on exactly this
+   * asymmetry: absent is a legitimate state (`/api/v1/health` reports `null` and
+   * `dev-stack-status.sh` answers UNVERIFIED), and empty is a mistake worth
+   * refusing — a stack claiming the empty commit is worse than one admitting it
+   * cannot say.
+   */
+  it('accepts an absent build commit, because a stack may legitimately not know it', () => {
+    const env = validEnv();
+    delete env.BUILD_COMMIT;
+
+    expect(loadConfig(env).buildCommit).toBeUndefined();
+  });
+
+  it('refuses an empty build commit rather than treating it as absent', () => {
+    const env = validEnv();
+    env.BUILD_COMMIT = '';
+
+    expect(() => loadConfig(env)).toThrow(ConfigValidationError);
+  });
+
+  it('parses a supplied build commit', () => {
+    const env = validEnv();
+    env.BUILD_COMMIT = '9d09f37';
+
+    expect(loadConfig(env).buildCommit).toBe('9d09f37');
+  });
+
   it('parses an overridden clock tolerance', () => {
     const env = validEnv();
     env.OIDC_CLOCK_TOLERANCE_SECONDS = '60';
