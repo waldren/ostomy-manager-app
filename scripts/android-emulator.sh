@@ -856,7 +856,10 @@ cmd_unlock() {
   sleep 2
 
   if [[ "$(keyguard_showing)" == "true" ]]; then
-    bad "still locked. If the device PIN is not ${pin}, pass the real one:"
+    # The value is NOT echoed. It defaults to a throwaway AVD PIN, but the
+    # variable exists so a real device credential can be passed, and a failure
+    # message is exactly where one would end up in scrollback or a CI log.
+    bad "still locked. If the device PIN is not the default, pass the real one:"
     bad "       ANDROID_DEVICE_PIN=<pin> $(basename "$0") unlock"
     return 1
   fi

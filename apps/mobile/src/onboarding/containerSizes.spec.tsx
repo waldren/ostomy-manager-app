@@ -178,10 +178,27 @@ describe('Add Intake container-size buttons', () => {
     await renderScreen(IMPERIAL);
 
     await act(async () => {
-      fireEvent.press(screen.getByLabelText('25 fl oz'));
+      fireEvent.press(screen.getByLabelText('25 fluid ounces'));
     });
 
     expect(screen.getByLabelText('How much did you drink?').props.value).toBe('25');
+  });
+
+  /**
+   * The button's FACE is compact and its spoken name is spelled out.
+   *
+   * These five are one-tap controls that fill a clinical field, and their
+   * visible label is their accessible name unless something overrides it —
+   * so "25 fl oz" would be announced "25 F L O Z" to a population that skews
+   * older and post-surgical. `apps/web`'s `OutputChart` already makes this
+   * distinction; mobile's highest-traffic buttons did not.
+   */
+  it('says the unit out loud rather than spelling the symbol', async () => {
+    await renderScreen(IMPERIAL);
+
+    expect(screen.getByLabelText('25 fluid ounces')).toBeTruthy();
+    expect(screen.getByText('25 fl oz')).toBeTruthy();
+    expect(screen.queryByLabelText('25 fl oz')).toBeNull();
   });
 
   /**
@@ -205,5 +222,27 @@ describe('Add Intake container-size buttons', () => {
     await renderScreen(METRIC);
 
     expect(screen.queryByText(/568/)).toBeNull();
+  });
+
+  /**
+   * One admin edit to the set's unit drops every button at once, and the
+   * heading plus the "tap a size below" hint would then point at nothing.
+   * "The set loaded" and "there is something to show" stopped being the same
+   * question the moment a member could be dropped.
+   */
+  it('hides the whole row, heading included, when every size was dropped', async () => {
+    await writeValueSets(
+      mockExecutor,
+      [
+        {
+          key: VALUE_SET_KEY.CONTAINER_SIZE,
+          members: [{ code: 'pint_568', sortOrder: 0, numericValue: 568, numericUnit: 'cups' }],
+        },
+      ],
+      AT,
+    );
+    await renderScreen(METRIC);
+
+    expect(screen.queryByText('Common sizes')).toBeNull();
   });
 });

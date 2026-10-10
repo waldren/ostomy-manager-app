@@ -262,7 +262,7 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
         hint={t('common:entry.urineAmountHint')}
         value={amountText}
         onChangeText={changeAmount}
-        unitLabel={formatVolumeUnitLabel(units.volumeUnit)}
+        unitLabel={formatVolumeUnitLabel(units.volumeUnit, undefined, 'short')}
         errorMessage={
           amountRuleCode === undefined ? undefined : t(`validationErrors:${amountRuleCode}`)
         }

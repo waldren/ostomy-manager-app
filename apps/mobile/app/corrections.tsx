@@ -318,7 +318,7 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
                           }
                           value={amountText}
                           onChangeText={setAmountText}
-                          unitLabel={formatVolumeUnitLabel(units.volumeUnit)}
+                          unitLabel={formatVolumeUnitLabel(units.volumeUnit, undefined, 'short')}
                           errorMessage={
                             amountRule === undefined
                               ? undefined

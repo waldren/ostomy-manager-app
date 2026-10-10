@@ -46,6 +46,15 @@ export type UnitDisplay = 'short' | 'long';
  * `unit.*` keys, they should be deleted rather than kept as a second,
  * unused source of unit wording.
  */
+// `fluid-ounce` is CLDR's identifier for the US fluid ounce specifically, which
+// is what `../units`' `ML_PER_US_FLUID_OUNCE` converts with — the two agree by
+// construction, and a locale that uses a different ounce DISAMBIGUATES rather
+// than misleading: `en-GB` renders "US fl oz", not "fl oz". (Measured, and
+// pinned in `format.spec.ts`; the reverse was assumed during review and is
+// wrong.) The hazard worth naming is therefore the other direction — switching
+// this to CLDR's separate `fluid-ounce-imperial` without changing the
+// conversion factor would under-report every volume by about 4% in a string
+// that still reads "fl oz". That is a units change, not a translation.
 const INTL_UNIT_BY_VOLUME_UNIT: Record<VolumeUnit, string> = {
   mL: 'milliliter',
   oz: 'fluid-ounce',
@@ -164,20 +173,30 @@ function unitLabel(intlUnit: string, locale: string, unitDisplay: UnitDisplay): 
 
 const UNIT_LABEL_SAMPLE = 1;
 
-/** The volume unit's label alone — see {@link unitLabel}. */
+/**
+ * The volume unit's label alone — see {@link unitLabel}.
+ *
+ * `unitDisplay` is **required**, unlike on the quantity formatters above. A
+ * function whose entire output is a label is one whose result most often ends
+ * up in an accessible name, where `'short'` is announced letter by letter —
+ * so the unsafe choice should be the one a caller has to type. This is the
+ * same argument that deleted `DEFAULT_MEASUREMENT_SYSTEM` rather than leaving
+ * it unused: a default that still compiles is the one the next screen reaches
+ * for, and `formatWeightUnitLabel` has no caller yet.
+ */
 export function formatVolumeUnitLabel(
   unit: VolumeUnit,
   locale: string = DEFAULT_LOCALE,
-  unitDisplay: UnitDisplay = 'short',
+  unitDisplay: UnitDisplay,
 ): string {
   return unitLabel(INTL_UNIT_BY_VOLUME_UNIT[unit], locale, unitDisplay);
 }
 
-/** The weight unit's label alone — see {@link unitLabel}. */
+/** The weight unit's label alone — see {@link formatVolumeUnitLabel}. */
 export function formatWeightUnitLabel(
   unit: WeightUnit,
   locale: string = DEFAULT_LOCALE,
-  unitDisplay: UnitDisplay = 'short',
+  unitDisplay: UnitDisplay,
 ): string {
   return unitLabel(INTL_UNIT_BY_WEIGHT_UNIT[unit], locale, unitDisplay);
 }

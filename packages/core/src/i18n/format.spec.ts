@@ -95,13 +95,13 @@ describe('Intl-based formatting helpers (ADR-0006)', () => {
    * hid the imperial case for as long as metric was the only reachable system.
    */
   it('formats a volume unit label on its own, with no number', () => {
-    expect(formatVolumeUnitLabel('mL')).toBe('mL');
-    expect(formatVolumeUnitLabel('oz')).toBe('fl oz');
+    expect(formatVolumeUnitLabel('mL', DEFAULT_LOCALE, 'short')).toBe('mL');
+    expect(formatVolumeUnitLabel('oz', DEFAULT_LOCALE, 'short')).toBe('fl oz');
   });
 
   it('formats a weight unit label on its own', () => {
-    expect(formatWeightUnitLabel('kg')).toBe('kg');
-    expect(formatWeightUnitLabel('lb')).toBe('lb');
+    expect(formatWeightUnitLabel('kg', DEFAULT_LOCALE, 'short')).toBe('kg');
+    expect(formatWeightUnitLabel('lb', DEFAULT_LOCALE, 'short')).toBe('lb');
   });
 
   /**
@@ -116,15 +116,30 @@ describe('Intl-based formatting helpers (ADR-0006)', () => {
     expect(formatWeightUnitLabel('kg', DEFAULT_LOCALE, 'long')).toBe('kilogram');
   });
 
-  /** A label is a label: no digits may survive the formatToParts filter. */
+  /** A label is a label: the sample number must not survive the subtraction. */
   it('never leaks the sample number into the label', () => {
     for (const label of [
-      formatVolumeUnitLabel('mL'),
-      formatVolumeUnitLabel('oz'),
-      formatWeightUnitLabel('kg'),
-      formatWeightUnitLabel('lb'),
+      formatVolumeUnitLabel('mL', DEFAULT_LOCALE, 'short'),
+      formatVolumeUnitLabel('oz', DEFAULT_LOCALE, 'short'),
+      formatWeightUnitLabel('kg', DEFAULT_LOCALE, 'short'),
+      formatWeightUnitLabel('lb', DEFAULT_LOCALE, 'short'),
     ]) {
       expect(label).not.toMatch(/\d/);
     }
+  });
+  /**
+   * The label stays honest in a locale whose own ounce is a different size.
+   *
+   * `../units` converts with the US fluid ounce, and CLDR's `fluid-ounce`
+   * identifier means exactly that one — so a reader in a locale where "fl oz"
+   * would otherwise mean the imperial ounce (28.4131 mL, about 4% smaller)
+   * gets a disambiguated label instead of a wrong one. Pinned because review
+   * assumed the opposite: that `en-GB` would silently relabel US-ounce numbers
+   * with the UK name. It does not, and the next person to wonder should find
+   * the measurement rather than repeat the guess.
+   */
+  it('disambiguates the ounce in a locale that has its own', () => {
+    expect(formatVolumeUnitLabel('oz', 'en-US', 'short')).toBe('fl oz');
+    expect(formatVolumeUnitLabel('oz', 'en-GB', 'short')).toBe('US fl oz');
   });
 });

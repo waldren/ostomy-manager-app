@@ -195,7 +195,7 @@ function AddOutputScreen({ profile }: { readonly profile: LocalProfile }): React
         hint={t('common:entry.stomaOutputAmountHint')}
         value={amountText}
         onChangeText={setAmountText}
-        unitLabel={formatVolumeUnitLabel(units.volumeUnit)}
+        unitLabel={formatVolumeUnitLabel(units.volumeUnit, undefined, 'short')}
         errorMessage={
           amountRuleCode === undefined ? undefined : t(`validationErrors:${amountRuleCode}`)
         }

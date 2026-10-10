@@ -391,7 +391,16 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
       ) : null}
 
       {pendingCount !== undefined ? (
-        <BodyText tone="muted">
+        <BodyText
+          tone="muted"
+          // Announced, because this line now changes WHILE the screen is open.
+          // Before the refresh fix above it was frozen after mount, so there
+          // was nothing to announce; a sync cycle completing is an async status
+          // change and a screen-reader user would otherwise never learn their
+          // entries went out. `polite` on purpose — urgency in this app is
+          // reserved for the red-flag prompt.
+          live="polite"
+        >
           {pendingCount === 0
             ? t('mobile:home.pendingCountNone')
             : t('mobile:home.pendingCount', { count: pendingCount })}

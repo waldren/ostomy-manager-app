@@ -58,6 +58,15 @@ import { NumericField } from '../src/ui/NumericField';
 import { Screen } from '../src/ui/Screen';
 
 /**
+ * The spelled-out unit, for anything whose label is read aloud.
+ *
+ * Named rather than inlined for the same reason `apps/web`'s `OutputChart`
+ * names it: the no-hardcoded-strings lint cannot tell a formatter enum from
+ * patient copy, and the reason this is not `'short'` belongs next to the
+ * value. A screen reader announces "fl oz" as "F L O Z".
+ */
+const SPOKEN_UNIT_DISPLAY = 'long' as const;
+/**
  * The Add Intake screen (SRS §3.1, AC 2.3).
  *
  * Structurally the Add Output screen with two additions, and it reuses that
@@ -119,6 +128,20 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
   const { measurementSystem, surgeryDate } = profile;
   const units = unitsForMeasurementSystem(measurementSystem);
   const containers = useValueSetOptions(VALUE_SET_KEY.CONTAINER_SIZE);
+  // Resolved before rendering rather than inside it, because "the set loaded"
+  // and "there is something to show" stopped being the same question once a
+  // member in an unconvertible unit could be dropped. One admin edit to the
+  // set's unit drops every button at once, and the heading above an empty row
+  // — with a hint telling the patient to tap a size — is worse than no row.
+  const quickSizes =
+    containers.status === 'ready'
+      ? containers.members
+          .map((member) => ({ member, size: containerSizeFor(member, units) }))
+          .filter(
+            (entry): entry is { member: CachedValueSetMember; size: DisplayVolume } =>
+              entry.size !== null,
+          )
+      : [];
   const fluidTypes = useValueSetOptions(VALUE_SET_KEY.FLUID_TYPE);
 
   const cached = useCachedThresholds(database);
@@ -203,42 +226,40 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
         hint={t('common:entry.intakeAmountHint')}
         value={amountText}
         onChangeText={setAmountText}
-        unitLabel={formatVolumeUnitLabel(units.volumeUnit)}
+        unitLabel={formatVolumeUnitLabel(units.volumeUnit, undefined, 'short')}
         errorMessage={
           amountRuleCode === undefined ? undefined : t(`validationErrors:${amountRuleCode}`)
         }
       />
 
       {/* AC 2.3 AC2 — at least three configurable quick-select sizes. */}
-      {containers.status === 'ready' ? (
+      {quickSizes.length > 0 ? (
         <View>
           <BodyText>{t('common:entry.intakeQuickAddLabel')}</BodyText>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            {containers.members
-              .map((member) => ({ member, size: containerSizeFor(member, units) }))
-              .filter(
-                (entry): entry is { member: CachedValueSetMember; size: DisplayVolume } =>
-                  entry.size !== null,
-              )
-              .map(({ member, size }) => (
-                <Button
-                  key={member.code}
-                  label={formatVolumeQuantity(size)}
-                  variant="secondary"
-                  onPress={() => {
-                    // Auto-fills the field rather than saving: the AC says
-                    // "auto-fill the volume field when tapped", and a
-                    // one-tap save would skip the Measured/Estimated
-                    // choice that Tier 1 requires.
-                    //
-                    // The CONVERTED number, matching the button's own face.
-                    // Filling the canonical millilitre figure into a field
-                    // measured in the patient's unit is what made an imperial
-                    // patient's tap on "750 fl oz" save about 22 litres.
-                    setAmountText(String(size.value));
-                  }}
-                />
-              ))}
+            {quickSizes.map(({ member, size }) => (
+              <Button
+                key={member.code}
+                label={formatVolumeQuantity(size)}
+                // The spelled-out unit, because this label IS the control's
+                // accessible name: "7 fl oz" is announced "7 F L O Z".
+                // `OutputChart.tsx` makes the same move for the same reason.
+                accessibilityLabel={formatVolumeQuantity(size, undefined, SPOKEN_UNIT_DISPLAY)}
+                variant="secondary"
+                onPress={() => {
+                  // Auto-fills the field rather than saving: the AC says
+                  // "auto-fill the volume field when tapped", and a
+                  // one-tap save would skip the Measured/Estimated
+                  // choice that Tier 1 requires.
+                  //
+                  // The CONVERTED number, matching the button's own face.
+                  // Filling the canonical millilitre figure into a field
+                  // measured in the patient's unit is what made an imperial
+                  // patient's tap on "750 fl oz" save about 22 litres.
+                  setAmountText(String(size.value));
+                }}
+              />
+            ))}
           </View>
         </View>
       ) : null}
