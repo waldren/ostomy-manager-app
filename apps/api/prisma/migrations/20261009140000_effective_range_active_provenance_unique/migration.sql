@@ -1,0 +1,47 @@
+-- P4.S2 slice 2 — settling the invariant `p1-s3-schema-coverage.md` deferred.
+--
+-- That document left one decision open for "whichever sprint builds the
+-- range-precedence query", between two readings of `effective_ranges`:
+--
+--   (a) at most one ACTIVE row per (patient_id, range_type), or
+--   (b) "whichever ACTIVE row has the highest-precedence provenance wins,
+--       possibly among several".
+--
+-- It is (b), and the SRS settles it rather than taste.
+--
+-- §3.0: "The patient may edit these, but edits that diverge from a
+-- physician-entered default are flagged." The edit is allowed and FLAGGED, not
+-- refused — so a patient-set row and a physician-set row exist at the same
+-- time. §3.9 then puts physician-set highest and says "a physician-entered
+-- target is only ever flagged as diverging", so the physician's value stays in
+-- force while the patient's is recorded beside it.
+--
+-- A unique index over (patient_id, range_type) would make that state
+-- unrepresentable and force a patient's edit to destroy the physician's value —
+-- the one outcome AC 14.1 AC4 forbids. So that index is deliberately NOT
+-- created, and this comment is the record of why, since "no index" is otherwise
+-- indistinguishable from "nobody got to it".
+--
+-- ## What IS enforced
+--
+-- At most one ACTIVE row per (patient_id, range_type, provenance). Two
+-- simultaneously active patient-set values for one range type is not a state
+-- with a meaning: the newer supersedes the older, which is what `status` and
+-- the `previous_range_id` self-relation are for.
+--
+-- Partial on `status = 'ACTIVE'` because SUPERSEDED and DISMISSED rows are
+-- history and must be allowed to accumulate — that history is how "why did this
+-- change" (§3.9's adaptation) has an answer without reconstructing it from audit
+-- rows. Partial on `deleted_at IS NULL` for the reason #97's exclusion
+-- constraint is: a tombstone must not keep occupying the slot, or a soft delete
+-- would break the workflow it exists to serve.
+--
+-- `resolveEffectiveRange` still tie-breaks on `client_updated_at` for two rows
+-- of the same provenance. That is unreachable through this application's own
+-- writes once this index exists, and it is kept because the alternative —
+-- returning whichever row the query happened to order first — makes a patient's
+-- effective threshold depend on row order.
+
+CREATE UNIQUE INDEX "effective_ranges_one_active_per_provenance"
+  ON "effective_ranges" ("patient_id", "range_type", "provenance")
+  WHERE "status" = 'ACTIVE' AND "deleted_at" IS NULL;
