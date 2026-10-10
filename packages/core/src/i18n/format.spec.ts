@@ -22,7 +22,9 @@ import {
   formatDateTime,
   formatNumber,
   formatVolumeQuantity,
+  formatVolumeUnitLabel,
   formatWeightQuantity,
+  formatWeightUnitLabel,
 } from './index.js';
 
 describe('Intl-based formatting helpers (ADR-0006)', () => {
@@ -81,5 +83,48 @@ describe('Intl-based formatting helpers (ADR-0006)', () => {
     expect(formatDateTime(value, DEFAULT_LOCALE, { timeZone: 'America/Los_Angeles' })).toBe(
       'Jun 15, 2026, 4:30 PM',
     );
+  });
+  /**
+   * The bare unit label, for an input's suffix.
+   *
+   * The imperial case is the one that matters and the reason these exist: the
+   * `VolumeUnit` token is `'oz'`, CLDR's short form is `'fl oz'`, and a volume
+   * labelled in a unit most readers know as a measure of weight is ambiguous
+   * in the one place a patient is typing a clinical number. The metric pair is
+   * asserted beside it because token and label coincide there — which is what
+   * hid the imperial case for as long as metric was the only reachable system.
+   */
+  it('formats a volume unit label on its own, with no number', () => {
+    expect(formatVolumeUnitLabel('mL')).toBe('mL');
+    expect(formatVolumeUnitLabel('oz')).toBe('fl oz');
+  });
+
+  it('formats a weight unit label on its own', () => {
+    expect(formatWeightUnitLabel('kg')).toBe('kg');
+    expect(formatWeightUnitLabel('lb')).toBe('lb');
+  });
+
+  /**
+   * The same accessible-name rule as the quantity formatters: "fl oz" is read
+   * out as letters.
+   *
+   * Singular, because a label names the unit rather than counting anything —
+   * the field it sits beside has no value yet.
+   */
+  it('spells a unit label out when the long form is asked for', () => {
+    expect(formatVolumeUnitLabel('oz', DEFAULT_LOCALE, 'long')).toBe('fluid ounce');
+    expect(formatWeightUnitLabel('kg', DEFAULT_LOCALE, 'long')).toBe('kilogram');
+  });
+
+  /** A label is a label: no digits may survive the formatToParts filter. */
+  it('never leaks the sample number into the label', () => {
+    for (const label of [
+      formatVolumeUnitLabel('mL'),
+      formatVolumeUnitLabel('oz'),
+      formatWeightUnitLabel('kg'),
+      formatWeightUnitLabel('lb'),
+    ]) {
+      expect(label).not.toMatch(/\d/);
+    }
   });
 });

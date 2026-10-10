@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime } from '@ostomy/core/i18n';
+import { formatDateTime, formatVolumeUnitLabel } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
@@ -318,7 +318,7 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
                           }
                           value={amountText}
                           onChangeText={setAmountText}
-                          unitLabel={units.volumeUnit}
+                          unitLabel={formatVolumeUnitLabel(units.volumeUnit)}
                           errorMessage={
                             amountRule === undefined
                               ? undefined

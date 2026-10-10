@@ -120,6 +120,69 @@ export function formatVolumeQuantity(
 }
 
 /**
+ * The unit's own label, with no number attached — for a field whose value is
+ * typed rather than formatted, so the suffix beside the input is the only
+ * place the unit appears.
+ *
+ * Derived from the same `Intl` call as the quantity formatters and then
+ * stripped of the number, rather than from a table of English strings. That is
+ * the whole point: the four entry screens rendered the raw `VolumeUnit` token
+ * as their suffix, which reads "mL" under metric — identical to CLDR's short
+ * form, so it looked correct for as long as metric was the only reachable
+ * system — and "oz" under imperial, where CLDR says "fl oz". A patient logging
+ * a volume in a unit most readers know as a measure of weight is exactly the
+ * ambiguity the unit wording exists to remove, and it reached the screen the
+ * first time a patient could choose imperial (#122's emulator pass).
+ *
+ * `Intl.NumberFormat` has no unit-only mode, so a sample is formatted twice —
+ * once with the unit and once without — and the number is subtracted from the
+ * result. The sample is `1` because a label names its unit instead of counting
+ * anything (the field beside it has no value yet), so the singular plural
+ * category is the one to ask for: "fluid ounce", not "fluid ounces". The short
+ * forms this is actually used for do not inflect at all.
+ *
+ * **Subtraction rather than `formatToParts`,** which is the obvious
+ * implementation and is wrong here: React Native runs on Hermes, whose `Intl`
+ * is a thin bridge to the platform's ICU and does not return `type: 'unit'`
+ * parts. Filtering for them there yields an empty string, so the first version
+ * of this replaced a wrongly-labelled field with an unlabelled one — measured
+ * on an emulator during #122, after a Node-only unit test passed. `format` is
+ * supported on both engines, so taking the difference behaves identically in
+ * jest, vitest and the app. The separator goes with the number, and `trim`
+ * removes it whichever side it falls on, including the non-breaking space most
+ * locales use.
+ */
+function unitLabel(intlUnit: string, locale: string, unitDisplay: UnitDisplay): string {
+  const withUnit = new Intl.NumberFormat(locale, {
+    style: 'unit',
+    unit: intlUnit,
+    unitDisplay,
+  }).format(UNIT_LABEL_SAMPLE);
+  const bare = new Intl.NumberFormat(locale).format(UNIT_LABEL_SAMPLE);
+  return withUnit.replace(bare, '').trim();
+}
+
+const UNIT_LABEL_SAMPLE = 1;
+
+/** The volume unit's label alone — see {@link unitLabel}. */
+export function formatVolumeUnitLabel(
+  unit: VolumeUnit,
+  locale: string = DEFAULT_LOCALE,
+  unitDisplay: UnitDisplay = 'short',
+): string {
+  return unitLabel(INTL_UNIT_BY_VOLUME_UNIT[unit], locale, unitDisplay);
+}
+
+/** The weight unit's label alone — see {@link unitLabel}. */
+export function formatWeightUnitLabel(
+  unit: WeightUnit,
+  locale: string = DEFAULT_LOCALE,
+  unitDisplay: UnitDisplay = 'short',
+): string {
+  return unitLabel(INTL_UNIT_BY_WEIGHT_UNIT[unit], locale, unitDisplay);
+}
+
+/**
  * Weight is always rendered to one decimal place, in both systems
  * (ADR-0005's weight carve-out) — this formatter enforces that at the
  * presentation layer too, independent of what `convertWeightForDisplay`

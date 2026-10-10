@@ -95,5 +95,7 @@ export {
   formatDateTime,
   formatNumber,
   formatVolumeQuantity,
+  formatVolumeUnitLabel,
   formatWeightQuantity,
+  formatWeightUnitLabel,
 } from './format.js';

@@ -40,6 +40,7 @@
 #   scripts/android-emulator.sh wire      # adb reverse for the dev stack
 #   scripts/android-emulator.sh up        # create + start + wire
 #   scripts/android-emulator.sh status    # device state and forwarded ports
+#   scripts/android-emulator.sh unlock    # dismiss the keyguard with the device PIN
 #   scripts/android-emulator.sh logcat    # this app's logs only
 #   scripts/android-emulator.sh fingerprint  # PIN + fingerprint enrolment (ADR-0015)
 #   scripts/android-emulator.sh metro-reset  # clear Metro's file-map cache (#115)
@@ -50,7 +51,7 @@
 # no-op the second time, which is what lets a session call it without first
 # checking whether it already ran.
 #
-# ## Three failures that present as something else (#115)
+# ## Four failures that present as something else (#115, #122)
 #
 # Each of these cost hours during the R.S1 emulator pass, and each sends you
 # somewhere other than its cause. They are named here because the section above
@@ -82,6 +83,24 @@
 #
 # So budget a human at the screen for the unlock step. `docs/gate-b-hardware-
 # verification.md` says the same thing where the steps are written down.
+#
+# **A locked device looks like a broken build** (#122). This is what the point
+# above costs you if nobody unlocks: until the device credential is entered
+# once after boot, user 0's credential-encrypted storage stays locked and only
+# `directBootAware` components resolve. This app is not one, so:
+#
+#   - `am start -n org.ostomy.diary/.MainActivity` answers
+#     "Activity class {...} does not exist", naming a class that is present in
+#     the APK and in the manifest.
+#   - `cmd package query-activities -a android.intent.action.MAIN` does not
+#     list the app, while `pm list packages` still does, and
+#     `dumpsys package <pkg>` still prints the MAIN/LAUNCHER filter.
+#   - `monkey -p <pkg>` reports "No activities found to run".
+#
+# Every one of those reads as a bad install. A reboot does not help, and
+# neither does uninstall-and-reinstall — both were tried before the keyguard
+# was. `status` now reports the keyguard for exactly this reason, and `unlock`
+# dismisses it for the ordinary PIN case.
 
 set -euo pipefail
 
@@ -687,12 +706,22 @@ cmd_wire() {
   # Metro's default is 8081, which infra/docker-compose.yml already publishes
   # for the admin SPA. Expo then quietly picks another port and the device
   # cannot find the bundler.
+  #
+  # "In use" is not the same as "wrong", and saying so cost a #122 session a
+  # detour: once Metro IS running this warning fired against Metro itself and
+  # told the reader to stop a container that was already stopped. Metro answers
+  # `/status` with `packager-status:running` and nothing else on this port does,
+  # so ask who holds it before complaining.
   if lsof -i ":8081" >/dev/null 2>&1 || netstat -an 2>/dev/null | grep -qE '[.:]8081[[:space:]]+.*LISTEN'; then
-    warn "host port 8081 is in use (the admin SPA publishes it)."
-    warn "         Metro MUST have host 8081. Stop the admin container first:"
-    warn "           docker stop ostomy-dev-admin"
-    warn "           pnpm --filter @ostomy/mobile start --port 8081"
-    warn "         (restart it afterwards: docker start ostomy-dev-admin)"
+    if curl -fsS -m 2 "http://localhost:8081/status" 2>/dev/null | grep -q 'packager-status:running'; then
+      ok "host 8081 is Metro, already running"
+    else
+      warn "host port 8081 is in use, and it is not Metro (the admin SPA publishes it)."
+      warn "         Metro MUST have host 8081. Stop the admin container first:"
+      warn "           docker stop ostomy-dev-admin"
+      warn "           pnpm --filter @ostomy/mobile start --port 8081"
+      warn "         (restart it afterwards: docker start ostomy-dev-admin)"
+    fi
   fi
 }
 
@@ -723,15 +752,116 @@ cmd_status() {
   fi
 
   step "App"
-  if "${ADB}" -s "${EMULATOR_SERIAL}" shell pm list packages 2>/dev/null | grep -q "package:${APP_PACKAGE}$"; then
-    printf '  %s is installed\n' "${APP_PACKAGE}"
-  else
-    printf '  %s is NOT installed — build it with:\n' "${APP_PACKAGE}"
-    printf '    pnpm --filter @ostomy/mobile android:build\n'
-  fi
+  report_app_health
+
+  step "Keyguard"
+  report_keyguard_health
 
   step "Display"
   report_display_health
+}
+
+# Reports the keyguard, because a locked device makes this app unlaunchable in
+# a way that names a class rather than a lock screen (#122).
+#
+# Until the device credential is entered once after boot, user 0's
+# credential-encrypted storage is locked and only `directBootAware` components
+# resolve. `am start` then answers "Activity class {...} does not exist" for a
+# class that is in the APK, which reads as a broken build — see this file's
+# header for the full set of symptoms and what was wasted chasing them.
+# Whether the app is installed AND launchable, which are not the same question
+# (#122).
+#
+# `pm list packages` answers the first and reads like an answer to the second.
+# It is not: while user 0's credential-encrypted storage is locked, only
+# `directBootAware` components resolve, so the package is listed, `dumpsys
+# package` still prints its MAIN/LAUNCHER filter, and every launch path reports
+# a missing activity CLASS. Resolving the launcher intent is the question a
+# reader actually has when the app will not start, so ask that one — it also
+# catches a genuinely broken install, which the keyguard line below would not
+# explain.
+report_app_health() {
+  if ! "${ADB}" -s "${EMULATOR_SERIAL}" shell pm list packages 2>/dev/null |
+    grep -q "package:${APP_PACKAGE}$"; then
+    printf '  %s is NOT installed — build it with:\n' "${APP_PACKAGE}"
+    printf '    pnpm --filter @ostomy/mobile android:build\n'
+    return 0
+  fi
+
+  if "${ADB}" -s "${EMULATOR_SERIAL}" shell cmd package query-activities \
+    -a android.intent.action.MAIN -c android.intent.category.LAUNCHER 2>/dev/null |
+    grep -q "${APP_PACKAGE}"; then
+    printf '  %s is installed and launchable\n' "${APP_PACKAGE}"
+    return 0
+  fi
+
+  cat <<EOF
+  ${APP_PACKAGE} is installed but its launcher activity does NOT resolve.
+
+  Almost always the device is locked and has not been unlocked since boot: the
+  app is not directBootAware, so its components stay invisible and "am start"
+  answers "Activity class {...} does not exist" for a class that is in the APK.
+  Reinstalling does not help. Try:
+
+    $(basename "$0") unlock
+EOF
+}
+
+# `true` when the lock screen is up. One source for `status` and `unlock`, so
+# the two can never disagree about what "locked" means.
+keyguard_showing() {
+  "${ADB}" -s "${EMULATOR_SERIAL}" shell dumpsys window 2>/dev/null |
+    sed -n 's/.*isKeyguardShowing=\([a-z]*\).*//p' | head -1 | tr -d '
+'
+}
+
+report_keyguard_health() {
+  if [[ "$(keyguard_showing)" != "true" ]]; then
+    printf '  unlocked
+'
+    return 0
+  fi
+
+  cat <<EOF
+  LOCKED: the keyguard is showing, so ${APP_PACKAGE} cannot be launched.
+
+  Its components do not resolve while user 0's credential-encrypted storage is
+  locked, and every launch path reports that as a missing activity class rather
+  than as a lock screen. Clear it with:
+
+    $(basename "$0") unlock
+EOF
+}
+
+# Dismisses the keyguard with the device PIN.
+#
+# `keyevent 82` rather than a swipe: on the lock screen an upward `input swipe`
+# opens the notification shade instead of the bouncer (#115). This handles the
+# ordinary PIN keyguard only — the credential view BiometricPrompt raises from
+# inside an app is a secure window that `adb` cannot drive at all, which is why
+# a full walkthrough still needs a human at the screen.
+cmd_unlock() {
+  if ! emulator_is_running; then
+    printf 'ERROR: %s is not running.
+' "${EMULATOR_SERIAL}" >&2
+    exit 1
+  fi
+
+  local pin="${ANDROID_DEVICE_PIN:-1234}"
+
+  "${ADB}" -s "${EMULATOR_SERIAL}" shell input keyevent KEYCODE_WAKEUP
+  "${ADB}" -s "${EMULATOR_SERIAL}" shell input keyevent 82
+  "${ADB}" -s "${EMULATOR_SERIAL}" shell input text "${pin}"
+  "${ADB}" -s "${EMULATOR_SERIAL}" shell input keyevent KEYCODE_ENTER
+  sleep 2
+
+  if [[ "$(keyguard_showing)" == "true" ]]; then
+    bad "still locked. If the device PIN is not ${pin}, pass the real one:"
+    bad "       ANDROID_DEVICE_PIN=<pin> $(basename "$0") unlock"
+    return 1
+  fi
+
+  ok "unlocked"
 }
 
 # How small a `screencap` PNG has to be before it is reporting a wedged display
@@ -1059,6 +1189,7 @@ case "${1:-}" in
   wire)   cmd_wire ;;
   up)     cmd_up ;;
   status) cmd_status ;;
+  unlock) cmd_unlock ;;
   logcat) cmd_logcat ;;
   fingerprint) cmd_fingerprint ;;
   metro-reset) cmd_metro_reset ;;

@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime, formatVolumeQuantity } from '@ostomy/core/i18n';
+import { formatDateTime, formatVolumeQuantity, formatVolumeUnitLabel } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -28,7 +28,10 @@ import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
-import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
+import {
+  VALUE_SET_KEY,
+  type CachedValueSetMember,
+} from '../src/db/repositories/valueSetsRepository';
 import { parseDraftParams } from '../src/quickadd/draftParams';
 import { FLUID_INTAKE_LOINC_CODE } from '../src/entry/observationCodes';
 import {
@@ -39,7 +42,12 @@ import {
   type EntryCheck,
 } from '../src/entry/useStomaOutputEntry';
 import { labelKeyFor, useValueSetOptions } from '../src/entry/useValueSetOptions';
-import { unitsForMeasurementSystem } from '../src/lib/units/measurementSystem';
+import {
+  unitsForMeasurementSystem,
+  type MeasurementSystem,
+  type MeasurementSystemUnits,
+} from '../src/lib/units/measurementSystem';
+import { convertVolumeForDisplay, type DisplayVolume } from '@ostomy/core/units';
 import { deviceTimeZone, now as clockNow, toWireInstant } from '../src/lib/utils/clock';
 import { useSyncStatus } from '../src/sync/SyncProvider';
 import { BodyText } from '../src/ui/BodyText';
@@ -195,7 +203,7 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
         hint={t('common:entry.intakeAmountHint')}
         value={amountText}
         onChangeText={setAmountText}
-        unitLabel={units.volumeUnit}
+        unitLabel={formatVolumeUnitLabel(units.volumeUnit)}
         errorMessage={
           amountRuleCode === undefined ? undefined : t(`validationErrors:${amountRuleCode}`)
         }
@@ -207,31 +215,30 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
           <BodyText>{t('common:entry.intakeQuickAddLabel')}</BodyText>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
             {containers.members
-              .filter((member) => member.numericValue !== null)
-              .map((member) => {
-                // A `DisplayVolume`, not a bare number: the unit travels with
-                // the value so `Intl` can render it, and the unit comes from
-                // the member rather than being assumed — an admin could
-                // legitimately configure a set in some other canonical unit.
-                const amount = formatVolumeQuantity({
-                  value: member.numericValue as number,
-                  unit: units.volumeUnit,
-                });
-                return (
-                  <Button
-                    key={member.code}
-                    label={amount}
-                    variant="secondary"
-                    onPress={() => {
-                      // Auto-fills the field rather than saving: the AC says
-                      // "auto-fill the volume field when tapped", and a
-                      // one-tap save would skip the Measured/Estimated
-                      // choice that Tier 1 requires.
-                      setAmountText(String(member.numericValue));
-                    }}
-                  />
-                );
-              })}
+              .map((member) => ({ member, size: containerSizeFor(member, units) }))
+              .filter(
+                (entry): entry is { member: CachedValueSetMember; size: DisplayVolume } =>
+                  entry.size !== null,
+              )
+              .map(({ member, size }) => (
+                <Button
+                  key={member.code}
+                  label={formatVolumeQuantity(size)}
+                  variant="secondary"
+                  onPress={() => {
+                    // Auto-fills the field rather than saving: the AC says
+                    // "auto-fill the volume field when tapped", and a
+                    // one-tap save would skip the Measured/Estimated
+                    // choice that Tier 1 requires.
+                    //
+                    // The CONVERTED number, matching the button's own face.
+                    // Filling the canonical millilitre figure into a field
+                    // measured in the patient's unit is what made an imperial
+                    // patient's tap on "750 fl oz" save about 22 litres.
+                    setAmountText(String(size.value));
+                  }}
+                />
+              ))}
           </View>
         </View>
       ) : null}
@@ -335,6 +342,58 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
     </Screen>
   );
 }
+
+/**
+ * One quick-select container size, in the units the patient reads and types
+ * in — or `null` for a member this release cannot place on a button.
+ *
+ * ## What this is fixing
+ *
+ * The size was previously rendered as the member's raw canonical number
+ * labelled with the patient's unit, and the tap filled the field with that
+ * same raw number. Under metric both are right by coincidence: the members
+ * are stored in mL and a metric patient reads and types mL. Under imperial
+ * the 750 mL bottle rendered as "750 fl oz" — about 22 litres — and tapping
+ * it saved that, because the field's contents are read as the patient's unit
+ * and converted on save. A one-tap control that writes roughly thirty times
+ * the real volume into a hydration signal is the worst kind of defect this
+ * screen can have, and it was unreachable until P4.S1 let a patient choose
+ * imperial (#122).
+ *
+ * ## Why the member's own unit, not an assumption
+ *
+ * `numericUnit` is what the admin configured the set in, and the comment at
+ * the call site has always said to use it. A member in a unit this release
+ * has no conversion for is dropped rather than guessed at: every other
+ * unknown-value case in this codebase renders a generic label and keeps the
+ * value visible, but those are review surfaces. This is a button that writes
+ * a clinical number, and offering one whose value cannot be computed is worse
+ * than not offering it. The typed field beside it still accepts any amount.
+ */
+function containerSizeFor(
+  member: CachedValueSetMember,
+  target: MeasurementSystemUnits,
+): DisplayVolume | null {
+  if (member.numericValue === null) return null;
+  const memberSystem = MEASUREMENT_SYSTEM_BY_VOLUME_UNIT[member.numericUnit ?? ''];
+  if (memberSystem === undefined) return null;
+  return convertVolumeForDisplay(
+    member.numericValue,
+    unitsForMeasurementSystem(memberSystem),
+    target,
+  );
+}
+
+/**
+ * The volume units a member may be configured in, and which system each one
+ * makes the member's value canonical to. Deliberately a lookup rather than a
+ * cast: a set configured in litres or cups reaches here as an unknown key and
+ * is dropped, instead of being read as millilitres.
+ */
+const MEASUREMENT_SYSTEM_BY_VOLUME_UNIT: Readonly<Record<string, MeasurementSystem | undefined>> = {
+  mL: 'metric',
+  oz: 'imperial',
+};
 
 /**
  * The profile arrives as a prop, never read inside — see `withProfile`. Two
