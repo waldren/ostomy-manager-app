@@ -36,11 +36,13 @@ import '../i18n/index.js';
 
 const listMock = vi.fn();
 const profileMock = vi.fn();
+const rangesMock = vi.fn();
 
 vi.mock('../api/client.js', () => ({
   createWebApiClient: () => ({
     observations: { list: listMock },
     onboarding: { profile: profileMock },
+    ranges: { list: rangesMock },
   }),
 }));
 
@@ -122,6 +124,10 @@ beforeEach(() => {
     surgeryDate: '2026-01-15',
     measurementSystem: 'metric',
   });
+  // Empty by default: the target-range region is secondary to this page, and
+  // the cases about it supply their own.
+  rangesMock.mockReset();
+  rangesMock.mockResolvedValue({ ranges: [] });
   authValue.signOut.mockReset();
 });
 
@@ -666,5 +672,90 @@ describe('PhysicianOutputView — the patient’s measurement system', () => {
 
       await waitFor(() => expect(authValue.signOut).toHaveBeenCalledWith('session_expired'));
     });
+  });
+});
+
+/**
+ * P4.S2 slice 4: the target-range region on the page (#130).
+ *
+ * `TargetRanges.spec.tsx` owns how a range renders. This covers only what the
+ * page adds: that the region is fetched once rather than per day, that it is
+ * gated on the same known measurement system the rest of the page is, and that
+ * a failure there does not take the clinical view down with it.
+ */
+describe('PhysicianOutputView — target ranges', () => {
+  const suggestedRange = {
+    rangeType: 'daily_output_ml',
+    unit: 'mL',
+    lowValue: 600,
+    highValue: 1500,
+    provenance: 'CLINICAL_DEFAULT',
+    isActiveThreshold: false,
+    divergesFromPhysician: false,
+    basis: { ostomyType: 'ileostomy', daysPostOp: 10, minDaysPostOp: 0, maxDaysPostOp: 30 },
+  };
+
+  it('shows the ranges with their basis', async () => {
+    listMock.mockResolvedValue({ observations: [] });
+    rangesMock.mockResolvedValue({ ranges: [suggestedRange] });
+
+    render(<PhysicianOutputView />);
+
+    expect(await screen.findByText(/daily output from your stoma/i)).toBeVisible();
+    expect(screen.getByText(/600 mL to 1,?500 mL/)).toBeVisible();
+    expect(screen.getByText(/typical for an ileostomy/i)).toBeVisible();
+  });
+
+  /**
+   * A range in units the reader did not choose is the defect P4.S1 slice 3
+   * removed from the entry screens, in its read-only form. The region waits for
+   * the same measurement system the rest of the page waits for.
+   */
+  it('shows no range until the measurement system is known', async () => {
+    profileMock.mockRejectedValue(new Error('network down'));
+    listMock.mockResolvedValue({ observations: [] });
+    rangesMock.mockResolvedValue({ ranges: [suggestedRange] });
+
+    render(<PhysicianOutputView />);
+
+    expect(await screen.findByText(/could not load your settings/i)).toBeVisible();
+    expect(screen.queryByText(/600 mL to 1,?500 mL/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * A target range is secondary to this page: the chart, table and balance do
+   * not depend on one, so removing the clinical view because a secondary read
+   * failed would be the wrong trade.
+   */
+  it('still renders the day when the ranges cannot be loaded', async () => {
+    rangesMock.mockRejectedValue(new Error('network down'));
+    listMock.mockResolvedValue({
+      observations: [observation({ valueQuantity: { value: 350, unit: 'mL' } })],
+    });
+
+    render(<PhysicianOutputView />);
+
+    expect(await screen.findAllByText(/350 mL/)).not.toHaveLength(0);
+    expect(screen.queryByText(/your target ranges/i)).not.toBeInTheDocument();
+  });
+
+  it('fetches the ranges once, not once per day viewed', async () => {
+    listMock.mockResolvedValue({ observations: [] });
+    render(<PhysicianOutputView />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole('button', { name: /previous day/i }));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+
+    expect(rangesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('signs out when the ranges request is rejected as unauthenticated', async () => {
+    listMock.mockResolvedValue({ observations: [] });
+    rangesMock.mockRejectedValue(new ApiError(401, { error: { code: 'UNAUTHENTICATED' } }));
+
+    render(<PhysicianOutputView />);
+
+    await waitFor(() => expect(authValue.signOut).toHaveBeenCalledWith('session_expired'));
   });
 });

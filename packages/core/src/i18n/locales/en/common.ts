@@ -335,6 +335,86 @@ export const common = {
     'Your diary could not be set up. Please try again, and contact your care team if it keeps happening.',
   'onboarding.checkingLabel': 'Checking your account',
 
+  /**
+   * Target ranges and their basis (P4.S2 slice 4, SRS §3.9, AC 14.1 AC1/AC4).
+   *
+   * In `common` because every line here has clinical meaning: a range type is a
+   * clinical measure, and a basis statement says what is typical for a group of
+   * people. ADR-0006 puts that in a shared namespace so one reviewer reads all
+   * of it together, and §3.9's framing constraint is what that review is for.
+   *
+   * ## Descriptive, never prescriptive — and the numbers make that sharper
+   *
+   * §3.9: patient-facing copy "describes suggestions descriptively — what is
+   * typical for people with a similar profile — rather than prescriptively.
+   * Suggested ranges are informational context for the patient and their care
+   * team; they are not a treatment recommendation, and copy must not present
+   * them as one."
+   *
+   * That constraint binds harder here than it would otherwise, because the
+   * numbers behind these sentences are implementer-chosen and **unratified by
+   * any clinician** (#130). So: "typical", never "should"; "about", never a
+   * precise claim; and no verb that tells the patient to do anything.
+   */
+  'targetRanges.heading': 'Your target ranges',
+  'targetRanges.intro':
+    'What is typical for people with a similar profile. These are for context — they are not advice, and nothing here is checked against your entries yet.',
+  'targetRanges.empty': 'There are no target ranges for your profile yet.',
+
+  'rangeType.daily_output_ml': 'Daily output from your stoma',
+  'rangeType.urine_output_adequacy_ml': 'Daily urine',
+  'rangeType.net_fluid_balance_ml': 'Daily net fluid balance',
+  // Shown in place of a range type this release has no label for. The three
+  // above are the ones seeded today; weight and heart-rate measures arrive with
+  // Sections 3.12 and 3.13, and until this catalog names them a reader sees the
+  // value under a generic label rather than not at all. Hiding it would be the
+  // worse failure: a measure silently missing from a review screen.
+  'rangeType.unknownMeasure': 'Another measure',
+
+  // Both bounds, one bound, or neither. `{{low}}`/`{{high}}` arrive already
+  // formatted and carrying their unit, so the measurement system governs them
+  // (ADR-0004) and this never spells a unit itself.
+  'targetRanges.band': '{{low}} to {{high}}',
+  'targetRanges.atLeast': 'At least {{low}}',
+  'targetRanges.atMost': 'Up to {{high}}',
+
+  /**
+   * The basis (AC 1), assembled from the fields the API returns rather than
+   * from a sentence it sends. "About" is doing real work: the window is a span
+   * of days and a precise phrasing would overstate what is known.
+   */
+  'targetRanges.basisEarly': 'Typical for {{ostomyType}} in the first weeks after surgery.',
+  'targetRanges.basisMonths': 'Typical for {{ostomyType}} about {{months}} months after surgery.',
+  'targetRanges.basisSettled': 'Typical for {{ostomyType}} once things have settled.',
+  /**
+   * The article is part of the value, not of the sentence.
+   *
+   * "a {{ostomyType}}" produces "a ileostomy", which a test caught. Pulling the
+   * article out of the template is also the only form that survives translation:
+   * which article a noun takes is a property of the noun in most languages, and
+   * several decline it by case — a sentence that assumes one is a sentence that
+   * can only be English.
+   */
+  'ostomyType.colostomyLower': 'a colostomy',
+  'ostomyType.ileostomyLower': 'an ileostomy',
+
+  /**
+   * AC 2, said out loud. A suggestion shown without this reads as "this is your
+   * target", which is the impression the whole confirmation rule exists to
+   * prevent — and the stored row says so too (`isActiveThreshold`).
+   */
+  'targetRanges.notConfirmed': 'A suggestion. You have not set this yourself.',
+  'targetRanges.sourcePhysician': 'Set by your care team.',
+  'targetRanges.sourcePatient': 'Set by you.',
+  'targetRanges.sourceConfirmed': 'A suggestion you accepted.',
+  /**
+   * AC 4. The physician's value stays in force and the divergence is reported —
+   * so this says which one is being shown, rather than leaving a patient to
+   * assume the number they entered is the one in use.
+   */
+  'targetRanges.divergesFromPhysician':
+    'You have a different value saved. Your care team’s value is the one shown.',
+
   'notProvisioned.heading': 'Your account is not set up yet',
   // P4.S1: this is now a route rather than a sentence, which is what the earlier
   // version of this comment said it would become. The entries really are safe
