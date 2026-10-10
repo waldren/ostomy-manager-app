@@ -30,6 +30,8 @@ import { OutputChart } from '../components/OutputChart.js';
 import { OutputTable } from '../components/OutputTable.js';
 import { UnitToggle } from '../components/UnitToggle.js';
 import { useProfile } from '../profile/useProfile.js';
+import { useRanges } from '../ranges/useRanges.js';
+import { TargetRanges } from '../components/TargetRanges.js';
 import { UrineSignalNotice } from '../components/UrineSignalNotice.js';
 import {
   toDisplayDailyTotal,
@@ -230,6 +232,12 @@ export function PhysicianOutputView() {
    */
   const onUnauthenticated = useCallback(() => signOut('session_expired'), [signOut]);
   const profileState = useProfile({ apiClient, onUnauthenticated });
+  /**
+   * Fetched beside the profile, not inside the day's effect: a target range does
+   * not vary with the date on screen, so refetching it on every press of
+   * "previous day" would be work for nothing.
+   */
+  const rangesState = useRanges({ apiClient, onUnauthenticated });
 
   const profileSystem =
     profileState.status === 'loaded' ? profileState.profile.measurementSystem : undefined;
@@ -352,6 +360,20 @@ export function PhysicianOutputView() {
           <InlineNotice variant="error" icon={<NoticeIcon />} live="assertive">
             <p>{t('physicianView.profileLoadError')}</p>
           </InlineNotice>
+        ) : null}
+
+        {/*
+          Below the day's data and gated on the same known measurement system.
+          A range rendered in units the patient did not choose is the defect
+          P4.S1 slice 3 removed from the entry screens, and showing "600 mL to
+          1500 mL" to an imperial reader would reintroduce it here.
+
+          A failed fetch renders nothing rather than taking the page down: the
+          chart, table and balance do not depend on a target range, and removing
+          the clinical view because a secondary read failed is the wrong trade.
+        */}
+        {targetSystem !== undefined && rangesState.status === 'loaded' ? (
+          <TargetRanges ranges={rangesState.ranges} targetSystem={targetSystem} />
         ) : null}
 
         {view === undefined ? null : (
