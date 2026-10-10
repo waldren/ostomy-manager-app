@@ -32,6 +32,16 @@ export interface ButtonProps {
    * diary from this phone". Read after the label by both screen readers.
    */
   readonly hint?: string | undefined;
+  /**
+   * The SPOKEN name, when the visible label is not the right thing to hear.
+   *
+   * The one case so far is a label carrying a compact unit symbol: "7 fl oz"
+   * is announced "7 F L O Z" to a population that skews older and
+   * post-surgical, which `@ostomy/core/i18n`'s `UnitDisplay` doc explains at
+   * length. The visible label stays compact and this carries the spelled-out
+   * form. Defaults to `label`, so a button that does not need it is unchanged.
+   */
+  readonly accessibilityLabel?: string | undefined;
 }
 
 /**
@@ -60,6 +70,7 @@ export interface ButtonProps {
  */
 export function Button({
   label,
+  accessibilityLabel,
   onPress,
   variant = 'primary',
   disabled = false,
@@ -72,7 +83,7 @@ export function Button({
     <Pressable
       onPress={inert ? undefined : onPress}
       accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel ?? label}
       accessibilityHint={hint}
       accessibilityState={{ disabled: inert, busy }}
       style={({ pressed }) => [

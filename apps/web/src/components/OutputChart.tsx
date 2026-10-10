@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime, formatVolumeQuantity } from '@ostomy/core/i18n';
+import { formatDateTime, formatVolumeQuantity, formatVolumeUnitLabel } from '@ostomy/core/i18n';
 import { VisuallyHidden } from '@ostomy/ui';
 import { useTranslation } from 'react-i18next';
 
@@ -106,9 +106,10 @@ export function OutputChart({ entries }: OutputChartProps) {
   // tick labels, not from the unit code. `'oz'` renders as "fl oz", so
   // interpolating the code gave an axis reading "Output volume (oz)" above
   // gridlines reading "12 fl oz" — two names for one unit, on one chart.
-  // Formatting zero and stripping the number is what guarantees the two
-  // cannot drift, which naming it separately would not.
-  const unitLabel = formatVolumeQuantity({ value: 0, unit }).replace(/^[\d\s.,]+/, '');
+  // `formatVolumeUnitLabel` is the shared derivation that guarantees the two
+  // cannot drift; this used to format zero and strip the digits with a regex,
+  // which assumed the number precedes the unit in every locale.
+  const unitLabel = formatVolumeUnitLabel(unit, undefined, 'short');
   const axisMax = niceCeiling(Math.max(...entries.map((entry) => entry.display.value), 0));
 
   // Anchored to the day being charted, so the hour ticks are that day's
