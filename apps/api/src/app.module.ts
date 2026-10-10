@@ -28,6 +28,7 @@ import { ErrorSanitizerModule } from './http/error-sanitizer.module';
 import { HealthModule } from './health/health.module';
 import { LoggingModule } from './logging/logging.module';
 import { ObservationsModule } from './observations/observations.module';
+import { RangesModule } from './ranges/ranges.module';
 import { OnboardingModule } from './onboarding/onboarding.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { SyncModule } from './sync/sync.module';
@@ -92,6 +93,7 @@ export class AppModule {
         ThresholdsModule,
         ObservationsModule,
         OnboardingModule,
+        RangesModule,
         SyncModule,
       ],
     };

@@ -305,6 +305,74 @@ export function createApiClient(options: ApiClientOptions) {
         }),
     },
 
+    ranges: {
+      /**
+       * Read the patient's target ranges and suggestions
+       *
+       * Every range type this patient has an answer for: the value in force, where it came from in §3.9's precedence order (physician-set → patient-set → patient-confirmed suggestion → clinical default), and the clinical default window that produced it. A range whose provenance is CLINICAL_DEFAULT is a SUGGESTION, not a threshold — isActiveThreshold says so, because AC 14.1 AC2 requires that no value become an anomaly threshold without a human confirming it. The heart-rate red-flag bound never appears here: it is a clinical safety bound and not patient-adjustable. Read-only by design; confirming or editing a range is a synced write and lands with the rest of §3.10 at P4.S3. A read, so no audit row (SRS §5.2), and it carries no patient identifier — the caller is the patient.
+       */
+      list: (): Promise<{
+        readonly ranges: ReadonlyArray<{
+          /** What the range governs, e.g. daily_output_ml. Shares a key space with the admin clinical default ranges. */
+          readonly rangeType: string;
+          readonly unit: string;
+          /** Null where the range is a ceiling only. */
+          readonly lowValue: number | null;
+          /** Null where the range is a floor only — urine adequacy and net fluid balance both are, because passing too little is the concern rather than too much. */
+          readonly highValue: number | null;
+          /** Where the value in force came from, in §3.9's precedence order. CLINICAL_DEFAULT means no patient row exists and this is a suggestion. */
+          readonly provenance:
+            'PHYSICIAN_SET' | 'PATIENT_SET' | 'PATIENT_CONFIRMED_SUGGESTION' | 'CLINICAL_DEFAULT';
+          /** Whether this may be used as an anomaly threshold (AC 14.1 AC2). False for a clinical default nobody has confirmed: "no value becomes an active threshold without a human confirming it". A client must not flag an anomaly against a range where this is false. */
+          readonly isActiveThreshold: boolean;
+          /** Whether the patient holds a value of their own alongside a physician-set one (AC 14.1 AC4). The physician's value is the one in force; this is reported so a surface can say so rather than silently showing a number the patient did not choose. */
+          readonly divergesFromPhysician: boolean;
+          /** The clinical default window this suggestion came from, or null when no default covers this patient today. */
+          readonly basis: {
+            /** The ostomy type the suggestion is keyed to (SRS §3.9). */
+            readonly ostomyType: 'colostomy' | 'ileostomy';
+            /** Days since the patient's surgery date, for the copy that states the basis. */
+            readonly daysPostOp: number;
+            readonly minDaysPostOp: number;
+            /** Null for the open-ended final window — "and beyond". */
+            readonly maxDaysPostOp: number | null;
+          } | null;
+        }>;
+      }> =>
+        request<{
+          readonly ranges: ReadonlyArray<{
+            /** What the range governs, e.g. daily_output_ml. Shares a key space with the admin clinical default ranges. */
+            readonly rangeType: string;
+            readonly unit: string;
+            /** Null where the range is a ceiling only. */
+            readonly lowValue: number | null;
+            /** Null where the range is a floor only — urine adequacy and net fluid balance both are, because passing too little is the concern rather than too much. */
+            readonly highValue: number | null;
+            /** Where the value in force came from, in §3.9's precedence order. CLINICAL_DEFAULT means no patient row exists and this is a suggestion. */
+            readonly provenance:
+              'PHYSICIAN_SET' | 'PATIENT_SET' | 'PATIENT_CONFIRMED_SUGGESTION' | 'CLINICAL_DEFAULT';
+            /** Whether this may be used as an anomaly threshold (AC 14.1 AC2). False for a clinical default nobody has confirmed: "no value becomes an active threshold without a human confirming it". A client must not flag an anomaly against a range where this is false. */
+            readonly isActiveThreshold: boolean;
+            /** Whether the patient holds a value of their own alongside a physician-set one (AC 14.1 AC4). The physician's value is the one in force; this is reported so a surface can say so rather than silently showing a number the patient did not choose. */
+            readonly divergesFromPhysician: boolean;
+            /** The clinical default window this suggestion came from, or null when no default covers this patient today. */
+            readonly basis: {
+              /** The ostomy type the suggestion is keyed to (SRS §3.9). */
+              readonly ostomyType: 'colostomy' | 'ileostomy';
+              /** Days since the patient's surgery date, for the copy that states the basis. */
+              readonly daysPostOp: number;
+              readonly minDaysPostOp: number;
+              /** Null for the open-ended final window — "and beyond". */
+              readonly maxDaysPostOp: number | null;
+            } | null;
+          }>;
+        }>({
+          method: 'GET',
+          path: `/api/v1/ranges`,
+          requiresAuth: true,
+        }),
+    },
+
     sync: {
       /**
        * Pull changes since a cursor
