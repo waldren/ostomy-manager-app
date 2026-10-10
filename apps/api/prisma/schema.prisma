@@ -1371,10 +1371,33 @@ enum RangeStatus {
 /// notes "a future physician portal" may one day set directly) — see
 /// Profile's doc comment for what the sync bookkeeping columns below mean.
 ///
-/// No partial-unique-index enforcement of "at most one ACTIVE row per
-/// (patientId, rangeType)" in this migration — see
-/// design-specs/data-model/p1-s3-schema-coverage.md for why that was left
-/// out deliberately rather than guessed at.
+/// SETTLED by P4.S2 (#130), which `p1-s3-schema-coverage.md` deferred to
+/// "whichever sprint builds the range-precedence query". There is
+/// deliberately **no** unique index over (patientId, rangeType): several
+/// rows may be ACTIVE at once and precedence picks the winner. §3.0 says
+/// "the patient may edit these, but edits that diverge from a
+/// physician-entered default are flagged" — allowed and flagged, not
+/// refused — so a patient-set row and a physician-set row coexist, and
+/// §3.9 keeps the physician's in force. A unique index there would force
+/// the patient's edit to destroy the physician's value, which is the one
+/// outcome AC 14.1 AC4 forbids.
+///
+/// What IS enforced, in
+/// `migrations/20261009140000_effective_range_active_provenance_unique/`
+/// and not expressible here (Prisma has no syntax for a partial index):
+///
+/// - `effective_ranges_one_active_per_provenance` — UNIQUE
+///   (patient_id, range_type, provenance) WHERE status = 'ACTIVE' AND
+///   deleted_at IS NULL. Two simultaneously active patient-set values for
+///   one range type is not a state with a meaning; the newer supersedes
+///   the older. Partial on status so SUPERSEDED/DISMISSED history can
+///   accumulate, and on deleted_at for #97's reason — a tombstone must not
+///   keep occupying the slot.
+///
+/// `range-selection.ts` resolves precedence and still tie-breaks on
+/// clientUpdatedAt for two rows of one provenance: unreachable through this
+/// app's writes given the index, and kept because the alternative makes a
+/// patient's effective threshold depend on row order.
 model EffectiveRange {
   id String @id @map("id") @db.Uuid
 
