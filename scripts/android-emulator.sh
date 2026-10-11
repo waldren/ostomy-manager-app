@@ -810,15 +810,26 @@ EOF
 # `true` when the lock screen is up. One source for `status` and `unlock`, so
 # the two can never disagree about what "locked" means.
 keyguard_showing() {
+  # `true`, `false`, or empty when the field could not be read at all.
+  #
+  # Empty is NOT folded into "unlocked", for the reason `dev-stack-status.sh`
+  # separates UNVERIFIED from CURRENT: the field name has moved between API
+  # levels, and a rename would otherwise be indistinguishable from an unlocked
+  # device — on the one check whose whole purpose is to catch a locked one.
   "${ADB}" -s "${EMULATOR_SERIAL}" shell dumpsys window 2>/dev/null |
-    sed -n 's/.*isKeyguardShowing=\([a-z]*\).*//p' | head -1 | tr -d '
-'
+    sed -n 's/.*isKeyguardShowing=\([a-z]*\).*/\1/p' | head -1 | tr -d '\r'
 }
-
 report_keyguard_health() {
-  if [[ "$(keyguard_showing)" != "true" ]]; then
-    printf '  unlocked
-'
+  local showing
+  showing="$(keyguard_showing)"
+
+  if [[ -z "${showing}" ]]; then
+    printf '  unknown — could not read isKeyguardShowing from dumpsys window\n'
+    return 0
+  fi
+
+  if [[ "${showing}" != "true" ]]; then
+    printf '  unlocked\n'
     return 0
   fi
 
@@ -842,12 +853,34 @@ EOF
 # a full walkthrough still needs a human at the screen.
 cmd_unlock() {
   if ! emulator_is_running; then
-    printf 'ERROR: %s is not running.
-' "${EMULATOR_SERIAL}" >&2
+    printf 'ERROR: %s is not running.\n' "${EMULATOR_SERIAL}" >&2
     exit 1
   fi
 
   local pin="${ANDROID_DEVICE_PIN:-1234}"
+
+  # Digits only, and checked before anything is typed. This string is sent to
+  # `adb shell input text`, where a space or a `;` is either swallowed or run
+  # by the device shell.
+  if [[ ! "${pin}" =~ ^[0-9]+$ ]]; then
+    warn "ANDROID_DEVICE_PIN must be digits only; refusing to type it."
+    return 1
+  fi
+
+  # Nothing is typed at an unlocked device. `input text` goes to whatever has
+  # focus, and the thing a session is most likely to have in front of it is an
+  # entry screen — so a stray run would put the PIN into a clinical amount
+  # field and press Enter.
+  local showing
+  showing="$(keyguard_showing)"
+  if [[ -z "${showing}" ]]; then
+    warn "could not read the keyguard state; not typing a PIN blind."
+    return 1
+  fi
+  if [[ "${showing}" != "true" ]]; then
+    ok "already unlocked"
+    return 0
+  fi
 
   "${ADB}" -s "${EMULATOR_SERIAL}" shell input keyevent KEYCODE_WAKEUP
   "${ADB}" -s "${EMULATOR_SERIAL}" shell input keyevent 82
@@ -859,8 +892,8 @@ cmd_unlock() {
     # The value is NOT echoed. It defaults to a throwaway AVD PIN, but the
     # variable exists so a real device credential can be passed, and a failure
     # message is exactly where one would end up in scrollback or a CI log.
-    bad "still locked. If the device PIN is not the default, pass the real one:"
-    bad "       ANDROID_DEVICE_PIN=<pin> $(basename "$0") unlock"
+    warn "still locked. If the device PIN is not the default, pass the real one:"
+    warn "         ANDROID_DEVICE_PIN=<pin> $(basename "$0") unlock"
     return 1
   fi
 

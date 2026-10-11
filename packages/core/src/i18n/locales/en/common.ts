@@ -113,6 +113,11 @@ export const common = {
   'entry.intakeHeading': 'Add a drink',
   'entry.intakeAmountLabel': 'How much did you drink?',
   'entry.intakeAmountHint': 'Tap a size below, or type the amount.',
+  // The same field when there are no sizes to tap. The quick-select row is
+  // built from a value set, and a member in a unit this release cannot convert
+  // is dropped — so the row can be empty, and a hint pointing at buttons that
+  // are not there is worse than no hint.
+  'entry.intakeAmountHintNoSizes': 'Type the amount.',
   // AC 2.3 AC2. The buttons themselves are labelled with the amount, which is
   // a VALUE interpolated by Intl rather than a catalog string — a catalog key
   // cannot carry a number (ADR-0006), and "250 mL" localises properly while

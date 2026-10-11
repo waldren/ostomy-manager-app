@@ -225,6 +225,61 @@ describe('Add Intake container-size buttons', () => {
   });
 
   /**
+   * The branch that shipped wrong and that these tests did not cover.
+   *
+   * The first fix accepted `numericUnit: 'oz'` and handed the member's value
+   * to `convertVolumeForDisplay` as its canonical-millilitre argument, so a
+   * 25 fl oz bottle rendered "0.8454 fl oz" — the real volume divided by the
+   * conversion factor, the same class of defect as the one being fixed. Only
+   * the `mL` row was ever exercised, so nothing failed. Members are canonical
+   * mL by contract; anything else is dropped.
+   */
+  it('drops a member configured in ounces rather than converting it wrongly', async () => {
+    await writeValueSets(
+      mockExecutor,
+      [
+        {
+          key: VALUE_SET_KEY.CONTAINER_SIZE,
+          members: [{ code: 'bottle_oz_25', sortOrder: 0, numericValue: 25, numericUnit: 'oz' }],
+        },
+      ],
+      AT,
+    );
+    await renderScreen(IMPERIAL);
+
+    expect(screen.queryByText(/0\.8/)).toBeNull();
+    expect(screen.queryByText('25 fl oz')).toBeNull();
+    expect(screen.queryByText('Common sizes')).toBeNull();
+  });
+
+  /**
+   * ADR-0005 rounds a cross-system conversion to a whole unit, so a small
+   * enough member becomes "0 fl oz" — a button that fills the field with a
+   * zero Tier 1 then hard-blocks. `valueSetsRepository` already refuses to
+   * build a 0 mL button for this reason; the rounding is a second route to
+   * the same unusable control.
+   */
+  it('drops a size too small to survive rounding into the patient’s units', async () => {
+    await writeValueSets(
+      mockExecutor,
+      [
+        {
+          key: VALUE_SET_KEY.CONTAINER_SIZE,
+          members: [
+            { code: 'sip_10', sortOrder: 0, numericValue: 10, numericUnit: 'mL' },
+            { code: 'large_bottle_750', sortOrder: 1, numericValue: 750, numericUnit: 'mL' },
+          ],
+        },
+      ],
+      AT,
+    );
+    await renderScreen(IMPERIAL);
+
+    expect(screen.queryByText('0 fl oz')).toBeNull();
+    expect(screen.getByText('25 fl oz')).toBeTruthy();
+  });
+
+  /**
    * One admin edit to the set's unit drops every button at once, and the
    * heading plus the "tap a size below" hint would then point at nothing.
    * "The set loaded" and "there is something to show" stopped being the same
@@ -244,5 +299,8 @@ describe('Add Intake container-size buttons', () => {
     await renderScreen(METRIC);
 
     expect(screen.queryByText('Common sizes')).toBeNull();
+    // And the hint stops pointing at buttons that are not rendered.
+    expect(screen.queryByText(/tap a size below/i)).toBeNull();
+    expect(screen.getByText('Type the amount.')).toBeTruthy();
   });
 });

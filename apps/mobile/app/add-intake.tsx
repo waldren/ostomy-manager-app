@@ -44,7 +44,6 @@ import {
 import { labelKeyFor, useValueSetOptions } from '../src/entry/useValueSetOptions';
 import {
   unitsForMeasurementSystem,
-  type MeasurementSystem,
   type MeasurementSystemUnits,
 } from '../src/lib/units/measurementSystem';
 import { convertVolumeForDisplay, type DisplayVolume } from '@ostomy/core/units';
@@ -223,7 +222,11 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
 
       <NumericField
         label={t('common:entry.intakeAmountLabel')}
-        hint={t('common:entry.intakeAmountHint')}
+        hint={t(
+          quickSizes.length > 0
+            ? 'common:entry.intakeAmountHint'
+            : 'common:entry.intakeAmountHintNoSizes',
+        )}
         value={amountText}
         onChangeText={setAmountText}
         unitLabel={formatVolumeUnitLabel(units.volumeUnit, undefined, 'short')}
@@ -396,25 +399,38 @@ function containerSizeFor(
   target: MeasurementSystemUnits,
 ): DisplayVolume | null {
   if (member.numericValue === null) return null;
-  const memberSystem = MEASUREMENT_SYSTEM_BY_VOLUME_UNIT[member.numericUnit ?? ''];
-  if (memberSystem === undefined) return null;
-  return convertVolumeForDisplay(
-    member.numericValue,
-    unitsForMeasurementSystem(memberSystem),
-    target,
-  );
+  // Canonical millilitres or nothing. `convertVolumeForDisplay`'s first
+  // argument is ALWAYS canonical mL — its `entrySystem` parameter is the
+  // ADR-0005 rounding discriminator, not a declaration of what unit the number
+  // is in — so feeding it a member's value while claiming an entry system of
+  // `imperial` would read 25 oz as 25 mL and render "0.8454 fl oz", wrong by
+  // the conversion factor itself. That was this function's first version.
+  if (member.numericUnit !== CANONICAL_MEMBER_UNIT) return null;
+  const display = convertVolumeForDisplay(member.numericValue, CANONICAL_UNITS, target);
+  // A cross-system conversion rounds to a whole unit (ADR-0005), so a member
+  // under ~14.8 mL renders "0 fl oz" and would fill the field with a zero that
+  // Tier 1 then hard-blocks. `valueSetsRepository` already refuses to build a
+  // 0 mL button for the same reason — "a control that looks usable and cannot
+  // be used" — and the rounding is a second way to arrive at one.
+  if (display.value <= 0) return null;
+  return display;
 }
 
 /**
- * The volume units a member may be configured in, and which system each one
- * makes the member's value canonical to. Deliberately a lookup rather than a
- * cast: a set configured in litres or cups reaches here as an unknown key and
- * is dropped, instead of being read as millilitres.
+ * The one unit a quick-select member may be configured in.
+ *
+ * `CachedValueSetMember.numericValue` is documented as "a container size's
+ * canonical mL", and `numericUnit` is a free-form string on the admin create
+ * path — so anything else is a misconfiguration, not an alternative encoding,
+ * and the drop path above is the right response to it. An earlier version
+ * accepted `'oz'` too and converted it wrongly; supporting a second unit here
+ * means owning that conversion AND the fluid-versus-avoirdupois ambiguity the
+ * admin surface does not resolve. Not worth it for a button.
  */
-const MEASUREMENT_SYSTEM_BY_VOLUME_UNIT: Readonly<Record<string, MeasurementSystem | undefined>> = {
-  mL: 'metric',
-  oz: 'imperial',
-};
+const CANONICAL_MEMBER_UNIT = 'mL';
+
+/** Members are canonical mL by contract, so that is the entry system for the conversion. */
+const CANONICAL_UNITS = unitsForMeasurementSystem('metric');
 
 /**
  * The profile arrives as a prop, never read inside — see `withProfile`. Two
