@@ -73,7 +73,7 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
   const { phase, signOut } = useAuth();
   const { t } = useTranslation(['mobile', 'common']);
   const database = useDatabaseState();
-  const { lastRejected, lastStop, recoverStaleCursor, requestSync } = useSyncStatus();
+  const { isRunning, lastRejected, lastStop, recoverStaleCursor, requestSync } = useSyncStatus();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const params = useLocalSearchParams<{ saved?: string }>();
@@ -114,9 +114,24 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
     };
   }, [database]);
 
-  // `lastRejected` in the dependency list is what refreshes these counts
-  // after a sync cycle settles, without this screen polling.
-  useEffect(() => refreshCounts(), [refreshCounts, lastRejected]);
+  // `isRunning` is what refreshes these counts after a sync cycle settles,
+  // without this screen polling: it is set in the cycle's `finally`, so it
+  // falls back to `false` once per cycle whatever the outcome.
+  //
+  // `lastRejected` alone was the dependency and it was not enough. It changes
+  // only when a cycle parks something for correction, so the ordinary case —
+  // a clean push — left the count frozen at whatever it was when the entry
+  // was saved. An emulator pass for #122 found the home screen still reading
+  // "1 entry has not been sent yet" minutes after the row was on the server,
+  // and it never cleared: nothing else remounts this screen. That is the
+  // worst direction for this particular message to be wrong in, because a
+  // patient reads it as "my care team does not have this", and a patient who
+  // learns it is meaningless will ignore it on the day it is true.
+  //
+  // `lastRejected` stays in the list: it is cumulative-per-cycle rather than
+  // a toggle, so it also moves on a cycle whose rejection count changes, and
+  // dropping it would narrow what triggers a refresh for no gain.
+  useEffect(() => refreshCounts(), [refreshCounts, isRunning, lastRejected]);
 
   /**
    * Opens the entry form for a suggestion, pre-filled.
@@ -376,7 +391,16 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
       ) : null}
 
       {pendingCount !== undefined ? (
-        <BodyText tone="muted">
+        <BodyText
+          tone="muted"
+          // Announced, because this line now changes WHILE the screen is open.
+          // Before the refresh fix above it was frozen after mount, so there
+          // was nothing to announce; a sync cycle completing is an async status
+          // change and a screen-reader user would otherwise never learn their
+          // entries went out. `polite` on purpose — urgency in this app is
+          // reserved for the red-flag prompt.
+          live="polite"
+        >
           {pendingCount === 0
             ? t('mobile:home.pendingCountNone')
             : t('mobile:home.pendingCount', { count: pendingCount })}

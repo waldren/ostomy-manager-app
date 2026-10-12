@@ -12,7 +12,8 @@ networking is shaped the way it is.
 ```
 scripts/android-emulator.sh doctor       what's installed, what's missing
 scripts/android-emulator.sh up           create + boot + wire  (idempotent)
-scripts/android-emulator.sh status       device state, ports, app, display health
+scripts/android-emulator.sh status       device state, ports, app, keyguard, display
+scripts/android-emulator.sh unlock       dismiss the keyguard with the device PIN
 scripts/android-emulator.sh logcat       this app's process only
 scripts/android-emulator.sh fingerprint  device PIN + fingerprint enrolment
 scripts/android-emulator.sh metro-reset  clear Metro's file-map cache
@@ -84,6 +85,36 @@ works; `--device emulator-5554` fails with `Could not find device with name`.
 
 **A transient `Read timed out` from dl.google.com is not a real failure.**
 Gradle keeps what it cached — just run it again.
+
+**`ANDROID_HOME` has to be exported, and Gradle blames a file instead.** The
+build fails at CONFIGURE time with "SDK location not found ... or by setting
+the sdk.dir path in your project's local properties file at
+`apps/mobile/android/local.properties`", which sends you to write a file in
+generated build output. `doctor` prints the `export` line; take it. The script
+itself does not need the variable, so every emulator command works without it
+and only the build fails.
+
+## A `packages/core` rebuild is not picked up by a running Metro
+
+The device-side twin of the jest trap CLAUDE.md describes ("`apps/mobile`'s
+jest suite reads `packages/core` from `dist`"). Metro reads it from `dist` too,
+and during #122 a rebuilt catalog change did not reach the app through a Metro
+that was already running — not after Fast Refresh, and not after a full
+`am force-stop` and relaunch. The app kept serving the previous bundle, so the
+screen showed the pre-fix string and the obvious conclusion was that the fix
+was wrong.
+
+Restarting Metro with `--clear` picked it up. So after touching
+`packages/core`:
+
+```bash
+pnpm --filter @ostomy/core build
+# then restart Metro, not just the app:
+pnpm --filter @ostomy/mobile start --port 8081 --clear
+```
+
+This is not the corrupt-file-map case `metro-reset` exists for — Metro was
+serving bundles perfectly well, just stale ones.
 
 ## Why the repo installs hoisted
 
@@ -237,6 +268,16 @@ rule: no real PHI outside production, not temporarily, not to reproduce a bug.
 The emulator's disk is as much "outside production" as the dev host is.
 
 ## Debugging
+
+**Start with `status` when the app will not launch.** A locked device makes
+this app unlaunchable in a way that names a class, not a lock screen (#122):
+`am start` answers "Activity class {...} does not exist" for a class that is
+in the APK and in the manifest, `monkey` reports "No activities found to run",
+and `cmd package query-activities` does not list it — while `pm list packages`
+still does. The app is not `directBootAware`, so until the device credential
+is entered once after boot its components simply do not resolve. A reboot does
+not fix it; neither does uninstall-and-reinstall. `status` now reports "is
+installed but its launcher activity does NOT resolve", and `unlock` clears it.
 
 `logcat` scopes to this app's process rather than the whole ring buffer. That
 narrowness is the point: this app's rule is that **no clinical value is ever

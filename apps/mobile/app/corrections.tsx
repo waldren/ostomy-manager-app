@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime } from '@ostomy/core/i18n';
+import { formatDateTime, formatVolumeUnitLabel } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
@@ -47,7 +47,12 @@ import {
 } from '../src/entry/useStomaOutputEntry';
 import { useValueSetOptions } from '../src/entry/useValueSetOptions';
 import { checkUrineEntry } from '../src/entry/useVoidedUrineEntry';
-import { unitsForMeasurementSystem } from '../src/lib/units/measurementSystem';
+import { mlToOz } from '@ostomy/core/units';
+import { MAX_VALUE_DECIMAL_PLACES } from '@ostomy/core/validation';
+import {
+  unitsForMeasurementSystem,
+  type MeasurementSystem,
+} from '../src/lib/units/measurementSystem';
 import { deviceTimeZone, now as clockNow } from '../src/lib/utils/clock';
 import { useSyncStatus } from '../src/sync/SyncProvider';
 import { BodyText } from '../src/ui/BodyText';
@@ -92,6 +97,31 @@ import { Screen } from '../src/ui/Screen';
  * identifier is not shown as a fallback: these codes are health facts on
  * their own.
  */
+
+/**
+ * A canonical millilitre value, as a number the patient can read AND re-submit.
+ *
+ * Deliberately NOT `convertVolumeForDisplay`, which is the function every
+ * read-only surface uses. That one applies ADR-0005's whole-unit rounding
+ * whenever the entry system differs from the display system, and this value is
+ * about to be written back: a patient correcting a rejected entry's TIMESTAMP
+ * would have had their 354.8824 mL silently rewritten to 355 on the way past.
+ * That is ADR-0005's display rounding travelling inward, which CLAUDE.md
+ * forbids by name for the Quick-Add path and forbids here for the same reason.
+ *
+ * Rounded instead to the canonical column's own scale, which kills the float
+ * noise from the inverse conversion without inventing precision: a patient who
+ * typed 12 fl oz has 354.8824 stored, and `mlToOz` returns 12.000001530084528
+ * for it. Showing that in an editable field is its own defect.
+ *
+ * `apps/mobile/src/quickadd/draftParams.ts` prefills a draft the same way and
+ * has the same need; it still uses the display converter.
+ */
+function editableAmountIn(canonicalMl: number, system: MeasurementSystem): string {
+  const inPatientUnits = system === 'imperial' ? mlToOz(canonicalMl) : canonicalMl;
+  const factor = 10 ** MAX_VALUE_DECIMAL_PLACES;
+  return String(Math.round(inPatientUnits * factor) / factor);
+}
 
 interface RejectedEntry {
   readonly operation: SyncQueueEntry;
@@ -138,20 +168,38 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     void load();
   }, [load]);
 
-  const beginEdit = useCallback((entry: RejectedEntry) => {
-    setEditing(entry.operation.operationId);
-    // Empty only when the row genuinely has no amount — a colour-only urine
-    // entry. Every other row has one, and the editor renders the field for it.
-    setAmountText(entry.observation.valueQuantityValue ?? '');
-    // Decoded from the stored qualifier, not inferred from whether it is null.
-    // This used to read `method === null ? 'measured' : 'estimated'`, which
-    // since ADR-0018's amendment relabels every MEASURED entry as Estimated
-    // the moment a patient opens it to fix something else — a silent change to
-    // a clinical claim about how the number was arrived at.
-    setMethod(methodFromStoredCode(entry.observation.method));
-    setUrineColorCode(entry.observation.urineColorCode ?? undefined);
-    setCheck(undefined);
-  }, []);
+  const beginEdit = useCallback(
+    (entry: RejectedEntry) => {
+      setEditing(entry.operation.operationId);
+      // Converted into the units this field is LABELLED in, never the stored
+      // canonical number.
+      //
+      // `value_quantity_value` is canonical mL and the save path below reads
+      // this field as the patient's current system, so prefilling the raw
+      // value made a correction multiply the entry by the conversion factor:
+      // a rejected 12 fl oz entry is stored as 354.8824, reopened as
+      // "354.8824 fl oz", and confirming it wrote 10,494 mL. It trips the
+      // >2,000 mL Tier 2 warning, which is overridable by design, so nothing
+      // stopped it. `quickadd/draftParams.ts` is the shape this copies.
+      //
+      // Empty only when the row genuinely has no amount — a colour-only urine
+      // entry. Every other row has one, and the editor renders the field for it.
+      setAmountText(
+        entry.observation.valueQuantityValue === null
+          ? ''
+          : editableAmountIn(Number(entry.observation.valueQuantityValue), measurementSystem),
+      );
+      // Decoded from the stored qualifier, not inferred from whether it is null.
+      // This used to read `method === null ? 'measured' : 'estimated'`, which
+      // since ADR-0018's amendment relabels every MEASURED entry as Estimated
+      // the moment a patient opens it to fix something else — a silent change to
+      // a clinical claim about how the number was arrived at.
+      setMethod(methodFromStoredCode(entry.observation.method));
+      setUrineColorCode(entry.observation.urineColorCode ?? undefined);
+      setCheck(undefined);
+    },
+    [measurementSystem],
+  );
 
   const saveCorrection = useCallback(
     async (entry: RejectedEntry, confirmedWarning: boolean) => {
@@ -212,7 +260,12 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
           // (ADR-0018 amended), and `validateVolumelessObservation` rejects a
           // qualifier there.
           measuredOrEstimated: volumeless ? null : (method ?? null),
-          enteredMeasurementSystem: entry.observation.enteredMeasurementSystem,
+          // The patient's CURRENT system, not the rejected row's. They are
+          // re-asserting the value by typing it into a field labelled in the
+          // system they use today, which is what ADR-0012's field records —
+          // and it is what the conversion above and `toCanonicalValueString`
+          // below both already assume. Quick-Add states the same rule.
+          enteredMeasurementSystem: measurementSystem,
           urineColorCode: urineColorCode ?? null,
           // Carried through from the stored row, because a correction is a
           // full replacement (§4) and this screen offers no control for it.
@@ -318,7 +371,7 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
                           }
                           value={amountText}
                           onChangeText={setAmountText}
-                          unitLabel={units.volumeUnit}
+                          unitLabel={formatVolumeUnitLabel(units.volumeUnit, undefined, 'short')}
                           errorMessage={
                             amountRule === undefined
                               ? undefined

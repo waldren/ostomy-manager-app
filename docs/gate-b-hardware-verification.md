@@ -16,7 +16,7 @@ Record an emulator pass as "exercised on an emulator". It never closes a step he
 
 ## What the emulator already discharges — do not repeat here
 
-Sign-in, SQLCipher opening the store, the subject-binding purge, the unsent-entry warning on sign-out, the offline entry → queue → push → audit row → web view path, and — after `scripts/android-emulator.sh fingerprint` — Android biometric enrolment, unlock and rejection. Re-running these on a handset is harmless, but they are not what is open.
+Sign-in, SQLCipher opening the store, the subject-binding purge, the unsent-entry warning on sign-out, the offline entry → queue → push → audit row → web view path, and — after `scripts/android-emulator.sh fingerprint` — Android biometric enrolment, unlock and rejection. P4.S1's first-run path joined this list on 2026-10-10 (#122): onboarding's three questions for a never-provisioned subject, the gate releasing to the dashboard, and the imperial entry path end to end — `fl oz` on screen, canonical millilitres rounded to the column's scale in the database, `entered_measurement_system = IMPERIAL`. Re-running these on a handset is harmless, but they are not what is open.
 
 ## Blockers to running these at all
 

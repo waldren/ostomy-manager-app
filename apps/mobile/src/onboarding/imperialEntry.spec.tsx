@@ -175,10 +175,24 @@ describe('Add Output for an imperial patient', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  /**
+   * "fl oz", not "oz", and this assertion is the corrected version of one that
+   * passed against the defect.
+   *
+   * The screen rendered the raw `VolumeUnit` token as its suffix. Under metric
+   * the token and CLDR's short form are both "mL", so it was indistinguishable
+   * from correct for as long as metric was the only reachable system; under
+   * imperial it produced "oz", while every formatted quantity elsewhere in the
+   * app says "fl oz". An ounce reads as a measure of weight to most people,
+   * which is the ambiguity CLDR's "fl oz" exists to remove, and this is the one
+   * place a patient is typing a clinical number. Found on a device during
+   * #122's emulator pass, not here, because this test asserted the token.
+   */
   it('labels the amount in the patient’s own unit', async () => {
     await renderScreen(IMPERIAL);
 
-    expect(screen.getByText('oz')).toBeTruthy();
+    expect(screen.getByText('fl oz')).toBeTruthy();
+    expect(screen.queryByText('oz')).toBeNull();
     expect(screen.queryByText('mL')).toBeNull();
   });
 
@@ -186,7 +200,7 @@ describe('Add Output for an imperial patient', () => {
     await renderScreen(METRIC);
 
     expect(screen.getByText('mL')).toBeTruthy();
-    expect(screen.queryByText('oz')).toBeNull();
+    expect(screen.queryByText('fl oz')).toBeNull();
   });
 
   /**

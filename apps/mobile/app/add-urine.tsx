@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime } from '@ostomy/core/i18n';
+import { formatDateTime, formatVolumeUnitLabel } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -262,7 +262,7 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
         hint={t('common:entry.urineAmountHint')}
         value={amountText}
         onChangeText={changeAmount}
-        unitLabel={units.volumeUnit}
+        unitLabel={formatVolumeUnitLabel(units.volumeUnit, undefined, 'short')}
         errorMessage={
           amountRuleCode === undefined ? undefined : t(`validationErrors:${amountRuleCode}`)
         }
