@@ -22,6 +22,7 @@ import {
   amountError,
   checkEntry,
   methodError,
+  timestampError,
   toCanonicalMl,
   toCanonicalValueString,
 } from './useStomaOutputEntry';
@@ -43,6 +44,7 @@ function check(overrides: {
   method?: 'measured' | 'estimated' | undefined;
   effectiveDateTime?: Date;
   measurementSystem?: 'metric' | 'imperial';
+  surgeryDate?: string | null;
 }) {
   return checkEntry({
     draft: {
@@ -52,7 +54,7 @@ function check(overrides: {
     },
     measurementSystem: overrides.measurementSystem ?? 'metric',
     thresholds: THRESHOLDS,
-    surgeryDate: null,
+    surgeryDate: overrides.surgeryDate ?? null,
     enteredTimezone: 'UTC',
     now: NOW,
   });
@@ -107,7 +109,24 @@ describe('checkEntry', () => {
 
       expect(outcome.kind).toBe('blocked');
       if (outcome.kind !== 'blocked') return;
-      expect(amountError(outcome.errors)?.ruleCode).toBe('EFFECTIVE_DATE_TIME_IN_FUTURE');
+      // Beside the date-and-time field, never under the amount box (#135):
+      // the amount is fine, and the message has to sit by the control that
+      // fixes it.
+      expect(timestampError(outcome.errors)?.ruleCode).toBe('EFFECTIVE_DATE_TIME_IN_FUTURE');
+      expect(amountError(outcome.errors)).toBeUndefined();
+      expect(methodError(outcome.errors)).toBeUndefined();
+    });
+
+    it('routes a backdated entry before the surgery date to the date-and-time field', () => {
+      const outcome = check({
+        effectiveDateTime: new Date('2026-08-01T12:00:00.000Z'),
+        surgeryDate: '2026-08-10',
+      });
+
+      expect(outcome.kind).toBe('blocked');
+      if (outcome.kind !== 'blocked') return;
+      expect(timestampError(outcome.errors)?.ruleCode).toBe('EFFECTIVE_DATE_TIME_BEFORE_SURGERY');
+      expect(amountError(outcome.errors)).toBeUndefined();
     });
 
     it('allows a timestamp inside the allowance', () => {

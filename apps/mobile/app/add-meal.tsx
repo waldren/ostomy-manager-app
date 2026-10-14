@@ -15,19 +15,22 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime } from '@ostomy/core/i18n';
 import { Redirect, router } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
+import type { LocalProfile } from '../src/db/repositories/profileRepository';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { enqueueMealCreate } from '../src/db/offlineWrites';
 import { MEAL_SIZES, type MealSize } from '../src/db/repositories/mealsRepository';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
+import { EntryTimestampField } from '../src/entry/EntryTimestampField';
+import { checkMealTimestamp, type MealTimestampCheck } from '../src/entry/mealTimestamp';
+import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { labelKeyFor, useValueSetOptions } from '../src/entry/useValueSetOptions';
 import { deviceTimeZone, now as clockNow, toWireInstant } from '../src/lib/utils/clock';
+import { withProfile } from '../src/onboarding/withProfile';
 import { useSyncStatus } from '../src/sync/SyncProvider';
 import { BodyText } from '../src/ui/BodyText';
 import { Button } from '../src/ui/Button';
@@ -40,26 +43,21 @@ import { TextField } from '../src/ui/TextField';
 /**
  * The Add Meal screen (SRS §3.1, AC 2.4).
  *
- * ## No validation engine here, and that is not an omission
+ * ## No volumetric engine here, and that is not an omission
  *
  * A meal has no value, no unit and no Measured/Estimated toggle, so
  * `@ostomy/core`'s volumetric Tier 1 rules do not apply — which is why this
  * screen does not import `checkEntry`. The two rules a meal IS subject to are
- * about *when* it happened, and this screen cannot trip either: the timestamp
- * is read from the clock at mount and is not editable yet, so it can be
- * neither in the future nor before the surgery date. The server re-enforces
- * both regardless (`evaluateEntryTimestamp`), which is what makes that safe
- * rather than merely convenient.
+ * about *when* it happened, and since #135 made the time editable a patient
+ * can trip both, so they run here before the save (`checkMealTimestamp`). The
+ * server re-enforces them regardless (`evaluateEntryTimestamp`).
  *
- * That claim was **not true until P4.S1 slice 3**, which is why it is worth
- * stating rather than assuming. The surgery-date rule used to compare the entry
- * instant against the surgery date's UTC midnight, so a meal logged "now" on the
- * day of surgery was refused for every patient east of UTC — a screen that could
- * not trip the rule by construction, tripping it anyway. The rule now compares
- * calendar days in the patient's own zone, and "now is on or after today" holds
- * everywhere.
+ * Until #135 this screen ran no validation at all, on the stated grounds that
+ * a timestamp read from the clock could be neither in the future nor before the
+ * surgery date. That held only because the time could not be changed — which
+ * is the reason to check rather than reason about it now.
  *
- * The one client-side rule is AC 2.4 AC2's: **the size is mandatory**, and it
+ * The other client-side rule is AC 2.4 AC2's: **the size is mandatory**, and it
  * starts unanswered. `size` is the only stored representation of that choice,
  * so a default would be indistinguishable afterwards from a deliberate answer
  * — the same argument the Measured/Estimated toggle makes.
@@ -70,21 +68,24 @@ import { TextField } from '../src/ui/TextField';
  * description and the tags each say "(optional)" in their label, because a
  * field beside a required one reads as required unless it says otherwise.
  */
-export default function AddMeal(): React.JSX.Element {
+function AddMeal({ profile }: { readonly profile: LocalProfile }): React.JSX.Element {
   const { phase } = useAuth();
-  const { t } = useTranslation(['common', 'mobile']);
+  const { t } = useTranslation(['common', 'mobile', 'validationErrors']);
   const database = useDatabaseState();
   const { requestSync } = useSyncStatus();
 
   const [description, setDescription] = useState('');
   const [size, setSize] = useState<MealSize | undefined>(undefined);
   const [tagCodes, setTagCodes] = useState<readonly string[]>([]);
-  const [effectiveDateTime] = useState(() => clockNow());
+  const [effectiveDateTime, setEffectiveDateTime] = useState(() => clockNow());
+  const [timestampCheck, setTimestampCheck] = useState<MealTimestampCheck | undefined>(undefined);
   const [sizeMissing, setSizeMissing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
 
   const tags = useValueSetOptions(VALUE_SET_KEY.MEAL_TAG);
+  const cached = useCachedThresholds(database);
+  const { surgeryDate } = profile;
 
   const save = useCallback(async () => {
     if (database.status !== 'ready') return;
@@ -94,6 +95,16 @@ export default function AddMeal(): React.JSX.Element {
       return;
     }
     setSizeMissing(false);
+
+    const outcome = checkMealTimestamp({
+      effectiveDateTime,
+      surgeryDate,
+      enteredTimezone: deviceTimeZone(),
+      now: clockNow(),
+      thresholds: cached?.thresholds,
+    });
+    setTimestampCheck(outcome);
+    if (outcome.kind !== 'ok') return;
 
     setSaving(true);
     setSaveFailed(false);
@@ -122,7 +133,7 @@ export default function AddMeal(): React.JSX.Element {
 
     requestSync();
     router.replace('/home?saved=1');
-  }, [description, size, tagCodes, effectiveDateTime, database, requestSync]);
+  }, [description, size, tagCodes, effectiveDateTime, surgeryDate, cached, database, requestSync]);
 
   if (phase !== 'authenticated') return <Redirect href="/login" />;
 
@@ -181,12 +192,26 @@ export default function AddMeal(): React.JSX.Element {
         <BodyText tone="muted">{t('common:entry.optionsUnavailable')}</BodyText>
       ) : null}
 
-      <View>
-        <BodyText>{t('common:entry.whenLabel')}</BodyText>
-        <BodyText>
-          {formatDateTime(effectiveDateTime, undefined, { timeZone: deviceTimeZone() })}
+      <EntryTimestampField
+        value={effectiveDateTime}
+        onChange={(next) => {
+          setEffectiveDateTime(next);
+          setTimestampCheck(undefined);
+        }}
+        surgeryDate={surgeryDate}
+        now={clockNow}
+        errorMessage={
+          timestampCheck?.kind === 'blocked' && timestampCheck.errors[0] !== undefined
+            ? t(`validationErrors:${timestampCheck.errors[0].ruleCode}`)
+            : undefined
+        }
+      />
+
+      {timestampCheck?.kind === 'thresholds-unavailable' ? (
+        <BodyText tone="error" live="assertive">
+          {t('mobile:entry.thresholdsUnavailableBody')}
         </BodyText>
-      </View>
+      ) : null}
 
       <Button
         label={t('common:entry.mealSaveButton')}
@@ -200,3 +225,10 @@ export default function AddMeal(): React.JSX.Element {
     </Screen>
   );
 }
+
+/**
+ * The profile arrives as a prop since #135, for the surgery date: a backdated
+ * meal is checked against it before the save, and a fallback when it is
+ * absent would let the Tier 1 lower bound silently stop applying.
+ */
+export default withProfile(AddMeal);
