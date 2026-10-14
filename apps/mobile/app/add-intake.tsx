@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime, formatVolumeQuantity, formatVolumeUnitLabel } from '@ostomy/core/i18n';
+import { formatVolumeQuantity, formatVolumeUnitLabel } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -26,6 +26,7 @@ import { useAuth } from '../src/auth/AuthContext';
 import type { LocalProfile } from '../src/db/repositories/profileRepository';
 import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
+import { EntryTimestampField } from '../src/entry/EntryTimestampField';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
 import {
@@ -38,6 +39,7 @@ import {
   amountError,
   checkEntry,
   methodError,
+  timestampError,
   toCanonicalValueString,
   type EntryCheck,
 } from '../src/entry/useStomaOutputEntry';
@@ -117,7 +119,7 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
   const [amountText, setAmountText] = useState(draft.amount ?? '');
   const [method, setMethod] = useState<MeasuredOrEstimated | undefined>(draft.method);
   const [fluidTypeCode, setFluidTypeCode] = useState<string | undefined>(draft.fluidType);
-  const [effectiveDateTime] = useState(() => clockNow());
+  const [effectiveDateTime, setEffectiveDateTime] = useState(() => clockNow());
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -211,6 +213,7 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
   const blocked = check?.kind === 'blocked' ? check.errors : [];
   const amountRuleCode = amountError(blocked)?.ruleCode;
   const methodRuleCode = methodError(blocked)?.ruleCode;
+  const timestampRuleCode = timestampError(blocked)?.ruleCode;
 
   return (
     <Screen>
@@ -315,12 +318,15 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
         <BodyText tone="muted">{t('common:entry.optionsUnavailable')}</BodyText>
       ) : null}
 
-      <View>
-        <BodyText>{t('common:entry.whenLabel')}</BodyText>
-        <BodyText>
-          {formatDateTime(effectiveDateTime, undefined, { timeZone: deviceTimeZone() })}
-        </BodyText>
-      </View>
+      <EntryTimestampField
+        value={effectiveDateTime}
+        onChange={setEffectiveDateTime}
+        surgeryDate={surgeryDate}
+        now={clockNow}
+        errorMessage={
+          timestampRuleCode === undefined ? undefined : t(`validationErrors:${timestampRuleCode}`)
+        }
+      />
 
       {check?.kind === 'needs-confirmation' ? (
         <View>

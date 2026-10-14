@@ -81,7 +81,8 @@ export const common = {
   'entry.methodMeasuredHint': 'You poured it into a measuring container.',
   'entry.methodEstimatedHint': 'You judged the amount by eye.',
   'entry.whenLabel': 'When was this?',
-  'entry.whenHint': 'Set to now. Change it if you are adding this later.',
+  'entry.whenHint':
+    'This starts at the time you opened this page. Change it if you are adding this later.',
   'entry.whenChangeButton': 'Change the date and time',
   'entry.whenUseNowButton': 'Use right now',
   'entry.saveButton': 'Save entry',

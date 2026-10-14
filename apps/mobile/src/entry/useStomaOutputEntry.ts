@@ -22,6 +22,7 @@ import {
   isBlocked,
   MAX_VALUE_DECIMAL_PLACES,
   MEASURED_METHOD_CODE,
+  TIER1_RULE_CODE,
   validateVolumetricEntry,
   type MeasuredOrEstimated,
   type VolumetricValidationThresholds,
@@ -266,6 +267,25 @@ export function methodError(errors: readonly ValidationError[]): ValidationError
 }
 
 /**
+ * Rule codes that belong beside the date-and-time field (#135).
+ *
+ * Same reason as `METHOD_RULE_CODES`: every Tier 1 error carries the amount's
+ * `field`, so routing by field put "Choose a date on or after your surgery
+ * date." under the amount box. That was harmless only while the timestamp
+ * could not be edited and neither rule could fire; once a patient can backdate
+ * an entry, the message has to sit next to the control that fixes it.
+ */
+const TIMESTAMP_RULE_CODES: ReadonlySet<string> = new Set([
+  TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_IN_FUTURE,
+  TIER1_RULE_CODE.EFFECTIVE_DATE_TIME_BEFORE_SURGERY,
+]);
+
+/** The Tier 1 error to show beside the date-and-time field, if any. */
+export function timestampError(errors: readonly ValidationError[]): ValidationError | undefined {
+  return errors.find((error) => TIMESTAMP_RULE_CODES.has(error.ruleCode));
+}
+
+/**
  * The Tier 1 error to show beside the amount field, if any.
  *
  * Reports the first non-method error rather than collecting them all: the
@@ -274,5 +294,7 @@ export function methodError(errors: readonly ValidationError[]): ValidationError
  * corrections (docs/sync-contract.md §6.3 requires the same of the server).
  */
 export function amountError(errors: readonly ValidationError[]): ValidationError | undefined {
-  return errors.find((error) => !METHOD_RULE_CODES.has(error.ruleCode));
+  return errors.find(
+    (error) => !METHOD_RULE_CODES.has(error.ruleCode) && !TIMESTAMP_RULE_CODES.has(error.ruleCode),
+  );
 }

@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime, formatVolumeUnitLabel } from '@ostomy/core/i18n';
+import { formatVolumeUnitLabel } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -29,11 +29,13 @@ import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
 import { parseDraftParams } from '../src/quickadd/draftParams';
+import { EntryTimestampField } from '../src/entry/EntryTimestampField';
 import {
   amountError,
   checkEntry,
   methodError,
   STOMA_OUTPUT_LOINC_CODE,
+  timestampError,
   toCanonicalValueString,
   type EntryCheck,
 } from '../src/entry/useStomaOutputEntry';
@@ -181,6 +183,7 @@ function AddOutputScreen({ profile }: { readonly profile: LocalProfile }): React
   const blocked = check?.kind === 'blocked' ? check.errors : [];
   const amountRuleCode = amountError(blocked)?.ruleCode;
   const methodRuleCode = methodError(blocked)?.ruleCode;
+  const timestampRuleCode = timestampError(blocked)?.ruleCode;
 
   return (
     <Screen>
@@ -228,20 +231,15 @@ function AddOutputScreen({ profile }: { readonly profile: LocalProfile }): React
         </BodyText>
       ) : null}
 
-      <View>
-        <BodyText>{t('common:entry.whenLabel')}</BodyText>
-        <BodyText tone="muted">{t('common:entry.whenHint')}</BodyText>
-        <BodyText>
-          {formatDateTime(effectiveDateTime, undefined, { timeZone: deviceTimeZone() })}
-        </BodyText>
-        <Button
-          label={t('common:entry.whenUseNowButton')}
-          variant="secondary"
-          onPress={() => {
-            setEffectiveDateTime(clockNow());
-          }}
-        />
-      </View>
+      <EntryTimestampField
+        value={effectiveDateTime}
+        onChange={setEffectiveDateTime}
+        surgeryDate={surgeryDate}
+        now={clockNow}
+        errorMessage={
+          timestampRuleCode === undefined ? undefined : t(`validationErrors:${timestampRuleCode}`)
+        }
+      />
 
       {check?.kind === 'needs-confirmation' ? (
         <View>

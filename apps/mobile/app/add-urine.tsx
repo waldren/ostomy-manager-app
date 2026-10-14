@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime, formatVolumeUnitLabel } from '@ostomy/core/i18n';
+import { formatVolumeUnitLabel } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -26,6 +26,7 @@ import { useAuth } from '../src/auth/AuthContext';
 import type { LocalProfile } from '../src/db/repositories/profileRepository';
 import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
+import { EntryTimestampField } from '../src/entry/EntryTimestampField';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import {
   enqueueVolumelessUrineCreate,
@@ -35,7 +36,12 @@ import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
 import { parseDraftParams } from '../src/quickadd/draftParams';
 import { UrineColorChoice } from '../src/entry/UrineColorChoice';
 import { VOIDED_URINE_LOINC_CODE } from '../src/entry/observationCodes';
-import { amountError, methodError, toCanonicalValueString } from '../src/entry/useStomaOutputEntry';
+import {
+  amountError,
+  methodError,
+  timestampError,
+  toCanonicalValueString,
+} from '../src/entry/useStomaOutputEntry';
 import {
   checkUrineEntry,
   hasSomethingToRecord,
@@ -123,7 +129,7 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
   const [amountText, setAmountText] = useState(draft.amount ?? '');
   const [method, setMethod] = useState<MeasuredOrEstimated | undefined>(draft.method);
   const [urineColorCode, setUrineColorCode] = useState<string | undefined>(draft.urineColor);
-  const [effectiveDateTime] = useState(() => clockNow());
+  const [effectiveDateTime, setEffectiveDateTime] = useState(() => clockNow());
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -240,12 +246,15 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
   const blocked = check?.kind === 'blocked' ? check.errors : [];
   const amountRuleCode = amountError(blocked)?.ruleCode;
   const methodRuleCode = methodError(blocked)?.ruleCode;
+  const timestampRuleCode = timestampError(blocked)?.ruleCode;
   // A blocked error whose field surface is not on screen. See the catch-all in
   // the render for why this is not defensive padding.
   const unsurfacedBlocked = blocked.find(
     (error) =>
       (error.ruleCode === methodRuleCode && !recordingAnAmount) ||
-      (error.ruleCode !== methodRuleCode && error.ruleCode !== amountRuleCode),
+      (error.ruleCode !== methodRuleCode &&
+        error.ruleCode !== amountRuleCode &&
+        error.ruleCode !== timestampRuleCode),
   );
 
   return (
@@ -301,12 +310,15 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
       {/* AC 12.1 AC3 — the colour scale. */}
       <UrineColorChoice options={colors} value={urineColorCode} onChange={setUrineColorCode} />
 
-      <View>
-        <BodyText>{t('common:entry.whenLabel')}</BodyText>
-        <BodyText>
-          {formatDateTime(effectiveDateTime, undefined, { timeZone: deviceTimeZone() })}
-        </BodyText>
-      </View>
+      <EntryTimestampField
+        value={effectiveDateTime}
+        onChange={setEffectiveDateTime}
+        surgeryDate={surgeryDate}
+        now={clockNow}
+        errorMessage={
+          timestampRuleCode === undefined ? undefined : t(`validationErrors:${timestampRuleCode}`)
+        }
+      />
 
       {check?.kind === 'needs-confirmation' ? (
         <View>
