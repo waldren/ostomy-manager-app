@@ -22,12 +22,19 @@ import { type SurgeryDateRuleCode } from '@ostomy/core/validation';
 
 import { AuditService } from '../audit/audit.service';
 import type { PatientActor } from '../auth/patient-actor';
-import { MeasurementSystem, OstomyType, Prisma } from '../generated/prisma/client';
+import { Prisma } from '../generated/prisma/client';
 import { patientNotProvisioned } from '../observations/observation-rejection';
 import { PrismaService } from '../prisma/prisma.service';
 
 import { type OnboardingRequest, type ProfileResponse } from './onboarding-wire';
-import { surgeryDateViolation, toSurgeryDate, toWireSurgeryDate } from './surgery-date';
+import {
+  PROVISIONED_PROFILE_CLIENT_UPDATED_AT,
+  toProfileAuditSnapshot,
+  toProfileFields,
+  toStoredOstomyType,
+  toStoredProfileMeasurementSystem,
+} from './profile-payload';
+import { surgeryDateViolation, toSurgeryDate } from './surgery-date';
 
 /** What `audit_events.entity_type` carries for these rows. Greppable and stable. */
 export const PROFILE_ENTITY_TYPE = 'profile';
@@ -41,31 +48,6 @@ export interface OnboardingWrite {
   readonly profileId: string;
   readonly auditEventId: string;
 }
-
-const OSTOMY_TYPE_BY_WIRE: Readonly<Record<OnboardingRequest['ostomyType'], OstomyType>> = {
-  colostomy: OstomyType.COLOSTOMY,
-  ileostomy: OstomyType.ILEOSTOMY,
-};
-
-const MEASUREMENT_SYSTEM_BY_WIRE: Readonly<
-  Record<OnboardingRequest['measurementSystem'], MeasurementSystem>
-> = {
-  metric: MeasurementSystem.METRIC,
-  imperial: MeasurementSystem.IMPERIAL,
-};
-
-/** The inverse, so a read and a write cannot disagree about the mapping. */
-const WIRE_BY_OSTOMY_TYPE: Readonly<Record<OstomyType, OnboardingRequest['ostomyType']>> = {
-  [OstomyType.COLOSTOMY]: 'colostomy',
-  [OstomyType.ILEOSTOMY]: 'ileostomy',
-};
-
-const WIRE_BY_MEASUREMENT_SYSTEM: Readonly<
-  Record<MeasurementSystem, OnboardingRequest['measurementSystem']>
-> = {
-  [MeasurementSystem.METRIC]: 'metric',
-  [MeasurementSystem.IMPERIAL]: 'imperial',
-};
 
 /**
  * Provisioning: the one write that creates a patient (P4.S1, SRS §3.0).
@@ -147,13 +129,14 @@ export class OnboardingService {
           // and the schema leaves assignment to the writer.
           id: randomUUID(),
           patientId,
-          ostomyType: OSTOMY_TYPE_BY_WIRE[request.ostomyType],
+          ostomyType: toStoredOstomyType(request.ostomyType),
           surgeryDate,
-          measurementSystem: MEASUREMENT_SYSTEM_BY_WIRE[request.measurementSystem],
+          measurementSystem: toStoredProfileMeasurementSystem(request.measurementSystem),
           // The client asserts nothing here: onboarding is not a conflict-resolved
           // write, because it is the first one and there is nothing to conflict
-          // with. ADR-0001's last-write-wins applies to the EDITS P4.S3 adds.
-          clientUpdatedAt: new Date(),
+          // with. The epoch, not `now()`, so that every later edit wins — see
+          // `PROVISIONED_PROFILE_CLIENT_UPDATED_AT` for the loss path `now()` was.
+          clientUpdatedAt: PROVISIONED_PROFILE_CLIENT_UPDATED_AT,
         },
       });
 
@@ -177,7 +160,7 @@ export class OnboardingService {
           entityId: profile.id,
           reasonCode: ONBOARDING_REASON_CODE,
           ...(correlationId !== undefined ? { correlationId } : {}),
-          afterValue: after,
+          afterValue: toProfileAuditSnapshot(profile),
         },
         tx,
       );
@@ -200,6 +183,7 @@ export class OnboardingService {
       select: {
         profile: {
           select: {
+            id: true,
             ostomyType: true,
             surgeryDate: true,
             measurementSystem: true,
@@ -240,18 +224,10 @@ export class OnboardingService {
   }
 }
 
-function toProfileResponse(row: {
-  ostomyType: OstomyType;
-  surgeryDate: Date;
-  measurementSystem: MeasurementSystem;
-}): ProfileResponse {
-  return {
-    ostomyType: WIRE_BY_OSTOMY_TYPE[row.ostomyType],
-    // `@db.Date` comes back as a Date at UTC midnight; the wire carries the
-    // calendar date it has always been, not an instant.
-    surgeryDate: toWireSurgeryDate(row.surgeryDate),
-    measurementSystem: WIRE_BY_MEASUREMENT_SYSTEM[row.measurementSystem],
-  };
+function toProfileResponse(
+  row: Parameters<typeof toProfileFields>[0] & { id: string },
+): ProfileResponse {
+  return { id: row.id, ...toProfileFields(row) };
 }
 
 /** Re-exported for the controller's OpenAPI description; `Prisma` is imported for its transaction client type only. */

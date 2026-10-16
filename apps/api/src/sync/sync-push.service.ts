@@ -41,6 +41,13 @@ import {
 import { AuditService } from '../audit/audit.service';
 import type { PatientActor } from '../auth/patient-actor';
 import { getRequestId } from '../logging/request-id';
+import { PROFILE_ENTITY_TYPE } from '../onboarding/onboarding.service';
+import {
+  incomingProfileSnapshot,
+  interpretProfilePayload,
+  profileRequestParseSchema,
+  toProfileAuditSnapshot,
+} from '../onboarding/profile-payload';
 import { toWireSurgeryDate } from '../onboarding/surgery-date';
 import {
   MeasurementSystem,
@@ -51,6 +58,7 @@ import {
   SyncOperationType,
   type Meal,
   type Observation,
+  type Profile,
   type SyncOperation,
 } from '../generated/prisma/client';
 import { SecurityLogService } from '../logging/security-log.service';
@@ -95,8 +103,13 @@ const MEAL_ENTITY_TYPE = 'meal';
 interface PatientContext {
   readonly patientId: string;
   readonly actorId: string;
-  /** `YYYY-MM-DD`. A calendar date, because the Tier 1 rule it feeds compares calendar days — see `packages/core/src/validation/entryTimestamp.ts`. */
-  readonly surgeryDate: string | null;
+  /**
+   * `YYYY-MM-DD`. A calendar date, because the Tier 1 rule it feeds compares calendar days — see `packages/core/src/validation/entryTimestamp.ts`.
+   *
+   * Not `readonly`, the one exception in this type: an accepted `Profile`
+   * update in the batch replaces it (see `push`).
+   */
+  surgeryDate: string | null;
 }
 
 /**
@@ -199,6 +212,13 @@ export class SyncPushService {
       const result = await this.applyOne(context, operation, correlationId);
       results.push(result.result);
       if (result.applied) appliedCount += 1;
+      // A surgery-date edit applies to every operation queued AFTER it in this
+      // batch. The device queued the edit first and the entries after, so it
+      // validated those entries against the new date; validating them here
+      // against the date the batch started with would refuse entries the
+      // patient made correctly (P4.S3). Operations BEFORE the edit keep the
+      // old date, which is what they were checked against.
+      if (result.surgeryDate !== undefined) context.surgeryDate = result.surgeryDate;
     }
 
     return { results, appliedCount };
@@ -215,7 +235,7 @@ export class SyncPushService {
     context: PatientContext,
     operation: SyncPushOperationParsed,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+  ): Promise<OperationOutcome> {
     // §3.7. A re-pushed operation returns the result the first attempt
     // produced, byte-for-byte apart from `replayed: true`, and has no further
     // effect. Checked before anything else: a replayed rejection is still a
@@ -265,12 +285,8 @@ export class SyncPushService {
     context: PatientContext,
     operation: SyncPushOperationParsed,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
-    if (operation.entityType === SYNC_ENTITY_TYPE.MEAL) {
-      return this.applyMeal(context, operation, correlationId);
-    }
-
-    if (operation.entityType !== SYNC_ENTITY_TYPE.OBSERVATION) {
+  ): Promise<OperationOutcome> {
+    if (!HANDLED_ENTITY_TYPES.has(operation.entityType)) {
       // LIVE as of P3.S1, and it was written for exactly this. The comment
       // here used to say "currently unreachable ... becomes live at P4, when
       // Profile and EffectiveRange gain wire payloads and the enum grows" —
@@ -296,12 +312,183 @@ export class SyncPushService {
       };
     }
 
+    // §3.8, for EVERY entity type, before anything else. A poisoned
+    // `clientTimestamp` wins every last-write-wins comparison for the entity it
+    // touches, and that is no less true of a meal or a profile than of an
+    // observation. Meals used to be dispatched above this check and so were
+    // never bounded at all: a phone with its clock set a year ahead won every
+    // meal conflict, permanently (fixed at P4.S3).
     const skewRejection = await this.checkClockSkew(operation);
     if (skewRejection !== null) {
       return { result: skewRejection, applied: false };
     }
 
+    if (operation.entityType === SYNC_ENTITY_TYPE.MEAL) {
+      return this.applyMeal(context, operation, correlationId);
+    }
+    if (operation.entityType === SYNC_ENTITY_TYPE.PROFILE) {
+      return this.applyProfile(context, operation, correlationId);
+    }
     return this.applyObservation(context, operation, correlationId);
+  }
+
+  /**
+   * The `Profile` push path (P4.S3, §7.5): an UPDATE to the patient's own
+   * profile, and nothing else.
+   *
+   * Structurally the meal path again — (patient, entityId) lookup, last-write-
+   * wins by client timestamp with the same three outcomes, the same audit
+   * obligations — because a profile resolving conflicts differently would make
+   * §4 mean two things. Three things differ:
+   *
+   * - **Update only.** A profile is created by provisioning, which cannot be a
+   *   sync operation, and deleting one is account deletion (ADR-0017). Both are
+   *   refused per operation naming `operationType`, the way an entity type this
+   *   release does not handle is refused naming `entityType`.
+   * - **No clinical timestamp.** A profile describes the patient rather than an
+   *   event, so neither Tier 1 timestamp rule applies; the surgery date has its
+   *   own bounds, onboarding's (`interpretProfilePayload`).
+   * - **It changes the batch.** An accepted surgery-date edit becomes the bound
+   *   for the operations after it (`push`).
+   */
+  private async applyProfile(
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    correlationId: string | undefined,
+  ): Promise<OperationOutcome> {
+    if (operation.operationType !== SYNC_OPERATION_TYPE.UPDATE) {
+      return {
+        result: rejection(
+          operation,
+          SYNC_REASON_CODE.UNSUPPORTED_CODE,
+          SYNC_FIELD_PATH.OPERATION_TYPE,
+        ),
+        applied: false,
+      };
+    }
+
+    // §2: by (patient, entityId) together. Another patient's profile id
+    // resolves to nothing and gets the byte-identical refusal a nonexistent id
+    // does.
+    const stored = await this.prisma.profile.findFirst({
+      where: { id: operation.entityId, patientId: context.patientId, deletedAt: null },
+    });
+    if (stored === null) {
+      return {
+        result: rejection(operation, SYNC_REASON_CODE.ENTITY_NOT_FOUND, SYNC_FIELD_PATH.ENTITY_ID),
+        applied: false,
+      };
+    }
+
+    if (operation.clientTimestamp.getTime() < stored.clientUpdatedAt.getTime()) {
+      return this.recordProfileSuperseded(context, operation, stored, correlationId);
+    }
+
+    let input;
+    try {
+      const parsed = profileRequestParseSchema.parse(operation.payload);
+      input = interpretProfilePayload(parsed, new Date());
+    } catch (error) {
+      const detail = firstRejectionDetail(error);
+      return { result: rejection(operation, detail.reasonCode, detail.field), applied: false };
+    }
+
+    const row = await this.prisma.$transaction(async (tx) => {
+      const written = await tx.profile.update({
+        where: { id: operation.entityId, patientId: context.patientId },
+        // A full replacement (§4): every field the payload carries, named.
+        data: {
+          ostomyType: input.ostomyType,
+          surgeryDate: input.surgeryDate,
+          measurementSystem: input.measurementSystem,
+          clientUpdatedAt: operation.clientTimestamp,
+        },
+      });
+
+      // §3.10: "editable but audit-logged, since the surgery date is a
+      // validation boundary" — before AND after, so a moved boundary can always
+      // be traced to who moved it and from where.
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: context.actorId,
+          action: 'UPDATE',
+          entityType: PROFILE_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_APPLIED_REASON,
+          beforeValue: toProfileAuditSnapshot(stored),
+          afterValue: toProfileAuditSnapshot(written),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+      // §4.1: the displaced version, as its own row — the meal path's rule.
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: context.actorId,
+          action: 'UPDATE',
+          entityType: PROFILE_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_CONFLICT_LOSER_REASON,
+          beforeValue: toProfileAuditSnapshot(stored),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+
+      await this.writeOperationRecord(
+        tx,
+        context,
+        operation,
+        acceptedResultFor(operation, written.serverSequence),
+      );
+      return written;
+    });
+
+    return {
+      result: acceptedResultFor(operation, row.serverSequence),
+      applied: true,
+      surgeryDate: toWireSurgeryDate(row.surgeryDate),
+    };
+  }
+
+  /** The incoming profile lost. Result `superseded`, and the INCOMING version goes to the audit log (§4.1). */
+  private async recordProfileSuperseded(
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    stored: Profile,
+    correlationId: string | undefined,
+  ): Promise<OperationOutcome> {
+    const result = syncSupersededResult({
+      operationId: toOperationId(operation.operationId),
+      entityId: toEntityId(operation.entityId),
+      appliedServerSequence: toServerSequence(stored.serverSequence.toString()),
+      replayed: false,
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: context.actorId,
+          action: 'UPDATE',
+          entityType: PROFILE_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_CONFLICT_LOSER_REASON,
+          beforeValue: incomingProfileSnapshot(
+            operation.entityId,
+            operation.payload,
+            operation.clientTimestamp,
+          ),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+      await this.writeOperationRecord(tx, context, operation, result);
+    });
+
+    return { result, applied: false };
   }
 
   /**
@@ -355,7 +542,7 @@ export class SyncPushService {
     context: PatientContext,
     operation: SyncPushOperationParsed,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+  ): Promise<OperationOutcome> {
     const isDelete = operation.operationType === SYNC_OPERATION_TYPE.DELETE;
 
     // §2/§4: by (patient, entityId) together, never `findUnique({ id })`. An
@@ -393,7 +580,7 @@ export class SyncPushService {
     operation: SyncPushOperationParsed,
     stored: Meal,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+  ): Promise<OperationOutcome> {
     const result = syncSupersededResult({
       operationId: toOperationId(operation.operationId),
       entityId: toEntityId(operation.entityId),
@@ -432,7 +619,7 @@ export class SyncPushService {
     operation: SyncPushOperationParsed,
     stored: Meal | null,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+  ): Promise<OperationOutcome> {
     // Payload CONTENT validation, per operation — never in the pipe (§6.1).
     let input;
     try {
@@ -553,7 +740,7 @@ export class SyncPushService {
     operation: SyncPushOperationParsed,
     stored: Meal | null,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+  ): Promise<OperationOutcome> {
     if (stored === null) {
       throw new Error(
         'applyMealDelete reached with no stored row; applyMeal should have rejected it.',
@@ -602,7 +789,7 @@ export class SyncPushService {
     context: PatientContext,
     operation: SyncPushOperationParsed,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+  ): Promise<OperationOutcome> {
     const isDelete = operation.operationType === SYNC_OPERATION_TYPE.DELETE;
 
     // §2/§4: found by (patient, entityId) TOGETHER. `findFirst` with both in
@@ -690,7 +877,7 @@ export class SyncPushService {
     operation: SyncPushOperationParsed,
     stored: Observation,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+  ): Promise<OperationOutcome> {
     const result = syncSupersededResult({
       operationId: toOperationId(operation.operationId),
       entityId: toEntityId(operation.entityId),
@@ -725,7 +912,7 @@ export class SyncPushService {
     operation: SyncPushOperationParsed,
     stored: Observation | null,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+  ): Promise<OperationOutcome> {
     // Payload CONTENT validation, per operation — never in the pipe (§6.1).
     let input;
     try {
@@ -920,7 +1107,7 @@ export class SyncPushService {
     operation: SyncPushOperationParsed,
     stored: Observation | null,
     correlationId: string | undefined,
-  ): Promise<{ result: SyncOperationResult; applied: boolean }> {
+  ): Promise<OperationOutcome> {
     // `stored` is non-null by construction: `applyObservation` returns
     // ENTITY_NOT_FOUND for a delete against a row this patient does not have,
     // before this method is reached. An earlier version repeated that check
@@ -1009,7 +1196,11 @@ export class SyncPushService {
       data: {
         patientId: context.patientId,
         operationId: operation.operationId,
-        entityType: SyncEntityType.OBSERVATION,
+        // The operation's own type. This was the literal `OBSERVATION` for every
+        // record, so each meal's idempotency row misdescribed what it was about
+        // from P3.S1 until P4.S3 (replay was unaffected: it keys on
+        // (patient, operationId)).
+        entityType: toStoredEntityType(operation.entityType),
         entityId: operation.entityId,
         operationType: toStoredOperationType(operation.operationType),
         clientTimestamp: operation.clientTimestamp,
@@ -1021,6 +1212,40 @@ export class SyncPushService {
       },
     });
   }
+}
+
+/**
+ * What one operation produced. `surgeryDate` is set only by an accepted
+ * profile update, and is the new bound for the rest of the batch (`push`).
+ */
+interface OperationOutcome {
+  readonly result: SyncOperationResult;
+  readonly applied: boolean;
+  readonly surgeryDate?: string;
+}
+
+/** The entity types this release applies. Anything else is refused per operation, naming `entityType`. */
+const HANDLED_ENTITY_TYPES: ReadonlySet<string> = new Set<string>([
+  SYNC_ENTITY_TYPE.OBSERVATION,
+  SYNC_ENTITY_TYPE.MEAL,
+  SYNC_ENTITY_TYPE.PROFILE,
+]);
+
+const STORED_ENTITY_TYPE: Readonly<Record<string, SyncEntityType>> = {
+  [SYNC_ENTITY_TYPE.OBSERVATION]: SyncEntityType.OBSERVATION,
+  [SYNC_ENTITY_TYPE.MEAL]: SyncEntityType.MEAL,
+  [SYNC_ENTITY_TYPE.PROFILE]: SyncEntityType.PROFILE,
+};
+
+function toStoredEntityType(entityType: string): SyncEntityType {
+  const stored = STORED_ENTITY_TYPE[entityType];
+  if (stored === undefined) {
+    // Unreachable: the pipe admits only `SYNC_ENTITY_TYPE` members. A throw
+    // rather than a fallback, because a fallback is how every meal came to be
+    // recorded as an observation.
+    throw new Error('No stored sync_entity_type for this wire entity type.');
+  }
+  return stored;
 }
 
 function acceptedResultFor(

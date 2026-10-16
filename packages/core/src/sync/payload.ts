@@ -305,9 +305,55 @@ export interface MealSyncPayload {
   readonly enteredTimezone: string;
 }
 
+/**
+ * v1's ostomy types (SRS §3.0). Colostomy and ileostomy only: urostomy was cut
+ * in SRS Phase 4 Appendix A, because a urostomy's stoma output IS urine, which
+ * makes it a different data model rather than a third enum value.
+ */
+export const OSTOMY_TYPE = ['colostomy', 'ileostomy'] as const;
+export type OstomyType = (typeof OSTOMY_TYPE)[number];
+
+/**
+ * The patient's profile (P4.S3, SRS §3.10): the three facts onboarding asks
+ * for, and nothing else.
+ *
+ * **Update-only on this wire.** A profile is CREATED by provisioning
+ * (`POST /api/v1/onboarding`), which is not a sync operation because a sync
+ * push requires a provisioned patient, so the bootstrap cannot be the thing
+ * that needs the bootstrap. A `create` or `delete` for this entity type is
+ * refused per operation; deleting a profile is account deletion (ADR-0017),
+ * which this wire does not do.
+ *
+ * App-native, like `MealSyncPayload`, and for the same reason it has no
+ * `resourceType`. FHIR's `Patient` would hold none of these three fields, and
+ * the export module builds what it needs from the database.
+ *
+ * A full replacement, never a patch (§4), so every field is required. With a
+ * patch an omitted field would mean "unchanged", and a client that forgot one
+ * would be indistinguishable from one that meant to leave it alone.
+ */
+export interface ProfileSyncPayload {
+  /** Equals the operation's `entityId`: the profile's own id, as `GET /api/v1/profile` reports it. Never the patient's id, which this wire never carries (§2). */
+  readonly id: EntityId;
+  /** Drives which clinical default range is SUGGESTED (§3.9). Changing it never alters a range the patient confirmed or a physician set. */
+  readonly ostomyType: OstomyType;
+  /**
+   * `YYYY-MM-DD`: a calendar date, never an instant (the column is `@db.Date`).
+   *
+   * The lower bound of Tier 1 timestamp validation (§3.8), so moving it moves
+   * the boundary for entries made **from then on**. Entries already accepted
+   * are not re-validated: Tier 1 applies on write, and re-checking history
+   * against a mutable profile is the shape ADR-0016 refuses for `localDate`.
+   */
+  readonly surgeryDate: string;
+  /** Governs every volume and weight display (ADR-0004). Changing it rewrites no stored value: each observation keeps the system it was entered in (ADR-0012). */
+  readonly measurementSystem: MeasurementSystem;
+}
+
 export interface SyncPayloadByEntityType {
   readonly Observation: ObservationSyncPayload;
   readonly Meal: MealSyncPayload;
+  readonly Profile: ProfileSyncPayload;
 }
 
 export type SyncEntityType = keyof SyncPayloadByEntityType;
@@ -328,4 +374,10 @@ export const SYNC_ENTITY_TYPE = {
    * handler for it, so the server owes it the filtering, not the reverse.
    */
   MEAL: 'Meal',
+  /**
+   * P4.S3. Additive under §8 for the same reason `MEAL` was: a client that does
+   * not handle it skips the change in a delta page and still advances its
+   * cursor (§7.2).
+   */
+  PROFILE: 'Profile',
 } as const;

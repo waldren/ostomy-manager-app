@@ -26,11 +26,12 @@ import {
   type SyncDeltaResponse,
 } from '@ostomy/core/sync';
 
-import { Prisma, type Meal, type Observation } from '../generated/prisma/client';
+import { Prisma, type Meal, type Observation, type Profile } from '../generated/prisma/client';
 import { SecurityLogService } from '../logging/security-log.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { toObservationResource } from '../observations/observation-payload';
 import { toMealResource } from '../meals/meal-payload';
+import { toProfileResource } from '../onboarding/profile-payload';
 import { patientNotProvisioned } from '../observations/observation-rejection';
 import type { SyncDeltaQueryParsed } from './sync-delta.pipe';
 
@@ -195,6 +196,12 @@ export class SyncDeltaService {
           WHERE patient_id = ${patientId}::uuid
             AND server_sequence > ${query.since}
             AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)
+          UNION ALL
+          SELECT id, 'Profile' AS entity_type, server_sequence
+          FROM profiles
+          WHERE patient_id = ${patientId}::uuid
+            AND server_sequence > ${query.since}
+            AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)
           ORDER BY server_sequence ASC
           LIMIT ${query.limit + 1}
         `;
@@ -206,12 +213,15 @@ export class SyncDeltaService {
           .filter((ref) => ref.entity_type === 'Observation')
           .map((ref) => ref.id);
         const mealIds = pageRefs.filter((ref) => ref.entity_type === 'Meal').map((ref) => ref.id);
+        const profileIds = pageRefs
+          .filter((ref) => ref.entity_type === 'Profile')
+          .map((ref) => ref.id);
 
         // Re-scoped to the patient here as well as above. Belt and braces at
         // a seam where a future edit could plausibly drop one of the two, and
         // §2 admits no exception: every entity lookup is by (patient, id)
         // together.
-        const [observations, meals] = await Promise.all([
+        const [observations, meals, profiles] = await Promise.all([
           observationIds.length === 0
             ? Promise.resolve([])
             : tx.observation.findMany({
@@ -224,6 +234,12 @@ export class SyncDeltaService {
                 where: { id: { in: mealIds }, patientId },
                 orderBy: { serverSequence: 'asc' },
               }),
+          profileIds.length === 0
+            ? Promise.resolve([])
+            : tx.profile.findMany({
+                where: { id: { in: profileIds }, patientId },
+                orderBy: { serverSequence: 'asc' },
+              }),
         ]);
 
         // Re-merged into ONE sequence-ordered page. The two typed reads above
@@ -234,6 +250,7 @@ export class SyncDeltaService {
         const page: DeltaRow[] = [
           ...observations.map((row): DeltaRow => ({ kind: 'observation', row })),
           ...meals.map((row): DeltaRow => ({ kind: 'meal', row })),
+          ...profiles.map((row): DeltaRow => ({ kind: 'profile', row })),
         ].sort((a, b) => (a.row.serverSequence < b.row.serverSequence ? -1 : 1));
 
         return { page, hasMore: more };
@@ -279,7 +296,8 @@ export class SyncDeltaService {
  */
 export type DeltaRow =
   | { readonly kind: 'observation'; readonly row: Observation }
-  | { readonly kind: 'meal'; readonly row: Meal };
+  | { readonly kind: 'meal'; readonly row: Meal }
+  | { readonly kind: 'profile'; readonly row: Profile };
 
 function nextCursor(page: readonly DeltaRow[], since: bigint): bigint {
   const last = page[page.length - 1];
@@ -297,7 +315,54 @@ function nextCursor(page: readonly DeltaRow[], since: bigint): bigint {
  * call site.
  */
 function toChange(entry: DeltaRow): SyncDeltaChange {
-  return entry.kind === 'meal' ? toMealChange(entry.row) : toObservationChange(entry.row);
+  switch (entry.kind) {
+    case 'meal':
+      return toMealChange(entry.row);
+    case 'profile':
+      return toProfileChange(entry.row);
+    case 'observation':
+      return toObservationChange(entry.row);
+  }
+}
+
+/**
+ * A `Profile` change (P4.S3, §7.5). How a profile edited on one device reaches
+ * the patient's others (SRS §3.10: "preferences synchronize across devices via
+ * the Section 4.5 pull-sync delta endpoint").
+ *
+ * A tombstone is reachable only through ADR-0017's account deletion, and that
+ * revokes access before it purges, so in practice no device pulls one. Emitted
+ * anyway, through the same constructor, rather than shipping a deleted
+ * profile's clinical fields to a device that somehow could.
+ */
+function toProfileChange(row: Profile): SyncDeltaChange {
+  const entityId = toEntityId(row.id);
+  const serverSequence = toServerSequence(row.serverSequence.toString());
+  const clientUpdatedAt = row.clientUpdatedAt.toISOString();
+
+  if (row.deletedAt !== null) {
+    return syncDeltaTombstone({
+      entityType: SYNC_ENTITY_TYPE.PROFILE,
+      entityId,
+      serverSequence,
+      clientUpdatedAt,
+    });
+  }
+
+  const resource = toProfileResource(row);
+  return syncDeltaUpsert({
+    entityType: SYNC_ENTITY_TYPE.PROFILE,
+    entityId,
+    serverSequence,
+    clientUpdatedAt,
+    // Named field by field, never spread from `resource`.
+    payload: {
+      id: entityId,
+      ostomyType: resource.ostomyType,
+      surgeryDate: resource.surgeryDate,
+      measurementSystem: resource.measurementSystem,
+    },
+  });
 }
 
 /**

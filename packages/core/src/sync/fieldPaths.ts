@@ -81,6 +81,13 @@ export const SYNC_FIELD_PATH = {
   DESCRIPTION: 'description',
   SIZE: 'size',
   TAG_CODES: 'tagCodes',
+  // `Profile` payload fields (P4.S3). `id` above is shared. `measurementSystem`
+  // is the profile's CURRENT system and a different field from an
+  // observation's `enteredMeasurementSystem`, which is fixed per row
+  // (ADR-0012), so the two get different paths.
+  OSTOMY_TYPE: 'ostomyType',
+  SURGERY_DATE: 'surgeryDate',
+  MEASUREMENT_SYSTEM: 'measurementSystem',
 } as const;
 
 export type SyncFieldPath = (typeof SYNC_FIELD_PATH)[keyof typeof SYNC_FIELD_PATH];
