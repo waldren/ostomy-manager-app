@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { OSTOMY_TYPE } from '@ostomy/core/sync';
 import { z } from 'zod';
 
 /**
@@ -63,7 +64,7 @@ export const RANGE_PROVENANCES = [
  * copy must describe what is typical, never prescribe.
  */
 export const rangeBasisSchema = z.object({
-  ostomyType: z.enum(['colostomy', 'ileostomy']).meta({
+  ostomyType: z.enum(OSTOMY_TYPE).meta({
     description: 'The ostomy type the suggestion is keyed to (SRS §3.9).',
   }),
   daysPostOp: z.int().meta({

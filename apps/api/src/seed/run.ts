@@ -85,6 +85,7 @@ import type { VolumetricValidationThresholds } from '@ostomy/core/validation';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 import { PrismaClient } from '../generated/prisma/client';
+import { PROVISIONED_PROFILE_CLIENT_UPDATED_AT } from '../onboarding/profile-payload';
 
 interface SeedArgs {
   readonly scenario: ScenarioName;
@@ -188,7 +189,12 @@ async function write(prisma: PrismaClient, dataset: SeedDataset): Promise<void> 
       ostomyType: dataset.profile.ostomyType,
       surgeryDate: dataset.profile.surgeryDate,
       measurementSystem: dataset.profile.measurementSystem === 'metric' ? 'METRIC' : 'IMPERIAL',
-      clientUpdatedAt: dataset.profile.clientUpdatedAt,
+      // Not the scenario's `now`: a seeded profile is a provisioned one, and
+      // provisioning stamps the epoch so that every later edit wins it. With a
+      // real time here, an emulator whose clock runs behind the moment
+      // dev-reset ran loses its first profile edit and silently reverts — on
+      // the one stack where that reads as a client bug.
+      clientUpdatedAt: PROVISIONED_PROFILE_CLIENT_UPDATED_AT,
     },
   });
 

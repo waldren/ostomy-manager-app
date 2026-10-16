@@ -37,7 +37,9 @@ import {
 import { surgeryDateViolation, toSurgeryDate } from './surgery-date';
 
 /** What `audit_events.entity_type` carries for these rows. Greppable and stable. */
-export const PROFILE_ENTITY_TYPE = 'profile';
+/** Re-exported from where it lives, so the sync module need not import a service file for a string. */
+export { PROFILE_ENTITY_TYPE } from './profile-payload';
+import { PROFILE_ENTITY_TYPE } from './profile-payload';
 
 /** Distinguishes an onboarding write from a later preference edit in the audit log (P4.S3 will add the second). */
 const ONBOARDING_REASON_CODE = 'onboarding';

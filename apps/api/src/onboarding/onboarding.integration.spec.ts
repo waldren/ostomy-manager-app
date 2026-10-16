@@ -29,12 +29,12 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-import { type INestApplication } from '@nestjs/common';
+import { Logger as NestLogger, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Client as PgClient } from 'pg';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../app.module';
 import { PATIENT_JWKS_RESOLVER } from '../auth/patient-jwks-resolver.token';
@@ -541,7 +541,8 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
     it('knows every content column the profiles table has', async () => {
       const columns = await db.query(
         `SELECT column_name FROM information_schema.columns
-          WHERE table_name = 'profiles' ORDER BY column_name`,
+          WHERE table_schema = current_schema() AND table_name = 'profiles'
+          ORDER BY column_name`,
       );
       const content = columns.rows
         .map((row: { column_name: string }) => row.column_name)
@@ -622,6 +623,33 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
       expect(audit.rows[0]).toMatchObject({ action: 'UPDATE', actor_id: patient.subject });
       expect(audit.rows[0].before_value).toMatchObject({ surgeryDate: '2026-01-15' });
       expect(audit.rows[0].after_value).toMatchObject({ surgeryDate: '2026-01-10' });
+
+      // §4.1's second obligation: the displaced stored version, as its own row.
+      // Nothing asserted it, so deleting that write would have passed.
+      const displaced = await db.query(
+        `SELECT before_value, after_value FROM audit_events
+          WHERE entity_type = $1 AND entity_id = $2 AND reason_code = 'sync_conflict_loser'`,
+        [PROFILE_ENTITY_TYPE, patient.profileId],
+      );
+      expect(displaced.rowCount).toBe(1);
+      expect(displaced.rows[0].before_value).toMatchObject({ surgeryDate: '2026-01-15' });
+      expect(displaced.rows[0].after_value).toBeNull();
+    });
+
+    it('answers a replayed edit with its first result, and writes nothing twice', async () => {
+      // §3.7. A lost response makes the device re-push the same operation.
+      const patient = await provisioned();
+      const edit = profileEdit(patient.profileId, { measurementSystem: 'imperial' });
+
+      const first = await push(patient.token, [edit]).expect(200);
+      const second = await push(patient.token, [edit]).expect(200);
+
+      expect(second.body.results[0]).toEqual({ ...first.body.results[0], replayed: true });
+      const audit = await db.query(
+        `SELECT count(*)::int AS n FROM audit_events WHERE entity_id = $1 AND reason_code LIKE 'sync_%'`,
+        [patient.profileId],
+      );
+      expect(audit.rows[0].n).toBe(2);
     });
 
     it('records the idempotency row as a PROFILE operation', async () => {
@@ -678,14 +706,90 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
         ostomy_type: 'COLOSTOMY',
         measurement_system: 'METRIC',
       });
+      // The INCOMING version that lost, preserved rather than discarded (§4.1).
+      // Selected by content, not by recency: the first push's displaced-version
+      // row and this one can share a millisecond, and ids are random.
       const loser = await db.query(
         `SELECT before_value FROM audit_events
           WHERE entity_id = $1 AND reason_code = 'sync_conflict_loser'
-          ORDER BY occurred_at DESC, id DESC LIMIT 1`,
+            AND before_value->>'measurementSystem' = 'imperial'`,
         [patient.profileId],
       );
-      // The INCOMING version that lost, preserved rather than discarded (§4.1).
-      expect(loser.rows[0].before_value).toMatchObject({ measurementSystem: 'imperial' });
+      expect(loser.rowCount).toBe(1);
+      expect(loser.rows[0].before_value).toMatchObject({ clientUpdatedAt: older.clientTimestamp });
+    });
+
+    it('rejects an invalid edit even when it is older, so its content never reaches the audit store', async () => {
+      // Validated before the conflict comparison. Compared first, an older
+      // payload carrying anything at all in a known field would be superseded
+      // and its raw value copied into an append-only table.
+      const patient = await provisioned();
+      await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { ostomyType: 'colostomy' },
+          { clientTimestamp: clientTime(-10) },
+        ),
+      ]).expect(200);
+
+      const response = await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { ostomyType: 'free text the patient never typed' },
+          { clientTimestamp: clientTime(-60) },
+        ),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'PAYLOAD_FIELD_INVALID',
+        field: 'ostomyType',
+      });
+      const audit = await db.query(
+        `SELECT 1 FROM audit_events WHERE entity_id = $1 AND before_value::text LIKE '%free text%'`,
+        [patient.profileId],
+      );
+      expect(audit.rowCount).toBe(0);
+    });
+
+    it('lets a concurrent edit finish before comparing, so the older one cannot win', async () => {
+      // Two devices, one row. A newer version is being written and has not
+      // committed; an older push arrives. Compared against a read taken outside
+      // the transaction, the older push sees the provisioning version, passes,
+      // waits on the row lock for the UPDATE, then overwrites the newer one —
+      // and its audit row names the wrong version as displaced. Under the row
+      // lock it waits BEFORE comparing, and loses.
+      const patient = await provisioned();
+      const writer = new PgClient({ connectionString: runtimeDatabaseUrl });
+      await writer.connect();
+      try {
+        await writer.query('BEGIN');
+        await writer.query(
+          `UPDATE profiles SET ostomy_type = 'COLOSTOMY', client_updated_at = $2 WHERE id = $1`,
+          [patient.profileId, clientTime(-10)],
+        );
+
+        const pending = push(patient.token, [
+          profileEdit(
+            patient.profileId,
+            { measurementSystem: 'imperial' },
+            { clientTimestamp: clientTime(-60) },
+          ),
+        ]).then((response) => response);
+        // Long enough for the push to reach the lock and block on it.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await writer.query('COMMIT');
+
+        const response = await pending;
+        expect(response.body.results[0].status).toBe('superseded');
+        expect(await profileRow(patient.subject)).toMatchObject({
+          ostomy_type: 'COLOSTOMY',
+          measurement_system: 'METRIC',
+        });
+      } finally {
+        await writer.query('ROLLBACK').catch(() => undefined);
+        await writer.end();
+      }
     });
 
     it('refuses a create or a delete, naming operationType', async () => {
@@ -718,13 +822,37 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
       // for nobody, so the response cannot confirm the other profile exists.
       const victim = await provisioned();
       const attacker = await provisioned();
+      const auditBefore = await db.query(
+        `SELECT count(*)::int AS n FROM audit_events WHERE entity_id = $1`,
+        [victim.profileId],
+      );
 
-      const theirs = await push(attacker.token, [
-        profileEdit(victim.profileId, { surgeryDate: '2020-01-01' }),
-      ]);
-      const nobodys = await push(attacker.token, [
-        profileEdit(randomUUID(), { surgeryDate: '2020-01-01' }),
-      ]);
+      const lines: string[] = [];
+      const spy = vi.spyOn(NestLogger.prototype, 'warn').mockImplementation((message: unknown) => {
+        lines.push(String(message));
+      });
+      let theirs;
+      let nobodys;
+      try {
+        theirs = await push(attacker.token, [
+          profileEdit(victim.profileId, { surgeryDate: '2020-01-01' }),
+        ]);
+        nobodys = await push(attacker.token, [
+          profileEdit(randomUUID(), { surgeryDate: '2020-01-01' }),
+        ]);
+      } finally {
+        spy.mockRestore();
+      }
+
+      // The operator sees the probe against a real profile, and only that one.
+      const probes = lines.filter((line) => line.includes('sync.push.cross_patient_entity'));
+      expect(probes).toHaveLength(1);
+      expect(probes[0]).toContain(victim.profileId);
+      const auditAfter = await db.query(
+        `SELECT count(*)::int AS n FROM audit_events WHERE entity_id = $1`,
+        [victim.profileId],
+      );
+      expect(auditAfter.rows[0].n).toBe(auditBefore.rows[0].n);
 
       expect(theirs.body.results[0]).toMatchObject({
         status: 'rejected',
@@ -792,6 +920,8 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
         reasonCode: 'PAYLOAD_FIELD_UNRECOGNIZED',
         field: 'payload',
       });
+      // Never the key: it is client-supplied content (§6.2).
+      expect(JSON.stringify(response.body)).not.toContain('targetDryWeightKg');
     });
 
     it('refuses a clock set too far ahead, which would win every later conflict', async () => {
@@ -876,6 +1006,35 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
         reasonCode: 'EFFECTIVE_DATE_TIME_BEFORE_SURGERY',
       });
       expect(response.body.results[1].status).toBe('accepted');
+    });
+
+    it('does not move the bound when the edit loses', async () => {
+      // Only an ACCEPTED edit changes the stored date, so only an accepted one
+      // may change what the rest of the batch is checked against. Carrying any
+      // non-rejected result would let a superseded edit relax the bound.
+      const patient = await provisioned();
+      await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { ostomyType: 'colostomy' },
+          { clientTimestamp: clientTime(-10) },
+        ),
+      ]).expect(200);
+
+      const response = await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { surgeryDate: '2026-01-05' },
+          { clientTimestamp: clientTime(-60) },
+        ),
+        entryBefore(-5, '2026-01-10T12:00:00.000Z'),
+      ]);
+
+      expect(response.body.results[0].status).toBe('superseded');
+      expect(response.body.results[1]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'EFFECTIVE_DATE_TIME_BEFORE_SURGERY',
+      });
     });
 
     it('does not re-validate entries already accepted', async () => {

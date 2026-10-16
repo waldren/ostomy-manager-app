@@ -41,10 +41,10 @@ import {
 import { AuditService } from '../audit/audit.service';
 import type { PatientActor } from '../auth/patient-actor';
 import { getRequestId } from '../logging/request-id';
-import { PROFILE_ENTITY_TYPE } from '../onboarding/onboarding.service';
 import {
   incomingProfileSnapshot,
   interpretProfilePayload,
+  PROFILE_ENTITY_TYPE,
   profileRequestParseSchema,
   toProfileAuditSnapshot,
 } from '../onboarding/profile-payload';
@@ -58,7 +58,6 @@ import {
   SyncOperationType,
   type Meal,
   type Observation,
-  type Profile,
   type SyncOperation,
 } from '../generated/prisma/client';
 import { SecurityLogService } from '../logging/security-log.service';
@@ -336,10 +335,10 @@ export class SyncPushService {
    * The `Profile` push path (P4.S3, §7.5): an UPDATE to the patient's own
    * profile, and nothing else.
    *
-   * Structurally the meal path again — (patient, entityId) lookup, last-write-
-   * wins by client timestamp with the same three outcomes, the same audit
+   * Structurally the meal path — (patient, entityId) lookup, last-write-wins
+   * by client timestamp with the same three outcomes, the same audit
    * obligations — because a profile resolving conflicts differently would make
-   * §4 mean two things. Three things differ:
+   * §4 mean two things. Five things differ:
    *
    * - **Update only.** A profile is created by provisioning, which cannot be a
    *   sync operation, and deleting one is account deletion (ADR-0017). Both are
@@ -348,6 +347,18 @@ export class SyncPushService {
    * - **No clinical timestamp.** A profile describes the patient rather than an
    *   event, so neither Tier 1 timestamp rule applies; the surgery date has its
    *   own bounds, onboarding's (`interpretProfilePayload`).
+   * - **The payload is validated BEFORE the conflict comparison.** The meal
+   *   path compares first, so an older payload carrying anything at all in a
+   *   known field is `superseded` and its raw value is copied into the
+   *   append-only audit store, where only an ADR-0017 purge can reach it. Here
+   *   an invalid payload is `rejected` whatever its timestamp, and the losing
+   *   version the audit row preserves is always one that passed validation.
+   * - **The comparison runs under a row lock.** Every device a patient owns
+   *   edits this one row. Read outside the transaction, two concurrent pushes
+   *   both pass the comparison against the same stored version, the OLDER one
+   *   can commit second and win, and its audit row names the wrong version as
+   *   the one it displaced. For the row that is every later entry's Tier 1
+   *   bound, that is not a theoretical race (#140 review).
    * - **It changes the batch.** An accepted surgery-date edit becomes the bound
    *   for the operations after it (`push`).
    */
@@ -369,19 +380,34 @@ export class SyncPushService {
 
     // §2: by (patient, entityId) together. Another patient's profile id
     // resolves to nothing and gets the byte-identical refusal a nonexistent id
-    // does.
-    const stored = await this.prisma.profile.findFirst({
+    // does. `deletedAt: null` is safe HERE only because `push` already refuses
+    // a batch from a patient whose profile is deleted; §4 says a tombstoned row
+    // still exists, so do not copy this filter into a path where it can matter.
+    const exists = await this.prisma.profile.findFirst({
       where: { id: operation.entityId, patientId: context.patientId, deletedAt: null },
+      select: { id: true },
     });
-    if (stored === null) {
+    if (exists === null) {
+      // A profile id reaches a device only from that patient's own responses,
+      // so naming someone else's is a strong sign of a stolen token or device.
+      // Recorded for the operator, exactly as the observation path does, and
+      // never reflected in the response (§2).
+      const foreign = await this.prisma.profile.findUnique({
+        where: { id: operation.entityId },
+        select: { id: true },
+      });
+      if (foreign !== null) {
+        this.securityLog.crossPatientEntityAccess({
+          actorSubject: context.actorId,
+          patientId: context.patientId,
+          entityId: operation.entityId,
+          requestId: correlationId,
+        });
+      }
       return {
         result: rejection(operation, SYNC_REASON_CODE.ENTITY_NOT_FOUND, SYNC_FIELD_PATH.ENTITY_ID),
         applied: false,
       };
-    }
-
-    if (operation.clientTimestamp.getTime() < stored.clientUpdatedAt.getTime()) {
-      return this.recordProfileSuperseded(context, operation, stored, correlationId);
     }
 
     let input;
@@ -393,7 +419,49 @@ export class SyncPushService {
       return { result: rejection(operation, detail.reasonCode, detail.field), applied: false };
     }
 
-    const row = await this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(async (tx) => {
+      // The lock that makes the comparison below mean anything: a concurrent
+      // push for this row waits here until this transaction commits, then reads
+      // the version this one wrote.
+      await tx.$queryRaw`
+        SELECT id FROM profiles
+        WHERE id = ${operation.entityId}::uuid AND patient_id = ${context.patientId}::uuid
+        FOR UPDATE
+      `;
+      const stored = await tx.profile.findFirstOrThrow({
+        where: { id: operation.entityId, patientId: context.patientId },
+      });
+
+      if (operation.clientTimestamp.getTime() < stored.clientUpdatedAt.getTime()) {
+        const result = syncSupersededResult({
+          operationId: toOperationId(operation.operationId),
+          entityId: toEntityId(operation.entityId),
+          appliedServerSequence: toServerSequence(stored.serverSequence.toString()),
+          replayed: false,
+        });
+        await this.audit.record(
+          {
+            actorType: 'PATIENT',
+            actorId: context.actorId,
+            action: 'UPDATE',
+            entityType: PROFILE_ENTITY_TYPE,
+            entityId: operation.entityId,
+            reasonCode: SYNC_CONFLICT_LOSER_REASON,
+            // The INCOMING version that lost (§4.1) — validated above, so this
+            // is never arbitrary client content.
+            beforeValue: incomingProfileSnapshot(
+              operation.entityId,
+              input,
+              operation.clientTimestamp,
+            ),
+            ...(correlationId !== undefined ? { correlationId } : {}),
+          },
+          tx,
+        );
+        await this.writeOperationRecord(tx, context, operation, result);
+        return { result, applied: false };
+      }
+
       const written = await tx.profile.update({
         where: { id: operation.entityId, patientId: context.patientId },
         // A full replacement (§4): every field the payload carries, named.
@@ -407,7 +475,8 @@ export class SyncPushService {
 
       // §3.10: "editable but audit-logged, since the surgery date is a
       // validation boundary" — before AND after, so a moved boundary can always
-      // be traced to who moved it and from where.
+      // be traced to who moved it and from where. `stored` is the locked read,
+      // so "before" is the version this write actually displaced.
       await this.audit.record(
         {
           actorType: 'PATIENT',
@@ -423,6 +492,9 @@ export class SyncPushService {
         tx,
       );
       // §4.1: the displaced version, as its own row — the meal path's rule.
+      // Written on every accepted edit, including the first after provisioning
+      // where nothing conflicted, so a count of these rows is not a count of
+      // conflicts.
       await this.audit.record(
         {
           actorType: 'PATIENT',
@@ -437,58 +509,10 @@ export class SyncPushService {
         tx,
       );
 
-      await this.writeOperationRecord(
-        tx,
-        context,
-        operation,
-        acceptedResultFor(operation, written.serverSequence),
-      );
-      return written;
-    });
-
-    return {
-      result: acceptedResultFor(operation, row.serverSequence),
-      applied: true,
-      surgeryDate: toWireSurgeryDate(row.surgeryDate),
-    };
-  }
-
-  /** The incoming profile lost. Result `superseded`, and the INCOMING version goes to the audit log (§4.1). */
-  private async recordProfileSuperseded(
-    context: PatientContext,
-    operation: SyncPushOperationParsed,
-    stored: Profile,
-    correlationId: string | undefined,
-  ): Promise<OperationOutcome> {
-    const result = syncSupersededResult({
-      operationId: toOperationId(operation.operationId),
-      entityId: toEntityId(operation.entityId),
-      appliedServerSequence: toServerSequence(stored.serverSequence.toString()),
-      replayed: false,
-    });
-
-    await this.prisma.$transaction(async (tx) => {
-      await this.audit.record(
-        {
-          actorType: 'PATIENT',
-          actorId: context.actorId,
-          action: 'UPDATE',
-          entityType: PROFILE_ENTITY_TYPE,
-          entityId: operation.entityId,
-          reasonCode: SYNC_CONFLICT_LOSER_REASON,
-          beforeValue: incomingProfileSnapshot(
-            operation.entityId,
-            operation.payload,
-            operation.clientTimestamp,
-          ),
-          ...(correlationId !== undefined ? { correlationId } : {}),
-        },
-        tx,
-      );
+      const result = acceptedResultFor(operation, written.serverSequence);
       await this.writeOperationRecord(tx, context, operation, result);
+      return { result, applied: true, surgeryDate: toWireSurgeryDate(written.surgeryDate) };
     });
-
-    return { result, applied: false };
   }
 
   /**

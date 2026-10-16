@@ -109,6 +109,10 @@ export type OnboardingRequest = z.infer<typeof onboardingRequestSchema>;
  * the delta pull carries it as that change's `entityId` regardless, so leaving
  * it out here would hide nothing and would leave a freshly installed device
  * unable to make an edit until its first delta pull.
+ *
+ * It is still a stable, one-per-patient handle, so §7.5's rules bind every
+ * consumer: never in a URL path or query string, never in analytics, crash
+ * reports or push payloads, and never as or in Epic 5's share link.
  */
 export const profileResponseSchema = z.object({
   id: z.uuid().meta({

@@ -182,21 +182,22 @@ export function toProfileAuditSnapshot(
 }
 
 /**
- * The INCOMING profile that lost a conflict (§4.1), as the client sent it.
- * Field by field rather than a spread of `operation.payload`, which is
- * client-supplied and unvalidated at this point.
+ * The INCOMING profile that lost a conflict (§4.1), in the same shape as every
+ * other version of it in the audit store.
+ *
+ * Built from the VALIDATED input, never from `operation.payload`. The profile
+ * path validates before it compares timestamps, so a version that loses has
+ * always passed validation, and the append-only audit store never receives
+ * arbitrary client content in a known field.
  */
 export function incomingProfileSnapshot(
   entityId: string,
-  payload: Record<string, unknown> | undefined,
+  input: ProfileWriteInput,
   clientTimestamp: Date,
 ): Record<string, unknown> {
-  const fields = payload ?? {};
   return {
     id: entityId,
-    ostomyType: fields.ostomyType ?? null,
-    surgeryDate: fields.surgeryDate ?? null,
-    measurementSystem: fields.measurementSystem ?? null,
+    ...toProfileFields(input),
     clientUpdatedAt: clientTimestamp.toISOString(),
   };
 }
@@ -214,5 +215,15 @@ export function incomingProfileSnapshot(
  * moved to the audit log, and the patient's own phone silently reverts on its
  * next delta pull. The epoch says what is actually true: this version was not
  * written at any client time, so every client-timed edit is later than it.
+ *
+ * **A placeholder, not a time.** A profile nobody has edited reports
+ * `clientUpdatedAt: 1970-01-01T00:00:00.000Z`, in the delta pull and in its
+ * provisioning audit row. Nothing may read that as "last changed": not a
+ * patient-facing "updated on" label, not a support tool, and not P5's FHIR
+ * export. When the profile was provisioned is `profiles.created_at` and the
+ * provisioning audit row's own timestamp.
  */
 export const PROVISIONED_PROFILE_CLIENT_UPDATED_AT = new Date(0);
+
+/** The audit store's `entityType` for a profile — lowercase, its vocabulary rather than the wire's. */
+export const PROFILE_ENTITY_TYPE = 'profile';

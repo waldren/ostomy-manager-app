@@ -441,6 +441,14 @@ Everything a client would want and will not find here is deliberate. There is no
 
 Note that `localDate` is **not monotonic with `effectiveDateTime`**. A patient who crosses a time zone can have a 23- or 25-hour day, and two entries can share an instant while falling on different dates. Order by the instant; group by the date. Any code that assumes one implies the other is wrong (ADR-0016).
 
+### 7.3 Numbers on the wire
+
+**`serverSequence` and `appliedServerSequence` are JSON strings, not numbers.** They are 64-bit database values and JSON numbers are IEEE-754 doubles: `JSON.parse` silently loses precision above 2^53. The loss would appear as a cursor that stops advancing, years from now, with no error — the class of bug that costs a week and a data-integrity incident to find. They are strings everywhere, including in `packages/core`'s types.
+
+`valueQuantity.value` stays a JSON number. Its `DECIMAL(12,4)` range is nowhere near the double's exact-integer limit, and making a clinical value a string would push parsing responsibility onto every consumer for no benefit.
+
+All timestamps are RFC 3339 with a `Z` offset and **exactly three** fractional digits, matching the schema's `Timestamptz(3)` — `2026-09-07T14:00:00.000Z`. Not a numeric offset, not a bare second, not six digits. Anything else is `PAYLOAD_FIELD_INVALID`; the lexical form is pinned rather than parsed leniently because "accept it and truncate" turns a client bug into silent precision loss inside the values conflict resolution compares.
+
 ### 7.4 `Meal`
 
 App-native in its entirety, and the first entity on this wire that is (P3.S1, SRS AC 2.4).
@@ -464,7 +472,9 @@ The patient's three onboarding answers, editable afterwards (P4.S3, SRS §3.10).
 
 **Update only.** A profile is *created* by provisioning (`POST /api/v1/onboarding`), which is not a sync operation: a push requires a provisioned patient, so the bootstrap cannot be the thing that needs the bootstrap. A `create` or a `delete` with `entityType: "Profile"` is rejected per operation with `UNSUPPORTED_CODE` naming `operationType`, the way an entity type a release does not handle is refused naming `entityType` (§6.2). Deleting a profile is account deletion (ADR-0017), which this wire does not do.
 
-The `entityId` is the profile's own id, which `GET /api/v1/profile` and the onboarding response report as `id`. It is never the patient's id (§2). An id that names another patient's profile, or nobody's, is `ENTITY_NOT_FOUND`, answered identically in both cases.
+The `entityId` is the profile's own id, which `GET /api/v1/profile` and the onboarding response report as `id`. It is never the patient's id (§2). An id that names another patient's profile, or nobody's, is `ENTITY_NOT_FOUND`, answered identically in both cases; the first is recorded to the security log, since a profile id reaches a device only from that patient's own responses.
+
+**The profile id is a stable per-patient handle, and must be treated as one.** It is a random UUID, not derived from anything about the patient, and it reaches only the patient it describes. But there is exactly one per patient and it never changes, which is what makes it a surrogate key: the risk is not this wire but its becoming a join key somewhere else. So it is **never** placed in a URL path or query string (access and CDN logs), in analytics, crash reports or push-notification payloads, and never used as or in SRS §3.5 Epic 5's share link, which needs its own revocable token.
 
 | Wire field | Source | Required | Notes |
 | --- | --- | --- | --- |
@@ -475,23 +485,16 @@ The `entityId` is the profile's own id, which `GET /api/v1/profile` and the onbo
 
 A **full replacement**, never a patch (§4), so every field is required. With a patch an omitted field would mean "unchanged", and a client that forgot one would look the same as one that meant to leave it alone.
 
-Three behaviours are specific to this entity:
+Five behaviours are specific to this entity:
 
-- **Provisioning loses to every edit.** Provisioning asserts no client time, so it records the epoch as `clientUpdatedAt`. It used to record the server's `now()`, which made an edit from a phone whose clock ran slow lose to its own onboarding: `superseded`, then silently reverted on the next pull.
+- **The payload is validated before the conflict comparison.** An invalid payload is `rejected` whatever its `clientTimestamp`, rather than `superseded` as an older observation or meal would be. That keeps arbitrary client content out of the append-only audit store: the losing version §4.1 preserves has always passed validation.
+- **The comparison runs under a row lock.** Every device a patient owns edits this one row, so two pushes for it can genuinely race. Each takes the row lock before comparing, so the second compares against the version the first wrote, and its audit row names the version it actually displaced.
+
+- **Provisioning loses to every edit.** Provisioning asserts no client time, so it records the epoch as `clientUpdatedAt`. It used to record the server's `now()`, which made an edit from a phone whose clock ran slow lose to its own onboarding: `superseded`, then silently reverted on the next pull. So an unedited profile reports `clientUpdatedAt: "1970-01-01T00:00:00.000Z"`. That is a placeholder, not a time, and nothing may display or export it as "last changed".
 - **A surgery-date edit moves the bound for the rest of its batch.** Operations queued after an accepted profile update are validated against the new date, and operations before it against the old one. The device queued them in that order and validated them that way, so the server must agree, or it refuses entries the patient made correctly.
 - **History is not re-validated.** Moving the surgery date later can make an already-accepted entry look "before surgery". It stays accepted: Tier 1 applies on write, and re-checking history against a mutable profile is the shape ADR-0016 refuses for `localDate`.
 
 As in §7.2 there is no `patientId`, no `serverSequence`, no `deletedAt` and no `createdAt`/`updatedAt`. A delta page carries the profile as an ordinary change, which is how an edit on one device reaches the patient's others (SRS §3.10). A client that does not handle `Profile` skips it and advances its cursor (§7.2).
-
----
-
-### 7.3 Numbers on the wire
-
-**`serverSequence` and `appliedServerSequence` are JSON strings, not numbers.** They are 64-bit database values and JSON numbers are IEEE-754 doubles: `JSON.parse` silently loses precision above 2^53. The loss would appear as a cursor that stops advancing, years from now, with no error — the class of bug that costs a week and a data-integrity incident to find. They are strings everywhere, including in `packages/core`'s types.
-
-`valueQuantity.value` stays a JSON number. Its `DECIMAL(12,4)` range is nowhere near the double's exact-integer limit, and making a clinical value a string would push parsing responsibility onto every consumer for no benefit.
-
-All timestamps are RFC 3339 with a `Z` offset and **exactly three** fractional digits, matching the schema's `Timestamptz(3)` — `2026-09-07T14:00:00.000Z`. Not a numeric offset, not a bare second, not six digits. Anything else is `PAYLOAD_FIELD_INVALID`; the lexical form is pinned rather than parsed leniently because "accept it and truncate" turns a client bug into silent precision loss inside the values conflict resolution compares.
 
 ---
 
