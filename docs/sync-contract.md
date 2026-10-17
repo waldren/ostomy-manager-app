@@ -505,11 +505,11 @@ One of the patient's target ranges, with where its value came from (P4.S3, SRS �
 | `id` | app-native | yes | Equals the operation's `entityId`. |
 | `rangeType` | app-native | yes | A `clinical_default_range_limits` key, such as `"daily_output_ml"`. Which keys exist is data, not a wire enum. |
 | `lowValue`, `highValue` | app-native | yes, nullable | Canonical units (ADR-0004), JSON numbers. `null` when the range has no bound on that side, never `0`. |
-| `targetValue` | app-native | yes, nullable | For a single-target range, such as a target dry weight (P6), rather than a band. |
+| `targetValue` | app-native | yes, nullable | For a single-target range, such as a target dry weight (P6), rather than a band. A row carries a target **or** a band, never both. |
 | `unit` | app-native | yes | The range type's canonical unit. |
 | `provenance` | app-native | yes | `"physician_set"`, `"patient_set"`, `"patient_confirmed_suggestion"` or `"clinical_default"`. This is also the precedence order, highest first. |
 | `status` | app-native | yes | `"proposed"`, `"active"`, `"superseded"` or `"dismissed"`. Only `active` is ever a threshold. A `proposed` row is a suggestion awaiting a human (AC 14.1 AC2). |
-| `previousRangeId` | app-native | yes, nullable | The row this one replaced. **Server-assigned:** `null` on a create, and unchanged on an update. |
+| `previousRangeId` | app-native | yes, nullable | The row this one replaced. **Server-assigned.** A create must send `null`. An update may send `null` or the stored value: a device that has not pulled since the server assigned it can only send `null`. The server sets it when a create or an accepted proposal replaces a patient value. |
 
 **The delta pull carries every row,** of every provenance and status, a physician's included. A device needs those rows to show which value is in force and why.
 
@@ -522,16 +522,23 @@ One of the patient's target ranges, with where its value came from (P4.S3, SRS �
   - It needs at least one bound, every bound must sit inside the type's limits, and the band cannot be inverted.
   - A bound the `DECIMAL(12,4)` column cannot hold is refused, never rounded.
 - **Update only the status** of a row whose provenance is the patient's own. The allowed changes:
-  - accept a proposal (`proposed` → `active`);
+  - accept a proposal (`proposed` → `active`), which must pass the same safety-type and limits checks as a new value;
   - dismiss a proposal (`proposed` → `dismissed`);
   - withdraw a value (`active` → `superseded`), which falls back to a physician's value or the default.
 
   Every other field is immutable, because a new value is a new row. No other status change is allowed: once superseded or dismissed, a row stays that way, and the patient creates the value again instead.
 - **Never delete.** A delete is `UNSUPPORTED_CODE` naming `operationType`, as for a profile.
 
-**One patient value per range type is in force.** Precedence ranks `patient_set` above `patient_confirmed_suggestion`. Without this rule, a patient who set a value and later confirmed the suggestion would stay on their own value with no visible reason. So a new patient value, or an accepted proposal, supersedes whichever patient value was active for that type, and its `previousRangeId` points at it. A physician's row is never touched. It outranks both and stays in force, and the read flags the patient's divergence from it (AC4).
+**One patient value per range type is in force.** Precedence ranks `patient_set` above `patient_confirmed_suggestion`. Without this rule, a patient who set a value and later confirmed the suggestion would stay on their own value with no visible reason. So a new patient value, or an accepted proposal, supersedes whichever patient value was active for that type, and its `previousRangeId` points at it. The superseded row's audit entry has its own reason code, `range_replaced_by_new_value`, and names its successor. A value the patient withdrew and a value their new one replaced are different answers to "who changed my threshold". A physician's row is never touched. It outranks both and stays in force, and the read flags the patient's divergence from it (AC4).
 
-**Older loses, across rows too.** Suppose one device creates a value at T5 while offline, and it reaches the server after another device's T10 value for the same type. The T5 value is stored as `superseded` history. The operation still answers `accepted`, because the row was written; the delta pull shows its status. Last-write-wins by client timestamp (§4) applied only within one row would let a stale device revert a newer decision.
+**The latest patient decision wins, across rows.** Suppose one device creates a value at T5 while offline, and it reaches the server after another device's T10 decision for the same type. That decision may be a new value **or a withdrawal**. The T5 value is stored as `superseded` history, and the operation still answers `accepted`, because the row was written; the delta pull shows its status. An accepted proposal that loses this way is answered and stored the same way. Last-write-wins by client timestamp (§4) applied only within one row would let a stale device revert a newer decision. A withdrawal affects only the row it names.
+
+**What the patient may write is checked before when they wrote it.** On an existing row, the provenance and immutability rules run **before** the timestamp comparison. So a write the patient may never make is `rejected` whatever its timestamp: it is not answered `superseded` and copied into the audit store under a physician's row. Only the status change itself is checked after the comparison. Two consequences:
+
+- A replayed or out-of-date operation resolves to `superseded`, not to a correction the patient could not make.
+- A **create** whose row exists with a different status is a replay, because the creation landed and a later decision has since moved the row on. It is answered `superseded`.
+
+An update that writes the status a row already has changes nothing and is answered `accepted` without a write. A write would move the row's timestamp and let a no-op win a later comparison.
 
 **Every write takes one advisory lock per (patient, range type) first.** These rules read one row and write another. Without the lock, two devices confirming at the same moment would both see nothing in force and both become active.
 

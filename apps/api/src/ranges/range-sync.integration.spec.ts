@@ -40,7 +40,7 @@ import { PATIENT_JWKS_RESOLVER } from '../auth/patient-jwks-resolver.token';
 import type { AppConfig } from '../config/env.schema';
 import { createTestOidcIssuer, type TestOidcIssuer } from '../test-support/oidc-test-tokens';
 
-import { RANGE_ENTITY_TYPE } from './range-payload';
+import { RANGE_ENTITY_TYPE, RANGE_REPLACED_REASON, rangeLockKey } from './range-payload';
 
 const API_ROOT = path.resolve(__dirname, '..', '..');
 const ISSUER = 'https://issuer.test/patient';
@@ -230,28 +230,39 @@ describe('P4.S3 — target ranges through sync', () => {
     fields: {
       provenance: string;
       status: string;
-      low: number;
+      low: number | null;
       high: number;
       clientUpdatedAt?: string;
+      rangeType?: string;
+      unit?: string;
     },
   ): Promise<string> {
     const id = randomUUID();
     await db.query(
       `INSERT INTO effective_ranges
          (id, patient_id, range_type, low_value, high_value, unit, provenance, status, client_updated_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'mL', $6, $7, $8, now())`,
+       VALUES ($1, $2, $3, $4, $5, $9, $6, $7, $8, now())`,
       [
         id,
         patient.patientId,
-        OUTPUT,
+        fields.rangeType ?? OUTPUT,
         fields.low,
         fields.high,
         fields.provenance,
         fields.status,
         fields.clientUpdatedAt ?? clientTime(-3600),
+        fields.unit ?? 'mL',
       ],
     );
     return id;
+  }
+
+  async function auditCount(entityId: string): Promise<number> {
+    const result = await db.query(
+      `SELECT count(*)::int AS n FROM audit_events WHERE entity_id = $1`,
+      [entityId],
+    );
+    return result.rows[0].n;
   }
 
   async function accepted(patient: Patient, operation: Record<string, unknown>) {
@@ -446,9 +457,148 @@ describe('P4.S3 — target ranges through sync', () => {
       expect(displaced.rows).toEqual([
         expect.objectContaining({
           before_value: expect.objectContaining({ status: 'active' }),
-          after_value: expect.objectContaining({ status: 'superseded' }),
+          after_value: expect.objectContaining({
+            status: 'superseded',
+            // Named, so "who changed my threshold" is answerable from this row.
+            supersededBy: second.entityId,
+          }),
         }),
       ]);
+      const reason = await db.query(
+        `SELECT reason_code FROM audit_events WHERE entity_id = $1 AND action = 'UPDATE'`,
+        [first.entityId],
+      );
+      expect(reason.rows[0].reason_code).toBe(RANGE_REPLACED_REASON);
+    });
+
+    it('sends the value it replaced to other devices too', async () => {
+      // The side-effect write moves the old row's server_sequence, so a device
+      // that pulled after the first value learns it is no longer in force.
+      const patient = await newPatient();
+      const first = rangeOp({ clientTimestamp: clientTime(-60) });
+      await accepted(patient, first);
+      const before = await request(app.getHttpServer())
+        .get('/api/v1/sync/delta')
+        .set('Authorization', `Bearer ${patient.token}`)
+        .query({ since: '0' })
+        .expect(200);
+
+      await accepted(
+        patient,
+        rangeOp({ clientTimestamp: clientTime(-10), payload: { lowValue: 650 } }),
+      );
+      const after = await request(app.getHttpServer())
+        .get('/api/v1/sync/delta')
+        .set('Authorization', `Bearer ${patient.token}`)
+        .query({ since: before.body.cursor })
+        .expect(200);
+
+      expect(after.body.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            entityId: first.entityId,
+            payload: expect.objectContaining({ status: 'superseded' }),
+          }),
+        ]),
+      );
+    });
+
+    it('lets a device set a value and withdraw it before it ever syncs', async () => {
+      // The device holds previousRangeId null — all it can hold, since the
+      // server assigns it — while the server links the new row to the old.
+      // Refusing that null put an ordinary offline edit in the correction inbox
+      // on a field the patient cannot see (#146 review).
+      const patient = await newPatient();
+      await accepted(patient, rangeOp({ clientTimestamp: clientTime(-90) }));
+      const second = rangeOp({ clientTimestamp: clientTime(-60), payload: { lowValue: 650 } });
+      const withdraw = rangeOp({
+        entityId: second.entityId as string,
+        operationType: 'update',
+        clientTimestamp: clientTime(-30),
+        payload: { lowValue: 650, status: 'superseded' },
+      });
+
+      const response = await push(patient, [second, withdraw]).expect(200);
+
+      expect(response.body.results.map((r: { status: string }) => r.status)).toEqual([
+        'accepted',
+        'accepted',
+      ]);
+      expect(await inForce(patient)).toMatchObject({ provenance: 'CLINICAL_DEFAULT' });
+    });
+
+    it('does not let an older value undo a newer withdrawal', async () => {
+      // Device A, offline, sets a value at T5; device B withdraws the patient's
+      // value at T10. A's value must not come back into force when it syncs.
+      const patient = await newPatient();
+      const mine = rangeOp({ clientTimestamp: clientTime(-120) });
+      await accepted(patient, mine);
+      await accepted(
+        patient,
+        rangeOp({
+          entityId: mine.entityId as string,
+          operationType: 'update',
+          clientTimestamp: clientTime(-30),
+          payload: { status: 'superseded' },
+        }),
+      );
+
+      const stale = rangeOp({ clientTimestamp: clientTime(-60), payload: { lowValue: 300 } });
+      await accepted(patient, stale);
+
+      expect(await inForce(patient)).toMatchObject({ provenance: 'CLINICAL_DEFAULT' });
+      expect((await rows(patient)).find((row) => row.id === stale.entityId)).toMatchObject({
+        status: 'SUPERSEDED',
+      });
+    });
+
+    it('answers a re-sent create whose row has since moved on as superseded, not as a correction', async () => {
+      // The response to the first push was lost, a newer value superseded the
+      // row, and the device re-sends the create under a new operation id.
+      const patient = await newPatient();
+      const first = rangeOp({ clientTimestamp: clientTime(-60) });
+      await accepted(patient, first);
+      await accepted(
+        patient,
+        rangeOp({ clientTimestamp: clientTime(-10), payload: { lowValue: 650 } }),
+      );
+
+      const resent = await push(patient, [{ ...first, operationId: randomUUID() }]).expect(200);
+
+      expect(resent.body.results[0].status).toBe('superseded');
+    });
+
+    it('answers a re-sent create stored as history as superseded, even on an equal timestamp', async () => {
+      // A create that lost to a newer value is stored superseded WITH ITS OWN
+      // timestamp, so re-sending it ties rather than losing on time. It still
+      // must not reach the status rules, which would refuse superseded → active
+      // and put it in the correction inbox.
+      const patient = await newPatient();
+      await accepted(patient, rangeOp({ clientTimestamp: clientTime(-10) }));
+      const stale = rangeOp({ clientTimestamp: clientTime(-60), payload: { lowValue: 300 } });
+      await accepted(patient, stale);
+
+      const resent = await push(patient, [{ ...stale, operationId: randomUUID() }]).expect(200);
+
+      expect(resent.body.results[0].status).toBe('superseded');
+    });
+
+    it('writes nothing for a status the row already has', async () => {
+      const patient = await newPatient();
+      const mine = rangeOp({ clientTimestamp: clientTime(-60) });
+      await accepted(patient, mine);
+      const auditsBefore = await auditCount(mine.entityId as string);
+
+      const again = await push(patient, [
+        rangeOp({
+          entityId: mine.entityId as string,
+          operationType: 'update',
+          clientTimestamp: clientTime(-10),
+        }),
+      ]).expect(200);
+
+      expect(again.body.results[0].status).toBe('accepted');
+      expect(await auditCount(mine.entityId as string)).toBe(auditsBefore);
     });
   });
 
@@ -506,6 +656,37 @@ describe('P4.S3 — target ranges through sync', () => {
       }
       expect(await inForce(patient)).toMatchObject({ provenance: 'PHYSICIAN_SET', lowValue: 400 });
     });
+
+    it('rejects an OLDER write to the physician’s row too, and records nothing under it', async () => {
+      // A queued offline write carries an older timestamp. Compared first, it
+      // was answered superseded and copied into the audit store under the
+      // physician's row as a patient-authored version (#146 review).
+      const patient = await newPatient();
+      const physician = await insertRow(patient, {
+        provenance: 'PHYSICIAN_SET',
+        status: 'ACTIVE',
+        low: 400,
+        high: 1000,
+        clientUpdatedAt: clientTime(-10),
+      });
+
+      const response = await push(patient, [
+        rangeOp({
+          entityId: physician,
+          operationType: 'update',
+          clientTimestamp: clientTime(-600),
+          payload: {
+            provenance: 'physician_set',
+            lowValue: 400,
+            highValue: 9999,
+            status: 'active',
+          },
+        }),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({ status: 'rejected', field: 'provenance' });
+      expect(await auditCount(physician)).toBe(0);
+    });
   });
 
   describe('a proposal waits for a human (AC 14.1 AC2/AC3)', () => {
@@ -538,6 +719,70 @@ describe('P4.S3 — target ranges through sync', () => {
         lowValue: 550,
         isActiveThreshold: true,
       });
+    });
+
+    it('accepting one replaces the patient’s value in force, and links to it', async () => {
+      const patient = await newPatient();
+      const mine = rangeOp({ clientTimestamp: clientTime(-120) });
+      await accepted(patient, mine);
+      const proposal = await insertRow(patient, {
+        provenance: 'PATIENT_CONFIRMED_SUGGESTION',
+        status: 'PROPOSED',
+        low: 550,
+        high: 1250,
+        clientUpdatedAt: clientTime(-100),
+      });
+
+      await accepted(
+        patient,
+        rangeOp({
+          entityId: proposal,
+          operationType: 'update',
+          clientTimestamp: clientTime(-10),
+          payload: {
+            provenance: 'patient_confirmed_suggestion',
+            lowValue: 550,
+            highValue: 1250,
+            status: 'active',
+          },
+        }),
+      );
+
+      const stored = await rows(patient);
+      expect(stored.filter((row) => row.status === 'ACTIVE')).toEqual([
+        expect.objectContaining({ id: proposal, previous_range_id: mine.entityId }),
+      ]);
+    });
+
+    it('cannot make a safety bound active, whoever proposed it', async () => {
+      // Nothing writes proposals yet. Whichever writer is built must not be able
+      // to route the heart-rate red flag through a patient's tap.
+      const patient = await newPatient();
+      const proposal = await insertRow(patient, {
+        provenance: 'PATIENT_CONFIRMED_SUGGESTION',
+        status: 'PROPOSED',
+        low: null,
+        high: 150,
+        rangeType: 'heart_rate_red_flag_bpm',
+        unit: 'bpm',
+      });
+
+      const response = await push(patient, [
+        rangeOp({
+          entityId: proposal,
+          operationType: 'update',
+          payload: {
+            rangeType: 'heart_rate_red_flag_bpm',
+            unit: 'bpm',
+            provenance: 'patient_confirmed_suggestion',
+            lowValue: null,
+            highValue: 150,
+            status: 'active',
+          },
+        }),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({ status: 'rejected', field: 'rangeType' });
     });
 
     it('can be dismissed, and then never comes back', async () => {
@@ -592,6 +837,7 @@ describe('P4.S3 — target ranges through sync', () => {
       ['more decimal places than the column holds', { lowValue: 500.12345 }, 'lowValue'],
       ['a proposal', { status: 'proposed' }, 'status'],
       ['a link to an earlier row', { previousRangeId: randomUUID() }, 'previousRangeId'],
+      ['a target alongside a band', { targetValue: 800 }, 'targetValue'],
     ])('refuses %s, naming the field and never the value', async (_label, payload, field) => {
       const patient = await newPatient();
 
@@ -665,9 +911,9 @@ describe('P4.S3 — target ranges through sync', () => {
 
       expect(update.body.results[0]).toMatchObject({ reasonCode: 'ENTITY_NOT_FOUND' });
       expect(create.body.results[0]).toMatchObject({ reasonCode: 'ENTITY_ID_CONFLICT' });
-      expect(lines.filter((line) => line.includes('sync.push.cross_patient_entity'))).toHaveLength(
-        2,
-      );
+      const probes = lines.filter((line) => line.includes('sync.push.cross_patient_entity'));
+      expect(probes).toHaveLength(2);
+      for (const probe of probes) expect(probe).toContain(`"entityType":"${RANGE_ENTITY_TYPE}"`);
       expect(await rows(victim)).toEqual([
         expect.objectContaining({ id: theirs.entityId, status: 'ACTIVE' }),
       ]);
@@ -685,7 +931,7 @@ describe('P4.S3 — target ranges through sync', () => {
     try {
       await writer.query('BEGIN');
       await writer.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-        `${patient.patientId}:${OUTPUT}`,
+        rangeLockKey(patient.patientId, OUTPUT),
       ]);
       await writer.query(
         `INSERT INTO effective_ranges
@@ -697,7 +943,19 @@ describe('P4.S3 — target ranges through sync', () => {
       const pending = push(patient, [rangeOp({ clientTimestamp: clientTime(-60) })]).then(
         (response) => response,
       );
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Until the push is WAITING on the lock — not a fixed sleep, which could
+      // let this pass without the lock ever being contended.
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const waiting = await db.query(
+          `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+        );
+        if (waiting.rows[0].n > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const blocked = await db.query(
+        `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+      );
+      expect(blocked.rows[0].n).toBe(1);
       await writer.query('COMMIT');
       await pending;
 

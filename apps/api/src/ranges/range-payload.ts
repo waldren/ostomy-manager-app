@@ -228,6 +228,11 @@ export function newPatientRangeViolation(
   if (outside(input.lowValue)) return SYNC_FIELD_PATH.LOW_VALUE;
   if (outside(input.highValue)) return SYNC_FIELD_PATH.HIGH_VALUE;
   if (outside(input.targetValue)) return SYNC_FIELD_PATH.TARGET_VALUE;
+  // A single target OR a band, never both: nothing reads a target beside a
+  // band, and a stored value nothing reads still looks like a threshold.
+  if (input.targetValue !== null && (input.lowValue !== null || input.highValue !== null)) {
+    return SYNC_FIELD_PATH.TARGET_VALUE;
+  }
   if (input.lowValue !== null && input.highValue !== null && input.lowValue > input.highValue) {
     return SYNC_FIELD_PATH.HIGH_VALUE;
   }
@@ -247,7 +252,7 @@ type RangeRow = Pick<
   | 'previousRangeId'
 >;
 
-function toNumberOrNull(value: { toNumber(): number } | null): number | null {
+export function toNumberOrNull(value: { toNumber(): number } | null): number | null {
   return value === null ? null : value.toNumber();
 }
 
@@ -301,31 +306,41 @@ export function incomingRangeSnapshot(
  * reviving a superseded value, un-dismissing a suggestion — is refused: a
  * patient who wants that value again creates it again, as a new row with a
  * new decision time, rather than rewriting which decision was in force when.
+ * (Writing the status a row already has is not a change, and never reaches
+ * this table.)
  */
 const ALLOWED_STATUS_CHANGES: Readonly<Record<RangeStatus, readonly RangeStatus[]>> = {
-  [RangeStatus.PROPOSED]: [RangeStatus.PROPOSED, RangeStatus.ACTIVE, RangeStatus.DISMISSED],
-  [RangeStatus.ACTIVE]: [RangeStatus.ACTIVE, RangeStatus.SUPERSEDED],
-  [RangeStatus.SUPERSEDED]: [RangeStatus.SUPERSEDED],
-  [RangeStatus.DISMISSED]: [RangeStatus.DISMISSED],
+  [RangeStatus.PROPOSED]: [RangeStatus.ACTIVE, RangeStatus.DISMISSED],
+  [RangeStatus.ACTIVE]: [RangeStatus.SUPERSEDED],
+  [RangeStatus.SUPERSEDED]: [],
+  [RangeStatus.DISMISSED]: [],
 };
 
+type InvalidField = {
+  reasonCode: typeof SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID;
+  field: SyncFieldPath;
+};
+
+function refuse(field: SyncFieldPath): InvalidField {
+  return { reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID, field };
+}
+
 /**
- * Whether a push may write `input` over the stored row, and if not, which
- * field to name. Only the status may change (§7.6), and only along
- * `ALLOWED_STATUS_CHANGES`.
+ * Whether this patient may write `input` over the stored row AT ALL — checked
+ * before the timestamp comparison, so a write they may never make is
+ * rejected whatever its timestamp (#146 review).
  *
- * A `physician_set` or `clinical_default` row is never the patient's to
- * change, whatever the push says (AC 14.1 AC4). The field named is
- * `provenance`, the one that makes the row not theirs.
+ * - A `physician_set` or `clinical_default` row is never the patient's to
+ *   change (AC 14.1 AC4). The field named is `provenance`, the one that makes
+ *   the row not theirs.
+ * - Every value is immutable (§7.6): a new value is a new row.
+ * - `previousRangeId` is server-assigned, so the push may send `null` — which
+ *   is all a device that has not pulled since the server set it can send —
+ *   or the stored value. Anything else is a client claiming a different
+ *   history. Refusing `null` put an ordinary "set a value, then withdraw it,
+ *   offline" in the correction inbox on a field the patient cannot see.
  */
-export function statusChangeViolation(
-  stored: RangeRow,
-  input: RangeWriteInput,
-): { reasonCode: typeof SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID; field: SyncFieldPath } | null {
-  const refuse = (field: SyncFieldPath) => ({
-    reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
-    field,
-  });
+export function rangeRowViolation(stored: RangeRow, input: RangeWriteInput): InvalidField | null {
   if (!PATIENT_PROVENANCES.has(stored.provenance)) return refuse(SYNC_FIELD_PATH.PROVENANCE);
   if (input.provenance !== stored.provenance) return refuse(SYNC_FIELD_PATH.PROVENANCE);
   if (input.rangeType !== stored.rangeType) return refuse(SYNC_FIELD_PATH.RANGE_TYPE);
@@ -337,11 +352,30 @@ export function statusChangeViolation(
   if (input.targetValue !== toNumberOrNull(stored.targetValue)) {
     return refuse(SYNC_FIELD_PATH.TARGET_VALUE);
   }
-  if (input.previousRangeId !== stored.previousRangeId) {
+  if (input.previousRangeId !== null && input.previousRangeId !== stored.previousRangeId) {
     return refuse(SYNC_FIELD_PATH.PREVIOUS_RANGE_ID);
   }
-  if (!ALLOWED_STATUS_CHANGES[stored.status].includes(input.status)) {
-    return refuse(SYNC_FIELD_PATH.STATUS);
-  }
   return null;
+}
+
+/** Whether `from` → `to` is a status change a patient may make. Checked after the timestamp comparison, so a stale write resolves to `superseded` instead. */
+export function statusTransitionViolation(from: RangeStatus, to: RangeStatus): InvalidField | null {
+  return ALLOWED_STATUS_CHANGES[from].includes(to) ? null : refuse(SYNC_FIELD_PATH.STATUS);
+}
+
+/**
+ * The audit `reasonCode` for a patient value replaced as a SIDE EFFECT of a
+ * new one, distinct from `sync_applied` so that a withdrawal the patient chose
+ * and a value their new one displaced are different answers to "who changed
+ * my threshold" (#146 review).
+ */
+export const RANGE_REPLACED_REASON = 'range_replaced_by_new_value';
+
+/**
+ * The advisory-lock key for one patient's ranges of one type. Namespaced, so it
+ * cannot share a key with another feature's advisory locks, and exported so
+ * the test that holds this lock holds THIS one.
+ */
+export function rangeLockKey(patientId: string, rangeType: string): string {
+  return `effective_range:${patientId}:${rangeType}`;
 }

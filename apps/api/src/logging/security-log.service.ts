@@ -95,10 +95,16 @@ export class SecurityLogService {
    * Carries the entity id, which is a client-supplied UUID naming a row this
    * patient does not own — not a clinical value, and the one field that makes
    * a pattern of probes recognisable as one.
+   *
+   * And which table that row is in (`entityType`, the audit store's
+   * vocabulary). Three entity types share this event, so without it an
+   * investigator has to look a bare UUID up in every table to find whose
+   * record was probed (#146 review).
    */
   crossPatientEntityAccess(fields: {
     readonly actorSubject: string;
     readonly patientId: string;
+    readonly entityType: string;
     readonly entityId: string;
     readonly requestId: string | undefined;
   }): void {
@@ -107,6 +113,7 @@ export class SecurityLogService {
         event: 'sync.push.cross_patient_entity',
         actorSubject: fields.actorSubject,
         patientId: fields.patientId,
+        entityType: fields.entityType,
         entityId: fields.entityId,
         requestId: fields.requestId ?? null,
       }),
