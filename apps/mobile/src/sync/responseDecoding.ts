@@ -22,6 +22,9 @@ import type {
   SyncOperationResult,
   SyncPushResponse,
 } from '@ostomy/core/api-client';
+import type { MeasurementSystem } from '@ostomy/core/units';
+
+import { OSTOMY_TYPES, type OstomyType } from '../db/repositories/profileRepository';
 
 /**
  * The decode boundary between the generated API client and this app.
@@ -162,7 +165,7 @@ export const UNSPECIFIED_REJECTION_CODE = 'REJECTED_WITHOUT_REASON_CODE';
 export type DecodedDeltaChange =
   | {
       readonly kind: 'tombstone';
-      readonly entityType: 'Observation' | 'Meal';
+      readonly entityType: 'Observation' | 'Meal' | 'Profile';
       readonly entityId: string;
       readonly serverSequence: string;
       readonly clientUpdatedAt: string;
@@ -187,6 +190,17 @@ export type DecodedDeltaChange =
         readonly tagCodes: readonly string[];
         readonly effectiveDateTime: string;
         readonly enteredTimezone: string;
+      };
+    }
+  | {
+      readonly kind: 'profile-upsert';
+      readonly entityId: string;
+      readonly serverSequence: string;
+      readonly clientUpdatedAt: string;
+      readonly payload: {
+        readonly ostomyType: OstomyType;
+        readonly surgeryDate: string;
+        readonly measurementSystem: MeasurementSystem;
       };
     }
   /**
@@ -234,7 +248,11 @@ function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
   // server began sending `Meal` changes (P3.S1) a meal decoded as an
   // observation upsert and `deltaPull` wrote its fields into the observations
   // table — a well-formed row of nonsense, with no error anywhere.
-  if (change.entityType !== 'Observation' && change.entityType !== 'Meal') {
+  if (
+    change.entityType !== 'Observation' &&
+    change.entityType !== 'Meal' &&
+    change.entityType !== 'Profile'
+  ) {
     return { kind: 'unsupported-entity', entityType: String(change.entityType) };
   }
 
@@ -258,6 +276,17 @@ function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
     // (`applyDeltaPage`), because re-requesting the same malformed page
     // forever is the worse failure.
     return { kind: 'undecodable' };
+  }
+
+  if (change.entityType === 'Profile') {
+    // §7.5. Every field is checked against what this build can store, and a
+    // profile that fails is skipped rather than written: the surgery date is the
+    // Tier 1 bound for every entry and the measurement system decides how every
+    // amount renders, so a guessed value would be wrong everywhere at once.
+    const profile = decodeProfilePayload(change.payload);
+    return profile === undefined
+      ? { kind: 'undecodable' }
+      : { kind: 'profile-upsert', entityId, serverSequence, clientUpdatedAt, payload: profile };
   }
 
   if (change.entityType === 'Meal') {
@@ -322,6 +351,32 @@ function decodeMealPayload(
     effectiveDateTime,
     enteredTimezone,
   };
+}
+
+/** `YYYY-MM-DD`, the only shape a surgery date has on the wire (§7.5). */
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Narrows a delta payload to the §7.5 Profile shape, for the reason
+ * `decodeMealPayload` gives: the generated client types every payload as an
+ * `Observation`, so this is where a profile becomes one.
+ */
+function decodeProfilePayload(
+  payload: unknown,
+): Extract<DecodedDeltaChange, { kind: 'profile-upsert' }>['payload'] | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const raw = payload as Record<string, unknown>;
+
+  const ostomyType = raw.ostomyType;
+  const measurementSystem = raw.measurementSystem;
+  const surgeryDate = raw.surgeryDate;
+  if (typeof ostomyType !== 'string' || !(OSTOMY_TYPES as readonly string[]).includes(ostomyType)) {
+    return undefined;
+  }
+  if (measurementSystem !== 'metric' && measurementSystem !== 'imperial') return undefined;
+  if (typeof surgeryDate !== 'string' || !CALENDAR_DATE.test(surgeryDate)) return undefined;
+
+  return { ostomyType: ostomyType as OstomyType, surgeryDate, measurementSystem };
 }
 
 function nonEmptyString(value: unknown): string | undefined {

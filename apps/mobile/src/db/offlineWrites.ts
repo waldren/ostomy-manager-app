@@ -34,6 +34,11 @@ import {
   replaceObservation,
   tombstoneObservation,
 } from './repositories/observationsRepository';
+import {
+  updateProfileLocally,
+  writeProfile,
+  type LocalProfile,
+} from './repositories/profileRepository';
 import { enqueueOperation, removeOperation } from './repositories/syncQueueRepository';
 
 /**
@@ -652,5 +657,69 @@ export function buildMealPayload(fields: {
     tagCodes: [...fields.tagCodes],
     effectiveDateTime: fields.effectiveDatetime,
     enteredTimezone: fields.enteredTimezone,
+  });
+}
+
+/**
+ * The patient changed their profile (P4.S3, SRS §3.10): the local row and its
+ * sync `update` commit together, exactly as an entry and its queue row do.
+ *
+ * An UPDATE, never a create — the profile was created by provisioning, which
+ * is not a sync operation (`docs/sync-contract.md` §7.5). The operation's
+ * `entityId` is the server's profile id, so there is nothing to send until
+ * this device has learned it; the settings screen does not offer an edit
+ * before then, and this throws rather than queueing an operation no server
+ * could apply.
+ *
+ * The payload is built at push time from the `profiles` row, like every other
+ * entity here (migration 2), so a second edit made before the first is pushed
+ * sends the patient's latest answers both times — which is what a full
+ * replacement (§4) should carry.
+ */
+export async function enqueueProfileUpdate(
+  executor: SqliteExecutor,
+  serverId: string,
+  fields: Pick<LocalProfile, 'ostomyType' | 'surgeryDate' | 'measurementSystem'>,
+  now: () => Date,
+): Promise<{ operationId: string }> {
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+
+  await executor.withTransactionAsync(async () => {
+    await updateProfileLocally(executor, fields, nowIso);
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'Profile',
+        entityId: serverId,
+        operationType: 'update',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
+  });
+
+  return { operationId };
+}
+
+/**
+ * Undoes a profile edit the server refused (P4.S3): removes the rejected
+ * operation and puts the server's profile back on this device, together.
+ *
+ * The server's version, not a remembered "before": the row only holds the
+ * patient's latest answers, and the server's copy is the one every other
+ * device already has. The caller fetches it first — online — so this never
+ * removes the rejected edit without something true to replace it with.
+ */
+export async function undoRejectedProfileEdit(
+  executor: SqliteExecutor,
+  fields: { rejectedOperationId: string; serverProfile: LocalProfile },
+  now: () => Date,
+): Promise<void> {
+  const nowIso = toWireInstant(now());
+  await executor.withTransactionAsync(async () => {
+    await removeOperation(executor, fields.rejectedOperationId);
+    await writeProfile(executor, fields.serverProfile, nowIso);
   });
 }

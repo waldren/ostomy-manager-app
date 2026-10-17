@@ -291,8 +291,10 @@ export const common = {
    * questions is that a newly discharged patient may be setting the app up in a
    * hospital bed, and a question whose purpose is invisible is one they stall on.
    *
-   * Nothing here promises these can be changed later. Editing a profile is P4.S3,
-   * and copy that offers it now would be a promise this build does not keep.
+   * Nothing here promises these can be changed later. That stayed true until
+   * P4.S3 built the settings screen; the promise is now kept there (`settings.*`)
+   * rather than made here, where a patient setting up in a hospital bed does not
+   * need one more sentence to read.
    */
   'onboarding.heading': 'Set up your diary',
   'onboarding.intro': 'Three questions, then you can start logging.',
@@ -444,6 +446,45 @@ export const common = {
   'corrections.fixButton': 'Fix this entry',
   'corrections.deleteButton': 'Delete this entry',
   'corrections.savedAt': 'You added this on {{when}}.',
+  // A rejected PROFILE edit (P4.S3). It is not an entry, so it gets its own
+  // wording, and its one action puts the answers back the way the server has
+  // them — the patient can then change them again in Settings.
+  'corrections.profileProblem': 'A change you made in Settings could not be saved.',
+  // The only profile rejection the patient can act on: the device checks the
+  // future-date rule exactly, so this is the server's "too long ago" bound.
+  'corrections.profileSurgeryDateProblem':
+    'The surgery date you entered could not be saved. Check the year.',
+  'corrections.profileUndoButton': 'Undo this change',
+  'corrections.profileUndoHint':
+    'This puts your answers back to what they were. You can change them again in Settings.',
+  'corrections.profileUndoUnreachable':
+    'Your phone needs a connection to undo this. Check your connection, then try again.',
+
+  /**
+   * Settings (P4.S3, SRS §3.10). In `common` because the profile answers have
+   * clinical meaning: the ostomy type decides which typical ranges are
+   * suggested, and the surgery date is the earliest date an entry may have.
+   *
+   * Each "what happens if I change this" line answers the question a patient
+   * would otherwise have to guess at, and both name the thing they would fear:
+   * that entries already saved are changed or lost. Neither is.
+   */
+  'settings.heading': 'Settings',
+  'settings.profileHeading': 'About your ostomy',
+  'settings.profileIntro': 'These are the answers you gave when you set up the app.',
+  'settings.surgeryDateChangeNote':
+    'If you change this date, entries you have already saved stay as they are.',
+  'settings.measurementSystemChangeNote':
+    'Changing units only changes how amounts are shown. The amounts you saved stay the same.',
+  'settings.saveButton': 'Save changes',
+  'settings.savingLabel': 'Saving',
+  'settings.saved': 'Saved on this phone. It will be sent the next time you are online.',
+  'settings.nothingChanged': 'You have not changed anything yet.',
+  // Only on a phone set up before this screen existed, until it has been online
+  // once: the edit has nowhere to go until then.
+  'settings.needsConnectionBody':
+    'Your phone needs to connect once before you can change these. Check your connection, then try again.',
+  'settings.retryButton': 'Try again',
 
   // sync-contract §5.4. Deliberately says what will happen BEFORE it happens
   // and names the one thing a patient would fear — losing what they wrote.

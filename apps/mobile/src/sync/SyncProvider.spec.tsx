@@ -39,6 +39,11 @@ jest.mock('./syncWorker', () => ({
   runSyncCycle: (...args: unknown[]) => mockRunSyncCycle(...args),
 }));
 
+const mockProfileRefresh = jest.fn(() => Promise.resolve());
+jest.mock('../onboarding/ProfileProvider', () => ({
+  useOptionalProfileRefresh: () => mockProfileRefresh,
+}));
+
 // The subscription is built in the factory rather than through a per-test
 // `mockReturnValue`, so it can never be `undefined` at unmount: the effect
 // cleanup calls `subscription.remove()`, and a cleanup that throws surfaces
@@ -97,6 +102,7 @@ function completedCycle(overrides: Partial<SyncCycleResult> = {}): SyncCycleResu
       skippedAsStale: 0,
       undecodable: 0,
       unsupportedEntity: 0,
+      profileUpserts: 0,
     },
     stoppedBecause: { kind: 'completed' },
     unbuildable: [],
@@ -335,6 +341,43 @@ describe('SyncProvider', () => {
     await waitFor(() => {
       expect(screen.getByTestId('status')).toHaveTextContent('completed:2');
     });
+  });
+
+  /**
+   * P4.S3. `ProfileProvider` holds the profile in memory, so a pull that
+   * applied an edit made on another device must make it re-read — or every
+   * screen keeps rendering in the old units, and checking entries against the
+   * old surgery date, until the app restarts.
+   */
+  it('re-reads the profile after a pull that changed it', async () => {
+    mockRunSyncCycle.mockResolvedValue(
+      completedCycle({
+        delta: {
+          upserts: 1,
+          tombstones: 0,
+          pages: 1,
+          skippedAsStale: 0,
+          undecodable: 0,
+          unsupportedEntity: 0,
+          profileUpserts: 1,
+        },
+      }),
+    );
+
+    await renderProvider();
+
+    await waitFor(() => {
+      expect(mockProfileRefresh).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('does not re-read the profile after a pull that did not change it', async () => {
+    await renderProvider();
+
+    await waitFor(() => {
+      expect(mockRunSyncCycle).toHaveBeenCalledTimes(1);
+    });
+    expect(mockProfileRefresh).not.toHaveBeenCalled();
   });
 
   /**

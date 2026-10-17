@@ -203,6 +203,7 @@ const EMPTY_DELTA: DeltaOutcome = {
   skippedAsStale: 0,
   undecodable: 0,
   unsupportedEntity: 0,
+  profileUpserts: 0,
 };
 
 export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult> {
@@ -650,6 +651,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
   let skippedAsStale = 0;
   let undecodable = 0;
   let unsupportedEntity = 0;
+  let profileUpserts = 0;
 
   for (;;) {
     const since = await getCursor(deps.executor);
@@ -668,6 +670,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
         skippedAsStale,
         undecodable,
         unsupportedEntity,
+        profileUpserts,
       };
       if (error instanceof MissingAccessTokenError) {
         return { outcome, stoppedBecause: { kind: 'unauthenticated' } };
@@ -695,11 +698,20 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
     skippedAsStale += applied.skippedAsStale;
     undecodable += applied.undecodable;
     unsupportedEntity += applied.unsupportedEntity;
+    profileUpserts += applied.profileUpserts;
     pages += 1;
 
     if (!decodedPage.hasMore) {
       return {
-        outcome: { upserts, tombstones, pages, skippedAsStale, undecodable, unsupportedEntity },
+        outcome: {
+          upserts,
+          tombstones,
+          pages,
+          skippedAsStale,
+          undecodable,
+          unsupportedEntity,
+          profileUpserts,
+        },
         stoppedBecause: { kind: 'completed' },
       };
     }
@@ -710,7 +722,15 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
     // this client still must not hang on one.
     if (decodedPage.cursor === since) {
       return {
-        outcome: { upserts, tombstones, pages, skippedAsStale, undecodable, unsupportedEntity },
+        outcome: {
+          upserts,
+          tombstones,
+          pages,
+          skippedAsStale,
+          undecodable,
+          unsupportedEntity,
+          profileUpserts,
+        },
         stoppedBecause: { kind: 'unavailable' },
       };
     }

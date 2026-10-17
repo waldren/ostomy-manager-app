@@ -18,6 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import type {
   MealSyncPayload,
   ObservationSyncPayload,
+  ProfileSyncPayload,
   SyncPushOperation,
   SyncPushRequest,
 } from '@ostomy/core/sync';
@@ -30,6 +31,7 @@ import {
   type LocalMeal,
 } from '../db/repositories/mealsRepository';
 import { getObservationById, markServerSequence } from '../db/repositories/observationsRepository';
+import { readProfile, type LocalProfile } from '../db/repositories/profileRepository';
 import {
   markRejected,
   recordAttempt,
@@ -100,10 +102,16 @@ export async function buildPushRequest(
       // §3.1: `payload` is ABSENT for a delete — not null, not an empty
       // object. The key must not appear at all, or §6.1's
       // PAYLOAD_PRESENCE_INVALID fails the whole request.
+      //
+      // The queue row's OWN entity type. This was the literal 'Observation', so
+      // a queued meal delete would have reached the server as an observation
+      // delete, been refused ENTITY_NOT_FOUND, and landed in the correction
+      // inbox as an entry the patient could not see. Unreachable until now only
+      // because no screen deletes a meal yet (fixed at P4.S3).
       operations.push({
         operationId: toOperationId(entry.operationId),
         entityId: toEntityId(entry.entityId),
-        entityType: 'Observation',
+        entityType: entry.entityType,
         operationType: 'delete',
         clientTimestamp: entry.clientTimestamp,
       });
@@ -129,6 +137,33 @@ export async function buildPushRequest(
         operationType: entry.operationType,
         clientTimestamp: entry.clientTimestamp,
         payload: toMealPayload(meal),
+      });
+      sent.push(entry);
+      continue;
+    }
+
+    if (entry.entityType === 'Profile') {
+      // The single local row, sent as the full replacement §7.5 requires. Its id
+      // must be the one the operation names: a row whose server id has changed
+      // since (a re-provisioned account) would otherwise send one profile's
+      // values under another's id.
+      const profile = await readProfile(executor);
+      if (profile?.serverId !== entry.entityId) {
+        unbuildable.push({
+          operationId: entry.operationId,
+          entityId: entry.entityId,
+          reason: 'entity-row-missing',
+        });
+        continue;
+      }
+
+      operations.push({
+        operationId: toOperationId(entry.operationId),
+        entityId: toEntityId(entry.entityId),
+        entityType: 'Profile',
+        operationType: entry.operationType,
+        clientTimestamp: entry.clientTimestamp,
+        payload: toProfilePayload(profile, entry.entityId),
       });
       sent.push(entry);
       continue;
@@ -225,6 +260,19 @@ function toMealPayload(meal: LocalMeal): MealSyncPayload {
     tagCodes: [...meal.tagCodes],
     effectiveDateTime: meal.effectiveDatetime,
     enteredTimezone: meal.enteredTimezone,
+  };
+}
+
+/**
+ * Projects the local profile onto the §7.5 wire payload, field by field —
+ * never a spread, which would ship `serverId` under a key the server refuses.
+ */
+function toProfilePayload(profile: LocalProfile, serverId: string): ProfileSyncPayload {
+  return {
+    id: toEntityId(serverId),
+    ostomyType: profile.ostomyType,
+    surgeryDate: profile.surgeryDate,
+    measurementSystem: profile.measurementSystem,
   };
 }
 
@@ -364,9 +412,13 @@ export async function applyPushResults(
       // row entirely.
       if (entry?.entityType === 'Meal') {
         await markMealServerSequence(executor, result.entityId, result.appliedServerSequence);
-      } else {
+      } else if (entry?.entityType === 'Observation') {
         await markServerSequence(executor, result.entityId, result.appliedServerSequence);
       }
+      // A profile keeps no server sequence on this device (local migration 9):
+      // nothing reads one, and a receipt is not a cursor. A SUPERSEDED profile
+      // edit leaves the losing values in the local row until the next delta
+      // pull brings the winner, whose `clientUpdatedAt` is newer by definition.
       await removeOperation(executor, result.operationId);
     });
 

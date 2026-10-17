@@ -34,6 +34,7 @@ import { loadEnv } from '../config/env';
 import { useDatabaseState } from '../db/DatabaseProvider';
 import { recoverFromStaleCursor, type StaleCursorRecoveryResult } from '../db/staleCursorRecovery';
 import { now } from '../lib/utils/clock';
+import { useOptionalProfileRefresh } from '../onboarding/ProfileProvider';
 
 import {
   createSyncGate,
@@ -130,6 +131,11 @@ export function SyncProvider({
 
   const schedulerRef = useRef<SchedulerState>(INITIAL_SCHEDULER_STATE);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Through a ref, like the token accessor below: the gate is memoised, and a
+  // refresh captured at that moment would re-read with a stale executor.
+  const profileRefresh = useOptionalProfileRefresh();
+  const profileRefreshRef = useRef(profileRefresh);
+  profileRefreshRef.current = profileRefresh;
   /**
    * Read through a ref inside the cycle rather than captured in the closure: the gate
    * holds one `run` for its lifetime, and an accessor captured at mount would close
@@ -206,6 +212,11 @@ export function SyncProvider({
           schedulerRef.current = nextSchedulerState(schedulerRef.current, result);
           setLastStop(result.stoppedBecause);
           setLastRejected(result.push.rejected + result.quarantined);
+          // A profile edited on another device changes the units every screen
+          // renders in and the surgery date every entry is checked against, and
+          // `ProfileProvider` holds it in memory. Re-read only when a pull
+          // actually applied one, so an ordinary cycle re-renders nothing.
+          if (result.delta.profileUpserts > 0) await profileRefreshRef.current?.();
 
           const delay = nextDelayMs(schedulerRef.current, result.stoppedBecause);
           clearTimer();
