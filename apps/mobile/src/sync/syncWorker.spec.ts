@@ -26,6 +26,7 @@ import type { SyncPushRequest } from '@ostomy/core/sync';
 import type { SqliteExecutor } from '../db/executor';
 import { enqueueVolumetricObservationCreate } from '../db/offlineWrites';
 import { getObservationById } from '../db/repositories/observationsRepository';
+import { readRangeCache } from '../db/repositories/rangesRepository';
 import { getCursor } from '../db/repositories/syncCursorRepository';
 import {
   listQueuedOperations,
@@ -51,6 +52,7 @@ function createClientDouble(): {
   pushResponses: (SyncPushResponse | Error)[];
   deltaResponses: (SyncDeltaResponse | Error)[];
   thresholdResponses: ({ stomaOutputSoftWarningMl: number; maxClockSkewMs: number } | Error)[];
+  rangeResponses: ({ ranges: unknown } | Error)[];
 } {
   const pushes: SyncPushRequest[] = [];
   const deltaQueries: { since: string; limit?: string }[] = [];
@@ -59,6 +61,7 @@ function createClientDouble(): {
   const thresholdResponses: (
     { stomaOutputSoftWarningMl: number; maxClockSkewMs: number } | Error
   )[] = [];
+  const rangeResponses: ({ ranges: unknown } | Error)[] = [];
 
   const port: SyncClientPort = {
     push: (request) => {
@@ -81,9 +84,21 @@ function createClientDouble(): {
       return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
     },
     valueSets: () => Promise.resolve({ valueSets: [] }),
+    ranges: () => {
+      const next = rangeResponses.shift() ?? { ranges: [] };
+      return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+    },
   };
 
-  return { port, pushes, deltaQueries, pushResponses, deltaResponses, thresholdResponses };
+  return {
+    port,
+    pushes,
+    deltaQueries,
+    pushResponses,
+    deltaResponses,
+    thresholdResponses,
+    rangeResponses,
+  };
 }
 
 function protocolError(status: number, code: string): ApiError {
@@ -688,6 +703,7 @@ describe('runSyncCycle', () => {
         },
         thresholds: () => client.port.thresholds(),
         valueSets: () => client.port.valueSets(),
+        ranges: () => client.port.ranges(),
       };
 
       await runSyncCycle(deps({ client: port }));
@@ -705,6 +721,62 @@ describe('runSyncCycle', () => {
       expect(client.pushes).toHaveLength(2);
       expect(client.pushes[0]!.operations).toHaveLength(1);
       expect(client.pushes[1]!.operations).toHaveLength(1);
+    });
+  });
+
+  /**
+   * P4.S3 slice 4: the target ranges are refreshed every cycle, so the screen
+   * works offline and a range set on another device reaches this one without
+   * the patient asking.
+   */
+  describe('the target-range cache', () => {
+    const range = {
+      rangeType: 'daily_output_ml',
+      unit: 'mL',
+      lowValue: 600,
+      highValue: 1500,
+      provenance: 'CLINICAL_DEFAULT',
+      isActiveThreshold: false,
+      divergesFromPhysician: false,
+      basis: null,
+      patientRange: null,
+      proposal: null,
+      limits: { minValue: 0.0001, maxValue: 99999999.9999 },
+    };
+
+    it('writes what the read returned, after the push and the pull', async () => {
+      client.rangeResponses.push({ ranges: [range] });
+
+      const result = await runSyncCycle(deps());
+
+      expect(result.rangesRefreshed).toBe(true);
+      expect((await readRangeCache(executor))?.ranges).toEqual([
+        expect.objectContaining({ rangeType: 'daily_output_ml', provenance: 'clinical_default' }),
+      ]);
+    });
+
+    it('keeps the previous copy when the read fails, and the cycle still completes', async () => {
+      client.rangeResponses.push({ ranges: [range] });
+      await runSyncCycle(deps());
+      client.rangeResponses.push(new Error('network'));
+
+      const result = await runSyncCycle(deps());
+
+      expect(result.stoppedBecause.kind).toBe('completed');
+      expect(result.rangesRefreshed).toBe(false);
+      expect((await readRangeCache(executor))?.ranges).toHaveLength(1);
+    });
+
+    /** A half-understood answer would show some ranges and silently drop others. */
+    it('keeps the previous copy when the read does not decode', async () => {
+      client.rangeResponses.push({ ranges: [range] });
+      await runSyncCycle(deps());
+      client.rangeResponses.push({ ranges: [{ ...range, lowValue: 'six hundred' }] });
+
+      const result = await runSyncCycle(deps());
+
+      expect(result.rangesRefreshed).toBe(false);
+      expect((await readRangeCache(executor))?.ranges[0]?.lowValue).toBe(600);
     });
   });
 });

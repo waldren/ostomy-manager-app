@@ -72,6 +72,11 @@ export interface DeltaOutcome {
    * renders in, and the surgery date every entry is checked against.
    */
   readonly profileUpserts: number;
+  /**
+   * Target-range changes seen. Recognised but not stored: the resolved ranges
+   * are re-read every cycle instead (`responseDecoding.ts`'s `range-change`).
+   */
+  readonly rangeChanges: number;
 }
 
 /**
@@ -94,6 +99,7 @@ export async function applyDeltaPage(
   let undecodable = 0;
   let unsupportedEntity = 0;
   let profileUpserts = 0;
+  let rangeChanges = 0;
 
   for (const change of page.changes) {
     if (change.kind === 'undecodable') {
@@ -104,6 +110,10 @@ export async function applyDeltaPage(
       // §8: tolerate and skip. The cursor still advances below — withholding
       // it would stall every later change behind one this build cannot use.
       unsupportedEntity += 1;
+      continue;
+    }
+    if (change.kind === 'range-change') {
+      rangeChanges += 1;
       continue;
     }
     const applied = await applyChange(executor, change, appliedAt);
@@ -119,7 +129,15 @@ export async function applyDeltaPage(
   // AFTER every change in the page is committed. See this module's header.
   await setCursor(executor, page.cursor, appliedAt);
 
-  return { upserts, tombstones, skippedAsStale, undecodable, unsupportedEntity, profileUpserts };
+  return {
+    upserts,
+    tombstones,
+    skippedAsStale,
+    undecodable,
+    unsupportedEntity,
+    profileUpserts,
+    rangeChanges,
+  };
 }
 
 /**

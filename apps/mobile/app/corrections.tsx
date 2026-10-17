@@ -30,6 +30,7 @@ import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import {
   discardRejectedCreate,
+  discardRejectedRangeWrite,
   reenqueueCorrectedObservation,
   undoRejectedProfileEdit,
 } from '../src/db/offlineWrites';
@@ -153,6 +154,12 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
    * to put back the way the server has them.
    */
   const [profileRejections, setProfileRejections] = useState<readonly SyncQueueEntry[]>([]);
+  /**
+   * Refused target-range changes (P4.S3 slice 4). Not entries either, and with
+   * nothing to correct in place: a new range is a new row, set again on the
+   * target ranges screen, so the one action is to remove the change.
+   */
+  const [rangeRejections, setRangeRejections] = useState<readonly SyncQueueEntry[]>([]);
   const [undoUnreachable, setUndoUnreachable] = useState(false);
   const { port: profilePort, refresh: refreshProfile } = useProfileState();
 
@@ -167,9 +174,14 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     const rejected = await listRejectedOperations(database.executor);
     const resolved: RejectedEntry[] = [];
     const profiles: SyncQueueEntry[] = [];
+    const ranges: SyncQueueEntry[] = [];
     for (const operation of rejected) {
       if (operation.entityType === 'Profile') {
         profiles.push(operation);
+        continue;
+      }
+      if (operation.entityType === 'EffectiveRange') {
+        ranges.push(operation);
         continue;
       }
       const observation = await getObservationById(database.executor, operation.entityId);
@@ -181,6 +193,7 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     }
     setEntries(resolved);
     setProfileRejections(profiles);
+    setRangeRejections(ranges);
     setCached((await readThresholds(database.executor)) ?? null);
   }, [database]);
 
@@ -352,6 +365,18 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     [database, load, profilePort, refreshProfile],
   );
 
+  const discardRangeChange = useCallback(
+    async (operation: SyncQueueEntry) => {
+      if (database.status !== 'ready') return;
+      await discardRejectedRangeWrite(database.executor, {
+        rejectedOperationId: operation.operationId,
+        entityId: operation.entityId,
+      });
+      await load();
+    },
+    [database, load],
+  );
+
   if (phase !== 'authenticated') return <Redirect href="/login" />;
 
   const nothingToShow = entries !== undefined && entries.length === 0;
@@ -362,7 +387,7 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
 
       {entries === undefined ? (
         <BodyText>{t('mobile:common.loadingLabel')}</BodyText>
-      ) : nothingToShow && profileRejections.length === 0 ? (
+      ) : nothingToShow && profileRejections.length === 0 && rangeRejections.length === 0 ? (
         <BodyText>{t('common:corrections.empty')}</BodyText>
       ) : (
         <>
@@ -386,6 +411,19 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
                   {t('common:corrections.profileUndoUnreachable')}
                 </BodyText>
               ) : null}
+            </View>
+          ))}
+          {rangeRejections.map((operation) => (
+            <View key={operation.operationId} style={{ gap: 8 }}>
+              <BodyText tone="error">{t('common:corrections.rangeProblem')}</BodyText>
+              <Button
+                label={t('common:corrections.rangeDiscardButton')}
+                hint={t('common:corrections.rangeDiscardHint')}
+                onPress={() => {
+                  void discardRangeChange(operation);
+                }}
+              />
+              <BodyText tone="muted">{t('common:corrections.rangeDiscardHint')}</BodyText>
             </View>
           ))}
           {nothingToShow ? null : <BodyText>{t('common:corrections.intro')}</BodyText>}

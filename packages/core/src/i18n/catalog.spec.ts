@@ -65,6 +65,23 @@ describe('i18n catalog structure (ADR-0006)', () => {
     }
   });
 
+  /**
+   * SRS §3.9's framing constraint over EVERY target-range string, on both
+   * clients (P4.S3 slice 4). The web's component test asserts it over what one
+   * render shows; the phone adds buttons that turn a suggestion into the
+   * patient's value, which is where a well-meaning "recommended" would do the
+   * most harm. The numbers behind the suggestion are unratified (#130).
+   */
+  it('target-range copy describes rather than prescribes (SRS §3.9)', () => {
+    const prescriptive =
+      /\b(you should|you must|aim for|try to|make sure|recommended|normal range|safe range|healthy range)\b/;
+    const keys = Object.keys(en.common).filter((key) => key.startsWith('targetRanges.'));
+    expect(keys.length).toBeGreaterThan(20);
+    for (const key of keys) {
+      expect(en.common[key as keyof typeof en.common].toLowerCase(), key).not.toMatch(prescriptive);
+    }
+  });
+
   it('no catalog key contains a digit — values interpolate into messages, identifiers never do (ADR-0006)', () => {
     for (const namespace of Object.values(en)) {
       for (const key of Object.keys(namespace)) {

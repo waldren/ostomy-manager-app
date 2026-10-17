@@ -255,6 +255,16 @@ function SettingsScreen({ profile }: { readonly profile: LocalProfile }): React.
         onPress={onSave}
       />
 
+      {/* Its own screen rather than a section here: the profile form saves as
+          one unit, and each range action saves on its own. */}
+      <Button
+        label={t('common:settings.targetRangesButton')}
+        variant="secondary"
+        onPress={() => {
+          router.push('/target-ranges');
+        }}
+      />
+
       <Button
         label={t('mobile:navigation.backButton')}
         variant="secondary"

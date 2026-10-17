@@ -15,7 +15,12 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatVolumeQuantity } from '@ostomy/core/i18n';
+import {
+  formatVolumeQuantity,
+  rangeBandKey,
+  rangeBasisCopy,
+  rangeTypeLabelKey,
+} from '@ostomy/core/i18n';
 import {
   convertVolumeForDisplay,
   unitsForMeasurementSystem,
@@ -30,27 +35,8 @@ export interface TargetRangesProps {
   readonly targetSystem: MeasurementSystemUnits;
 }
 
-/**
- * Catalog keys for the range types this release names.
- *
- * Explicitly in the `common` namespace: web's `defaultNS` is `web`, which holds
- * shell copy only, and every string here has clinical meaning — a range type is
- * a clinical measure and a basis statement says what is typical for a group of
- * people. ADR-0006 keeps that in a shared namespace so one reviewer reads it
- * all together. Without the prefix these render as raw keys.
- */
-const RANGE_TYPE_KEYS: Readonly<Record<string, string>> = {
-  daily_output_ml: 'common:rangeType.daily_output_ml',
-  urine_output_adequacy_ml: 'common:rangeType.urine_output_adequacy_ml',
-  net_fluid_balance_ml: 'common:rangeType.net_fluid_balance_ml',
-};
-
-/** Roughly, for a basis sentence that says "about". A span of days does not deserve precision. */
 /** Ranges are stored in canonical mL (ADR-0004); nothing about a default range is patient-asserted. */
 const CANONICAL_UNITS = unitsForMeasurementSystem('metric');
-
-const DAYS_PER_MONTH = 30;
-const SETTLED_AFTER_MONTHS = 6;
 
 /**
  * The patient's target ranges, with what each one is based on (P4.S2 slice 4,
@@ -99,7 +85,7 @@ export function TargetRanges({ ranges, targetSystem }: TargetRangesProps) {
         <dl>
           {ranges.map((range) => (
             <div key={range.rangeType}>
-              <dt>{t(RANGE_TYPE_KEYS[range.rangeType] ?? 'common:rangeType.unknownMeasure')}</dt>
+              <dt>{t(rangeTypeLabelKey(range.rangeType))}</dt>
               <dd>
                 <p>{formatBand(range, targetSystem, t)}</p>
                 <p>{sourceLabel(range, t)}</p>
@@ -139,13 +125,11 @@ function formatBand(range: ResolvedRange, units: MeasurementSystemUnits, t: Tran
   const low = range.lowValue === null ? null : asText(range.lowValue);
   const high = range.highValue === null ? null : asText(range.highValue);
 
-  if (low !== null && high !== null) return t('common:targetRanges.band', { low, high });
-  if (low !== null) return t('common:targetRanges.atLeast', { low });
-  if (high !== null) return t('common:targetRanges.atMost', { high });
-  // #97's CHECK refuses a row with neither bound, so this is unreachable
+  const key = rangeBandKey({ hasLow: low !== null, hasHigh: high !== null });
+  // #97's CHECK refuses a row with neither bound, so `null` is unreachable
   // through the database — kept because rendering an empty line would be worse
   // than naming the state.
-  return t('common:targetRanges.empty');
+  return key === null ? t('common:targetRanges.empty') : t(key, { low, high });
 }
 
 /**
@@ -170,18 +154,7 @@ function sourceLabel(range: ResolvedRange, t: Translate): string {
  * invisible to the review §3.9's framing constraint exists for.
  */
 function basisSentence(basis: NonNullable<ResolvedRange['basis']>, t: Translate): string {
-  // The value carries its own article ("an ileostomy"), because "a
-  // {{ostomyType}}" produced "a ileostomy" — and because which article a noun
-  // takes is a property of the noun in most languages, so a sentence that
-  // assumes one can only ever be English.
-  const ostomyType = t(
-    basis.ostomyType === 'colostomy'
-      ? 'common:ostomyType.colostomyLower'
-      : 'common:ostomyType.ileostomyLower',
-  );
-  const months = Math.round(basis.daysPostOp / DAYS_PER_MONTH);
-
-  if (months < 1) return t('common:targetRanges.basisEarly', { ostomyType });
-  if (months >= SETTLED_AFTER_MONTHS) return t('common:targetRanges.basisSettled', { ostomyType });
-  return t('common:targetRanges.basisMonths', { ostomyType, months });
+  // Which sentence is `@ostomy/core/i18n`'s choice, shared with the phone.
+  const copy = rangeBasisCopy(basis);
+  return t(copy.key, { ostomyType: t(copy.ostomyTypeKey), months: copy.months });
 }

@@ -163,6 +163,7 @@ export function SyncProvider({
       delta: (query) => api.sync.delta(query as Parameters<typeof api.sync.delta>[0]),
       thresholds: () => api.thresholds.get(),
       valueSets: () => api.valueSets.get(),
+      ranges: () => api.ranges.list(),
     };
   }, [client]);
 

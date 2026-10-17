@@ -25,6 +25,8 @@ import {
   daysSinceSurgery,
   divergesFromPhysicianValue,
   isSuggestableRangeType,
+  patientRangeInForce,
+  pendingProposal,
   pickWindowForDay,
   resolveEffectiveRange,
   type RangeProvenanceName,
@@ -56,6 +58,35 @@ export interface ResolvedRange {
   readonly divergesFromPhysician: boolean;
   /** The post-operative window the suggestion came from, for the basis a surface states (AC 1). */
   readonly basis: RangeBasis | null;
+  /**
+   * The patient's own active value for this type, in force or not (P4.S3
+   * slice 4). Under a physician's value it is not the resolved one, and a
+   * device still needs its id to withdraw it and its values to say what it is.
+   */
+  readonly patientRange: PatientRangeRow | null;
+  /** The newest suggestion awaiting the patient's decision (§3.10), or null. */
+  readonly proposal: PatientRangeRow | null;
+  /**
+   * What a value of this type may be (`clinical_default_range_limits`, #102),
+   * so a device can refuse an out-of-range value on the form instead of in the
+   * correction inbox. Null only when the type has no limits row, which its
+   * foreign key from the defaults makes unreachable.
+   */
+  readonly limits: { readonly minValue: number; readonly maxValue: number } | null;
+}
+
+/**
+ * One stored row, as much of it as a device must echo back to change its
+ * status: `docs/sync-contract.md` §7.6 refuses an update whose content differs
+ * from the stored row, because a new value is a new row.
+ */
+export interface PatientRangeRow {
+  readonly id: string;
+  readonly lowValue: number | null;
+  readonly highValue: number | null;
+  readonly targetValue: number | null;
+  readonly unit: string;
+  readonly provenance: 'PATIENT_SET' | 'PATIENT_CONFIRMED_SUGGESTION';
 }
 
 /** What a surface needs to say "typical for an ileostomy about 3 months after surgery" in its own words. */
@@ -64,6 +95,13 @@ export interface RangeBasis {
   readonly daysPostOp: number;
   readonly minDaysPostOp: number;
   readonly maxDaysPostOp: number | null;
+  /**
+   * The default's own bounds, so a surface can offer the suggestion while a
+   * value of the patient's is in force (§3.10's review). The top-level bounds
+   * are the default's only when nothing else is in force.
+   */
+  readonly lowValue: number | null;
+  readonly highValue: number | null;
 }
 
 /**
@@ -112,7 +150,7 @@ export class RangesService {
     // UTC today, with the imprecision `daysSinceSurgery` documents.
     const daysPostOp = daysSinceSurgery(toWireSurgeryDate(surgeryDate), toLocalDate(now, 'UTC'));
 
-    const [defaults, patientRanges] = await Promise.all([
+    const [defaults, patientRanges, limitRows] = await Promise.all([
       this.prisma.clinicalDefaultRange.findMany({
         where: { ostomyType, deletedAt: null },
         orderBy: { minDaysPostOp: 'asc' },
@@ -120,7 +158,9 @@ export class RangesService {
       this.prisma.effectiveRange.findMany({
         where: { patientId: patient.id, deletedAt: null },
       }),
+      this.prisma.clinicalDefaultRangeLimits.findMany(),
     ]);
+    const limitsByType = new Map(limitRows.map((row) => [row.rangeType, row]));
 
     const suggestable = defaults.filter((row) => isSuggestableRangeType(row.rangeType));
     const rangeTypes = [...new Set(suggestable.map((row) => row.rangeType))].sort();
@@ -132,6 +172,7 @@ export class RangesService {
         daysPostOp,
         windows: suggestable.filter((row) => row.rangeType === rangeType),
         candidates: patientRanges.filter((row) => row.rangeType === rangeType),
+        limits: limitsByType.get(rangeType),
       });
       return resolved === undefined ? [] : [resolved];
     });
@@ -150,13 +191,16 @@ export class RangesService {
       highValue: unknown;
     }[];
     candidates: readonly {
+      id: string;
       provenance: string;
       status: string;
       clientUpdatedAt: Date;
       unit: string;
       lowValue: unknown;
       highValue: unknown;
+      targetValue: unknown;
     }[];
+    limits: { minValue: unknown; maxValue: unknown } | undefined;
   }): ResolvedRange | undefined {
     const typed = input.candidates.map((candidate) => ({
       ...candidate,
@@ -193,9 +237,44 @@ export class RangesService {
               daysPostOp: input.daysPostOp,
               minDaysPostOp: window.minDaysPostOp ?? 0,
               maxDaysPostOp: window.maxDaysPostOp,
+              lowValue: toNumberOrNull(window.lowValue),
+              highValue: toNumberOrNull(window.highValue),
             },
+      patientRange: toPatientRangeRow(patientRangeInForce(typed)),
+      proposal: toPatientRangeRow(pendingProposal(typed)),
+      limits:
+        input.limits === undefined
+          ? null
+          : { minValue: Number(input.limits.minValue), maxValue: Number(input.limits.maxValue) },
     };
   }
+}
+
+/** Field by field. Only the two patient provenances reach here: both selectors filter on them. */
+function toPatientRangeRow(
+  row:
+    | {
+        id: string;
+        provenance: RangeProvenanceName;
+        unit: string;
+        lowValue: unknown;
+        highValue: unknown;
+        targetValue: unknown;
+      }
+    | undefined,
+): PatientRangeRow | null {
+  if (row === undefined) return null;
+  if (row.provenance !== 'PATIENT_SET' && row.provenance !== 'PATIENT_CONFIRMED_SUGGESTION') {
+    return null;
+  }
+  return {
+    id: row.id,
+    lowValue: toNumberOrNull(row.lowValue),
+    highValue: toNumberOrNull(row.highValue),
+    targetValue: toNumberOrNull(row.targetValue),
+    unit: row.unit,
+    provenance: row.provenance,
+  };
 }
 
 /** Prisma `Decimal | null` to a plain number, without turning absent into zero. */

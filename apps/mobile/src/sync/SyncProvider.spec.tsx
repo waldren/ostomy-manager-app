@@ -103,12 +103,14 @@ function completedCycle(overrides: Partial<SyncCycleResult> = {}): SyncCycleResu
       undecodable: 0,
       unsupportedEntity: 0,
       profileUpserts: 0,
+      rangeChanges: 0,
     },
     stoppedBecause: { kind: 'completed' },
     unbuildable: [],
     quarantined: 0,
     thresholdsRefreshed: true,
     valueSetsRefreshed: true,
+    rangesRefreshed: true,
     ...overrides,
   };
 }
@@ -124,7 +126,13 @@ function Probe() {
 function providerTree() {
   return (
     <SyncProvider
-      client={{ push: jest.fn(), delta: jest.fn(), thresholds: jest.fn(), valueSets: jest.fn() }}
+      client={{
+        push: jest.fn(),
+        delta: jest.fn(),
+        thresholds: jest.fn(),
+        valueSets: jest.fn(),
+        ranges: jest.fn(),
+      }}
     >
       <Probe />
     </SyncProvider>
@@ -360,6 +368,7 @@ describe('SyncProvider', () => {
           undecodable: 0,
           unsupportedEntity: 0,
           profileUpserts: 1,
+          rangeChanges: 0,
         },
       }),
     );

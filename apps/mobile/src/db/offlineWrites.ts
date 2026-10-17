@@ -39,6 +39,13 @@ import {
   writeProfile,
   type LocalProfile,
 } from './repositories/profileRepository';
+import {
+  deleteRangeWrite,
+  putRangeWrite,
+  type CachedPatientRange,
+  type PatientRangeProvenance,
+  type RangeWrite,
+} from './repositories/rangesRepository';
 import { enqueueOperation, removeOperation } from './repositories/syncQueueRepository';
 
 /**
@@ -721,5 +728,156 @@ export async function undoRejectedProfileEdit(
   await executor.withTransactionAsync(async () => {
     await removeOperation(executor, fields.rejectedOperationId);
     await writeProfile(executor, fields.serverProfile, nowIso);
+  });
+}
+
+/**
+ * A new value for one range type (P4.S3 slice 4, `docs/sync-contract.md` §7.6):
+ * the patient's own, or the suggestion they accepted.
+ *
+ * Always a new row with a new id, never an edit of an old one, because §7.6
+ * keeps every field but the status immutable. The server supersedes whatever
+ * patient value was in force for the type, so this does not queue a
+ * withdrawal of the old one: two operations would be two chances to disagree
+ * about which value won.
+ */
+export async function enqueueRangeCreate(
+  executor: SqliteExecutor,
+  fields: {
+    readonly rangeType: string;
+    /** Canonical, as exact decimal strings (local migration 1's rule). */
+    readonly lowValue: string | null;
+    readonly highValue: string | null;
+    readonly unit: string;
+    readonly provenance: PatientRangeProvenance;
+  },
+  now: () => Date,
+): Promise<{ id: string; operationId: string }> {
+  const id = generateUuid();
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+
+  await executor.withTransactionAsync(async () => {
+    await putRangeWrite(executor, {
+      id,
+      rangeType: fields.rangeType,
+      lowValue: fields.lowValue,
+      highValue: fields.highValue,
+      targetValue: null,
+      unit: fields.unit,
+      provenance: fields.provenance,
+      status: 'active',
+      writtenAt: nowIso,
+    });
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'EffectiveRange',
+        entityId: id,
+        operationType: 'create',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
+  });
+
+  return { id, operationId };
+}
+
+/**
+ * Changes the status of a stored patient row: withdraw a value
+ * (`active` → `superseded`), or accept or dismiss a proposal.
+ *
+ * The row's content is copied from what the server reported, because §7.6
+ * refuses an update whose content differs from the stored row. Its values come
+ * from a JSON number, so `String()` gives back the shortest exact form.
+ */
+export async function enqueueRangeStatusChange(
+  executor: SqliteExecutor,
+  row: CachedPatientRange & { readonly rangeType: string },
+  status: Extract<RangeWrite['status'], 'active' | 'superseded' | 'dismissed'>,
+  now: () => Date,
+): Promise<{ operationId: string }> {
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+  const asText = (value: number | null) => (value === null ? null : String(value));
+
+  await executor.withTransactionAsync(async () => {
+    await putRangeWrite(executor, {
+      id: row.id,
+      rangeType: row.rangeType,
+      lowValue: asText(row.lowValue),
+      highValue: asText(row.highValue),
+      targetValue: asText(row.targetValue),
+      unit: row.unit,
+      provenance: row.provenance,
+      status,
+      writtenAt: nowIso,
+    });
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'EffectiveRange',
+        entityId: row.id,
+        operationType: 'update',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
+  });
+
+  return { operationId };
+}
+
+/**
+ * Takes back a new value that has not left the phone yet, and reports whether
+ * it could.
+ *
+ * Withdrawing it through the server instead would also work, but queue two
+ * operations whose only effect is to cancel out, and the screen would have to
+ * reason about a value that is both set and withdrawn while they wait. A value
+ * already sent, or being sent, is withdrawn the ordinary way.
+ */
+export async function cancelUnsentRangeCreate(
+  executor: SqliteExecutor,
+  id: string,
+): Promise<boolean> {
+  let cancelled = false;
+  await executor.withTransactionAsync(async () => {
+    const { changes } = await executor.runAsync(
+      `DELETE FROM sync_queue
+       WHERE entity_type = 'EffectiveRange' AND entity_id = ? AND operation_type = 'create'
+         AND status = 'queued';`,
+      [id],
+    );
+    if (changes === 0) return;
+    await deleteRangeWrite(executor, id);
+    cancelled = true;
+  });
+  return cancelled;
+}
+
+/**
+ * Drops a range change the server refused, and this phone's copy of it,
+ * together (the correction inbox's one action for a range).
+ *
+ * Nothing to correct in place: a refused value is replaced by setting a new
+ * one, which the patient does on the target ranges screen with the limits in
+ * front of them. The local row goes too, unless another change to the same row
+ * is still waiting, because that change is built from it at push time.
+ */
+export async function discardRejectedRangeWrite(
+  executor: SqliteExecutor,
+  fields: { readonly rejectedOperationId: string; readonly entityId: string },
+): Promise<void> {
+  await executor.withTransactionAsync(async () => {
+    await removeOperation(executor, fields.rejectedOperationId);
+    const remaining = await executor.getAllAsync<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM sync_queue WHERE entity_type = 'EffectiveRange' AND entity_id = ?;`,
+      [fields.entityId],
+    );
+    if ((remaining[0]?.n ?? 0) === 0) await deleteRangeWrite(executor, fields.entityId);
   });
 }

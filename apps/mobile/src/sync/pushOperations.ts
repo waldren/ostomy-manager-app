@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import type {
+  EffectiveRangeSyncPayload,
   MealSyncPayload,
   ObservationSyncPayload,
   ProfileSyncPayload,
@@ -32,6 +33,7 @@ import {
 } from '../db/repositories/mealsRepository';
 import { getObservationById, markServerSequence } from '../db/repositories/observationsRepository';
 import { readProfile, type LocalProfile } from '../db/repositories/profileRepository';
+import { getRangeWrite, type RangeWrite } from '../db/repositories/rangesRepository';
 import {
   markRejected,
   recordAttempt,
@@ -169,6 +171,29 @@ export async function buildPushRequest(
       continue;
     }
 
+    if (entry.entityType === 'EffectiveRange') {
+      const range = await getRangeWrite(executor, entry.entityId);
+      if (range === undefined) {
+        unbuildable.push({
+          operationId: entry.operationId,
+          entityId: entry.entityId,
+          reason: 'entity-row-missing',
+        });
+        continue;
+      }
+
+      operations.push({
+        operationId: toOperationId(entry.operationId),
+        entityId: toEntityId(entry.entityId),
+        entityType: 'EffectiveRange',
+        operationType: entry.operationType,
+        clientTimestamp: entry.clientTimestamp,
+        payload: toRangePayload(range, entry.operationType),
+      });
+      sent.push(entry);
+      continue;
+    }
+
     const observation = await getObservationById(executor, entry.entityId);
     if (observation === undefined) {
       unbuildable.push({
@@ -273,6 +298,37 @@ function toProfilePayload(profile: LocalProfile, serverId: string): ProfileSyncP
     ostomyType: profile.ostomyType,
     surgeryDate: profile.surgeryDate,
     measurementSystem: profile.measurementSystem,
+  };
+}
+
+/**
+ * Projects a local range change onto the §7.6 wire payload, field by field.
+ *
+ * **A create always says `active`**, whatever the row says now. The row holds
+ * the LATEST status, and a value set and then withdrawn before either change
+ * was sent has a row reading `superseded` behind a queued create. §7.6 refuses
+ * a create in any other status, so sending the row's status would turn an
+ * ordinary set-then-withdraw into a rejection. The update queued behind it
+ * carries the withdrawal.
+ *
+ * `previousRangeId` is always `null`: the server assigns it, and §7.6 accepts
+ * `null` on an update from a device that has not pulled since.
+ */
+function toRangePayload(
+  range: RangeWrite,
+  operationType: 'create' | 'update',
+): EffectiveRangeSyncPayload {
+  const asNumber = (value: string | null) => (value === null ? null : Number(value));
+  return {
+    id: toEntityId(range.id),
+    rangeType: range.rangeType,
+    lowValue: asNumber(range.lowValue),
+    highValue: asNumber(range.highValue),
+    targetValue: asNumber(range.targetValue),
+    unit: range.unit,
+    provenance: range.provenance,
+    status: operationType === 'create' ? 'active' : range.status,
+    previousRangeId: null,
   };
 }
 

@@ -74,6 +74,26 @@ export const rangeBasisSchema = z.object({
   maxDaysPostOp: z.int().nullable().meta({
     description: 'Null for the open-ended final window — "and beyond".',
   }),
+  lowValue: z.number().nullable().meta({
+    description:
+      "The suggestion's own lower bound. The range's top-level bounds are the suggestion's only while nothing else is in force, so a device offering the suggestion beside a patient's value reads it here.",
+  }),
+  highValue: z.number().nullable(),
+});
+
+/**
+ * One stored patient row, carrying what a device must echo back to change its
+ * status. `docs/sync-contract.md` §7.6 refuses an update whose content differs
+ * from the stored row, so a device that sent anything but these values would be
+ * refused.
+ */
+export const patientRangeRowSchema = z.object({
+  id: z.uuid().meta({ description: 'The row id, which is the sync entityId of a status update.' }),
+  lowValue: z.number().nullable(),
+  highValue: z.number().nullable(),
+  targetValue: z.number().nullable(),
+  unit: z.string(),
+  provenance: z.enum(['PATIENT_SET', 'PATIENT_CONFIRMED_SUGGESTION']),
 });
 
 export const resolvedRangeSchema = z.object({
@@ -104,6 +124,18 @@ export const resolvedRangeSchema = z.object({
   basis: rangeBasisSchema.nullable().meta({
     description:
       'The clinical default window this suggestion came from, or null when no default covers this patient today.',
+  }),
+  patientRange: patientRangeRowSchema.nullable().meta({
+    description:
+      "The patient's own active value for this type, whether or not it is in force. Under a physician-set value it is not the resolved one; a device needs it to say what the patient's value is and to withdraw it.",
+  }),
+  proposal: patientRangeRowSchema.nullable().meta({
+    description:
+      'The newest suggestion awaiting the patient (SRS §3.10). Never in force until the patient accepts it (AC 14.1 AC2).',
+  }),
+  limits: z.object({ minValue: z.number(), maxValue: z.number() }).nullable().meta({
+    description:
+      'The bounds a value of this type may take (clinical_default_range_limits). A device can refuse an out-of-range value on its form; the server refuses it on push regardless. These are structural limits, not clinical advice.',
   }),
 });
 

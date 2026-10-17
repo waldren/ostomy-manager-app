@@ -22,6 +22,7 @@ import { isSyncProtocolErrorCode } from '@ostomy/core/sync';
 
 import type { SqliteExecutor } from '../db/executor';
 import { getCursor } from '../db/repositories/syncCursorRepository';
+import { decodeRanges, writeRangeCache } from '../db/repositories/rangesRepository';
 import { writeThresholds } from '../db/repositories/thresholdsRepository';
 import { writeValueSets } from '../db/repositories/valueSetsRepository';
 import { listQueuedOperations, markQuarantined } from '../db/repositories/syncQueueRepository';
@@ -130,6 +131,8 @@ export interface SyncCycleResult {
   readonly thresholdsRefreshed: boolean;
   /** Whether this cycle refreshed the cached value sets. Same shape, same non-error semantics. */
   readonly valueSetsRefreshed: boolean;
+  /** Whether this cycle refreshed the cached target ranges (P4.S3 slice 4). Same semantics again. */
+  readonly rangesRefreshed: boolean;
 }
 
 /**
@@ -178,6 +181,14 @@ export interface SyncClientPort {
       }>;
     }>;
   }>;
+  /**
+   * `GET /api/v1/ranges` (P4.S3 slice 4). PHI, unlike the two above — these are
+   * the patient's own thresholds — but it rides this cycle for their reason:
+   * the target ranges screen must render offline, and a range set on another
+   * device must reach this one without the patient asking. Typed `unknown`
+   * because the cache decodes it field by field (`decodeRanges`).
+   */
+  ranges(): Promise<{ readonly ranges: unknown }>;
 }
 
 export interface SyncCycleDeps {
@@ -204,6 +215,7 @@ const EMPTY_DELTA: DeltaOutcome = {
   undecodable: 0,
   unsupportedEntity: 0,
   profileUpserts: 0,
+  rangeChanges: 0,
 };
 
 export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult> {
@@ -224,12 +236,16 @@ export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult
       // device does not make a doomed request per cycle.
       thresholdsRefreshed: false,
       valueSetsRefreshed: false,
+      rangesRefreshed: false,
     };
   }
 
   const delta = await runDeltaPhase(deps);
   const thresholdsRefreshed = await refreshThresholds(deps);
   const valueSetsRefreshed = await refreshValueSets(deps);
+  // After the push AND the pull, so it reflects the change this cycle just
+  // sent; `listUnreflectedRangeWrites` covers the moment in between.
+  const rangesRefreshed = await refreshRanges(deps);
 
   return {
     push: push.outcome,
@@ -239,7 +255,28 @@ export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult
     quarantined: push.quarantined,
     thresholdsRefreshed,
     valueSetsRefreshed,
+    rangesRefreshed,
   };
+}
+
+/**
+ * Refreshes the cached target ranges, and never fails the cycle — the
+ * threshold refresh's reasoning applies unchanged.
+ *
+ * A response that does not decode is not written: the previous copy stays,
+ * which is what an offline device shows anyway, and a half-understood answer
+ * would show some ranges and silently drop others.
+ */
+async function refreshRanges(deps: SyncCycleDeps): Promise<boolean> {
+  try {
+    const fetched = await deps.client.ranges();
+    const ranges = decodeRanges(fetched.ranges);
+    if (ranges === undefined) return false;
+    await writeRangeCache(deps.executor, ranges, deps.now().toISOString());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -652,6 +689,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
   let undecodable = 0;
   let unsupportedEntity = 0;
   let profileUpserts = 0;
+  let rangeChanges = 0;
 
   for (;;) {
     const since = await getCursor(deps.executor);
@@ -671,6 +709,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
         undecodable,
         unsupportedEntity,
         profileUpserts,
+        rangeChanges,
       };
       if (error instanceof MissingAccessTokenError) {
         return { outcome, stoppedBecause: { kind: 'unauthenticated' } };
@@ -699,6 +738,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
     undecodable += applied.undecodable;
     unsupportedEntity += applied.unsupportedEntity;
     profileUpserts += applied.profileUpserts;
+    rangeChanges += applied.rangeChanges;
     pages += 1;
 
     if (!decodedPage.hasMore) {
@@ -711,6 +751,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
           undecodable,
           unsupportedEntity,
           profileUpserts,
+          rangeChanges,
         },
         stoppedBecause: { kind: 'completed' },
       };
@@ -730,6 +771,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
           undecodable,
           unsupportedEntity,
           profileUpserts,
+          rangeChanges,
         },
         stoppedBecause: { kind: 'unavailable' },
       };

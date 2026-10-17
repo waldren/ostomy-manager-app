@@ -29,6 +29,13 @@ export interface NumericFieldProps {
   /** Tier 1 message when this field is blocking the save. Announced, not merely coloured. */
   readonly errorMessage?: string | undefined;
   readonly hint?: string | undefined;
+  /**
+   * Offer a keyboard that can type a minus sign. Android's decimal pad has
+   * none, so a field whose value may legitimately be negative (a net fluid
+   * balance, P4.S3) gets the full keyboard instead. Off by default: on every
+   * volume field a minus sign is only a way to type a Tier 1 error.
+   */
+  readonly allowsNegative?: boolean | undefined;
 }
 
 /**
@@ -65,6 +72,7 @@ export function NumericField({
   unitLabel,
   errorMessage,
   hint,
+  allowsNegative = false,
 }: NumericFieldProps) {
   const labelId = useId();
   const errorId = useId();
@@ -82,8 +90,8 @@ export function NumericField({
           style={styles.input}
           value={value}
           onChangeText={onChangeText}
-          keyboardType="decimal-pad"
-          inputMode="decimal"
+          keyboardType={allowsNegative ? 'default' : 'decimal-pad'}
+          inputMode={allowsNegative ? 'text' : 'decimal'}
           accessibilityLabel={label}
           accessibilityLabelledBy={labelId}
           accessibilityHint={hint}

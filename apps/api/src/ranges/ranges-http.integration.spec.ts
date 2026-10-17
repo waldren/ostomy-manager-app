@@ -60,7 +60,12 @@ interface WireRange {
     daysPostOp: number;
     minDaysPostOp: number;
     maxDaysPostOp: number | null;
+    lowValue: number | null;
+    highValue: number | null;
   } | null;
+  patientRange: { id: string; lowValue: number | null; provenance: string } | null;
+  proposal: { id: string } | null;
+  limits: { minValue: number; maxValue: number } | null;
 }
 
 describe('GET /api/v1/ranges', () => {
@@ -201,7 +206,13 @@ describe('GET /api/v1/ranges', () => {
       daysPostOp: 10,
       minDaysPostOp: 0,
       maxDaysPostOp: 30,
+      lowValue: 600,
+      highValue: 1500,
     });
+    // What a device needs to act (P4.S3 slice 4) survives serialisation too.
+    expect(output?.patientRange).toBeNull();
+    expect(output?.proposal).toBeNull();
+    expect(output?.limits).toEqual({ minValue: 0.0001, maxValue: 99999999.9999 });
   });
 
   /**

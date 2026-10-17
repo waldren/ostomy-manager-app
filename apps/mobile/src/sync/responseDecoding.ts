@@ -218,6 +218,14 @@ export type DecodedDeltaChange =
    * changes is visible rather than looking like an empty day.
    */
   | { readonly kind: 'unsupported-entity'; readonly entityType: string }
+  /**
+   * A target range changed (P4.S3 slice 4, §7.6). Recognised, and deliberately
+   * not stored: this device shows the server's RESOLVED ranges, refreshed every
+   * cycle (`syncWorker.ts`), rather than a mirror of the rows (local migration
+   * 10 says why). Counted apart from `unsupported-entity` so that count keeps
+   * meaning "a type this build does not know".
+   */
+  | { readonly kind: 'range-change' }
   | { readonly kind: 'undecodable' };
 
 export interface DecodedDeltaPage {
@@ -248,6 +256,8 @@ function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
   // server began sending `Meal` changes (P3.S1) a meal decoded as an
   // observation upsert and `deltaPull` wrote its fields into the observations
   // table — a well-formed row of nonsense, with no error anywhere.
+  if (change.entityType === 'EffectiveRange') return { kind: 'range-change' };
+
   if (
     change.entityType !== 'Observation' &&
     change.entityType !== 'Meal' &&

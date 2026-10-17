@@ -459,6 +459,12 @@ export const common = {
     'This puts your answers back to what they were. You can change them again in Settings.',
   'corrections.profileUndoUnreachable':
     'Your phone needs a connection to undo this. Check your connection, then try again.',
+  // P4.S3 slice 4. A refused range change has nothing to correct in place: a
+  // new value is a new row, set again on the target ranges screen.
+  'corrections.rangeProblem': 'A change to your target ranges could not be saved.',
+  'corrections.rangeDiscardButton': 'Remove this change',
+  'corrections.rangeDiscardHint':
+    'Your other ranges stay as they are. You can set this range again in Settings.',
 
   /**
    * Settings (P4.S3, SRS §3.10). In `common` because the profile answers have
@@ -485,6 +491,50 @@ export const common = {
   'settings.needsConnectionBody':
     'Your phone needs to connect once before you can change these. Check your connection, then try again.',
   'settings.retryButton': 'Try again',
+  'settings.targetRangesButton': 'Your target ranges',
+
+  /**
+   * The target ranges screen on the phone (P4.S3 slice 4, SRS §3.9 and §3.10).
+   * The display keys above are shared with the web; these are the actions.
+   *
+   * §3.9's framing constraint applies with more force here than on a read-only
+   * page, because these buttons make a suggestion into the patient's own
+   * value. So the suggestion is "the typical range", never "the recommended"
+   * one, and nothing says what the patient should choose. The numbers behind
+   * the suggestion are unratified by a clinician (#130).
+   *
+   * The form errors describe what the APP can store. The limits behind
+   * `errorOutsideLimits` are structural (a volume is positive; the column has a
+   * ceiling), so calling a value unsafe or wrong would be a clinical claim
+   * nobody has made.
+   */
+  'targetRanges.needsConnection':
+    'Your target ranges appear here once your phone has connected. Check your connection, then come back.',
+  'targetRanges.yourValue': 'Your own range: {{value}}.',
+  'targetRanges.typical': 'The typical range: {{value}}.',
+  'targetRanges.waitingToSend':
+    'Saved on this phone. It will be sent the next time you are online.',
+  'targetRanges.useTypicalButton': 'Use the typical range',
+  'targetRanges.setOwnButton': 'Set my own range',
+  'targetRanges.changeOwnButton': 'Change my range',
+  'targetRanges.stopOwnButton': 'Stop using my range',
+  'targetRanges.stopOwnHint':
+    'Your own range is removed. Your care team’s range or the typical range is shown instead.',
+  'targetRanges.proposal': 'A range is waiting for you to decide: {{value}}.',
+  'targetRanges.acceptProposalButton': 'Use this range',
+  'targetRanges.dismissProposalButton': 'Do not use this range',
+  'targetRanges.physicianStaysNote':
+    'Your care team set a range for this. Theirs stays in use, and yours is saved alongside it.',
+  'targetRanges.formLowLabel': 'At least',
+  'targetRanges.formHighLabel': 'At most',
+  'targetRanges.formHint': 'Fill in one box or both.',
+  'targetRanges.formSaveButton': 'Save my range',
+  'targetRanges.formCancelButton': 'Cancel',
+  'targetRanges.errorNeedsBound': 'Enter a number in at least one box.',
+  'targetRanges.errorNotNumber': 'Enter a number, like 500.',
+  'targetRanges.errorTooPrecise': 'Use no more than 4 numbers after the decimal point.',
+  'targetRanges.errorOutsideLimits': 'The app cannot save this number. Check it and try again.',
+  'targetRanges.errorBelowLow': 'This number must not be smaller than the “at least” number.',
 
   // sync-contract §5.4. Deliberately says what will happen BEFORE it happens
   // and names the one thing a patient would fear — losing what they wrote.

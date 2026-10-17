@@ -581,6 +581,64 @@ ALTER TABLE profiles ADD COLUMN server_id TEXT;
 ALTER TABLE profiles ADD COLUMN client_updated_at TEXT;
 `;
 
+/**
+ * Local migration 10 (P4.S3 slice 4): target ranges on this device.
+ *
+ * Two tables, because the device holds two different things about ranges and
+ * neither is a mirror of the server's `effective_ranges`.
+ *
+ * ## `range_cache`: the server's answer, kept for offline
+ *
+ * Which value is in force is decided by §3.9's precedence over several rows,
+ * and by which clinical default covers the patient's post-operative day. The
+ * server resolves that (`GET /api/v1/ranges`) so two clients never answer
+ * AC 14.1 AC2 differently, and the clinical defaults never reach the device at
+ * all. So the device caches the resolved answer, like the threshold and
+ * value-set caches, and the sync worker refreshes it every cycle.
+ *
+ * Kept as the response's JSON rather than as columns: it is a cache of one
+ * read, replaced whole, and nothing queries inside it. The repository decodes
+ * it field by field on the way out, so a malformed copy reads as no copy.
+ *
+ * Why not mirror the rows from the delta pull: builds before this one skipped
+ * `EffectiveRange` changes and advanced their cursor past them, so delta could
+ * never backfill the rows that already exist (#139). And a mirror would still
+ * need the defaults and the precedence rule to show anything.
+ *
+ * ## `range_writes`: this device's own changes
+ *
+ * A change is offline-first like any entry: the row and its queued operation
+ * commit together, the screen confirms from the row, and the push payload is
+ * built from it at push time (migration 2's rule). A row is the full
+ * `docs/sync-contract.md` §7.6 payload, because a status update must echo the
+ * stored row's content exactly. `written_at` is when the patient last changed
+ * it, which is how the screen tells a change the cached answer already
+ * reflects from one it does not.
+ *
+ * PHI, like every table here: a patient's thresholds are clinical values. The
+ * whole store is SQLCipher-encrypted and purged as one file (ADR-0014), so
+ * neither table needs anything of its own for that.
+ */
+const MIGRATION_10_RANGES = `
+CREATE TABLE IF NOT EXISTS range_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  ranges_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS range_writes (
+  id TEXT PRIMARY KEY,
+  range_type TEXT NOT NULL,
+  low_value TEXT,
+  high_value TEXT,
+  target_value TEXT,
+  unit TEXT NOT NULL,
+  provenance TEXT NOT NULL CHECK (provenance IN ('patient_set', 'patient_confirmed_suggestion')),
+  status TEXT NOT NULL CHECK (status IN ('active', 'superseded', 'dismissed')),
+  written_at TEXT NOT NULL
+);
+`;
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
@@ -628,5 +686,10 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     description:
       'profiles gain server_id and client_updated_at, so a profile edit can sync (P4.S3)',
     sql: () => MIGRATION_9_PROFILE_EDITS,
+  },
+  {
+    version: 10,
+    description: "range_cache and range_writes — the patient's target ranges, offline (P4.S3)",
+    sql: () => MIGRATION_10_RANGES,
   },
 ];

@@ -544,6 +544,8 @@ An update that writes the status a row already has changes nothing and is answer
 
 **The provenance label of a confirmed suggestion is not checked against the default.** The default can change between an offline patient's decision and its push, and so can the post-operative window it came from. Refusing then would reject a decision made correctly. Since only one patient value can be in force for a type, the label never decides which value wins.
 
+**Where a device learns what it may act on** (P4.S3 slice 4). Not from the delta pull, which carries the rows but neither the clinical defaults nor the precedence that picks one. `GET /api/v1/ranges` carries, per range type, the resolved value, the patient's own active row (`patientRange`) and any pending proposal (`proposal`) with the ids and stored content an update must echo, the default's bounds on `basis`, and the type's `limits`. That read is not part of this contract; it is named here because every update this section allows names a row only it reports.
+
 A create naming an id that belongs to **another patient's** row answers `ENTITY_ID_CONFLICT`, and the attempt goes to the security log. Any refusal there reveals that the id exists: answering as for a nonexistent id would mean letting the create succeed. With random v4 ids an honest client cannot collide, so the only caller who reaches this already holds someone else's id. An update or delete naming such an id answers `ENTITY_NOT_FOUND`, exactly as an id that belongs to nobody does (§2).
 
 ---

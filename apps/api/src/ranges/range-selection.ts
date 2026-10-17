@@ -212,3 +212,52 @@ export function divergesFromPhysicianValue(
   );
   return hasPhysician && hasPatient;
 }
+
+const PATIENT_PROVENANCE_NAMES: ReadonlySet<RangeProvenanceName> = new Set([
+  'PATIENT_SET',
+  'PATIENT_CONFIRMED_SUGGESTION',
+]);
+
+/**
+ * The patient's own value for one range type, whether or not it is in force
+ * (P4.S3 slice 4).
+ *
+ * A surface needs it beside the resolved value for two reasons. To withdraw it,
+ * a device must name it, and when a physician's value outranks it the resolved
+ * value is not this row. And AC 4's "your own value is recorded alongside" is
+ * only honest if the surface can say what that value is.
+ *
+ * `resolveEffectiveRange` over the patient's rows alone, so the same tie-break
+ * applies: §7.6 keeps one patient value active per type, and a row that arrived
+ * some other way resolves to the newer.
+ */
+export function patientRangeInForce<T extends RangeCandidate>(
+  candidates: readonly T[],
+): T | undefined {
+  return resolveEffectiveRange(
+    candidates.filter((candidate) => PATIENT_PROVENANCE_NAMES.has(candidate.provenance)),
+  );
+}
+
+/**
+ * The newest suggestion awaiting the patient (§3.10's "suggestion review"), or
+ * `undefined`.
+ *
+ * Only a proposal the patient could act on: `docs/sync-contract.md` §7.6 lets a
+ * push accept or dismiss a `proposed` row only when its provenance is the
+ * patient's own, so listing any other would offer two buttons that are refused.
+ */
+export function pendingProposal<T extends RangeCandidate>(candidates: readonly T[]): T | undefined {
+  return candidates
+    .filter(
+      (candidate) =>
+        candidate.status === 'PROPOSED' && PATIENT_PROVENANCE_NAMES.has(candidate.provenance),
+    )
+    .reduce<T | undefined>(
+      (newest, candidate) =>
+        newest === undefined || candidate.clientUpdatedAt > newest.clientUpdatedAt
+          ? candidate
+          : newest,
+      undefined,
+    );
+}
