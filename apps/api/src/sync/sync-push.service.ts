@@ -93,6 +93,16 @@ import {
 } from '../observations/observation-payload';
 import { observationRequestParseSchema } from '../observations/observation-wire';
 import { interpretMealPayload, toMealAuditSnapshot, toStoredSize } from '../meals/meal-payload';
+import {
+  QUICK_ADD_ENTITY_TYPE,
+  expectedQuickAddId,
+  incomingQuickAddSnapshot,
+  interpretQuickAddPayload,
+  quickAddLockKey,
+  quickAddRequestParseSchema,
+  toQuickAddAuditSnapshot,
+  type QuickAddWriteInput,
+} from '../quickadd/quick-add-payload';
 import { MEAL_FIELD, mealRequestParseSchema } from '../meals/meal-wire';
 import { toMeasuredOrEstimated, toStoredMethod } from '../observations/estimation-method';
 import type { SyncPushOperationParsed, SyncPushRequestParsed } from './sync-push.pipe';
@@ -349,7 +359,227 @@ export class SyncPushService {
     if (operation.entityType === SYNC_ENTITY_TYPE.EFFECTIVE_RANGE) {
       return this.applyEffectiveRange(context, operation, correlationId);
     }
+    if (operation.entityType === SYNC_ENTITY_TYPE.QUICK_ADD_PREFERENCE) {
+      return this.applyQuickAddPreference(context, operation, correlationId);
+    }
     return this.applyObservation(context, operation, correlationId);
+  }
+
+  /**
+   * The `QuickAddPreference` push path (P4.S3 slice 5, §7.7): a patient's
+   * decision to pin, hide, or stop deciding about one Quick-Add widget.
+   *
+   * The profile path's shape — validate first, then last-write-wins by client
+   * timestamp under a lock, audited in the write's own transaction — with three
+   * differences:
+   *
+   * - **The id is checked against the routine.** It must be the UUIDv5 of the
+   *   routine within this patient's profile id (`expectedQuickAddId`). That is
+   *   what makes two devices' decisions about one widget the same row, and it
+   *   also means an id from another patient's routine can never be named here.
+   * - **Create and update both apply last-write-wins** to the one row the id
+   *   names. Two devices can each believe they are creating it, and a create
+   *   against an existing row of the same patient is an ordinary comparison,
+   *   never a rejection (CLAUDE.md, §4). An update naming no row is
+   *   `ENTITY_NOT_FOUND`, as for every other entity.
+   * - **The lock is an advisory lock on the id**, taken before the row is read,
+   *   because the row may not exist yet: `FOR UPDATE` locks nothing then, and
+   *   two concurrent creates would both insert and one would fail on the key.
+   *
+   * Never a delete: a decision is undone with `none`, so another device learns
+   * of it through the delta pull like any other change.
+   */
+  private async applyQuickAddPreference(
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    correlationId: string | undefined,
+  ): Promise<OperationOutcome> {
+    if (operation.operationType === SYNC_OPERATION_TYPE.DELETE) {
+      return {
+        result: rejection(
+          operation,
+          SYNC_REASON_CODE.UNSUPPORTED_CODE,
+          SYNC_FIELD_PATH.OPERATION_TYPE,
+        ),
+        applied: false,
+      };
+    }
+
+    // Validated before anything is compared, so a losing version copied into
+    // the append-only audit store has always passed validation (#140's rule).
+    let input: QuickAddWriteInput;
+    let payloadId: string;
+    try {
+      const parsed = quickAddRequestParseSchema.parse(operation.payload);
+      payloadId = parsed.id;
+      input = interpretQuickAddPayload(parsed);
+    } catch (error) {
+      const detail = firstRejectionDetail(error);
+      return { result: rejection(operation, detail.reasonCode, detail.field), applied: false };
+    }
+
+    const profile = await this.prisma.profile.findFirst({
+      where: { patientId: context.patientId, deletedAt: null },
+      select: { id: true },
+    });
+    const expectedId = profile === null ? undefined : await expectedQuickAddId(profile.id, input);
+    if (payloadId !== operation.entityId || expectedId !== operation.entityId) {
+      return {
+        result: rejection(operation, SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID, SYNC_FIELD_PATH.ID),
+        applied: false,
+      };
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // `$executeRaw`, as the range path does: the lock function returns
+      // `void`, which `$queryRaw` cannot deserialise.
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(hashtextextended(${quickAddLockKey(operation.entityId)}, 0))
+      `;
+
+      const stored = await tx.quickAddPreference.findUnique({ where: { id: operation.entityId } });
+
+      if (stored !== null && stored.patientId !== context.patientId) {
+        // Unreachable short of a SHA-1 collision: the id was just derived from
+        // THIS patient's profile. Refused and recorded anyway, because the
+        // alternative on a collision is writing into someone else's row.
+        this.securityLog.crossPatientEntityAccess({
+          actorSubject: context.actorId,
+          patientId: context.patientId,
+          entityType: QUICK_ADD_ENTITY_TYPE,
+          entityId: operation.entityId,
+          requestId: correlationId,
+        });
+        return {
+          result: rejection(
+            operation,
+            SYNC_REASON_CODE.ENTITY_ID_CONFLICT,
+            SYNC_FIELD_PATH.ENTITY_ID,
+          ),
+          applied: false,
+        };
+      }
+
+      if (stored === null) {
+        if (operation.operationType !== SYNC_OPERATION_TYPE.CREATE) {
+          return {
+            result: rejection(
+              operation,
+              SYNC_REASON_CODE.ENTITY_NOT_FOUND,
+              SYNC_FIELD_PATH.ENTITY_ID,
+            ),
+            applied: false,
+          };
+        }
+        const written = await tx.quickAddPreference.create({
+          // Every field, named (CLAUDE.md: both write paths persist every field).
+          data: {
+            id: operation.entityId,
+            patientId: context.patientId,
+            code: input.code,
+            valueMl: input.valueMl,
+            method: input.method,
+            fluidTypeCode: input.fluidTypeCode,
+            urineColorCode: input.urineColorCode,
+            enteredMeasurementSystem: input.enteredMeasurementSystem,
+            decision: input.decision,
+            clientUpdatedAt: operation.clientTimestamp,
+          },
+        });
+        await this.audit.record(
+          {
+            actorType: 'PATIENT',
+            actorId: context.actorId,
+            action: 'CREATE',
+            entityType: QUICK_ADD_ENTITY_TYPE,
+            entityId: operation.entityId,
+            reasonCode: SYNC_APPLIED_REASON,
+            afterValue: toQuickAddAuditSnapshot(written),
+            ...(correlationId !== undefined ? { correlationId } : {}),
+          },
+          tx,
+        );
+        const result = acceptedResultFor(operation, written.serverSequence);
+        await this.writeOperationRecord(tx, context, operation, result);
+        return { result, applied: true };
+      }
+
+      if (operation.clientTimestamp.getTime() < stored.clientUpdatedAt.getTime()) {
+        const result = syncSupersededResult({
+          operationId: toOperationId(operation.operationId),
+          entityId: toEntityId(operation.entityId),
+          appliedServerSequence: toServerSequence(stored.serverSequence.toString()),
+          replayed: false,
+        });
+        await this.audit.record(
+          {
+            actorType: 'PATIENT',
+            actorId: context.actorId,
+            action: 'UPDATE',
+            entityType: QUICK_ADD_ENTITY_TYPE,
+            entityId: operation.entityId,
+            reasonCode: SYNC_CONFLICT_LOSER_REASON,
+            beforeValue: incomingQuickAddSnapshot(
+              operation.entityId,
+              input,
+              operation.clientTimestamp,
+            ),
+            ...(correlationId !== undefined ? { correlationId } : {}),
+          },
+          tx,
+        );
+        await this.writeOperationRecord(tx, context, operation, result);
+        return { result, applied: false };
+      }
+
+      // The routine's fields are fixed by the id, so only the decision and the
+      // timestamp can differ; they are all written anyway, as a full
+      // replacement (§4), so no field can drift from what the payload said.
+      const written = await tx.quickAddPreference.update({
+        where: { id: operation.entityId, patientId: context.patientId },
+        data: {
+          code: input.code,
+          valueMl: input.valueMl,
+          method: input.method,
+          fluidTypeCode: input.fluidTypeCode,
+          urineColorCode: input.urineColorCode,
+          enteredMeasurementSystem: input.enteredMeasurementSystem,
+          decision: input.decision,
+          clientUpdatedAt: operation.clientTimestamp,
+        },
+      });
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: context.actorId,
+          action: 'UPDATE',
+          entityType: QUICK_ADD_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_APPLIED_REASON,
+          beforeValue: toQuickAddAuditSnapshot(stored),
+          afterValue: toQuickAddAuditSnapshot(written),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+      // §4.1: the displaced version, as its own row — the meal and profile rule.
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: context.actorId,
+          action: 'UPDATE',
+          entityType: QUICK_ADD_ENTITY_TYPE,
+          entityId: operation.entityId,
+          reasonCode: SYNC_CONFLICT_LOSER_REASON,
+          beforeValue: toQuickAddAuditSnapshot(stored),
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+      const result = acceptedResultFor(operation, written.serverSequence);
+      await this.writeOperationRecord(tx, context, operation, result);
+      return { result, applied: true };
+    });
   }
 
   /**
@@ -1725,6 +1955,7 @@ const HANDLED_ENTITY_TYPES: ReadonlySet<string> = new Set<string>([
   SYNC_ENTITY_TYPE.MEAL,
   SYNC_ENTITY_TYPE.PROFILE,
   SYNC_ENTITY_TYPE.EFFECTIVE_RANGE,
+  SYNC_ENTITY_TYPE.QUICK_ADD_PREFERENCE,
 ]);
 
 const STORED_ENTITY_TYPE: Readonly<Record<string, SyncEntityType>> = {
@@ -1732,6 +1963,7 @@ const STORED_ENTITY_TYPE: Readonly<Record<string, SyncEntityType>> = {
   [SYNC_ENTITY_TYPE.MEAL]: SyncEntityType.MEAL,
   [SYNC_ENTITY_TYPE.PROFILE]: SyncEntityType.PROFILE,
   [SYNC_ENTITY_TYPE.EFFECTIVE_RANGE]: SyncEntityType.EFFECTIVE_RANGE,
+  [SYNC_ENTITY_TYPE.QUICK_ADD_PREFERENCE]: SyncEntityType.QUICK_ADD_PREFERENCE,
 };
 
 function toStoredEntityType(entityType: string): SyncEntityType {

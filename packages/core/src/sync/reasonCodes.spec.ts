@@ -169,7 +169,13 @@ describe('wire vocabularies', () => {
   it('§7 — the entity types this wire exchanges, spelled as the wire spells them', () => {
     const entityTypes: readonly SyncEntityType[] = Object.values(SYNC_ENTITY_TYPE);
     // `Profile` (§7.5) and `EffectiveRange` (§7.6) since P4.S3.
-    expect([...entityTypes].sort()).toEqual(['EffectiveRange', 'Meal', 'Observation', 'Profile']);
+    expect([...entityTypes].sort()).toEqual([
+      'EffectiveRange',
+      'Meal',
+      'Observation',
+      'Profile',
+      'QuickAddPreference',
+    ]);
   });
 
   it('§3.1 — operation types are create, update, delete', () => {

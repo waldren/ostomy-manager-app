@@ -411,7 +411,7 @@ App-native fields that FHIR has no element for travel as **plain siblings**, spe
 
 ### 7.2 `Observation`
 
-**`Profile` (§7.5) and `EffectiveRange` (§7.6) gained their payloads at P4.S3**, additively (§8).
+**`Profile` (§7.5), `EffectiveRange` (§7.6) and `QuickAddPreference` (§7.7) gained their payloads at P4.S3**, additively (§8).
 
 **P3.S1 added a second entity type, `Meal` (§7.4).** §8 already places the obligation on the client and has since P2.S0: a new `entityType` is additive without a version bump, and "Clients MUST tolerate all four". So a delta page may contain an entity type a given client does not handle, and that client **skips the change and still advances its cursor** — the alternative, withholding it, would need a client-capability signal this wire deliberately does not have (§8, "nothing on this wire tells the server which client version sent a request").
 
@@ -549,6 +549,35 @@ An update that writes the status a row already has changes nothing and is answer
 A create naming an id that belongs to **another patient's** row answers `ENTITY_ID_CONFLICT`, and the attempt goes to the security log. Any refusal there reveals that the id exists: answering as for a nonexistent id would mean letting the create succeed. With random v4 ids an honest client cannot collide, so the only caller who reaches this already holds someone else's id. An update or delete naming such an id answers `ENTITY_NOT_FOUND`, exactly as an id that belongs to nobody does (§2).
 
 ---
+
+### 7.7 `QuickAddPreference`
+
+The patient's decision about one Quick-Add widget: keep it pinned, remove it, or neither (P4.S3 slice 5, SRS §3.10, Epic 15 story 3). App-native, so it carries no `resourceType`.
+
+It is a decision **about** a routine, never a stored template. A widget is still derived on the device from the patient's own recent entries, so a tap still logs a value the patient actually entered. This entity names the routine and records the decision, and holds nothing a tap could log.
+
+| Wire field | Required | Notes |
+| --- | --- | --- |
+| `id` | yes | Equals the operation's `entityId`, and must be the **derived id** below. |
+| `code` | yes | `"79560-9"`, `"9000-1"` or `"9187-6"`: the three codes a widget is generated for. |
+| `valueMl` | yes, nullable | Canonical mL, a JSON number (§7.3). `null` only for a colour-only voided-urine routine, never `0`. |
+| `method` | yes, nullable | The Measured or Estimated SNOMED qualifier (§7.2). Present exactly when `valueMl` is. |
+| `fluidTypeCode` | yes, nullable | Only on `"9000-1"`. |
+| `urineColorCode` | yes, nullable | Only on `"9187-6"`, and required there when `valueMl` is `null`. |
+| `enteredMeasurementSystem` | yes | `"metric"` or `"imperial"`: the system the routine's entries were made in. |
+| `decision` | yes | `"pinned"`, `"hidden"` or `"none"`. |
+
+The six routine fields are the fields the device groups entries by. So a decision names exactly one widget, and a removed widget stays removed however often its routine recurs.
+
+**The id is derived, and the server refuses any other.** It is a UUIDv5 (RFC 9562) whose namespace is the patient's profile id (§7.5) and whose name is the routine key: the six routine fields joined by `|` in the order of the table above, with `valueMl` written as `String(number)` and a `null` as the empty string. `@ostomy/core/sync`'s `quickAddPreferenceId` is the one implementation. Each side supplies its own SHA-1.
+
+Two devices deciding about the same widget therefore write the same row, and §4's last-write-wins settles which decision stands. With random ids they would write two rows, and nothing would say which was in force. An id that is not the derived one is `PAYLOAD_FIELD_INVALID` naming `id`, and so is a routine that does not match its id. Because the namespace is the pushing patient's own profile, a push can never name another patient's row.
+
+**Create and update both apply last-write-wins to the one row.** A device cannot know whether another device created the row first. A create against an existing row of the same patient is the ordinary comparison (§4), never a rejection. An update naming a row that does not exist is `ENTITY_NOT_FOUND`, as for every entity.
+
+**A decision is undone with `"none"`, never deleted.** A delete is `UNSUPPORTED_CODE` naming `operationType`. An update to `"none"` reaches every device through the delta pull like any other change, and a tombstone would need a rule for reviving the row.
+
+**Every write is audited**, before and after, in the write's own transaction. The routine's fields are clinical values tied to a patient. A version that loses a conflict is audited as for a meal (§4.1).
 
 ## 8. Versioning and compatibility
 

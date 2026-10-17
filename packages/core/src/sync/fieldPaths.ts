@@ -98,6 +98,8 @@ export const SYNC_FIELD_PATH = {
   UNIT: 'unit',
   PROVENANCE: 'provenance',
   PREVIOUS_RANGE_ID: 'previousRangeId',
+  VALUE_ML: 'valueMl',
+  DECISION: 'decision',
 } as const;
 
 export type SyncFieldPath = (typeof SYNC_FIELD_PATH)[keyof typeof SYNC_FIELD_PATH];
