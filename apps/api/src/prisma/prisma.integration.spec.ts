@@ -126,6 +126,7 @@ const EXPECTED_TABLE_GRANTS: Readonly<Record<string, readonly string[]>> = {
   // propagate, and a second device would keep it forever.
   meals: ['INSERT', 'SELECT', 'UPDATE'],
   effective_ranges: ['INSERT', 'SELECT', 'UPDATE'],
+  quick_add_preferences: ['INSERT', 'SELECT', 'UPDATE'],
   // Retired-never-deleted (S5): no DELETE.
   value_set_members: ['INSERT', 'SELECT', 'UPDATE'],
   // Append-only (ADR-0011): SELECT and ordinary table-level INSERT — no
@@ -336,7 +337,13 @@ describe.skipIf(!dockerAvailable)(
     });
 
     it('refuses DELETE for the runtime role on every tombstoned synced entity, and on value_set_members (S5/S6)', async () => {
-      for (const table of ['profiles', 'observations', 'effective_ranges', 'value_set_members']) {
+      for (const table of [
+        'profiles',
+        'observations',
+        'effective_ranges',
+        'quick_add_preferences',
+        'value_set_members',
+      ]) {
         await expect(plainRuntimePgClient.query(`DELETE FROM "${table}"`)).rejects.toMatchObject({
           message: expect.stringContaining('permission denied'),
         });

@@ -59,6 +59,8 @@ export type {
   MealSize,
   EffectiveRangeSyncPayload,
   MealSyncPayload,
+  QuickAddDecision,
+  QuickAddPreferenceSyncPayload,
   OstomyType,
   RangeProvenance,
   RangeStatus,
@@ -73,10 +75,15 @@ export type {
 export {
   MEAL_SIZE,
   OSTOMY_TYPE,
+  QUICK_ADD_DECISION,
   RANGE_PROVENANCE,
   RANGE_STATUS,
   SYNC_ENTITY_TYPE,
 } from './payload.js';
+
+export type { QuickAddRoutine } from './quickAddPreferenceId.js';
+export { quickAddPreferenceId, quickAddRoutineKey } from './quickAddPreferenceId.js';
+export { uuidV5FromSha1, uuidV5HashInput } from '../uuid/uuidV5.js';
 
 export type { SyncReasonCode, SyncSpecificReasonCode, Tier1ReasonCode } from './reasonCodes.js';
 export {

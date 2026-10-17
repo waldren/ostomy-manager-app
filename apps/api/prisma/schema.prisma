@@ -182,11 +182,12 @@ model Patient {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  profile         Profile?
-  observations    Observation[]
-  meals           Meal[]
-  effectiveRanges EffectiveRange[]
-  syncOperations  SyncOperation[]
+  profile             Profile?
+  observations        Observation[]
+  meals               Meal[]
+  effectiveRanges     EffectiveRange[]
+  quickAddPreferences QuickAddPreference[]
+  syncOperations      SyncOperation[]
 
   @@map("patients")
 }
@@ -677,6 +678,69 @@ model Meal {
   @@map("meals")
 }
 
+/// What a patient decided about one Quick-Add routine (P4.S3 slice 5, SRS
+/// §3.10, Epic 15 story 3). `NONE` is a decision undone: a row is never
+/// deleted (docs/sync-contract.md §7.7).
+enum QuickAddDecision {
+  PINNED
+  HIDDEN
+  NONE
+
+  @@map("quick_add_decision")
+}
+
+/// The patient's decision about one Quick-Add routine (P4.S3 slice 5,
+/// docs/sync-contract.md §7.7).
+///
+/// A decision ABOUT a routine, never a stored template. A widget is still
+/// derived on the device from the patient's own entries, so a tap still logs a
+/// value they actually entered (#139 decision 3); this row says only which
+/// routine and what was decided. The routine is named by the fields the device
+/// groups entries by, so a decision names exactly one widget and a removed
+/// widget stays removed however often the routine recurs.
+///
+/// PHI: the routine's fields are clinical values tied to a patient. Every write
+/// is audited in its own transaction, like any other synced entity.
+///
+/// The id is DERIVED (`quickAddPreferenceId` in `@ostomy/core/sync`): a UUIDv5
+/// of the routine within the profile's id, so two devices deciding about the
+/// same widget write the same row. The push path refuses any other id, which
+/// is also what makes (patient, routine) unique without an index over nullable
+/// columns.
+model QuickAddPreference {
+  id String @id @map("id") @db.Uuid
+
+  patientId String  @map("patient_id") @db.Uuid
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  /// One of the three Quick-Add LOINC codes.
+  code                     String            @map("code") @db.VarChar(32)
+  /// Canonical mL. NULL only for a colour-only urine routine (AC 12.1 AC2) —
+  /// never 0, for the reason `observations.value_quantity_value` gives.
+  valueMl                  Decimal?          @map("value_ml") @db.Decimal(12, 4)
+  method                   String?           @map("method") @db.VarChar(32)
+  fluidTypeCode            String?           @map("fluid_type_code") @db.VarChar(64)
+  urineColorCode           String?           @map("urine_color_code") @db.VarChar(64)
+  enteredMeasurementSystem MeasurementSystem @map("entered_measurement_system")
+  decision                 QuickAddDecision  @map("decision")
+
+  /// See Profile.clientUpdatedAt. Last-write-wins input; never createdAt.
+  clientUpdatedAt DateTime @map("client_updated_at") @db.Timestamptz(3)
+
+  /// The shared cross-table `sync_sequence`, assigned by trigger.
+  serverSequence BigInt    @unique @default(0) @map("server_sequence")
+  /// Never set by this release: a decision is undone with `NONE`, not deleted.
+  /// Kept so the delta emitter and ADR-0017's purge treat this table like
+  /// every other synced one.
+  deletedAt      DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([patientId, serverSequence])
+  @@map("quick_add_preferences")
+}
+
 enum SyncEntityType {
   PROFILE
   OBSERVATION
@@ -686,6 +750,8 @@ enum SyncEntityType {
   /// SENT one, which is why the delta endpoint filters by what the requesting
   /// client can accept rather than returning everything it holds.
   MEAL
+  /// P4.S3 slice 5 (docs/sync-contract.md §7.7).
+  QUICK_ADD_PREFERENCE
 
   @@map("sync_entity_type")
 }
@@ -1113,14 +1179,14 @@ model ClinicalDefaultRange {
   /// no tripwire to catch the mistake.
   id String @id @default(uuid()) @map("id") @db.Uuid
 
-  ostomyType OstomyType @map("ostomy_type")
+  ostomyType OstomyType                 @map("ostomy_type")
   /// FK to the limits row that says what this type means (#102). `Restrict`, so
   /// a limits row cannot be removed while ranges of its type exist.
   limits     ClinicalDefaultRangeLimits @relation(fields: [rangeType], references: [rangeType], onDelete: Restrict, onUpdate: Cascade)
   /// e.g. 'daily_output_ml', 'net_fluid_balance_ml',
   /// 'urine_output_adequacy_ml', 'weight_change_threshold_percent',
   /// 'resting_heart_rate_elevation_bpm', 'orthostatic_postural_rise_bpm'.
-  rangeType  String     @map("range_type")
+  rangeType  String                     @map("range_type")
 
   /// Inclusive post-operative day window this default applies to. NULL
   /// `maxDaysPostOp` means unbounded ("3 months and beyond").
