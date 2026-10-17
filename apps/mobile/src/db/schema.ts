@@ -553,6 +553,34 @@ CREATE TABLE IF NOT EXISTS profiles (
 );
 `;
 
+/**
+ * Local migration 9 (P4.S3): the profile becomes editable from this device.
+ *
+ * Two columns, each nullable for a reason rather than for convenience:
+ *
+ * - **`server_id`** is the server's `Profile.id`, the `entity_id` a sync edit
+ *   names (`docs/sync-contract.md` §7.5). NULL on every row written before this
+ *   migration, because `GET /api/v1/profile` published no id until P4.S3. It
+ *   cannot be backfilled from the delta pull: builds before this one skipped
+ *   `Profile` changes and advanced their cursor past them. So
+ *   `ProfileProvider` fetches it once, with `GET /api/v1/profile`, and until it
+ *   has, the settings screen does not offer an edit it could not send.
+ * - **`client_updated_at`** is when this device last edited the profile, which
+ *   is what a delta change is compared against (§4, applied on the client the
+ *   way `deltaPull.ts` applies it to observations and meals). NULL means "this
+ *   row came from the server": any delta change for it is the server's truth
+ *   and applies.
+ *
+ * No `server_sequence` and no `deleted_at`. Nothing on this device would read
+ * either: the profile is a single row that is never deleted here (account
+ * deletion purges the whole store, ADR-0014), and a push receipt's sequence
+ * is not a cursor.
+ */
+const MIGRATION_9_PROFILE_EDITS = `
+ALTER TABLE profiles ADD COLUMN server_id TEXT;
+ALTER TABLE profiles ADD COLUMN client_updated_at TEXT;
+`;
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
@@ -594,5 +622,11 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     description:
       "profiles — the patient's ostomy type, surgery date and measurement system (SRS §3.0)",
     sql: () => MIGRATION_8_PROFILE,
+  },
+  {
+    version: 9,
+    description:
+      'profiles gain server_id and client_updated_at, so a profile edit can sync (P4.S3)',
+    sql: () => MIGRATION_9_PROFILE_EDITS,
   },
 ];

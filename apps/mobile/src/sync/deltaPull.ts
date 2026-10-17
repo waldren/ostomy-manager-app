@@ -27,6 +27,7 @@ import {
   MEAL_SIZES,
   type MealSize,
 } from '../db/repositories/mealsRepository';
+import { readProfileClientUpdatedAt, writeProfile } from '../db/repositories/profileRepository';
 import { getObservationById } from '../db/repositories/observationsRepository';
 import { setCursor } from '../db/repositories/syncCursorRepository';
 
@@ -64,6 +65,13 @@ export interface DeltaOutcome {
   readonly undecodable: number;
   /** Changes for an entity type this build does not handle yet (§8). Skipped, cursor still advanced — see `DecodedDeltaChange`. */
   readonly unsupportedEntity: number;
+  /**
+   * Profile changes applied (also counted in `upserts`). Reported on its own
+   * because `ProfileProvider` holds the profile in memory and must re-read it:
+   * an edit made on another device changes the measurement system every screen
+   * renders in, and the surgery date every entry is checked against.
+   */
+  readonly profileUpserts: number;
 }
 
 /**
@@ -85,6 +93,7 @@ export async function applyDeltaPage(
   let skippedAsStale = 0;
   let undecodable = 0;
   let unsupportedEntity = 0;
+  let profileUpserts = 0;
 
   for (const change of page.changes) {
     if (change.kind === 'undecodable') {
@@ -104,12 +113,13 @@ export async function applyDeltaPage(
     }
     if (change.kind === 'tombstone') tombstones += 1;
     else upserts += 1;
+    if (change.kind === 'profile-upsert') profileUpserts += 1;
   }
 
   // AFTER every change in the page is committed. See this module's header.
   await setCursor(executor, page.cursor, appliedAt);
 
-  return { upserts, tombstones, skippedAsStale, undecodable, unsupportedEntity };
+  return { upserts, tombstones, skippedAsStale, undecodable, unsupportedEntity, profileUpserts };
 }
 
 /**
@@ -142,12 +152,27 @@ async function applyChange(
   executor: SqliteExecutor,
   change: Extract<
     DecodedDeltaChange,
-    { kind: 'upsert' } | { kind: 'tombstone' } | { kind: 'meal-upsert' }
+    | { kind: 'upsert' }
+    | { kind: 'tombstone' }
+    | { kind: 'meal-upsert' }
+    | { kind: 'profile-upsert' }
   >,
   appliedAt: string,
 ): Promise<boolean> {
   if (change.kind === 'meal-upsert') {
     return applyMealUpsert(executor, change, appliedAt);
+  }
+
+  if (change.kind === 'profile-upsert') {
+    return applyProfileUpsert(executor, change, appliedAt);
+  }
+
+  if (change.kind === 'tombstone' && change.entityType === 'Profile') {
+    // Reachable only through ADR-0017's account deletion, which revokes access
+    // before it purges, so a device should never pull one. If it does, it is
+    // not applied: this device's profile is what routes the patient to their
+    // diary, and ADR-0014's purge — not a sync change — is what removes it.
+    return false;
   }
 
   if (change.kind === 'tombstone' && change.entityType === 'Meal') {
@@ -341,6 +366,39 @@ async function applyMealTombstone(
 
   await tombstoneMeal(executor, change.entityId, appliedAt, change.clientUpdatedAt, appliedAt);
   await markMealServerSequence(executor, change.entityId, change.serverSequence);
+  return true;
+}
+
+/**
+ * Writes a profile change from another device (or the server's own version),
+ * unless this device holds a strictly newer edit — the same comparison
+ * `applyMealUpsert` makes, on the same field.
+ *
+ * `client_updated_at` is NULL on a row that came from the server rather than
+ * from an edit here (local migration 9), and then any change applies. A row
+ * edited here and not yet pushed keeps the patient's answers until the server
+ * has decided between the two, which is what §9.5 promises: the local write is
+ * the confirmation, and it must not flip back under them for one cycle.
+ */
+async function applyProfileUpsert(
+  executor: SqliteExecutor,
+  change: Extract<DecodedDeltaChange, { kind: 'profile-upsert' }>,
+  appliedAt: string,
+): Promise<boolean> {
+  const localEdit = await readProfileClientUpdatedAt(executor);
+  if (typeof localEdit === 'string' && change.clientUpdatedAt < localEdit) return false;
+
+  await writeProfile(
+    executor,
+    {
+      ostomyType: change.payload.ostomyType,
+      surgeryDate: change.payload.surgeryDate,
+      measurementSystem: change.payload.measurementSystem,
+      serverId: change.entityId,
+    },
+    appliedAt,
+    change.clientUpdatedAt,
+  );
   return true;
 }
 

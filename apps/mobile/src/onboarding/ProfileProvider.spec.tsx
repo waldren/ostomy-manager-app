@@ -45,6 +45,14 @@ const PROFILE: LocalProfile = {
   ostomyType: 'ileostomy',
   surgeryDate: '2026-09-01',
   measurementSystem: 'metric',
+  serverId: '6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b',
+};
+
+/** A row written before P4.S3, when the server published no profile id. */
+const LEGACY_PROFILE: LocalProfile = {
+  ostomyType: 'ileostomy',
+  surgeryDate: '2026-09-01',
+  measurementSystem: 'metric',
 };
 
 const mockAuth: { phase: string; getFreshAccessToken: () => Promise<string | undefined> } = {
@@ -139,6 +147,43 @@ describe('ProfileProvider', () => {
 
     expect(screen.getByText('status:present')).toBeTruthy();
     expect(read).not.toHaveBeenCalled();
+  });
+
+  /**
+   * P4.S3. A row from before this build has no server id, and an edit cannot be
+   * sent without one. The delta pull cannot supply it — older builds skipped
+   * Profile changes and advanced their cursor past them — so it is fetched once.
+   * The diary opens from the local row first, without waiting on that request.
+   */
+  it('learns the server id once for a row written before the server published one', async () => {
+    await writeProfile(executor, LEGACY_PROFILE, '2026-10-08T12:00:00.000Z');
+    // The server's current answers, which an older build never pulled.
+    const read = jest.fn(() =>
+      Promise.resolve({ ...PROFILE, measurementSystem: 'imperial' as const }),
+    );
+
+    await renderGate(
+      <ProfileProvider port={port({ read })}>
+        <GateProbe />
+      </ProfileProvider>,
+    );
+
+    expect(screen.getByText('status:present')).toBeTruthy();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(await readProfile(executor)).toEqual({ ...PROFILE, measurementSystem: 'imperial' });
+  });
+
+  it('keeps a legacy row usable when the server cannot be reached', async () => {
+    await writeProfile(executor, LEGACY_PROFILE, '2026-10-08T12:00:00.000Z');
+
+    await renderGate(
+      <ProfileProvider port={port({ read: () => Promise.reject(new Error('offline')) })}>
+        <GateProbe />
+      </ProfileProvider>,
+    );
+
+    expect(screen.getByText('status:present')).toBeTruthy();
+    expect(await readProfile(executor)).toEqual(LEGACY_PROFILE);
   });
 
   it('reports absent when the server says this patient is not provisioned', async () => {

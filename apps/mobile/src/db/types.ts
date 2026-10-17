@@ -187,9 +187,10 @@ export interface SyncQueueRawRow {
 /**
  * The entity types this device queues. Mirrors `@ostomy/core/sync`'s
  * `SYNC_ENTITY_TYPE` — the wire's FHIR-style capitalisation, not Prisma's
- * `OBSERVATION` — and grew at P3.S1 when meals became syncable (§7.4).
+ * `OBSERVATION` — and grew at P3.S1 when meals became syncable (§7.4), and at
+ * P4.S3 when the profile did (§7.5, update only).
  */
-export const SYNC_QUEUE_ENTITY_TYPE = ['Observation', 'Meal'] as const;
+export const SYNC_QUEUE_ENTITY_TYPE = ['Observation', 'Meal', 'Profile'] as const;
 export type SyncQueueEntityType = (typeof SYNC_QUEUE_ENTITY_TYPE)[number];
 
 export interface SyncQueueEntry {

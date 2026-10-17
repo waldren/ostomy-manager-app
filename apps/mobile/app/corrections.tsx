@@ -24,9 +24,15 @@ import { View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
 import type { LocalProfile } from '../src/db/repositories/profileRepository';
+import { useProfileState } from '../src/onboarding/ProfileProvider';
+import { lookUpProfile } from '../src/onboarding/provisionProfile';
 import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
-import { discardRejectedCreate, reenqueueCorrectedObservation } from '../src/db/offlineWrites';
+import {
+  discardRejectedCreate,
+  reenqueueCorrectedObservation,
+  undoRejectedProfileEdit,
+} from '../src/db/offlineWrites';
 import { getObservationById } from '../src/db/repositories/observationsRepository';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
 
@@ -141,6 +147,14 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
   const [method, setMethod] = useState<MeasuredOrEstimated | undefined>(undefined);
   const [urineColorCode, setUrineColorCode] = useState<string | undefined>(undefined);
   const [check, setCheck] = useState<EntryCheck | undefined>(undefined);
+  /**
+   * Rejected profile edits (P4.S3), kept apart from `entries` because they are
+   * not entries: there is no amount to fix and no row to delete, only answers
+   * to put back the way the server has them.
+   */
+  const [profileRejections, setProfileRejections] = useState<readonly SyncQueueEntry[]>([]);
+  const [undoUnreachable, setUndoUnreachable] = useState(false);
+  const { port: profilePort, refresh: refreshProfile } = useProfileState();
 
   // Destructured so the callbacks below depend on these VALUES rather than on
   // `profile`, whose identity the gate controls.
@@ -152,7 +166,12 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     if (database.status !== 'ready') return;
     const rejected = await listRejectedOperations(database.executor);
     const resolved: RejectedEntry[] = [];
+    const profiles: SyncQueueEntry[] = [];
     for (const operation of rejected) {
+      if (operation.entityType === 'Profile') {
+        profiles.push(operation);
+        continue;
+      }
       const observation = await getObservationById(database.executor, operation.entityId);
       // A rejected operation whose entity row is gone cannot be rendered or
       // corrected — there is nothing to show the patient and nothing to
@@ -161,6 +180,7 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
       if (observation !== undefined) resolved.push({ operation, observation });
     }
     setEntries(resolved);
+    setProfileRejections(profiles);
     setCached((await readThresholds(database.executor)) ?? null);
   }, [database]);
 
@@ -307,7 +327,34 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     [database, load],
   );
 
+  /**
+   * Puts the server's profile back on this phone and drops the rejected edit,
+   * together. Online only: the server's copy is the one thing that is certainly
+   * right, so with no connection nothing is removed and the patient is told why.
+   */
+  const undoProfileEdit = useCallback(
+    async (operation: SyncQueueEntry) => {
+      if (database.status !== 'ready') return;
+      const lookup = await lookUpProfile(profilePort);
+      if (lookup.status !== 'found') {
+        setUndoUnreachable(true);
+        return;
+      }
+      setUndoUnreachable(false);
+      await undoRejectedProfileEdit(
+        database.executor,
+        { rejectedOperationId: operation.operationId, serverProfile: lookup.profile },
+        clockNow,
+      );
+      await refreshProfile();
+      await load();
+    },
+    [database, load, profilePort, refreshProfile],
+  );
+
   if (phase !== 'authenticated') return <Redirect href="/login" />;
+
+  const nothingToShow = entries !== undefined && entries.length === 0;
 
   return (
     <Screen>
@@ -315,11 +362,33 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
 
       {entries === undefined ? (
         <BodyText>{t('mobile:common.loadingLabel')}</BodyText>
-      ) : entries.length === 0 ? (
+      ) : nothingToShow && profileRejections.length === 0 ? (
         <BodyText>{t('common:corrections.empty')}</BodyText>
       ) : (
         <>
-          <BodyText>{t('common:corrections.intro')}</BodyText>
+          {profileRejections.map((operation) => (
+            <View key={operation.operationId} style={{ gap: 8 }}>
+              <BodyText tone="error">
+                {operation.rejectedField === 'surgeryDate'
+                  ? t('common:corrections.profileSurgeryDateProblem')
+                  : t('common:corrections.profileProblem')}
+              </BodyText>
+              <Button
+                label={t('common:corrections.profileUndoButton')}
+                hint={t('common:corrections.profileUndoHint')}
+                onPress={() => {
+                  void undoProfileEdit(operation);
+                }}
+              />
+              <BodyText tone="muted">{t('common:corrections.profileUndoHint')}</BodyText>
+              {undoUnreachable ? (
+                <BodyText tone="error" live="polite">
+                  {t('common:corrections.profileUndoUnreachable')}
+                </BodyText>
+              ) : null}
+            </View>
+          ))}
+          {nothingToShow ? null : <BodyText>{t('common:corrections.intro')}</BodyText>}
           {entries.map((entry) => {
             const key = validationErrorKeyFor(entry.operation.rejectedReasonCode);
             const isEditing = editing === entry.operation.operationId;

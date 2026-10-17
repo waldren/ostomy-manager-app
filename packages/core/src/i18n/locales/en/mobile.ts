@@ -179,6 +179,7 @@ export const mobile = {
   'home.addUrineButton': 'Add a urine entry',
   'home.addMealButton': 'Add a meal',
   'home.correctionsButton': 'Entries that need attention',
+  'home.settingsButton': 'Settings',
   'home.correctionsCount_one': '1 entry needs your attention.',
   'home.correctionsCount_other': '{{count}} entries need your attention.',
   'home.signOutButton': 'Sign out',

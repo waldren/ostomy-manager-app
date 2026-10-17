@@ -390,6 +390,14 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
         </>
       ) : null}
 
+      <Button
+        label={t('mobile:home.settingsButton')}
+        variant="secondary"
+        onPress={() => {
+          router.push('/settings');
+        }}
+      />
+
       {pendingCount !== undefined ? (
         <BodyText
           tone="muted"

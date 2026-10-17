@@ -46,6 +46,13 @@ export interface LocalProfile {
    */
   readonly surgeryDate: string;
   readonly measurementSystem: MeasurementSystem;
+  /**
+   * The server's `Profile.id`: the `entityId` a sync edit names
+   * (`docs/sync-contract.md` §7.5). Absent on a row written before P4.S3, when
+   * the server published no id, until `ProfileProvider` fetches it once. Never
+   * the patient's id, and never placed in a URL, a log or analytics (§7.5).
+   */
+  readonly serverId?: string;
 }
 
 /**
@@ -72,6 +79,8 @@ interface ProfileRawRow {
   surgery_date: string;
   measurement_system: string;
   fetched_at: string;
+  server_id: string | null;
+  client_updated_at: string | null;
 }
 
 function isOstomyType(value: string): value is OstomyType {
@@ -110,7 +119,21 @@ export async function readProfile(executor: SqliteExecutor): Promise<LocalProfil
     ostomyType: row.ostomy_type,
     surgeryDate: row.surgery_date,
     measurementSystem: row.measurement_system,
+    ...(row.server_id === null ? {} : { serverId: row.server_id }),
   };
+}
+
+/**
+ * When this device last EDITED its profile, or `null` when the row is the
+ * server's version (migration 9). What a delta change is compared against.
+ */
+export async function readProfileClientUpdatedAt(
+  executor: SqliteExecutor,
+): Promise<string | null | undefined> {
+  const rows = await executor.getAllAsync<Pick<ProfileRawRow, 'client_updated_at'>>(
+    'SELECT client_updated_at FROM profiles WHERE id = 1;',
+  );
+  return rows[0] === undefined ? undefined : rows[0].client_updated_at;
 }
 
 /**
@@ -130,15 +153,58 @@ export async function writeProfile(
   executor: SqliteExecutor,
   profile: LocalProfile,
   fetchedAt: string,
+  clientUpdatedAt: string | null = null,
 ): Promise<void> {
+  // `server_id` is kept when the incoming profile carries none, so a write from
+  // an older-shaped source can never erase an id this device has learned.
+  // `client_updated_at` is the server's version stamp when there is one (a delta
+  // change), and NULL otherwise: a server-sourced row, which any later delta
+  // change for it may replace.
   await executor.runAsync(
-    `INSERT INTO profiles (id, ostomy_type, surgery_date, measurement_system, fetched_at)
-     VALUES (1, ?, ?, ?, ?)
+    `INSERT INTO profiles
+       (id, ostomy_type, surgery_date, measurement_system, fetched_at, server_id, client_updated_at)
+     VALUES (1, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        ostomy_type = excluded.ostomy_type,
        surgery_date = excluded.surgery_date,
        measurement_system = excluded.measurement_system,
-       fetched_at = excluded.fetched_at;`,
-    [profile.ostomyType, profile.surgeryDate, profile.measurementSystem, fetchedAt],
+       fetched_at = excluded.fetched_at,
+       server_id = COALESCE(excluded.server_id, profiles.server_id),
+       client_updated_at = excluded.client_updated_at;`,
+    [
+      profile.ostomyType,
+      profile.surgeryDate,
+      profile.measurementSystem,
+      fetchedAt,
+      profile.serverId ?? null,
+      clientUpdatedAt,
+    ],
+  );
+}
+
+/**
+ * The patient's own edit (P4.S3), written to this device before it is sent.
+ *
+ * Unlike `writeProfile`, this is a value the patient composed on a screen —
+ * which that function's comment refuses for provisioning, and the difference is
+ * the point. Provisioning is ONLINE and the server is right there to decide; an
+ * edit is offline-first like every entry, so the device holds it as the
+ * patient's current answer (§9.5: the local write IS the confirmation) and the
+ * server re-validates it when it is pushed. The screen applies the same
+ * surgery-date rules first, from `surgeryDateParts.ts`.
+ *
+ * Only ever called by `enqueueProfileUpdate`, in the transaction that queues
+ * the operation, so a row edited here always has its push queued.
+ */
+export async function updateProfileLocally(
+  executor: SqliteExecutor,
+  fields: Pick<LocalProfile, 'ostomyType' | 'surgeryDate' | 'measurementSystem'>,
+  clientUpdatedAt: string,
+): Promise<void> {
+  await executor.runAsync(
+    `UPDATE profiles SET
+       ostomy_type = ?, surgery_date = ?, measurement_system = ?, client_updated_at = ?
+     WHERE id = 1;`,
+    [fields.ostomyType, fields.surgeryDate, fields.measurementSystem, clientUpdatedAt],
   );
 }

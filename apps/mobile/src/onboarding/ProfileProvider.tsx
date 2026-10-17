@@ -77,6 +77,34 @@ export interface ProfileContextValue {
 
 const ProfileContext = createContext<ProfileContextValue | undefined>(undefined);
 
+/**
+ * `refresh`, or `undefined` outside a `ProfileProvider`. For `SyncProvider`,
+ * which re-reads the profile after a pull changed it and is rendered without a
+ * profile provider in its own tests.
+ */
+export function useOptionalProfileRefresh(): (() => Promise<void>) | undefined {
+  return useContext(ProfileContext)?.refresh;
+}
+
+/**
+ * The API's profile response as this device stores it. Named field by field:
+ * the response's `id` is the server's profile id and is kept as `serverId`, so
+ * nothing downstream can mistake it for this device's own row key.
+ */
+function toLocalProfile(response: {
+  readonly id: string;
+  readonly ostomyType: LocalProfile['ostomyType'];
+  readonly surgeryDate: string;
+  readonly measurementSystem: LocalProfile['measurementSystem'];
+}): LocalProfile {
+  return {
+    ostomyType: response.ostomyType,
+    surgeryDate: response.surgeryDate,
+    measurementSystem: response.measurementSystem,
+    serverId: response.id,
+  };
+}
+
 export function useProfileState(): ProfileContextValue {
   const value = useContext(ProfileContext);
   if (value === undefined) {
@@ -118,8 +146,8 @@ export function ProfileProvider({ children, port }: ProfileProviderProps): React
       getAccessToken: () => getAccessTokenRef.current(),
     });
     return {
-      provision: (body) => api.onboarding.provision(body),
-      read: () => api.onboarding.profile(),
+      provision: async (body) => toLocalProfile(await api.onboarding.provision(body)),
+      read: async () => toLocalProfile(await api.onboarding.profile()),
     };
   }, [port]);
 
@@ -136,6 +164,25 @@ export function ProfileProvider({ children, port }: ProfileProviderProps): React
     [executor],
   );
 
+  /**
+   * A row written before P4.S3 has no server id, and an edit cannot be sent
+   * without one (`docs/sync-contract.md` §7.5). The delta pull cannot supply it
+   * either: builds before this one skipped `Profile` changes and advanced their
+   * cursor past them. So it is fetched once, here.
+   *
+   * The server's whole profile is adopted, not only its id. Nothing can have
+   * been edited on this device without an id, and the values those older builds
+   * skipped are the server's current truth, including any edit made on another
+   * device. Best-effort: offline, the patient keeps their diary and the
+   * settings screen says an edit needs a connection first.
+   */
+  const learnServerId = useCallback(async () => {
+    const lookup = await lookUpProfile(resolvedPort);
+    if (lookup.status === 'found' && lookup.profile.serverId !== undefined) {
+      await adopt(lookup.profile);
+    }
+  }, [adopt, resolvedPort]);
+
   const check = useCallback(async () => {
     if (executor === undefined) return;
 
@@ -151,6 +198,7 @@ export function ProfileProvider({ children, port }: ProfileProviderProps): React
     const local = await readProfile(executor);
     if (local !== undefined) {
       setState({ status: 'present', profile: local });
+      if (local.serverId === undefined) await learnServerId();
       return;
     }
 
@@ -164,7 +212,7 @@ export function ProfileProvider({ children, port }: ProfileProviderProps): React
     setState(
       lookup.status === 'not-provisioned' ? { status: 'absent' } : { status: 'unreachable' },
     );
-  }, [adopt, executor, resolvedPort]);
+  }, [adopt, executor, learnServerId, resolvedPort]);
 
   useEffect(() => {
     /**
