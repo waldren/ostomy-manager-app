@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
-import { uuidV5FromSha1, uuidV5HashInput } from '../uuid/uuidV5.js';
+import { utf8, uuidV5FromSha1, uuidV5HashInput } from '../uuid/uuidV5.js';
 
 import {
   quickAddPreferenceId,
@@ -97,4 +97,14 @@ describe('quickAddRoutineKey', () => {
       quickAddRoutineKey({ ...ROUTINE, valueMl: 0 }),
     );
   });
+});
+
+/** This package cannot use `TextEncoder` (it has no DOM or Node types), so its encoder is checked against Node's. */
+describe('utf8', () => {
+  it.each(['pale_yellow', 'café', '水分', '😀 ok', '\ud800 lone'])(
+    'encodes %j as Node does',
+    (text) => {
+      expect(Array.from(utf8(text))).toEqual(Array.from(Buffer.from(text, 'utf8')));
+    },
+  );
 });

@@ -31,7 +31,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 export function uuidV5HashInput(namespace: string, name: string): Uint8Array {
   const hex = namespace.replace(/-/g, '');
   if (!/^[0-9a-f]{32}$/i.test(hex)) throw new TypeError('The namespace must be a UUID.');
-  const nameBytes = new TextEncoder().encode(name);
+  const nameBytes = utf8(name);
   const input = new Uint8Array(16 + nameBytes.length);
   for (let i = 0; i < 16; i += 1) input[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   input.set(nameBytes, 16);
@@ -46,4 +46,36 @@ export function uuidV5FromSha1(sha1: Uint8Array): string {
   bytes[8] = ((bytes[8] as number) & 0x3f) | 0x80; // RFC variant
   const hex = bytes.map((byte) => byte.toString(16).padStart(2, '0')).join('');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * UTF-8 bytes of a string, by hand rather than with `TextEncoder`.
+ *
+ * This package is compiled with neither the DOM nor Node's type definitions
+ * (the web image's build proved it: `Cannot find name 'TextEncoder'`), and
+ * pulling either in for one call would let the rest of the package use APIs
+ * one of its three runtimes may lack. A lone surrogate is encoded as U+FFFD,
+ * as `TextEncoder` does.
+ */
+export function utf8(text: string): Uint8Array {
+  const bytes: number[] = [];
+  for (const char of text) {
+    let point = char.codePointAt(0) as number;
+    if (point >= 0xd800 && point <= 0xdfff) point = 0xfffd;
+    if (point < 0x80) {
+      bytes.push(point);
+    } else if (point < 0x800) {
+      bytes.push(0xc0 | (point >> 6), 0x80 | (point & 0x3f));
+    } else if (point < 0x10000) {
+      bytes.push(0xe0 | (point >> 12), 0x80 | ((point >> 6) & 0x3f), 0x80 | (point & 0x3f));
+    } else {
+      bytes.push(
+        0xf0 | (point >> 18),
+        0x80 | ((point >> 12) & 0x3f),
+        0x80 | ((point >> 6) & 0x3f),
+        0x80 | (point & 0x3f),
+      );
+    }
+  }
+  return Uint8Array.from(bytes);
 }
