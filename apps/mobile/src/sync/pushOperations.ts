@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import type {
+  EffectiveRangeSyncPayload,
   MealSyncPayload,
   ObservationSyncPayload,
   ProfileSyncPayload,
@@ -32,6 +33,7 @@ import {
 } from '../db/repositories/mealsRepository';
 import { getObservationById, markServerSequence } from '../db/repositories/observationsRepository';
 import { readProfile, type LocalProfile } from '../db/repositories/profileRepository';
+import { getRangeWriteForOperation, type RangeWrite } from '../db/repositories/rangesRepository';
 import {
   markRejected,
   recordAttempt,
@@ -55,11 +57,13 @@ import type { DecodedPushResult } from './responseDecoding';
  */
 
 /**
- * An operation whose entity row has vanished from `observations`.
+ * An operation whose local row has vanished.
  *
- * Not reachable today: `db/offlineWrites.ts` writes the row and the queue
- * entry in one transaction, and nothing deletes an observation row (a
- * delete tombstones it in place, §1). It is a reported outcome rather than
+ * Not reachable through this app's own writes: `db/offlineWrites.ts` writes
+ * the row and the queue entry in one transaction, nothing deletes an
+ * observation or meal row (a delete tombstones it in place, §1), and a
+ * range change's row is deleted only with its operation or after it has left
+ * the queue. It is a reported outcome rather than
  * a thrown error because the alternative — letting one unbuildable
  * operation throw out of the batch build — would stall every operation
  * queued behind it, forever, with no diagnostic. The queue row stays put.
@@ -169,6 +173,31 @@ export async function buildPushRequest(
       continue;
     }
 
+    if (entry.entityType === 'EffectiveRange') {
+      // By OPERATION: each one carries the status it was queued with (local
+      // migration 10), so two changes queued to one range send what each meant.
+      const range = await getRangeWriteForOperation(executor, entry.operationId);
+      if (range === undefined) {
+        unbuildable.push({
+          operationId: entry.operationId,
+          entityId: entry.entityId,
+          reason: 'entity-row-missing',
+        });
+        continue;
+      }
+
+      operations.push({
+        operationId: toOperationId(entry.operationId),
+        entityId: toEntityId(entry.entityId),
+        entityType: 'EffectiveRange',
+        operationType: entry.operationType,
+        clientTimestamp: entry.clientTimestamp,
+        payload: toRangePayload(range),
+      });
+      sent.push(entry);
+      continue;
+    }
+
     const observation = await getObservationById(executor, entry.entityId);
     if (observation === undefined) {
       unbuildable.push({
@@ -273,6 +302,27 @@ function toProfilePayload(profile: LocalProfile, serverId: string): ProfileSyncP
     ostomyType: profile.ostomyType,
     surgeryDate: profile.surgeryDate,
     measurementSystem: profile.measurementSystem,
+  };
+}
+
+/**
+ * Projects a local range change onto the §7.6 wire payload, field by field.
+ *
+ * `previousRangeId` is always `null`: the server assigns it, and §7.6 accepts
+ * `null` on an update from a device that has not pulled since.
+ */
+function toRangePayload(range: RangeWrite): EffectiveRangeSyncPayload {
+  const asNumber = (value: string | null) => (value === null ? null : Number(value));
+  return {
+    id: toEntityId(range.id),
+    rangeType: range.rangeType,
+    lowValue: asNumber(range.lowValue),
+    highValue: asNumber(range.highValue),
+    targetValue: asNumber(range.targetValue),
+    unit: range.unit,
+    provenance: range.provenance,
+    status: range.status,
+    previousRangeId: null,
   };
 }
 

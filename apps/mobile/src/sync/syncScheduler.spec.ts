@@ -36,12 +36,14 @@ function cycle(stoppedBecause: SyncStopReason): SyncCycleResult {
       undecodable: 0,
       unsupportedEntity: 0,
       profileUpserts: 0,
+      rangeChanges: 0,
     },
     stoppedBecause,
     unbuildable: [],
     quarantined: 0,
     thresholdsRefreshed: true,
     valueSetsRefreshed: true,
+    rangesRefreshed: true,
   };
 }
 

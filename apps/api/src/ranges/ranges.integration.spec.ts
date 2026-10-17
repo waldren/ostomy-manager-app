@@ -167,6 +167,8 @@ describe('RangesService — real PostgreSQL', () => {
         daysPostOp: 10,
         minDaysPostOp: 0,
         maxDaysPostOp: 30,
+        lowValue: 600,
+        highValue: 1500,
       });
     });
 
@@ -311,6 +313,104 @@ describe('RangesService — real PostgreSQL', () => {
       expect(forType(ranges, 'daily_output_ml')?.lowValue).toBe(777);
       expect(forType(ranges, 'urine_output_adequacy_ml')?.lowValue).toBe(1000);
       expect(forType(ranges, 'urine_output_adequacy_ml')?.provenance).toBe('CLINICAL_DEFAULT');
+    });
+  });
+
+  /**
+   * P4.S3 slice 4: what a device needs to ACT on a range, not only to show it.
+   * Every write a patient may make (`docs/sync-contract.md` §7.6) names a row
+   * and echoes its content, so the read has to carry the rows themselves.
+   */
+  describe('what a device needs to act on a range', () => {
+    it("reports the patient's own value under a physician's, with the id a withdrawal names", async () => {
+      await seedPatient('ILEOSTOMY', 10);
+      await addRange({ provenance: 'PHYSICIAN_SET', lowValue: 450, highValue: 950 });
+      const own = await addRange({ provenance: 'PATIENT_SET', lowValue: 800, highValue: 1600 });
+
+      const output = forType(await service.resolveForPatient(subject, NOW), 'daily_output_ml');
+
+      expect(output?.provenance).toBe('PHYSICIAN_SET');
+      expect(output?.patientRange).toEqual({
+        id: own,
+        lowValue: 800,
+        highValue: 1600,
+        targetValue: null,
+        unit: 'mL',
+        provenance: 'PATIENT_SET',
+      });
+    });
+
+    it('reports no patient value when the only patient rows are history', async () => {
+      await seedPatient('ILEOSTOMY', 10);
+      await addRange({ provenance: 'PATIENT_SET', status: 'SUPERSEDED' });
+      await addRange({ provenance: 'PATIENT_CONFIRMED_SUGGESTION', status: 'DISMISSED' });
+
+      const output = forType(await service.resolveForPatient(subject, NOW), 'daily_output_ml');
+
+      expect(output?.patientRange).toBeNull();
+      expect(output?.proposal).toBeNull();
+    });
+
+    /** §3.10's review: the suggestion stays offerable while the patient's own value is in force. */
+    it("keeps the default's bounds on the basis while the patient's value is in force", async () => {
+      await seedPatient('ILEOSTOMY', 10);
+      await addRange({ provenance: 'PATIENT_SET', lowValue: 800, highValue: 1600 });
+
+      const output = forType(await service.resolveForPatient(subject, NOW), 'daily_output_ml');
+
+      expect(output?.lowValue).toBe(800);
+      expect(output?.basis?.lowValue).toBe(600);
+      expect(output?.basis?.highValue).toBe(1500);
+    });
+
+    it('lists a pending proposal without putting it in force', async () => {
+      await seedPatient('ILEOSTOMY', 10);
+      const proposal = await addRange({
+        provenance: 'PATIENT_CONFIRMED_SUGGESTION',
+        status: 'PROPOSED',
+        lowValue: 650,
+        highValue: 1450,
+      });
+
+      const output = forType(await service.resolveForPatient(subject, NOW), 'daily_output_ml');
+
+      expect(output?.provenance).toBe('CLINICAL_DEFAULT');
+      expect(output?.proposal?.id).toBe(proposal);
+      expect(output?.proposal?.lowValue).toBe(650);
+    });
+
+    /** §7.6 refuses a patient's accept or dismiss of anyone else's proposal, so offering one would offer two refused buttons. */
+    it('does not list a proposal whose provenance the patient could not act on', async () => {
+      await seedPatient('ILEOSTOMY', 10);
+      await prisma.effectiveRange.create({
+        data: {
+          id: randomUUID(),
+          patientId,
+          rangeType: 'daily_output_ml',
+          lowValue: 500,
+          highValue: 1000,
+          unit: 'mL',
+          provenance: 'PHYSICIAN_SET',
+          status: 'PROPOSED',
+          clientUpdatedAt: NOW,
+        },
+      });
+
+      const output = forType(await service.resolveForPatient(subject, NOW), 'daily_output_ml');
+
+      expect(output?.proposal).toBeNull();
+    });
+
+    it("carries each type's limits, including the one type that may be negative", async () => {
+      await seedPatient('ILEOSTOMY', 10);
+
+      const ranges = await service.resolveForPatient(subject, NOW);
+
+      expect(forType(ranges, 'daily_output_ml')?.limits).toEqual({
+        minValue: 0.0001,
+        maxValue: 99999999.9999,
+      });
+      expect(forType(ranges, 'net_fluid_balance_ml')?.limits?.minValue).toBe(-99999999.9999);
     });
   });
 

@@ -24,8 +24,9 @@ import type { SyncDeltaResponse, SyncPushResponse } from '@ostomy/core/api-clien
 import type { SyncPushRequest } from '@ostomy/core/sync';
 
 import type { SqliteExecutor } from '../db/executor';
-import { enqueueVolumetricObservationCreate } from '../db/offlineWrites';
+import { enqueueRangeCreate, enqueueVolumetricObservationCreate } from '../db/offlineWrites';
 import { getObservationById } from '../db/repositories/observationsRepository';
+import { listOverlayRangeWrites, readRangeCache } from '../db/repositories/rangesRepository';
 import { getCursor } from '../db/repositories/syncCursorRepository';
 import {
   listQueuedOperations,
@@ -51,6 +52,7 @@ function createClientDouble(): {
   pushResponses: (SyncPushResponse | Error)[];
   deltaResponses: (SyncDeltaResponse | Error)[];
   thresholdResponses: ({ stomaOutputSoftWarningMl: number; maxClockSkewMs: number } | Error)[];
+  rangeResponses: ({ ranges: unknown } | Error)[];
 } {
   const pushes: SyncPushRequest[] = [];
   const deltaQueries: { since: string; limit?: string }[] = [];
@@ -59,6 +61,7 @@ function createClientDouble(): {
   const thresholdResponses: (
     { stomaOutputSoftWarningMl: number; maxClockSkewMs: number } | Error
   )[] = [];
+  const rangeResponses: ({ ranges: unknown } | Error)[] = [];
 
   const port: SyncClientPort = {
     push: (request) => {
@@ -81,9 +84,21 @@ function createClientDouble(): {
       return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
     },
     valueSets: () => Promise.resolve({ valueSets: [] }),
+    ranges: () => {
+      const next = rangeResponses.shift() ?? { ranges: [] };
+      return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+    },
   };
 
-  return { port, pushes, deltaQueries, pushResponses, deltaResponses, thresholdResponses };
+  return {
+    port,
+    pushes,
+    deltaQueries,
+    pushResponses,
+    deltaResponses,
+    thresholdResponses,
+    rangeResponses,
+  };
 }
 
 function protocolError(status: number, code: string): ApiError {
@@ -688,6 +703,7 @@ describe('runSyncCycle', () => {
         },
         thresholds: () => client.port.thresholds(),
         valueSets: () => client.port.valueSets(),
+        ranges: () => client.port.ranges(),
       };
 
       await runSyncCycle(deps({ client: port }));
@@ -705,6 +721,160 @@ describe('runSyncCycle', () => {
       expect(client.pushes).toHaveLength(2);
       expect(client.pushes[0]!.operations).toHaveLength(1);
       expect(client.pushes[1]!.operations).toHaveLength(1);
+    });
+  });
+
+  /**
+   * P4.S3 slice 4: the target ranges are refreshed every cycle, so the screen
+   * works offline and a range set on another device reaches this one without
+   * the patient asking.
+   */
+  describe('the target-range cache', () => {
+    const range = {
+      rangeType: 'daily_output_ml',
+      unit: 'mL',
+      lowValue: 600,
+      highValue: 1500,
+      provenance: 'CLINICAL_DEFAULT',
+      isActiveThreshold: false,
+      divergesFromPhysician: false,
+      basis: null,
+      patientRange: null,
+      proposal: null,
+      limits: { minValue: 0.0001, maxValue: 99999999.9999 },
+    };
+
+    it('writes what the read returned, after the push and the pull', async () => {
+      client.rangeResponses.push({ ranges: [range] });
+
+      const result = await runSyncCycle(deps());
+
+      expect(result.rangesRefreshed).toBe(true);
+      expect((await readRangeCache(executor))?.ranges).toEqual([
+        expect.objectContaining({ rangeType: 'daily_output_ml', provenance: 'clinical_default' }),
+      ]);
+    });
+
+    it('keeps the previous copy when the read fails, and the cycle still completes', async () => {
+      client.rangeResponses.push({ ranges: [range] });
+      await runSyncCycle(deps());
+      client.rangeResponses.push(new Error('network'));
+
+      const result = await runSyncCycle(deps());
+
+      expect(result.stoppedBecause.kind).toBe('completed');
+      expect(result.rangesRefreshed).toBe(false);
+      expect((await readRangeCache(executor))?.ranges).toHaveLength(1);
+    });
+
+    /** A change the refreshed answer reflects is forgotten, so the screen stops laying it over. */
+    it('forgets a sent change once a refresh after its push succeeds', async () => {
+      const { operationId } = await enqueueRangeCreate(
+        executor,
+        {
+          rangeType: 'daily_output_ml',
+          lowValue: '800',
+          highValue: null,
+          unit: 'mL',
+          provenance: 'patient_set',
+        },
+        FIXED_NOW,
+      );
+      client.pushResponses.push({
+        results: [
+          {
+            operationId,
+            entityId: 'x',
+            status: 'accepted',
+            appliedServerSequence: '3',
+            replayed: false,
+          },
+        ],
+      } as unknown as SyncPushResponse);
+      client.rangeResponses.push({ ranges: [range] });
+
+      await runSyncCycle(deps());
+
+      expect(await listOverlayRangeWrites(executor)).toEqual([]);
+    });
+
+    it('keeps a sent change while the refresh fails, so the screen does not flick back', async () => {
+      const { operationId } = await enqueueRangeCreate(
+        executor,
+        {
+          rangeType: 'daily_output_ml',
+          lowValue: '800',
+          highValue: null,
+          unit: 'mL',
+          provenance: 'patient_set',
+        },
+        FIXED_NOW,
+      );
+      client.pushResponses.push({
+        results: [
+          {
+            operationId,
+            entityId: 'x',
+            status: 'accepted',
+            appliedServerSequence: '3',
+            replayed: false,
+          },
+        ],
+      } as unknown as SyncPushResponse);
+      client.rangeResponses.push(new Error('network'));
+
+      await runSyncCycle(deps());
+
+      expect(await listOverlayRangeWrites(executor)).toEqual([
+        expect.objectContaining({ operationId, pending: false }),
+      ]);
+    });
+
+    /**
+     * Which changes the answer reflects is decided BEFORE the read is sent: a
+     * change settled while the read is in flight may not be in its answer.
+     * Nothing in this worker settles one then today (it pushes first), so this
+     * simulates it, to keep the order from being "simplified" away.
+     */
+    it('keeps a change settled while the read was in flight', async () => {
+      const { operationId } = await enqueueRangeCreate(
+        executor,
+        {
+          rangeType: 'daily_output_ml',
+          lowValue: '800',
+          highValue: null,
+          unit: 'mL',
+          provenance: 'patient_set',
+        },
+        FIXED_NOW,
+      );
+      // The push of this cycle sends nothing back for it, so it stays queued.
+      client.pushResponses.push({ results: [] } as unknown as SyncPushResponse);
+      const port: SyncClientPort = {
+        ...client.port,
+        ranges: async () => {
+          await executor.runAsync('DELETE FROM sync_queue WHERE operation_id = ?;', [operationId]);
+          return { ranges: [range] };
+        },
+      };
+
+      await runSyncCycle(deps({ client: port }));
+
+      expect(await listOverlayRangeWrites(executor)).toEqual([
+        expect.objectContaining({ operationId }),
+      ]);
+    });
+
+    /** A half-understood answer would show some ranges and silently drop others. */
+    it('keeps the previous copy when the read does not decode', async () => {
+      client.rangeResponses.push({ ranges: [range] });
+      await runSyncCycle(deps());
+      client.rangeResponses.push({ ranges: [{ ...range, lowValue: 'six hundred' }] });
+
+      const result = await runSyncCycle(deps());
+
+      expect(result.rangesRefreshed).toBe(false);
+      expect((await readRangeCache(executor))?.ranges[0]?.lowValue).toBe(600);
     });
   });
 });

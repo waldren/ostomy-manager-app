@@ -16,13 +16,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import { tokens } from '@ostomy/ui/tokens';
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { StyleSheet, Text } from 'react-native';
 
 export interface HeadingProps {
   readonly children: ReactNode;
   /** `1` is the screen's own heading. Use `2` for sections within it. */
   readonly level?: 1 | 2;
+  /**
+   * For a screen that moves accessibility focus here after an action removes
+   * the control that had it (the target ranges screen), so a screen-reader
+   * user is not dropped back at the top.
+   */
+  readonly ref?: Ref<Text>;
 }
 
 /**
@@ -35,9 +41,9 @@ export interface HeadingProps {
  * navigation found exactly one stop per screen, and on the login screen
  * that one stop was the product name rather than the actual heading.
  */
-export function Heading({ children, level = 1 }: HeadingProps) {
+export function Heading({ children, level = 1, ref }: HeadingProps) {
   return (
-    <Text accessibilityRole="header" style={level === 1 ? styles.h1 : styles.h2}>
+    <Text ref={ref} accessibilityRole="header" style={level === 1 ? styles.h1 : styles.h2}>
       {children}
     </Text>
   );

@@ -50,6 +50,12 @@ export interface BodyTextProps {
    * `assertive` interrupts; reserve it for something that blocked the action.
    */
   readonly live?: 'polite' | 'assertive';
+  /**
+   * What a screen reader says instead of the visible text. For a line holding
+   * an amount: the visible text uses short unit symbols, and "fl oz" is read
+   * letter by letter, so the spoken version spells the unit out.
+   */
+  readonly accessibilityLabel?: string | undefined;
 }
 
 /**
@@ -65,10 +71,11 @@ export interface BodyTextProps {
  * `maxFontSizeMultiplier` is set: the text must scale with the OS setting
  * without limit, which is what `Screen`'s scroll container makes safe.
  */
-export function BodyText({ children, tone = 'normal', live }: BodyTextProps) {
+export function BodyText({ children, tone = 'normal', live, accessibilityLabel }: BodyTextProps) {
   return (
     <Text
       style={[styles.base, TONE_STYLE[tone]]}
+      accessibilityLabel={accessibilityLabel}
       accessibilityLiveRegion={live}
       // `alert` only when the message interrupts. A polite region is ordinary
       // content that happens to be new.

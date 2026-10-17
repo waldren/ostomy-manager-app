@@ -31,7 +31,7 @@ import { getPatientActor } from '../auth/patient-actor';
 import { OBSERVATION_ERROR_RESPONSE_SCHEMA } from '../observations/observation-openapi';
 
 import { rangesResponseSchema, type RangesResponse } from './ranges-wire';
-import { RangesService } from './ranges.service';
+import { RangesService, type PatientRangeRow } from './ranges.service';
 
 const RANGES_RESPONSE_SCHEMA = z.toJSONSchema(rangesResponseSchema, {
   target: 'openapi-3.0',
@@ -65,7 +65,7 @@ export class RangesController {
   @ApiOperation({
     summary: "Read the patient's target ranges and suggestions",
     description:
-      "Every range type this patient has an answer for: the value in force, where it came from in §3.9's precedence order (physician-set → patient-set → patient-confirmed suggestion → clinical default), and the clinical default window that produced it. A range whose provenance is CLINICAL_DEFAULT is a SUGGESTION, not a threshold — isActiveThreshold says so, because AC 14.1 AC2 requires that no value become an anomaly threshold without a human confirming it. The heart-rate red-flag bound never appears here: it is a clinical safety bound and not patient-adjustable. Read-only by design; confirming or editing a range is a synced write and lands with the rest of §3.10 at P4.S3. A read, so no audit row (SRS §5.2), and it carries no patient identifier — the caller is the patient.",
+      "Every range type this patient has an answer for: the value in force, where it came from in §3.9's precedence order (physician-set → patient-set → patient-confirmed suggestion → clinical default), and the clinical default window that produced it. A range whose provenance is CLINICAL_DEFAULT is a SUGGESTION, not a threshold — isActiveThreshold says so, because AC 14.1 AC2 requires that no value become an anomaly threshold without a human confirming it. The heart-rate red-flag bound never appears here: it is a clinical safety bound and not patient-adjustable. Read-only by design: confirming, setting, withdrawing or dismissing a range is a synced write (docs/sync-contract.md §7.6). This read carries what those writes need — the patient's own row and any pending proposal, with their ids — and the type's limits. A read, so no audit row (SRS §5.2), and it carries no patient identifier — the caller is the patient.",
   })
   @ApiOkResponse({ schema: RANGES_RESPONSE_SCHEMA })
   @ApiForbiddenResponse({ schema: OBSERVATION_ERROR_RESPONSE_SCHEMA })
@@ -98,8 +98,31 @@ export class RangesController {
                 daysPostOp: range.basis.daysPostOp,
                 minDaysPostOp: range.basis.minDaysPostOp,
                 maxDaysPostOp: range.basis.maxDaysPostOp,
+                lowValue: range.basis.lowValue,
+                highValue: range.basis.highValue,
               },
+        patientRange: toWirePatientRow(range.patientRange),
+        proposal: toWirePatientRow(range.proposal),
+        limits:
+          range.limits === null
+            ? null
+            : { minValue: range.limits.minValue, maxValue: range.limits.maxValue },
       })),
     };
   }
+}
+
+/** Field by field, for the reason the mapping above gives. */
+function toWirePatientRow(
+  row: PatientRangeRow | null,
+): RangesResponse['ranges'][number]['patientRange'] {
+  if (row === null) return null;
+  return {
+    id: row.id,
+    lowValue: row.lowValue,
+    highValue: row.highValue,
+    targetValue: row.targetValue,
+    unit: row.unit,
+    provenance: row.provenance,
+  };
 }

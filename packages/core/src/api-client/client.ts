@@ -317,7 +317,7 @@ export function createApiClient(options: ApiClientOptions) {
       /**
        * Read the patient's target ranges and suggestions
        *
-       * Every range type this patient has an answer for: the value in force, where it came from in §3.9's precedence order (physician-set → patient-set → patient-confirmed suggestion → clinical default), and the clinical default window that produced it. A range whose provenance is CLINICAL_DEFAULT is a SUGGESTION, not a threshold — isActiveThreshold says so, because AC 14.1 AC2 requires that no value become an anomaly threshold without a human confirming it. The heart-rate red-flag bound never appears here: it is a clinical safety bound and not patient-adjustable. Read-only by design; confirming or editing a range is a synced write and lands with the rest of §3.10 at P4.S3. A read, so no audit row (SRS §5.2), and it carries no patient identifier — the caller is the patient.
+       * Every range type this patient has an answer for: the value in force, where it came from in §3.9's precedence order (physician-set → patient-set → patient-confirmed suggestion → clinical default), and the clinical default window that produced it. A range whose provenance is CLINICAL_DEFAULT is a SUGGESTION, not a threshold — isActiveThreshold says so, because AC 14.1 AC2 requires that no value become an anomaly threshold without a human confirming it. The heart-rate red-flag bound never appears here: it is a clinical safety bound and not patient-adjustable. Read-only by design: confirming, setting, withdrawing or dismissing a range is a synced write (docs/sync-contract.md §7.6). This read carries what those writes need — the patient's own row and any pending proposal, with their ids — and the type's limits. A read, so no audit row (SRS §5.2), and it carries no patient identifier — the caller is the patient.
        */
       list: (): Promise<{
         readonly ranges: ReadonlyArray<{
@@ -344,6 +344,34 @@ export function createApiClient(options: ApiClientOptions) {
             readonly minDaysPostOp: number;
             /** Null for the open-ended final window — "and beyond". */
             readonly maxDaysPostOp: number | null;
+            /** The suggestion's own lower bound. The range's top-level bounds are the suggestion's only while nothing else is in force, so a device offering the suggestion beside a patient's value reads it here. */
+            readonly lowValue: number | null;
+            readonly highValue: number | null;
+          } | null;
+          /** The patient's own active value for this type, whether or not it is in force. Under a physician-set value it is not the resolved one; a device needs it to say what the patient's value is and to withdraw it. */
+          readonly patientRange: {
+            /** The row id, which is the sync entityId of a status update. */
+            readonly id: string;
+            readonly lowValue: number | null;
+            readonly highValue: number | null;
+            readonly targetValue: number | null;
+            readonly unit: string;
+            readonly provenance: 'PATIENT_SET' | 'PATIENT_CONFIRMED_SUGGESTION';
+          } | null;
+          /** The newest suggestion awaiting the patient (SRS §3.10). Never in force until the patient accepts it (AC 14.1 AC2). */
+          readonly proposal: {
+            /** The row id, which is the sync entityId of a status update. */
+            readonly id: string;
+            readonly lowValue: number | null;
+            readonly highValue: number | null;
+            readonly targetValue: number | null;
+            readonly unit: string;
+            readonly provenance: 'PATIENT_SET' | 'PATIENT_CONFIRMED_SUGGESTION';
+          } | null;
+          /** The bounds a value of this type may take (clinical_default_range_limits). A device can refuse an out-of-range value on its form; the server refuses it on push regardless. These are structural limits, not clinical advice. */
+          readonly limits: {
+            readonly minValue: number;
+            readonly maxValue: number;
           } | null;
         }>;
       }> =>
@@ -372,6 +400,34 @@ export function createApiClient(options: ApiClientOptions) {
               readonly minDaysPostOp: number;
               /** Null for the open-ended final window — "and beyond". */
               readonly maxDaysPostOp: number | null;
+              /** The suggestion's own lower bound. The range's top-level bounds are the suggestion's only while nothing else is in force, so a device offering the suggestion beside a patient's value reads it here. */
+              readonly lowValue: number | null;
+              readonly highValue: number | null;
+            } | null;
+            /** The patient's own active value for this type, whether or not it is in force. Under a physician-set value it is not the resolved one; a device needs it to say what the patient's value is and to withdraw it. */
+            readonly patientRange: {
+              /** The row id, which is the sync entityId of a status update. */
+              readonly id: string;
+              readonly lowValue: number | null;
+              readonly highValue: number | null;
+              readonly targetValue: number | null;
+              readonly unit: string;
+              readonly provenance: 'PATIENT_SET' | 'PATIENT_CONFIRMED_SUGGESTION';
+            } | null;
+            /** The newest suggestion awaiting the patient (SRS §3.10). Never in force until the patient accepts it (AC 14.1 AC2). */
+            readonly proposal: {
+              /** The row id, which is the sync entityId of a status update. */
+              readonly id: string;
+              readonly lowValue: number | null;
+              readonly highValue: number | null;
+              readonly targetValue: number | null;
+              readonly unit: string;
+              readonly provenance: 'PATIENT_SET' | 'PATIENT_CONFIRMED_SUGGESTION';
+            } | null;
+            /** The bounds a value of this type may take (clinical_default_range_limits). A device can refuse an out-of-range value on its form; the server refuses it on push regardless. These are structural limits, not clinical advice. */
+            readonly limits: {
+              readonly minValue: number;
+              readonly maxValue: number;
             } | null;
           }>;
         }>({

@@ -99,3 +99,9 @@ export {
   formatWeightQuantity,
   formatWeightUnitLabel,
 } from './format.js';
+export {
+  rangeBandKey,
+  rangeBasisCopy,
+  rangeTypeLabelKey,
+  type RangeBasisCopy,
+} from './targetRangeCopy.js';

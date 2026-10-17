@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import { tokens } from '@ostomy/ui/tokens';
-import { useId } from 'react';
+import { useId, type Ref } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 
 export interface NumericFieldProps {
@@ -29,6 +29,20 @@ export interface NumericFieldProps {
   /** Tier 1 message when this field is blocking the save. Announced, not merely coloured. */
   readonly errorMessage?: string | undefined;
   readonly hint?: string | undefined;
+  /**
+   * Offer a keypad that can type a minus sign, for a value that may
+   * legitimately be negative (a net fluid balance, P4.S3). Off by default: on
+   * every volume field a minus sign is only a way to type a Tier 1 error.
+   */
+  readonly allowsNegative?: boolean | undefined;
+  /**
+   * The spoken name, when the visible label alone is ambiguous — several
+   * fields on one screen with the same label, or a unit the label does not say.
+   * Defaults to the visible label.
+   */
+  readonly accessibilityLabel?: string | undefined;
+  /** For a screen that moves accessibility focus to this field when it appears. */
+  readonly inputRef?: Ref<TextInput>;
 }
 
 /**
@@ -65,6 +79,9 @@ export function NumericField({
   unitLabel,
   errorMessage,
   hint,
+  allowsNegative = false,
+  accessibilityLabel,
+  inputRef,
 }: NumericFieldProps) {
   const labelId = useId();
   const errorId = useId();
@@ -72,21 +89,40 @@ export function NumericField({
 
   return (
     <View style={styles.container}>
-      <Text nativeID={labelId} style={styles.label}>
+      <Text
+        nativeID={labelId}
+        style={styles.label}
+        // With an explicit spoken name the field says all of this itself, so
+        // the visible label would be read twice.
+        importantForAccessibility={accessibilityLabel === undefined ? 'auto' : 'no'}
+      >
         {label}
       </Text>
       {hint === undefined ? null : <Text style={styles.hint}>{hint}</Text>}
 
       <View style={[styles.inputRow, invalid ? styles.inputRowInvalid : undefined]}>
         <TextInput
+          ref={inputRef}
           style={styles.input}
           value={value}
           onChangeText={onChangeText}
-          keyboardType="decimal-pad"
-          inputMode="decimal"
-          accessibilityLabel={label}
-          accessibilityLabelledBy={labelId}
-          accessibilityHint={hint}
+          // `numeric` is a SIGNED decimal number pad on Android (TYPE_CLASS_NUMBER
+          // with the decimal and signed flags): the minus key without the letter
+          // keyboard, its autocorrect, or a typographic dash the parser refuses.
+          // The iOS objection to it above does not apply in v1 (ADR-0020).
+          keyboardType={allowsNegative ? 'numeric' : 'decimal-pad'}
+          inputMode={allowsNegative ? 'numeric' : 'decimal'}
+          autoCorrect={false}
+          autoCapitalize="none"
+          accessibilityLabel={accessibilityLabel ?? label}
+          // Only without an explicit spoken name: a labelled-by link names the
+          // field from the visible label and would override it.
+          accessibilityLabelledBy={accessibilityLabel === undefined ? labelId : undefined}
+          // The error first, so a user who comes back to the field later hears
+          // it with the field rather than only when it first appeared.
+          accessibilityHint={
+            invalid ? [errorMessage, hint].filter((part) => part !== undefined).join(' ') : hint
+          }
           accessibilityState={invalid ? { disabled: false } : undefined}
           aria-invalid={invalid}
           aria-errormessage={invalid ? errorId : undefined}
