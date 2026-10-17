@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { ozToMl, type MeasurementSystem } from '@ostomy/core/units';
+import { mlToOz, ozToMl, type MeasurementSystem } from '@ostomy/core/units';
 import { MAX_REPRESENTABLE_VALUE_ML, MAX_VALUE_DECIMAL_PLACES } from '@ostomy/core/validation';
 
 import type { CachedRange } from '../db/repositories/rangesRepository';
@@ -28,7 +28,12 @@ export type RangeFormErrorCode =
   | 'not-a-number'
   /** More decimal places than the stored value can hold (metric only; imperial is converted and rounded). */
   | 'too-precise'
-  | 'outside-limits'
+  /** Zero or below, for a type whose values are positive. */
+  | 'not-positive'
+  /** Below the type's lowest storable value. */
+  | 'too-small'
+  /** Above the type's highest storable value. */
+  | 'too-big'
   /** The upper bound is below the lower one. */
   | 'below-low';
 
@@ -46,6 +51,25 @@ export type RangeFormResult =
     }
   | { readonly status: 'invalid'; readonly errors: readonly RangeFormError[] };
 
+/** Every limit a bound is held to, in canonical millilitres. */
+export interface RangeFormLimits {
+  readonly minValue: number;
+  readonly maxValue: number;
+}
+
+/**
+ * What a bound may be: the type's limits, or, with no limits row, the
+ * narrowest reading (a positive volume the column can hold). A type with no
+ * limits row is not one the server accepts at all, so that case only has to be
+ * safe, not useful.
+ */
+export function effectiveLimits(limits: CachedRange['limits']): RangeFormLimits {
+  return {
+    minValue: limits?.minValue ?? Number.MIN_VALUE,
+    maxValue: Math.min(limits?.maxValue ?? MAX_REPRESENTABLE_VALUE_ML, MAX_REPRESENTABLE_VALUE_ML),
+  };
+}
+
 /**
  * Reads the "set my own range" form (P4.S3 slice 4) into canonical values.
  *
@@ -58,8 +82,8 @@ export type RangeFormResult =
  *
  * `limits` comes from `clinical_default_range_limits`, whose numbers are
  * "a volume is positive" and the column's own ceiling — not clinical advice.
- * So a value outside them is described as one the app cannot store, never as
- * one that is unsafe.
+ * So a value outside them is described as one the app cannot store, and the
+ * error says what it CAN store (WCAG 3.3.3), never that a value is unsafe.
  *
  * ## Units
  *
@@ -75,8 +99,9 @@ export function readRangeForm(input: {
   readonly limits: CachedRange['limits'];
 }): RangeFormResult {
   const errors: RangeFormError[] = [];
-  const low = readBound(input.lowText, 'low', input, errors);
-  const high = readBound(input.highText, 'high', input, errors);
+  const limits = effectiveLimits(input.limits);
+  const low = readBound(input.lowText, 'low', input.measurementSystem, limits, errors);
+  const high = readBound(input.highText, 'high', input.measurementSystem, limits, errors);
 
   if (errors.length > 0) return { status: 'invalid', errors };
   if (low === null && high === null) {
@@ -88,43 +113,79 @@ export function readRangeForm(input: {
   return { status: 'valid', lowValue: low, highValue: high };
 }
 
+/**
+ * The text as a plain decimal, or `undefined`.
+ *
+ * Forgiving where a patient is likely to type something reasonable: a
+ * typographic minus or dash (which some keyboards substitute), and thousands
+ * separators ("1,500"). Strict everywhere else: `Number('1e3')` is 1000 and
+ * `Number('')` is 0, and neither is a number the patient typed.
+ */
+function normalise(text: string): string | undefined {
+  const trimmed = text.trim().replace(/^[−–—]/, '-');
+  const withoutGrouping = /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(trimmed)
+    ? trimmed.replace(/,/g, '')
+    : trimmed;
+  return /^-?\d+(\.\d+)?$/.test(withoutGrouping) ? withoutGrouping : undefined;
+}
+
 function readBound(
   text: string,
   field: RangeFormField,
-  input: { readonly measurementSystem: MeasurementSystem; readonly limits: CachedRange['limits'] },
+  system: MeasurementSystem,
+  limits: RangeFormLimits,
   errors: RangeFormError[],
 ): string | null {
-  const trimmed = text.trim();
-  if (trimmed === '') return null;
+  if (text.trim() === '') return null;
 
-  // `Number('')` is 0 and `Number('1e3')` is 1000; the empty case is handled
-  // above, and a plain-decimal pattern keeps exponent notation out.
-  if (!/^-?\d+(\.\d+)?$/.test(trimmed)) {
+  const plain = normalise(text);
+  if (plain === undefined) {
     errors.push({ field, code: 'not-a-number' });
     return null;
   }
 
   let canonical: string;
-  if (input.measurementSystem === 'metric') {
-    const decimals = trimmed.split('.')[1]?.length ?? 0;
+  if (system === 'metric') {
+    const decimals = plain.split('.')[1]?.length ?? 0;
     if (decimals > MAX_VALUE_DECIMAL_PLACES) {
       errors.push({ field, code: 'too-precise' });
       return null;
     }
-    canonical = trimmed;
+    canonical = plain;
   } else {
-    const factor = 10 ** MAX_VALUE_DECIMAL_PLACES;
-    canonical = String(Math.round(ozToMl(Number(trimmed)) * factor) / factor);
+    canonical = String(toColumnScale(ozToMl(Number(plain))));
   }
 
   const value = Number(canonical);
-  // With no limits row the type is not one the server will accept at all, so
-  // the narrowest reading applies: a positive volume the column can hold.
-  const min = input.limits?.minValue ?? Number.MIN_VALUE;
-  const max = input.limits?.maxValue ?? MAX_REPRESENTABLE_VALUE_ML;
-  if (value < min || value > max || Math.abs(value) >= MAX_REPRESENTABLE_VALUE_ML) {
-    errors.push({ field, code: 'outside-limits' });
+  if (value < limits.minValue) {
+    // A floor below one millilitre is the structural "a volume is positive"
+    // rule, and "bigger than 0" is the plain way to say it.
+    const positiveOnly = limits.minValue > 0 && limits.minValue < 1;
+    errors.push({ field, code: positiveOnly ? 'not-positive' : 'too-small' });
+    return null;
+  }
+  if (value > limits.maxValue) {
+    errors.push({ field, code: 'too-big' });
     return null;
   }
   return canonical;
+}
+
+function toColumnScale(value: number): number {
+  const factor = 10 ** MAX_VALUE_DECIMAL_PLACES;
+  return Math.round(value * factor) / factor;
+}
+
+/**
+ * A stored canonical value as text the patient can read and save again, for
+ * pre-filling the form with their current range.
+ *
+ * Rounded to the column's scale, not to ADR-0005's whole display unit: this
+ * value may be saved back, and display rounding travelling inward would change
+ * a range the patient only meant to adjust on one side. `corrections.tsx`'s
+ * `editableAmountIn` does the same for an entry.
+ */
+export function toEditableText(canonicalMl: number | null, system: MeasurementSystem): string {
+  if (canonicalMl === null) return '';
+  return String(toColumnScale(system === 'imperial' ? mlToOz(canonicalMl) : canonicalMl));
 }

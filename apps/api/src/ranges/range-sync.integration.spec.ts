@@ -602,6 +602,99 @@ describe('P4.S3 — target ranges through sync', () => {
     });
   });
 
+  /**
+   * #147 review: the phone builds every write from what `GET /api/v1/ranges`
+   * reported, and nothing else checked that what the read reports is enough
+   * for §7.6 to accept. These build each write the way
+   * `apps/mobile/src/sync/pushOperations.ts` does — the read's numbers echoed
+   * as numbers, its provenance in the sync spelling, `previousRangeId` null —
+   * so a field the read stops carrying, or carries differently, fails here.
+   */
+  describe('what the read reports is enough to write with (the phone, P4.S3 slice 4)', () => {
+    type ReadRow = {
+      id: string;
+      lowValue: number | null;
+      highValue: number | null;
+      targetValue: number | null;
+      unit: string;
+      provenance: string;
+    };
+
+    /** A status update exactly as the phone builds one from a row the read reported. */
+    function statusChangeFromRead(row: ReadRow, status: string): Record<string, unknown> {
+      return rangeOp({
+        entityId: row.id,
+        operationType: 'update',
+        payload: {
+          lowValue: row.lowValue,
+          highValue: row.highValue,
+          targetValue: row.targetValue,
+          unit: row.unit,
+          provenance: row.provenance.toLowerCase(),
+          status,
+          previousRangeId: null,
+        },
+      });
+    }
+
+    it("withdraws the patient's value from the read's own report of it", async () => {
+      const patient = await newPatient();
+      // An imperial value: 20 fl oz at the column's scale, a floor only.
+      await accepted(patient, rangeOp({ payload: { lowValue: 591.4706, highValue: null } }));
+      const own = (await inForce(patient))?.patientRange as ReadRow;
+
+      await accepted(patient, statusChangeFromRead(own, 'superseded'));
+
+      expect((await inForce(patient))?.patientRange).toBeNull();
+    });
+
+    it('accepts and then withdraws a proposal in one push, each change with its own status', async () => {
+      const patient = await newPatient();
+      await insertRow(patient, {
+        provenance: 'PATIENT_CONFIRMED_SUGGESTION',
+        status: 'PROPOSED',
+        low: 550,
+        high: 1250,
+      });
+      const proposal = (await inForce(patient))?.proposal as ReadRow;
+
+      const response = await push(patient, [
+        { ...statusChangeFromRead(proposal, 'active'), clientTimestamp: clientTime(0) },
+        { ...statusChangeFromRead(proposal, 'superseded'), clientTimestamp: clientTime(1) },
+      ]).expect(200);
+
+      expect(response.body.results.map((result: { status: string }) => result.status)).toEqual([
+        'accepted',
+        'accepted',
+      ]);
+      expect(await inForce(patient)).toMatchObject({
+        provenance: 'CLINICAL_DEFAULT',
+        proposal: null,
+      });
+    });
+
+    it("adopts the typical range from the read's basis", async () => {
+      const patient = await newPatient();
+      const basis = (await inForce(patient))?.basis as { lowValue: number; highValue: number };
+
+      await accepted(
+        patient,
+        rangeOp({
+          payload: {
+            lowValue: basis.lowValue,
+            highValue: basis.highValue,
+            provenance: 'patient_confirmed_suggestion',
+          },
+        }),
+      );
+
+      expect(await inForce(patient)).toMatchObject({
+        provenance: 'PATIENT_CONFIRMED_SUGGESTION',
+        lowValue: basis.lowValue,
+      });
+    });
+  });
+
   describe('a physician’s value is never the patient’s to change (AC 14.1 AC4)', () => {
     it('stays in force beside the patient’s own value, which is flagged as diverging', async () => {
       const patient = await newPatient();

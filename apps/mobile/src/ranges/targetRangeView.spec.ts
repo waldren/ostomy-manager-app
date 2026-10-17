@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import type { CachedRange, RangeWrite } from '../db/repositories/rangesRepository';
+import type { CachedRange, OverlayRangeWrite } from '../db/repositories/rangesRepository';
 
 import { buildTargetRangeViews } from './targetRangeView';
 
@@ -47,8 +47,13 @@ function cached(overrides: Partial<CachedRange> = {}): CachedRange {
   };
 }
 
-function write(overrides: Partial<RangeWrite>): RangeWrite {
+let nextOperation = 0;
+
+function write(overrides: Partial<OverlayRangeWrite>): OverlayRangeWrite {
+  nextOperation += 1;
   return {
+    operationId: `op-${String(nextOperation)}`,
+    pending: true,
     id: NEW_ID,
     rangeType: 'daily_output_ml',
     lowValue: '800',
@@ -200,6 +205,30 @@ describe('buildTargetRangeViews', () => {
     expect(view?.proposal).toBeNull();
     expect(view?.patientRange).toBeNull();
     expect(view?.source).toBe('suggestion');
+  });
+
+  /**
+   * #147: the first version deleted an unsent replacement instead, which left
+   * the value it had replaced in force. Laid over in order, the replacement
+   * supersedes the old value and the withdrawal removes the replacement — the
+   * same outcome the server reaches from the same two operations.
+   */
+  it('falls back past the replaced value when an unsent replacement is withdrawn', () => {
+    const [view] = buildTargetRangeViews(
+      [cached({ provenance: 'patient_set', lowValue: 700, highValue: 1400, patientRange: OWN })],
+      [write({}), write({ status: 'superseded' })],
+    );
+
+    expect(view?.patientRange).toBeNull();
+    expect(view?.source).toBe('suggestion');
+  });
+
+  /** "It will be sent when your phone is connected" is false of a change already sent. */
+  it('does not say a change is waiting to send once it has been sent', () => {
+    const [view] = buildTargetRangeViews([cached()], [write({ pending: false })]);
+
+    expect(view?.source).toBe('patient');
+    expect(view?.waitingToSend).toBe(false);
   });
 
   it('applies changes to their own range type only', () => {

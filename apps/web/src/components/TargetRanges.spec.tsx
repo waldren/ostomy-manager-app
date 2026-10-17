@@ -128,7 +128,7 @@ describe('TargetRanges', () => {
       />,
     );
 
-    expect(screen.getByText(/your care team’s value is the one shown/i)).toBeVisible();
+    expect(screen.getByText(/your care team’s range is the one in use/i)).toBeVisible();
   });
 
   it('says nothing about divergence when there is none', () => {

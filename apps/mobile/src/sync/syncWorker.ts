@@ -22,7 +22,11 @@ import { isSyncProtocolErrorCode } from '@ostomy/core/sync';
 
 import type { SqliteExecutor } from '../db/executor';
 import { getCursor } from '../db/repositories/syncCursorRepository';
-import { decodeRanges, writeRangeCache } from '../db/repositories/rangesRepository';
+import {
+  decodeRanges,
+  listSettledRangeWriteOperations,
+  replaceRangeCache,
+} from '../db/repositories/rangesRepository';
 import { writeThresholds } from '../db/repositories/thresholdsRepository';
 import { writeValueSets } from '../db/repositories/valueSetsRepository';
 import { listQueuedOperations, markQuarantined } from '../db/repositories/syncQueueRepository';
@@ -244,7 +248,7 @@ export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult
   const thresholdsRefreshed = await refreshThresholds(deps);
   const valueSetsRefreshed = await refreshValueSets(deps);
   // After the push AND the pull, so it reflects the change this cycle just
-  // sent; `listUnreflectedRangeWrites` covers the moment in between.
+  // sent; `listOverlayRangeWrites` covers the moment in between.
   const rangesRefreshed = await refreshRanges(deps);
 
   return {
@@ -269,10 +273,15 @@ export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult
  */
 async function refreshRanges(deps: SyncCycleDeps): Promise<boolean> {
   try {
+    // BEFORE the request: these changes were settled by a push the server had
+    // finished, so the answer to this read reflects them and they can be
+    // forgotten once it is cached. A change settled after this point may not
+    // be in the answer, and stays shown until the next refresh.
+    const reflected = await listSettledRangeWriteOperations(deps.executor);
     const fetched = await deps.client.ranges();
     const ranges = decodeRanges(fetched.ranges);
     if (ranges === undefined) return false;
-    await writeRangeCache(deps.executor, ranges, deps.now().toISOString());
+    await replaceRangeCache(deps.executor, ranges, deps.now().toISOString(), reflected);
     return true;
   } catch {
     return false;

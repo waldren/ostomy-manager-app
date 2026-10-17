@@ -19,7 +19,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * Target ranges on this device, through sync (P4.S3 slice 4,
  * `docs/sync-contract.md` §7.6): a change queued with its row, built into a
  * push at push time, settled by the push, and the cached server answer that the
- * screen lays the unsent changes over.
+ * screen lays the changes over until a newer answer reflects them.
  *
  * Against a real SQLite database through the real migrations, because what
  * matters is which rows and operations exist after each step.
@@ -34,23 +34,24 @@ import type { SyncDeltaResponse, SyncPushResponse } from '@ostomy/core/api-clien
 import type { SqliteExecutor } from '../db/executor';
 import { runMigrations } from '../db/migrations';
 import {
-  cancelUnsentRangeCreate,
   discardRejectedRangeWrite,
   enqueueRangeCreate,
   enqueueRangeStatusChange,
 } from '../db/offlineWrites';
 import {
   decodeRanges,
-  getRangeWrite,
-  listUnreflectedRangeWrites,
+  getRangeWriteForOperation,
+  listOverlayRangeWrites,
+  listSettledRangeWriteOperations,
   readRangeCache,
-  writeRangeCache,
+  replaceRangeCache,
 } from '../db/repositories/rangesRepository';
 import { getCursor } from '../db/repositories/syncCursorRepository';
 import {
   listQueuedOperations,
   markRejected,
   recordAttempt,
+  revertToQueued,
 } from '../db/repositories/syncQueueRepository';
 import { createNodeSqliteExecutor } from '../test-support/nodeSqliteExecutor';
 
@@ -63,8 +64,8 @@ const iso = (minute: number) => AT(minute)().toISOString();
 const STORED_ID = '44444444-4444-4444-8444-444444444444';
 
 /** A delete carries no payload (§3.1), so the type makes reading one explicit. */
-function payloadOf(operation: unknown): unknown {
-  return (operation as { payload?: unknown } | undefined)?.payload;
+function payloadOf(operation: unknown): { status: string } & Record<string, unknown> {
+  return (operation as { payload: { status: string } & Record<string, unknown> }).payload;
 }
 
 const STORED_ROW = {
@@ -135,7 +136,16 @@ describe('target ranges on this device, through sync (P4.S3 slice 4, §7.6)', ()
     );
   }
 
-  async function accept(entityId: string): Promise<void> {
+  async function pushedStatuses(): Promise<[string, string][]> {
+    const built = await buildPushRequest(executor, await listQueuedOperations(executor));
+    expect(built.unbuildable).toEqual([]);
+    return built.request.operations.map((operation) => [
+      operation.operationType,
+      payloadOf(operation).status,
+    ]);
+  }
+
+  async function acceptAll(): Promise<void> {
     const built = await buildPushRequest(executor, await listQueuedOperations(executor));
     await applyPushResults(
       executor,
@@ -144,7 +154,7 @@ describe('target ranges on this device, through sync (P4.S3 slice 4, §7.6)', ()
         results: built.request.operations.map((operation) => ({
           operationId: operation.operationId,
           status: 'accepted',
-          entityId,
+          entityId: operation.entityId,
           appliedServerSequence: '7',
           replayed: false,
         })),
@@ -154,10 +164,11 @@ describe('target ranges on this device, through sync (P4.S3 slice 4, §7.6)', ()
   }
 
   describe('a new value', () => {
-    it('saves the row and queues a create naming it, together', async () => {
-      const { id } = await newValue();
+    it('saves its change and queues a create naming it, together', async () => {
+      const { id, operationId } = await newValue();
 
-      expect(await getRangeWrite(executor, id)).toMatchObject({
+      expect(await getRangeWriteForOperation(executor, operationId)).toMatchObject({
+        id,
         status: 'active',
         lowValue: '800',
       });
@@ -175,7 +186,6 @@ describe('target ranges on this device, through sync (P4.S3 slice 4, §7.6)', ()
 
       const built = await buildPushRequest(executor, await listQueuedOperations(executor));
 
-      expect(built.unbuildable).toEqual([]);
       expect(built.request.operations[0]).toMatchObject({
         entityType: 'EffectiveRange',
         operationType: 'create',
@@ -193,26 +203,33 @@ describe('target ranges on this device, through sync (P4.S3 slice 4, §7.6)', ()
       });
     });
 
-    it('is taken back outright when withdrawn before it is sent', async () => {
+    /**
+     * §7.6 is built for this pair: the create, then its withdrawal. The first
+     * version deleted the unsent create instead, which silently undid the
+     * withdrawal whenever the create had in fact reached the server (#147).
+     */
+    it('is withdrawn by queuing a withdrawal behind it, never by deleting it', async () => {
       const { id } = await newValue();
 
-      expect(await cancelUnsentRangeCreate(executor, id)).toBe(true);
+      await enqueueRangeStatusChange(
+        executor,
+        { ...STORED_ROW, id, lowValue: 800, highValue: 1600.5, provenance: 'patient_set' },
+        'superseded',
+        AT(2),
+      );
 
-      expect(await listQueuedOperations(executor)).toEqual([]);
-      expect(await getRangeWrite(executor, id)).toBeUndefined();
+      expect(await pushedStatuses()).toEqual([
+        ['create', 'active'],
+        ['update', 'superseded'],
+      ]);
     });
 
-    /**
-     * The row holds the LATEST status, so a create built from it after a
-     * withdrawal would say `superseded`, and §7.6 refuses a create in any status
-     * but `active`. Reachable whenever the create is in flight when the patient
-     * withdraws it.
-     */
-    it('still says active on its create when withdrawn while being sent', async () => {
+    /** §9.3: back in the queue after a timeout, it may already have been applied. */
+    it('is withdrawn the same way after a push of unknown fate', async () => {
       const { id, operationId } = await newValue();
       await recordAttempt(executor, operationId, iso(2));
+      await revertToQueued(executor, operationId);
 
-      expect(await cancelUnsentRangeCreate(executor, id)).toBe(false);
       await enqueueRangeStatusChange(
         executor,
         { ...STORED_ROW, id, lowValue: 800, highValue: 1600.5, provenance: 'patient_set' },
@@ -220,15 +237,7 @@ describe('target ranges on this device, through sync (P4.S3 slice 4, §7.6)', ()
         AT(3),
       );
 
-      // As a retry after an unknown fate would find them (§9.3).
-      await executor.runAsync("UPDATE sync_queue SET status = 'queued';");
-      const built = await buildPushRequest(executor, await listQueuedOperations(executor));
-      expect(
-        built.request.operations.map((operation) => [
-          operation.operationType,
-          (payloadOf(operation) as { status: string }).status,
-        ]),
-      ).toEqual([
+      expect(await pushedStatuses()).toEqual([
         ['create', 'active'],
         ['update', 'superseded'],
       ]);
@@ -257,30 +266,81 @@ describe('target ranges on this device, through sync (P4.S3 slice 4, §7.6)', ()
         previousRangeId: null,
       });
     });
+
+    /**
+     * #147's must-fix: with one status per range, both updates went out saying
+     * `superseded`, and §7.6 refuses `proposed` → `superseded`. Each operation
+     * now carries the status it was queued with.
+     */
+    it('sends each queued change with its own status: accept a proposal, then withdraw it', async () => {
+      await enqueueRangeStatusChange(executor, STORED_ROW, 'active', AT(1));
+      await enqueueRangeStatusChange(executor, STORED_ROW, 'superseded', AT(2));
+
+      expect(await pushedStatuses()).toEqual([
+        ['update', 'active'],
+        ['update', 'superseded'],
+      ]);
+    });
   });
 
   describe('what the screen lays over the cached answer', () => {
-    it('includes a change while it waits to send, even if the cache is newer', async () => {
-      const { id } = await newValue(1);
-      await writeRangeCache(executor, [], iso(5));
+    it('includes a change while it waits to send, and says so', async () => {
+      const { operationId } = await newValue(1);
 
-      const unreflected = await listUnreflectedRangeWrites(executor, iso(5));
-
-      expect(unreflected.map((write) => write.id)).toEqual([id]);
+      expect(await listOverlayRangeWrites(executor)).toEqual([
+        expect.objectContaining({ operationId, pending: true }),
+      ]);
     });
 
     /** Between the push that sends it and the refresh that shows it, the change must not flick back. */
-    it('keeps a sent change until a newer cached answer arrives', async () => {
-      const { id } = await newValue(1);
-      await accept(id);
-      expect(await listQueuedOperations(executor)).toEqual([]);
+    it('keeps a sent change, no longer pending, until a newer cached answer reflects it', async () => {
+      const { operationId } = await newValue(1);
+      await acceptAll();
 
-      expect(await listUnreflectedRangeWrites(executor, iso(0))).toHaveLength(1);
-      expect(await listUnreflectedRangeWrites(executor, iso(3))).toEqual([]);
+      expect(await listOverlayRangeWrites(executor)).toEqual([
+        expect.objectContaining({ operationId, pending: false }),
+      ]);
+
+      const reflected = await listSettledRangeWriteOperations(executor);
+      await replaceRangeCache(executor, [], iso(3), reflected);
+
+      expect(await listOverlayRangeWrites(executor)).toEqual([]);
+    });
+
+    /**
+     * Decided by WHEN the change was settled relative to the read, never by
+     * comparing device-clock timestamps (#147): a change settled after the read
+     * began may not be in its answer.
+     */
+    it('keeps a change settled after the read began, even once that answer is cached', async () => {
+      const snapshot = await listSettledRangeWriteOperations(executor); // read begins
+      const { operationId } = await newValue(1);
+      await acceptAll(); // settled while the read is in flight
+
+      await replaceRangeCache(executor, [], iso(3), snapshot);
+
+      expect(await listOverlayRangeWrites(executor)).toEqual([
+        expect.objectContaining({ operationId }),
+      ]);
+    });
+
+    it('keeps a change still waiting to send through any number of refreshes', async () => {
+      const { operationId } = await newValue(1);
+
+      await replaceRangeCache(
+        executor,
+        [],
+        iso(3),
+        await listSettledRangeWriteOperations(executor),
+      );
+
+      expect(await listOverlayRangeWrites(executor)).toEqual([
+        expect.objectContaining({ operationId, pending: true }),
+      ]);
     });
 
     /** A refused change is in the correction inbox; showing it here too would claim a value is in use. */
-    it('never includes a change the server refused', async () => {
+    it('leaves out a change the server refused', async () => {
       const { operationId } = await newValue(1);
       await markRejected(executor, operationId, {
         reasonCode: 'PAYLOAD_FIELD_INVALID',
@@ -288,39 +348,69 @@ describe('target ranges on this device, through sync (P4.S3 slice 4, §7.6)', ()
         rejectedAt: iso(2),
       });
 
-      expect(await listUnreflectedRangeWrites(executor, undefined)).toEqual([]);
+      expect(await listOverlayRangeWrites(executor)).toEqual([]);
     });
 
-    it('drops a refused change and its row together when the patient removes it', async () => {
-      const { id, operationId } = await newValue(1);
-      await markRejected(executor, operationId, {
-        reasonCode: 'PAYLOAD_FIELD_INVALID',
-        field: 'lowValue',
-        rejectedAt: iso(2),
-      });
-
-      await discardRejectedRangeWrite(executor, { rejectedOperationId: operationId, entityId: id });
-
-      expect(await executor.getAllAsync('SELECT * FROM sync_queue;')).toEqual([]);
-      expect(await getRangeWrite(executor, id)).toBeUndefined();
-    });
-
-    it('keeps the row while another change to it waits, because that change is built from it', async () => {
+    /** #147: the filter was per range, so a new action on a range with a refused one was never shown. */
+    it('still shows a later change to a range whose earlier change was refused', async () => {
       const first = await enqueueRangeStatusChange(executor, STORED_ROW, 'superseded', AT(1));
       await markRejected(executor, first.operationId, {
         reasonCode: 'ENTITY_NOT_FOUND',
         field: null,
         rejectedAt: iso(2),
       });
-      await enqueueRangeStatusChange(executor, STORED_ROW, 'superseded', AT(3));
+      const second = await enqueueRangeStatusChange(executor, STORED_ROW, 'superseded', AT(3));
 
-      await discardRejectedRangeWrite(executor, {
-        rejectedOperationId: first.operationId,
-        entityId: STORED_ID,
+      expect((await listOverlayRangeWrites(executor)).map((write) => write.operationId)).toEqual([
+        second.operationId,
+      ]);
+    });
+
+    it('keeps a refused change through a refresh, for the correction inbox to describe', async () => {
+      const { operationId } = await newValue(1);
+      await markRejected(executor, operationId, {
+        reasonCode: 'PAYLOAD_FIELD_INVALID',
+        field: 'lowValue',
+        rejectedAt: iso(2),
       });
 
-      expect(await getRangeWrite(executor, STORED_ID)).toBeDefined();
-      expect(await listQueuedOperations(executor)).toHaveLength(1);
+      await replaceRangeCache(
+        executor,
+        [],
+        iso(3),
+        await listSettledRangeWriteOperations(executor),
+      );
+
+      expect(await getRangeWriteForOperation(executor, operationId)).toBeDefined();
+    });
+
+    it('drops a refused change and its operation together when the patient removes it', async () => {
+      const { operationId } = await newValue(1);
+      await markRejected(executor, operationId, {
+        reasonCode: 'PAYLOAD_FIELD_INVALID',
+        field: 'lowValue',
+        rejectedAt: iso(2),
+      });
+
+      await discardRejectedRangeWrite(executor, operationId);
+
+      expect(await executor.getAllAsync('SELECT * FROM sync_queue;')).toEqual([]);
+      expect(await getRangeWriteForOperation(executor, operationId)).toBeUndefined();
+    });
+
+    it('leaves another change to the same range alone when one is removed', async () => {
+      const first = await enqueueRangeStatusChange(executor, STORED_ROW, 'superseded', AT(1));
+      await markRejected(executor, first.operationId, {
+        reasonCode: 'ENTITY_NOT_FOUND',
+        field: null,
+        rejectedAt: iso(2),
+      });
+      const second = await enqueueRangeStatusChange(executor, STORED_ROW, 'superseded', AT(3));
+
+      await discardRejectedRangeWrite(executor, first.operationId);
+
+      expect(await getRangeWriteForOperation(executor, second.operationId)).toBeDefined();
+      expect(await pushedStatuses()).toEqual([['update', 'superseded']]);
     });
   });
 
@@ -328,7 +418,7 @@ describe('target ranges on this device, through sync (P4.S3 slice 4, §7.6)', ()
     it('round-trips what the read sent, in the sync spelling', async () => {
       const decoded = decodeRanges([READ_RESPONSE_RANGE]);
       if (decoded === undefined) throw new Error('did not decode');
-      await writeRangeCache(executor, decoded, iso(4));
+      await replaceRangeCache(executor, decoded, iso(4), []);
 
       const cache = await readRangeCache(executor);
 

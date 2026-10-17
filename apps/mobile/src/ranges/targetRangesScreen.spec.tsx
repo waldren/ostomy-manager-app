@@ -22,7 +22,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  *
  * These assert what reaches the queue, because a screen that showed the new
  * value and queued nothing, or queued a change the server must refuse, would
- * pass every rendering test.
+ * pass every rendering test. Buttons are found by their SPOKEN names, which
+ * name the measure: that is the name a screen-reader or voice-control user has.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -33,6 +34,7 @@ import '../i18n/i18n';
 
 import { en } from '@ostomy/core/i18n';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { AccessibilityInfo } from 'react-native';
 
 import Corrections from '../../app/corrections';
 import TargetRanges from '../../app/target-ranges';
@@ -41,7 +43,7 @@ import { runMigrations } from '../db/migrations';
 import { enqueueRangeCreate } from '../db/offlineWrites';
 import { writeProfile, type LocalProfile } from '../db/repositories/profileRepository';
 import {
-  getRangeWrite,
+  listOverlayRangeWrites,
   writeRangeCache,
   type CachedRange,
 } from '../db/repositories/rangesRepository';
@@ -57,6 +59,7 @@ const NOW_ISO = '2026-10-17T12:00:00.000Z';
 const CACHED_AT = '2026-10-17T11:00:00.000Z';
 const OWN_ID = '11111111-1111-4111-8111-111111111111';
 const PROPOSAL_ID = '22222222-2222-4222-8222-222222222222';
+const MEASURE = en.common['rangeType.daily_output_ml'];
 
 const PROFILE: LocalProfile = {
   ostomyType: 'ileostomy',
@@ -83,10 +86,16 @@ jest.mock('../db/DatabaseProvider', () => ({
 }));
 
 const mockReplace = jest.fn();
+const mockBack = jest.fn();
 jest.mock('expo-router', () => {
   const { Text: RNText } = jest.requireActual('react-native');
   return {
-    router: { replace: (href: string) => mockReplace(href), push: jest.fn(), back: jest.fn() },
+    router: {
+      replace: (href: string) => mockReplace(href),
+      push: jest.fn(),
+      back: () => mockBack(),
+      canGoBack: () => true,
+    },
     useLocalSearchParams: () => ({}),
     Redirect: ({ href }: { href: string }) => <RNText>{`redirect:${href}`}</RNText>,
   };
@@ -112,6 +121,14 @@ const port: ProfilePort = {
   provision: () => Promise.resolve(PROFILE),
   read: () => Promise.resolve(PROFILE),
 };
+
+/** A catalog string with its `{{placeholders}}` filled, as i18next renders it. */
+function copy(key: keyof typeof en.common, values: Record<string, string> = {}): string {
+  return Object.entries({ measure: MEASURE, ...values }).reduce(
+    (text, [name, value]) => text.replaceAll(`{{${name}}}`, value),
+    en.common[key] as string,
+  );
+}
 
 function range(overrides: Partial<CachedRange> = {}): CachedRange {
   return {
@@ -171,11 +188,25 @@ async function type(label: string, value: string): Promise<void> {
   });
 }
 
+/** The changes this phone has saved for ranges, in order, with the status each one sets. */
+async function savedChanges() {
+  return (await listOverlayRangeWrites(mockExecutor)).map((write) => ({
+    id: write.id,
+    status: write.status,
+    provenance: write.provenance,
+    lowValue: write.lowValue,
+    highValue: write.highValue,
+  }));
+}
+
 let dir: string;
+let announce: jest.SpyInstance;
 
 beforeEach(async () => {
   mockReplace.mockReset();
+  mockBack.mockReset();
   mockRequestSync.mockReset();
+  announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => {});
   dir = mkdtempSync(join(tmpdir(), 'ostomy-mobile-target-ranges-'));
   mockExecutor = createNodeSqliteExecutor(join(dir, 'test.db'));
   await runMigrations(mockExecutor, () => new Date(NOW_ISO));
@@ -187,22 +218,25 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  announce.mockRestore();
   await mockExecutor.closeAsync();
   rmSync(dir, { recursive: true, force: true });
 });
 
 describe('the target ranges screen', () => {
   /** There is no default this phone could honestly show before it has asked the server. */
-  it('asks the patient to connect when it has never fetched the ranges', async () => {
+  it('asks the patient to connect when it has never fetched the ranges, and offers to try now', async () => {
     await renderScreen(<TargetRanges />);
 
     expect(screen.getByText(en.common['targetRanges.needsConnection'])).toBeTruthy();
+    await press(en.common['settings.retryButton']);
+    expect(mockRequestSync).toHaveBeenCalled();
   });
 
   it('shows the suggestion with its basis, and that it is only a suggestion', async () => {
     await renderScreen(<TargetRanges />, { cached: [range()] });
 
-    expect(screen.getByText(en.common['rangeType.daily_output_ml'])).toBeTruthy();
+    expect(screen.getByText(MEASURE)).toBeTruthy();
     expect(screen.getByText(/600 mL to 1,500 mL/)).toBeTruthy();
     expect(screen.getByText(en.common['targetRanges.notConfirmed'])).toBeTruthy();
     expect(screen.getByText(/in the first weeks after surgery/)).toBeTruthy();
@@ -210,24 +244,36 @@ describe('the target ranges screen', () => {
     expect(screen.getByText(en.common['targetRanges.intro'])).toBeTruthy();
   });
 
+  /** "fl oz" is read letter by letter, so the spoken value spells the unit out. */
+  it('speaks the value with its unit spelled out', async () => {
+    await renderScreen(<TargetRanges />, {
+      cached: [range()],
+      profile: { ...PROFILE, measurementSystem: 'imperial' },
+    });
+
+    expect(screen.getByLabelText(/fluid ounces to .* fluid ounces/)).toBeTruthy();
+  });
+
   /** AC 14.1 AC2/AC3: a human action, and only that, turns the suggestion into a value in use. */
-  it('accepts the typical range as the patient’s own, queued and shown at once', async () => {
+  it('accepts the typical range as the patient’s own, queued, shown and announced at once', async () => {
     await renderScreen(<TargetRanges />, { cached: [range()] });
 
-    await press(en.common['targetRanges.useTypicalButton']);
+    await press(copy('targetRanges.useTypicalSpoken'));
 
-    const queued = await listQueuedOperations(mockExecutor);
-    expect(queued).toEqual([
+    expect(await listQueuedOperations(mockExecutor)).toEqual([
       expect.objectContaining({ entityType: 'EffectiveRange', operationType: 'create' }),
     ]);
-    expect(await getRangeWrite(mockExecutor, queued[0]!.entityId)).toMatchObject({
-      provenance: 'patient_confirmed_suggestion',
-      lowValue: '600',
-      highValue: '1500',
-      status: 'active',
-    });
+    expect(await savedChanges()).toEqual([
+      expect.objectContaining({
+        provenance: 'patient_confirmed_suggestion',
+        lowValue: '600',
+        highValue: '1500',
+        status: 'active',
+      }),
+    ]);
     expect(screen.getByText(en.common['targetRanges.sourceConfirmed'])).toBeTruthy();
     expect(screen.getByText(en.common['targetRanges.waitingToSend'])).toBeTruthy();
+    expect(announce).toHaveBeenCalledWith(copy('targetRanges.announceTypical'));
     expect(mockRequestSync).toHaveBeenCalled();
   });
 
@@ -238,59 +284,108 @@ describe('the target ranges screen', () => {
       profile: { ...PROFILE, measurementSystem: 'imperial' },
     });
 
-    await press(en.common['targetRanges.setOwnButton']);
-    await type(en.common['targetRanges.formLowLabel'], '20');
-    await press(en.common['targetRanges.formSaveButton']);
+    await press(copy('targetRanges.setOwnSpoken'));
+    await type(copy('targetRanges.formLowSpoken', { unit: 'fluid ounces' }), '20');
+    await press(copy('targetRanges.formSaveSpoken'));
 
-    const queued = await listQueuedOperations(mockExecutor);
-    expect(await getRangeWrite(mockExecutor, queued[0]!.entityId)).toMatchObject({
-      provenance: 'patient_set',
-      lowValue: '591.4706',
-      highValue: null,
-    });
+    expect(await savedChanges()).toEqual([
+      expect.objectContaining({ provenance: 'patient_set', lowValue: '591.4706', highValue: null }),
+    ]);
     expect(screen.getByText(en.common['targetRanges.sourcePatient'])).toBeTruthy();
   });
 
   it('refuses a value on the form, and queues nothing', async () => {
     await renderScreen(<TargetRanges />, { cached: [range()] });
 
-    await press(en.common['targetRanges.setOwnButton']);
-    await type(en.common['targetRanges.formLowLabel'], '900');
-    await type(en.common['targetRanges.formHighLabel'], '600');
-    await press(en.common['targetRanges.formSaveButton']);
+    await press(copy('targetRanges.setOwnSpoken'));
+    await type(copy('targetRanges.formLowSpoken', { unit: 'milliliters' }), '900');
+    await type(copy('targetRanges.formHighSpoken', { unit: 'milliliters' }), '600');
+    await press(copy('targetRanges.formSaveSpoken'));
 
     expect(screen.getByText(en.common['targetRanges.errorBelowLow'])).toBeTruthy();
     expect(await listQueuedOperations(mockExecutor)).toEqual([]);
   });
 
-  it('withdraws the patient’s value, echoing what the server stored', async () => {
+  /** WCAG 3.3.3: the error says what the app CAN store. */
+  it('says what number would work when one is too big to store', async () => {
+    await renderScreen(<TargetRanges />, {
+      cached: [range({ limits: { minValue: 0.0001, maxValue: 5000 } })],
+    });
+
+    await press(copy('targetRanges.setOwnSpoken'));
+    await type(copy('targetRanges.formHighSpoken', { unit: 'milliliters' }), '6000');
+    await press(copy('targetRanges.formSaveSpoken'));
+
+    expect(screen.getByText(copy('targetRanges.errorTooBig', { max: '5,000 mL' }))).toBeTruthy();
+  });
+
+  it('opens the form with the patient’s own range already in it', async () => {
     await renderScreen(<TargetRanges />, {
       cached: [
         range({ provenance: 'patient_set', lowValue: 700, highValue: 1400, patientRange: OWN }),
       ],
     });
 
-    await press(en.common['targetRanges.stopOwnButton']);
+    await press(copy('targetRanges.changeOwnSpoken'));
+
+    expect(
+      screen.getByLabelText(copy('targetRanges.formLowSpoken', { unit: 'milliliters' })).props
+        .value,
+    ).toBe('700');
+  });
+
+  it('asks before withdrawing the patient’s value, then echoes what the server stored', async () => {
+    await renderScreen(<TargetRanges />, {
+      cached: [
+        range({ provenance: 'patient_set', lowValue: 700, highValue: 1400, patientRange: OWN }),
+      ],
+    });
+
+    await press(copy('targetRanges.stopOwnSpoken'));
+    expect(screen.getByText(copy('targetRanges.stopConfirmTypical'))).toBeTruthy();
+    expect(await listQueuedOperations(mockExecutor)).toEqual([]);
+
+    await press(copy('targetRanges.stopConfirmSpoken'));
 
     expect(await listQueuedOperations(mockExecutor)).toEqual([
       expect.objectContaining({ entityId: OWN_ID, operationType: 'update' }),
     ]);
-    expect(await getRangeWrite(mockExecutor, OWN_ID)).toMatchObject({
-      status: 'superseded',
-      lowValue: '700',
-      highValue: '1400',
-    });
+    expect(await savedChanges()).toEqual([
+      expect.objectContaining({ status: 'superseded', lowValue: '700', highValue: '1400' }),
+    ]);
     // Back to the suggestion, at once.
     expect(screen.getByText(en.common['targetRanges.notConfirmed'])).toBeTruthy();
+    expect(announce).toHaveBeenCalledWith(copy('targetRanges.announceStop'));
   });
 
-  it('takes back an unsent value instead of queuing a withdrawal of it', async () => {
-    await renderScreen(<TargetRanges />, { cached: [range()] });
-    await press(en.common['targetRanges.useTypicalButton']);
+  it('keeps the value when the patient changes their mind', async () => {
+    await renderScreen(<TargetRanges />, {
+      cached: [range({ provenance: 'patient_set', patientRange: OWN })],
+    });
 
-    await press(en.common['targetRanges.stopOwnButton']);
+    await press(copy('targetRanges.stopOwnSpoken'));
+    await press(copy('targetRanges.stopKeepSpoken'));
 
     expect(await listQueuedOperations(mockExecutor)).toEqual([]);
+    expect(screen.getByLabelText(copy('targetRanges.stopOwnSpoken'))).toBeTruthy();
+  });
+
+  /**
+   * #147: an unsent value is withdrawn by a queued withdrawal, not deleted, so
+   * a create the server may already hold is still withdrawn.
+   */
+  it('withdraws an unsent value by queuing the withdrawal behind it', async () => {
+    await renderScreen(<TargetRanges />, { cached: [range()] });
+    await press(copy('targetRanges.useTypicalSpoken'));
+
+    await press(copy('targetRanges.stopOwnSpoken'));
+    await press(copy('targetRanges.stopConfirmSpoken'));
+
+    expect((await listQueuedOperations(mockExecutor)).map((op) => op.operationType)).toEqual([
+      'create',
+      'update',
+    ]);
+    expect(screen.getByText(en.common['targetRanges.notConfirmed'])).toBeTruthy();
   });
 
   /**
@@ -310,20 +405,36 @@ describe('the target ranges screen', () => {
     });
 
     expect(screen.getByText(en.common['targetRanges.sourcePhysician'])).toBeTruthy();
-    expect(screen.queryByLabelText(en.common['targetRanges.useTypicalButton'])).toBeNull();
+    expect(screen.queryByLabelText(copy('targetRanges.useTypicalSpoken'))).toBeNull();
 
-    await press(en.common['targetRanges.setOwnButton']);
+    await press(copy('targetRanges.setOwnSpoken'));
     expect(screen.getByText(en.common['targetRanges.physicianStaysNote'])).toBeTruthy();
-    await type(en.common['targetRanges.formLowLabel'], '800');
-    await press(en.common['targetRanges.formSaveButton']);
+    await type(copy('targetRanges.formLowSpoken', { unit: 'milliliters' }), '800');
+    await press(copy('targetRanges.formSaveSpoken'));
 
     expect(screen.getByText(/450 mL to 950 mL/)).toBeTruthy();
     expect(screen.getByText(en.common['targetRanges.divergesFromPhysician'])).toBeTruthy();
   });
 
+  /** WCAG 2.4.6: with several ranges on screen, each button names its own. */
+  it('names the measure on every button, so the same buttons on two ranges can be told apart', async () => {
+    await renderScreen(<TargetRanges />, {
+      cached: [range(), range({ rangeType: 'urine_output_adequacy_ml', highValue: null })],
+    });
+
+    expect(screen.getAllByLabelText(copy('targetRanges.setOwnSpoken'))).toHaveLength(1);
+    expect(
+      screen.getByLabelText(
+        copy('targetRanges.setOwnSpoken', {
+          measure: en.common['rangeType.urine_output_adequacy_ml'],
+        }),
+      ),
+    ).toBeTruthy();
+  });
+
   it.each([
-    ['accepts', 'targetRanges.acceptProposalButton', 'active'],
-    ['declines', 'targetRanges.dismissProposalButton', 'dismissed'],
+    ['accepts', 'targetRanges.acceptProposalSpoken', 'active'],
+    ['declines', 'targetRanges.dismissProposalSpoken', 'dismissed'],
   ] as const)('%s a range waiting for the patient', async (_verb, button, status) => {
     await renderScreen(<TargetRanges />, {
       cached: [
@@ -334,17 +445,27 @@ describe('the target ranges screen', () => {
     });
     expect(screen.getByText(/A range is waiting for you to decide/)).toBeTruthy();
 
-    await press(en.common[button]);
+    await press(copy(button));
 
-    expect(await getRangeWrite(mockExecutor, PROPOSAL_ID)).toMatchObject({ status });
+    expect(await savedChanges()).toEqual([expect.objectContaining({ id: PROPOSAL_ID, status })]);
     expect(screen.queryByText(/A range is waiting for you to decide/)).toBeNull();
+  });
+
+  it('goes back to Settings rather than stacking a new copy of it', async () => {
+    await renderScreen(<TargetRanges />, { cached: [range()] });
+
+    await press(en.mobile['navigation.backButton']);
+
+    expect(mockBack).toHaveBeenCalled();
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 });
 
 describe('a refused range change in the correction inbox', () => {
-  it('is shown, and removed with its row when the patient removes it', async () => {
+  /** "Remove this change" is not a decision anyone can make about a change they cannot identify. */
+  it('names the range and the value, and removes the change when asked', async () => {
     await writeProfile(mockExecutor, PROFILE, NOW_ISO);
-    const { id, operationId } = await enqueueRangeCreate(
+    const { operationId } = await enqueueRangeCreate(
       mockExecutor,
       {
         rangeType: 'daily_output_ml',
@@ -362,12 +483,13 @@ describe('a refused range change in the correction inbox', () => {
     });
 
     await renderScreen(<Corrections />);
-    expect(screen.getByText(en.common['corrections.rangeProblem'])).toBeTruthy();
+    const problem = copy('corrections.rangeProblemSet', { value: 'At least 800 mL' });
+    expect(screen.getByText(problem)).toBeTruthy();
 
-    await press(en.common['corrections.rangeDiscardButton']);
+    await press(copy('corrections.rangeDiscardSpoken'));
 
     expect(await mockExecutor.getAllAsync('SELECT * FROM sync_queue;')).toEqual([]);
-    expect(await getRangeWrite(mockExecutor, id)).toBeUndefined();
-    expect(screen.queryByText(en.common['corrections.rangeProblem'])).toBeNull();
+    expect(await mockExecutor.getAllAsync('SELECT * FROM range_writes;')).toEqual([]);
+    expect(screen.queryByText(problem)).toBeNull();
   });
 });

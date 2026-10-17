@@ -365,8 +365,11 @@ export const common = {
    * precise claim; and no verb that tells the patient to do anything.
    */
   'targetRanges.heading': 'Your target ranges',
+  // Heads the care team's range and the patient's own as well as the typical
+  // one (P4.S3 slice 4), so "not advice" is scoped to the typical range: said
+  // of everything, it told a patient to discount their clinician.
   'targetRanges.intro':
-    'What is typical for people with a similar profile. These are for context — they are not advice, and nothing here is checked against your entries yet.',
+    'These are ranges for your daily amounts. A typical range shows what is common for people with the same kind of ostomy. It is not medical advice. Your care team may also set a range for you. Nothing here is checked against your entries yet.',
   'targetRanges.empty': 'There are no target ranges for your profile yet.',
 
   'rangeType.daily_output_ml': 'Daily output from your stoma',
@@ -421,7 +424,7 @@ export const common = {
    * assume the number they entered is the one in use.
    */
   'targetRanges.divergesFromPhysician':
-    'You have a different value saved. Your care team’s value is the one shown.',
+    'You also saved your own range. Your care team’s range is the one in use.',
 
   'notProvisioned.heading': 'Your account is not set up yet',
   // P4.S1: this is now a route rather than a sentence, which is what the earlier
@@ -461,10 +464,16 @@ export const common = {
     'Your phone needs a connection to undo this. Check your connection, then try again.',
   // P4.S3 slice 4. A refused range change has nothing to correct in place: a
   // new value is a new row, set again on the target ranges screen.
-  'corrections.rangeProblem': 'A change to your target ranges could not be saved.',
-  'corrections.rangeDiscardButton': 'Remove this change',
+  'corrections.rangeProblem': 'A change to your ranges was not accepted.',
+  'corrections.rangeProblemSet': 'Your new range for {{measure}} ({{value}}) was not accepted.',
+  'corrections.rangeProblemStop':
+    'Your choice to stop using your range for {{measure}} was not accepted.',
+  'corrections.rangeProblemProposal':
+    'Your choice about the suggested range for {{measure}} was not accepted.',
   'corrections.rangeDiscardHint':
-    'Your other ranges stay as they are. You can set this range again in Settings.',
+    'Removing it does not change your other ranges. You can set this range again in Settings, under Your target ranges.',
+  'corrections.rangeDiscardButton': 'Remove this change',
+  'corrections.rangeDiscardSpoken': 'Remove this change to {{measure}}',
 
   /**
    * Settings (P4.S3, SRS §3.10). In `common` because the profile answers have
@@ -491,6 +500,8 @@ export const common = {
   'settings.needsConnectionBody':
     'Your phone needs to connect once before you can change these. Check your connection, then try again.',
   'settings.retryButton': 'Try again',
+  'settings.targetRangesHeading': 'Target ranges',
+  'settings.targetRangesIntro': 'See the typical ranges for you, and set your own.',
   'settings.targetRangesButton': 'Your target ranges',
 
   /**
@@ -504,37 +515,88 @@ export const common = {
    * the suggestion are unratified by a clinician (#130).
    *
    * The form errors describe what the APP can store. The limits behind
-   * `errorOutsideLimits` are structural (a volume is positive; the column has a
+   * the limit errors are structural (a volume is positive; the column has a
    * ceiling), so calling a value unsafe or wrong would be a clinical claim
    * nobody has made.
    */
   'targetRanges.needsConnection':
-    'Your target ranges appear here once your phone has connected. Check your connection, then come back.',
+    'Your target ranges appear here once your phone has connected. Check your connection, then try again.',
+  'targetRanges.needsConnectionOne': 'This range will show after your phone connects.',
   'targetRanges.yourValue': 'Your own range: {{value}}.',
   'targetRanges.typical': 'The typical range: {{value}}.',
   'targetRanges.waitingToSend':
-    'Saved on this phone. It will be sent the next time you are online.',
+    'Saved on this phone. It will be sent when your phone is connected.',
+  'targetRanges.saveFailed':
+    'Something went wrong, and your change was not saved. Please try again.',
   'targetRanges.useTypicalButton': 'Use the typical range',
+  'targetRanges.useTypicalHint':
+    'Saves the typical range as your own. You can change it at any time.',
   'targetRanges.setOwnButton': 'Set my own range',
   'targetRanges.changeOwnButton': 'Change my range',
   'targetRanges.stopOwnButton': 'Stop using my range',
-  'targetRanges.stopOwnHint':
-    'Your own range is removed. Your care team’s range or the typical range is shown instead.',
   'targetRanges.proposal': 'A range is waiting for you to decide: {{value}}.',
   'targetRanges.acceptProposalButton': 'Use this range',
   'targetRanges.dismissProposalButton': 'Do not use this range',
+  // Spoken names for the buttons above. Every range has the same buttons, so a
+  // screen-reader or voice-control user needs the measure named to tell them
+  // apart. Each starts with the visible words, so saying what is on screen
+  // still works (WCAG 2.5.3).
+  'targetRanges.useTypicalSpoken': 'Use the typical range for {{measure}}',
+  'targetRanges.setOwnSpoken': 'Set my own range for {{measure}}',
+  'targetRanges.changeOwnSpoken': 'Change my range for {{measure}}',
+  'targetRanges.stopOwnSpoken': 'Stop using my range for {{measure}}',
+  'targetRanges.acceptProposalSpoken': 'Use this range for {{measure}}',
+  'targetRanges.dismissProposalSpoken': 'Do not use this range for {{measure}}',
+  // One step of confirmation before a value is withdrawn: there is no undo, and
+  // the numbers would otherwise have to be remembered and typed again. Says
+  // what takes over, because the screen knows.
+  'targetRanges.stopConfirmCareTeam':
+    'Stop using your own range for {{measure}}? Your care team’s range stays in use.',
+  'targetRanges.stopConfirmTypical':
+    'Stop using your own range for {{measure}}? The typical range will be shown instead.',
+  'targetRanges.stopConfirmOther':
+    'Stop using your own range for {{measure}}? Your phone will show what is in use after it connects.',
+  'targetRanges.stopConfirmButton': 'Yes, stop using it',
+  'targetRanges.stopConfirmSpoken': 'Yes, stop using my range for {{measure}}',
+  'targetRanges.stopKeepButton': 'Keep my range',
+  'targetRanges.stopKeepSpoken': 'Keep my range for {{measure}}',
+  // Announced after each action. A visible "saved" line alone was not reliably
+  // read out, and never said what had changed.
+  'targetRanges.announceSet': 'Saved. Your range for {{measure}} is now {{value}}.',
+  'targetRanges.announceTypical': 'Saved. You are now using the typical range for {{measure}}.',
+  'targetRanges.announceStop': 'Saved. You stopped using your own range for {{measure}}.',
+  'targetRanges.announceAccept': 'Saved. You are now using the suggested range for {{measure}}.',
+  'targetRanges.announceDecline':
+    'Saved. You chose not to use the suggested range for {{measure}}.',
   'targetRanges.physicianStaysNote':
-    'Your care team set a range for this. Theirs stays in use, and yours is saved alongside it.',
+    'Your care team set a range for this. Theirs stays in use. Yours will be saved too.',
   'targetRanges.formLowLabel': 'At least',
   'targetRanges.formHighLabel': 'At most',
+  // The unit a form field is in, spoken in full: Intl's long unit name is
+  // singular ("milliliter"), which reads wrongly after "in".
+  'targetRanges.unitNameMetric': 'milliliters',
+  'targetRanges.unitNameImperial': 'fluid ounces',
+  'targetRanges.formLowSpoken': 'At least, in {{unit}}, for {{measure}}',
+  'targetRanges.formHighSpoken': 'At most, in {{unit}}, for {{measure}}',
   'targetRanges.formHint': 'Fill in one box or both.',
+  'targetRanges.negativeHint': 'To enter a number below zero, type a minus sign first, like -200.',
   'targetRanges.formSaveButton': 'Save my range',
+  'targetRanges.formSaveSpoken': 'Save my range for {{measure}}',
   'targetRanges.formCancelButton': 'Cancel',
+  'targetRanges.formCancelSpoken': 'Cancel changing the range for {{measure}}',
   'targetRanges.errorNeedsBound': 'Enter a number in at least one box.',
-  'targetRanges.errorNotNumber': 'Enter a number, like 500.',
-  'targetRanges.errorTooPrecise': 'Use no more than 4 numbers after the decimal point.',
-  'targetRanges.errorOutsideLimits': 'The app cannot save this number. Check it and try again.',
-  'targetRanges.errorBelowLow': 'This number must not be smaller than the “at least” number.',
+  'targetRanges.errorNotNumber': 'Use numbers only, like 500. Leave out units.',
+  'targetRanges.errorTooPrecise': 'Use fewer numbers after the decimal point.',
+  // What the app can STORE, never whether a value is safe: the limits are
+  // structural (a volume is positive; the column has a ceiling), and a
+  // clinical-sounding message would be a claim nobody has made.
+  'targetRanges.errorNotPositive': 'Enter a number bigger than 0.',
+  'targetRanges.errorTooSmall':
+    'This number is too small for the app to save. The smallest it can save is {{min}}.',
+  'targetRanges.errorTooBig':
+    'This number is too big for the app to save. The biggest it can save is {{max}}.',
+  'targetRanges.errorBelowLow':
+    'This number needs to be the same as the “At least” number or bigger.',
 
   // sync-contract §5.4. Deliberately says what will happen BEFORE it happens
   // and names the one thing a patient would fear — losing what they wrote.

@@ -15,7 +15,13 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { formatDateTime, formatVolumeUnitLabel } from '@ostomy/core/i18n';
+import {
+  formatDateTime,
+  formatVolumeQuantity,
+  formatVolumeUnitLabel,
+  rangeBandKey,
+  rangeTypeLabelKey,
+} from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
 import { Redirect, router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
@@ -35,6 +41,10 @@ import {
   undoRejectedProfileEdit,
 } from '../src/db/offlineWrites';
 import { getObservationById } from '../src/db/repositories/observationsRepository';
+import {
+  getRangeWriteForOperation,
+  type RangeWrite,
+} from '../src/db/repositories/rangesRepository';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
 
 /** LOINC 9187-6 — voided urine, whose amount question uses a different noun. */
@@ -54,7 +64,7 @@ import {
 } from '../src/entry/useStomaOutputEntry';
 import { useValueSetOptions } from '../src/entry/useValueSetOptions';
 import { checkUrineEntry } from '../src/entry/useVoidedUrineEntry';
-import { mlToOz } from '@ostomy/core/units';
+import { convertVolumeForDisplay, mlToOz } from '@ostomy/core/units';
 import { MAX_VALUE_DECIMAL_PLACES } from '@ostomy/core/validation';
 import {
   unitsForMeasurementSystem,
@@ -130,6 +140,12 @@ function editableAmountIn(canonicalMl: number, system: MeasurementSystem): strin
   return String(Math.round(inPatientUnits * factor) / factor);
 }
 
+/** A refused range change, with this phone's copy of it so the inbox can say which range. */
+interface RangeRejection {
+  readonly operation: SyncQueueEntry;
+  readonly change: RangeWrite | undefined;
+}
+
 interface RejectedEntry {
   readonly operation: SyncQueueEntry;
   readonly observation: LocalObservation;
@@ -159,7 +175,7 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
    * nothing to correct in place: a new range is a new row, set again on the
    * target ranges screen, so the one action is to remove the change.
    */
-  const [rangeRejections, setRangeRejections] = useState<readonly SyncQueueEntry[]>([]);
+  const [rangeRejections, setRangeRejections] = useState<readonly RangeRejection[]>([]);
   const [undoUnreachable, setUndoUnreachable] = useState(false);
   const { port: profilePort, refresh: refreshProfile } = useProfileState();
 
@@ -174,14 +190,17 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     const rejected = await listRejectedOperations(database.executor);
     const resolved: RejectedEntry[] = [];
     const profiles: SyncQueueEntry[] = [];
-    const ranges: SyncQueueEntry[] = [];
+    const ranges: RangeRejection[] = [];
     for (const operation of rejected) {
       if (operation.entityType === 'Profile') {
         profiles.push(operation);
         continue;
       }
       if (operation.entityType === 'EffectiveRange') {
-        ranges.push(operation);
+        ranges.push({
+          operation,
+          change: await getRangeWriteForOperation(database.executor, operation.operationId),
+        });
         continue;
       }
       const observation = await getObservationById(database.executor, operation.entityId);
@@ -368,14 +387,39 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
   const discardRangeChange = useCallback(
     async (operation: SyncQueueEntry) => {
       if (database.status !== 'ready') return;
-      await discardRejectedRangeWrite(database.executor, {
-        rejectedOperationId: operation.operationId,
-        entityId: operation.entityId,
-      });
+      await discardRejectedRangeWrite(database.executor, operation.operationId);
       await load();
     },
     [database, load],
   );
+
+  /**
+   * Which range, and what the patient did to it: "Remove this change" is not a
+   * decision anyone can make about a change they cannot identify.
+   */
+  const describeRangeChange = (change: RangeWrite | undefined): string => {
+    if (change === undefined) return t('common:corrections.rangeProblem');
+    const measure = t(rangeTypeLabelKey(change.rangeType));
+    if (change.status === 'superseded') {
+      return t('common:corrections.rangeProblemStop', { measure });
+    }
+    if (change.status === 'dismissed') {
+      return t('common:corrections.rangeProblemProposal', { measure });
+    }
+    const asText = (value: string | null) =>
+      value === null
+        ? null
+        : formatVolumeQuantity(
+            convertVolumeForDisplay(Number(value), unitsForMeasurementSystem('metric'), units),
+          );
+    const key = rangeBandKey({
+      hasLow: change.lowValue !== null,
+      hasHigh: change.highValue !== null,
+    });
+    if (key === null) return t('common:corrections.rangeProblem');
+    const value = t(key, { low: asText(change.lowValue), high: asText(change.highValue) });
+    return t('common:corrections.rangeProblemSet', { measure, value });
+  };
 
   if (phase !== 'authenticated') return <Redirect href="/login" />;
 
@@ -413,17 +457,26 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
               ) : null}
             </View>
           ))}
-          {rangeRejections.map((operation) => (
+          {rangeRejections.map(({ operation, change }) => (
             <View key={operation.operationId} style={{ gap: 8 }}>
-              <BodyText tone="error">{t('common:corrections.rangeProblem')}</BodyText>
+              <BodyText tone="error">{describeRangeChange(change)}</BodyText>
+              {/* Before the button, and only once: as a button hint as well it
+                  was read twice, and after the button a sighted reader met it
+                  only once they had already decided. */}
+              <BodyText tone="muted">{t('common:corrections.rangeDiscardHint')}</BodyText>
               <Button
                 label={t('common:corrections.rangeDiscardButton')}
-                hint={t('common:corrections.rangeDiscardHint')}
+                accessibilityLabel={
+                  change === undefined
+                    ? undefined
+                    : t('common:corrections.rangeDiscardSpoken', {
+                        measure: t(rangeTypeLabelKey(change.rangeType)),
+                      })
+                }
                 onPress={() => {
                   void discardRangeChange(operation);
                 }}
               />
-              <BodyText tone="muted">{t('common:corrections.rangeDiscardHint')}</BodyText>
             </View>
           ))}
           {nothingToShow ? null : <BodyText>{t('common:corrections.intro')}</BodyText>}

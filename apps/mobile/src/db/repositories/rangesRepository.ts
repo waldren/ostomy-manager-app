@@ -236,8 +236,14 @@ export async function writeRangeCache(
   );
 }
 
-/** A change this device made: the full §7.6 payload, less what the server assigns. */
+/**
+ * One change this device made, for one queued operation: the full §7.6
+ * payload, less what the server assigns. See local migration 10 for why a row
+ * is per operation rather than per range.
+ */
 export interface RangeWrite {
+  readonly operationId: string;
+  /** The range row the change creates or updates — the operation's `entityId`. */
   readonly id: string;
   readonly rangeType: string;
   /** Canonical values as exact decimal strings, migration 1's rule for every clinical number at rest. */
@@ -246,12 +252,14 @@ export interface RangeWrite {
   readonly targetValue: string | null;
   readonly unit: string;
   readonly provenance: PatientRangeProvenance;
+  /** The status THIS operation sets — `active` on a create. */
   readonly status: 'active' | 'superseded' | 'dismissed';
   readonly writtenAt: string;
 }
 
 interface RangeWriteRawRow {
-  id: string;
+  operation_id: string;
+  range_id: string;
   range_type: string;
   low_value: string | null;
   high_value: string | null;
@@ -264,7 +272,8 @@ interface RangeWriteRawRow {
 
 function decodeRangeWrite(row: RangeWriteRawRow): RangeWrite {
   return {
-    id: row.id,
+    operationId: row.operation_id,
+    id: row.range_id,
     rangeType: row.range_type,
     lowValue: row.low_value,
     highValue: row.high_value,
@@ -277,14 +286,14 @@ function decodeRangeWrite(row: RangeWriteRawRow): RangeWrite {
   };
 }
 
-/** Inserts a change, or replaces this device's earlier change to the same row. */
-export async function putRangeWrite(executor: SqliteExecutor, write: RangeWrite): Promise<void> {
+export async function insertRangeWrite(executor: SqliteExecutor, write: RangeWrite): Promise<void> {
   await executor.runAsync(
     `INSERT INTO range_writes (
-      id, range_type, low_value, high_value, target_value, unit, provenance, status, written_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET status = excluded.status, written_at = excluded.written_at;`,
+      operation_id, range_id, range_type, low_value, high_value, target_value,
+      unit, provenance, status, written_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
     [
+      write.operationId,
       write.id,
       write.rangeType,
       write.lowValue,
@@ -298,59 +307,88 @@ export async function putRangeWrite(executor: SqliteExecutor, write: RangeWrite)
   );
 }
 
-export async function getRangeWrite(
+/** The change a queued operation carries, which is what its push payload is built from. */
+export async function getRangeWriteForOperation(
   executor: SqliteExecutor,
-  id: string,
+  operationId: string,
 ): Promise<RangeWrite | undefined> {
   const rows = await executor.getAllAsync<RangeWriteRawRow>(
-    'SELECT * FROM range_writes WHERE id = ?;',
-    [id],
+    'SELECT * FROM range_writes WHERE operation_id = ?;',
+    [operationId],
   );
   const row = rows[0];
   return row === undefined ? undefined : decodeRangeWrite(row);
 }
 
-export async function deleteRangeWrite(executor: SqliteExecutor, id: string): Promise<void> {
-  await executor.runAsync('DELETE FROM range_writes WHERE id = ?;', [id]);
+export async function deleteRangeWriteForOperation(
+  executor: SqliteExecutor,
+  operationId: string,
+): Promise<void> {
+  await executor.runAsync('DELETE FROM range_writes WHERE operation_id = ?;', [operationId]);
+}
+
+/** A change to lay over the cached answer, and whether it is still waiting to be sent. */
+export interface OverlayRangeWrite extends RangeWrite {
+  /** Still queued or being sent. False once the push settled it and only the refresh is outstanding. */
+  readonly pending: boolean;
 }
 
 /**
- * The changes the cached answer does not reflect yet, oldest first.
+ * The changes the cached answer does not reflect yet, in the order the patient
+ * made them.
  *
- * Two ways a change can be missing from it, and both count:
+ * Every row here is either still waiting to be sent, or was settled by a push
+ * since the cached answer was fetched; `refreshRanges` deletes the rest. So
+ * this needs no timestamp comparison at all: the device's own clock, which can
+ * jump backwards, decides nothing.
  *
- * - **Still waiting to send** (queued or in flight). Every change is, until a
- *   push settles it.
- * - **Sent, but newer than the cache.** A push removes the operation from the
- *   queue, and the refresh that would show its result runs a moment later in
- *   the same cycle, or not at all if that fetch fails. Without this half the
- *   screen would flick back to the old value in between.
+ * A change the server REFUSED is left out, per operation: it is in the
+ * correction inbox, and showing it here too would tell the patient a value is
+ * in use that the server would not accept. A later change to the same range is
+ * a different operation and is shown.
  *
- * A change the server REFUSED is never shown here: it is in the correction
- * inbox, and showing it on this screen too would tell the patient a value is in
- * use that the server would not accept.
+ * Ordered by insertion, which is the order the patient acted in, rather than by
+ * `written_at`, for the same reason.
  */
-export async function listUnreflectedRangeWrites(
+export async function listOverlayRangeWrites(
   executor: SqliteExecutor,
-  cacheFetchedAt: string | undefined,
-): Promise<RangeWrite[]> {
-  const rows = await executor.getAllAsync<RangeWriteRawRow>(
-    `SELECT w.* FROM range_writes w
-     WHERE NOT EXISTS (
-       SELECT 1 FROM sync_queue q
-       WHERE q.entity_type = 'EffectiveRange' AND q.entity_id = w.id AND q.status = 'rejected'
-     )
-     AND (
-       w.written_at > ?
-       OR EXISTS (
-         SELECT 1 FROM sync_queue q
-         WHERE q.entity_type = 'EffectiveRange' AND q.entity_id = w.id
-           AND q.status IN ('queued', 'in_flight')
-       )
-     )
-     ORDER BY w.written_at ASC, w.rowid ASC;`,
-    // Before the first fetch every change is unreflected; '' sorts before any instant.
-    [cacheFetchedAt ?? ''],
+): Promise<OverlayRangeWrite[]> {
+  const rows = await executor.getAllAsync<RangeWriteRawRow & { queue_status: string | null }>(
+    `SELECT w.*, q.status AS queue_status FROM range_writes w
+     LEFT JOIN sync_queue q ON q.operation_id = w.operation_id
+     WHERE q.status IS NULL OR q.status IN ('queued', 'in_flight')
+     ORDER BY w.rowid ASC;`,
   );
-  return rows.map(decodeRangeWrite);
+  return rows.map((row) => ({ ...decodeRangeWrite(row), pending: row.queue_status !== null }));
+}
+
+/** Changes whose operation has left the queue — settled by a push, waiting only for a newer cached answer. */
+export async function listSettledRangeWriteOperations(executor: SqliteExecutor): Promise<string[]> {
+  const rows = await executor.getAllAsync<{ operation_id: string }>(
+    `SELECT w.operation_id FROM range_writes w
+     WHERE NOT EXISTS (SELECT 1 FROM sync_queue q WHERE q.operation_id = w.operation_id);`,
+  );
+  return rows.map((row) => row.operation_id);
+}
+
+/**
+ * Replaces the cached answer and forgets the changes it now reflects, together.
+ *
+ * `reflected` must be the changes that were already settled BEFORE the read
+ * that produced `ranges` was sent. A change settled after that read began may
+ * not be in it, and forgetting it would flick the screen back to the old
+ * value until the next refresh.
+ */
+export async function replaceRangeCache(
+  executor: SqliteExecutor,
+  ranges: readonly CachedRange[],
+  fetchedAt: string,
+  reflected: readonly string[],
+): Promise<void> {
+  await executor.withTransactionAsync(async () => {
+    await writeRangeCache(executor, ranges, fetchedAt);
+    for (const operationId of reflected) {
+      await deleteRangeWriteForOperation(executor, operationId);
+    }
+  });
 }

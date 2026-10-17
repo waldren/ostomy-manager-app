@@ -18,7 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { useCallback, useEffect, useState } from 'react';
 
 import type { SqliteExecutor } from '../db/executor';
-import { listUnreflectedRangeWrites, readRangeCache } from '../db/repositories/rangesRepository';
+import { listOverlayRangeWrites, readRangeCache } from '../db/repositories/rangesRepository';
 
 import { buildTargetRangeViews, type TargetRangeView } from './targetRangeView';
 
@@ -54,7 +54,7 @@ export function useTargetRanges(
       setState({ status: 'never-fetched' });
       return;
     }
-    const writes = await listUnreflectedRangeWrites(executor, cache.fetchedAt);
+    const writes = await listOverlayRangeWrites(executor);
     setState({ status: 'ready', views: buildTargetRangeViews(cache.ranges, writes) });
   }, [executor]);
 

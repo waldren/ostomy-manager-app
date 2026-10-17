@@ -19,6 +19,7 @@ import type {
   CachedPatientRange,
   CachedRange,
   CachedRangeBasis,
+  OverlayRangeWrite,
   RangeWrite,
 } from '../db/repositories/rangesRepository';
 
@@ -45,7 +46,11 @@ export interface TargetRangeView {
   readonly proposal: (CachedPatientRange & { readonly rangeType: string }) | null;
   /** AC 4: the patient holds a value of their own and a physician's outranks it. */
   readonly divergesFromPhysician: boolean;
-  /** Something the patient changed here has not reached the cached answer yet. */
+  /**
+   * Something the patient changed here is still waiting to be sent. Not true of
+   * a change already sent and only waiting for the next refresh: telling the
+   * patient that one "will be sent" would be false.
+   */
   readonly waitingToSend: boolean;
   readonly limits: CachedRange['limits'];
 }
@@ -71,14 +76,13 @@ export interface TargetRangeView {
  *   names that value, because a withdrawal affects only the row it names.
  * - **dismissed**: a proposal declined.
  *
- * One case is approximate and settles at the next refresh: a value withdrawn
- * while the value it replaced was still being sent. Unsent values are cancelled
- * outright instead (`cancelUnsentRangeCreate`), which keeps it to the in-flight
- * moment.
+ * Each change is one queued operation carrying its own status (local migration
+ * 10), so a value set and then withdrawn reads as exactly that: the value,
+ * then nothing. That is also what the server does with the two operations.
  */
 export function buildTargetRangeViews(
   cached: readonly CachedRange[],
-  writes: readonly RangeWrite[],
+  writes: readonly OverlayRangeWrite[],
 ): TargetRangeView[] {
   return cached.map((range) => {
     const own = writes.filter((write) => write.rangeType === range.rangeType);
@@ -124,7 +128,7 @@ export function buildTargetRangeViews(
       patientRange,
       proposal,
       divergesFromPhysician: physician !== null && patientRange !== null,
-      waitingToSend: own.length > 0,
+      waitingToSend: own.some((write) => write.pending),
       limits: range.limits,
     };
   });

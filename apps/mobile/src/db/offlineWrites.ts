@@ -40,8 +40,8 @@ import {
   type LocalProfile,
 } from './repositories/profileRepository';
 import {
-  deleteRangeWrite,
-  putRangeWrite,
+  deleteRangeWriteForOperation,
+  insertRangeWrite,
   type CachedPatientRange,
   type PatientRangeProvenance,
   type RangeWrite,
@@ -758,7 +758,8 @@ export async function enqueueRangeCreate(
   const nowIso = toWireInstant(now());
 
   await executor.withTransactionAsync(async () => {
-    await putRangeWrite(executor, {
+    await insertRangeWrite(executor, {
+      operationId,
       id,
       rangeType: fields.rangeType,
       lowValue: fields.lowValue,
@@ -786,17 +787,28 @@ export async function enqueueRangeCreate(
 }
 
 /**
- * Changes the status of a stored patient row: withdraw a value
- * (`active` → `superseded`), or accept or dismiss a proposal.
+ * Changes the status of a patient row: withdraw a value (`active` →
+ * `superseded`), or accept or decline a proposal.
  *
  * The row's content is copied from what the server reported, because §7.6
  * refuses an update whose content differs from the stored row. Its values come
  * from a JSON number, so `String()` gives back the shortest exact form.
+ *
+ * ## Always queued, even for a value that has not been sent yet
+ *
+ * The first version deleted an unsent create instead (#147 review), and that
+ * was wrong twice. An operation back in the queue after a timeout may already
+ * have been applied (§9.3), so deleting it silently undid the withdrawal once
+ * the server's copy came back. And deleting a replacement left the value it
+ * replaced in force, when the patient had asked for no value of their own. A
+ * create and its withdrawal pushed in order are exactly what §7.6 is built
+ * for: the create supersedes the earlier value, then the withdrawal removes
+ * the create.
  */
 export async function enqueueRangeStatusChange(
   executor: SqliteExecutor,
   row: CachedPatientRange & { readonly rangeType: string },
-  status: Extract<RangeWrite['status'], 'active' | 'superseded' | 'dismissed'>,
+  status: RangeWrite['status'],
   now: () => Date,
 ): Promise<{ operationId: string }> {
   const operationId = generateUuid();
@@ -804,7 +816,8 @@ export async function enqueueRangeStatusChange(
   const asText = (value: number | null) => (value === null ? null : String(value));
 
   await executor.withTransactionAsync(async () => {
-    await putRangeWrite(executor, {
+    await insertRangeWrite(executor, {
+      operationId,
       id: row.id,
       rangeType: row.rangeType,
       lowValue: asText(row.lowValue),
@@ -832,52 +845,20 @@ export async function enqueueRangeStatusChange(
 }
 
 /**
- * Takes back a new value that has not left the phone yet, and reports whether
- * it could.
- *
- * Withdrawing it through the server instead would also work, but queue two
- * operations whose only effect is to cancel out, and the screen would have to
- * reason about a value that is both set and withdrawn while they wait. A value
- * already sent, or being sent, is withdrawn the ordinary way.
- */
-export async function cancelUnsentRangeCreate(
-  executor: SqliteExecutor,
-  id: string,
-): Promise<boolean> {
-  let cancelled = false;
-  await executor.withTransactionAsync(async () => {
-    const { changes } = await executor.runAsync(
-      `DELETE FROM sync_queue
-       WHERE entity_type = 'EffectiveRange' AND entity_id = ? AND operation_type = 'create'
-         AND status = 'queued';`,
-      [id],
-    );
-    if (changes === 0) return;
-    await deleteRangeWrite(executor, id);
-    cancelled = true;
-  });
-  return cancelled;
-}
-
-/**
  * Drops a range change the server refused, and this phone's copy of it,
  * together (the correction inbox's one action for a range).
  *
  * Nothing to correct in place: a refused value is replaced by setting a new
  * one, which the patient does on the target ranges screen with the limits in
- * front of them. The local row goes too, unless another change to the same row
- * is still waiting, because that change is built from it at push time.
+ * front of them. Other changes to the same range are other operations with
+ * their own rows, so they are untouched.
  */
 export async function discardRejectedRangeWrite(
   executor: SqliteExecutor,
-  fields: { readonly rejectedOperationId: string; readonly entityId: string },
+  rejectedOperationId: string,
 ): Promise<void> {
   await executor.withTransactionAsync(async () => {
-    await removeOperation(executor, fields.rejectedOperationId);
-    const remaining = await executor.getAllAsync<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM sync_queue WHERE entity_type = 'EffectiveRange' AND entity_id = ?;`,
-      [fields.entityId],
-    );
-    if ((remaining[0]?.n ?? 0) === 0) await deleteRangeWrite(executor, fields.entityId);
+    await removeOperation(executor, rejectedOperationId);
+    await deleteRangeWriteForOperation(executor, rejectedOperationId);
   });
 }

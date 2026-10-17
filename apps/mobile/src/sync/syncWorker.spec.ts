@@ -24,9 +24,9 @@ import type { SyncDeltaResponse, SyncPushResponse } from '@ostomy/core/api-clien
 import type { SyncPushRequest } from '@ostomy/core/sync';
 
 import type { SqliteExecutor } from '../db/executor';
-import { enqueueVolumetricObservationCreate } from '../db/offlineWrites';
+import { enqueueRangeCreate, enqueueVolumetricObservationCreate } from '../db/offlineWrites';
 import { getObservationById } from '../db/repositories/observationsRepository';
-import { readRangeCache } from '../db/repositories/rangesRepository';
+import { listOverlayRangeWrites, readRangeCache } from '../db/repositories/rangesRepository';
 import { getCursor } from '../db/repositories/syncCursorRepository';
 import {
   listQueuedOperations,
@@ -765,6 +765,104 @@ describe('runSyncCycle', () => {
       expect(result.stoppedBecause.kind).toBe('completed');
       expect(result.rangesRefreshed).toBe(false);
       expect((await readRangeCache(executor))?.ranges).toHaveLength(1);
+    });
+
+    /** A change the refreshed answer reflects is forgotten, so the screen stops laying it over. */
+    it('forgets a sent change once a refresh after its push succeeds', async () => {
+      const { operationId } = await enqueueRangeCreate(
+        executor,
+        {
+          rangeType: 'daily_output_ml',
+          lowValue: '800',
+          highValue: null,
+          unit: 'mL',
+          provenance: 'patient_set',
+        },
+        FIXED_NOW,
+      );
+      client.pushResponses.push({
+        results: [
+          {
+            operationId,
+            entityId: 'x',
+            status: 'accepted',
+            appliedServerSequence: '3',
+            replayed: false,
+          },
+        ],
+      } as unknown as SyncPushResponse);
+      client.rangeResponses.push({ ranges: [range] });
+
+      await runSyncCycle(deps());
+
+      expect(await listOverlayRangeWrites(executor)).toEqual([]);
+    });
+
+    it('keeps a sent change while the refresh fails, so the screen does not flick back', async () => {
+      const { operationId } = await enqueueRangeCreate(
+        executor,
+        {
+          rangeType: 'daily_output_ml',
+          lowValue: '800',
+          highValue: null,
+          unit: 'mL',
+          provenance: 'patient_set',
+        },
+        FIXED_NOW,
+      );
+      client.pushResponses.push({
+        results: [
+          {
+            operationId,
+            entityId: 'x',
+            status: 'accepted',
+            appliedServerSequence: '3',
+            replayed: false,
+          },
+        ],
+      } as unknown as SyncPushResponse);
+      client.rangeResponses.push(new Error('network'));
+
+      await runSyncCycle(deps());
+
+      expect(await listOverlayRangeWrites(executor)).toEqual([
+        expect.objectContaining({ operationId, pending: false }),
+      ]);
+    });
+
+    /**
+     * Which changes the answer reflects is decided BEFORE the read is sent: a
+     * change settled while the read is in flight may not be in its answer.
+     * Nothing in this worker settles one then today (it pushes first), so this
+     * simulates it, to keep the order from being "simplified" away.
+     */
+    it('keeps a change settled while the read was in flight', async () => {
+      const { operationId } = await enqueueRangeCreate(
+        executor,
+        {
+          rangeType: 'daily_output_ml',
+          lowValue: '800',
+          highValue: null,
+          unit: 'mL',
+          provenance: 'patient_set',
+        },
+        FIXED_NOW,
+      );
+      // The push of this cycle sends nothing back for it, so it stays queued.
+      client.pushResponses.push({ results: [] } as unknown as SyncPushResponse);
+      const port: SyncClientPort = {
+        ...client.port,
+        ranges: async () => {
+          await executor.runAsync('DELETE FROM sync_queue WHERE operation_id = ?;', [operationId]);
+          return { ranges: [range] };
+        },
+      };
+
+      await runSyncCycle(deps({ client: port }));
+
+      expect(await listOverlayRangeWrites(executor)).toEqual([
+        expect.objectContaining({ operationId }),
+      ]);
     });
 
     /** A half-understood answer would show some ranges and silently drop others. */

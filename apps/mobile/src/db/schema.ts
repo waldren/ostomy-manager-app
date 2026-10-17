@@ -605,15 +605,27 @@ ALTER TABLE profiles ADD COLUMN client_updated_at TEXT;
  * never backfill the rows that already exist (#139). And a mirror would still
  * need the defaults and the precedence rule to show anything.
  *
- * ## `range_writes`: this device's own changes
+ * ## `range_writes`: this device's own changes, one row per OPERATION
  *
  * A change is offline-first like any entry: the row and its queued operation
  * commit together, the screen confirms from the row, and the push payload is
  * built from it at push time (migration 2's rule). A row is the full
  * `docs/sync-contract.md` §7.6 payload, because a status update must echo the
- * stored row's content exactly. `written_at` is when the patient last changed
- * it, which is how the screen tells a change the cached answer already
- * reflects from one it does not.
+ * stored row's content exactly.
+ *
+ * Keyed by the operation, not by the range, and that is the fix for a bug the
+ * first version had (#147 review). One row per range meant one status per
+ * range, and every queued operation on it was built from whatever the patient
+ * did LAST: accept a proposal, then withdraw it before either was sent, and
+ * both updates went out saying `superseded`, which §7.6 refuses for a
+ * proposal. Each operation now carries the status it was queued with.
+ *
+ * A row outlives its operation on purpose. Once the push settles it, the
+ * change is still shown over the cached answer until a NEWER cached answer
+ * has been fetched, or the screen would flick back to the old value between
+ * the push and the refresh. The sync worker deletes it then
+ * (`refreshRanges`), by which rows were settled before that fetch began, not
+ * by comparing device-clock timestamps.
  *
  * PHI, like every table here: a patient's thresholds are clinical values. The
  * whole store is SQLCipher-encrypted and purged as one file (ADR-0014), so
@@ -627,7 +639,8 @@ CREATE TABLE IF NOT EXISTS range_cache (
 );
 
 CREATE TABLE IF NOT EXISTS range_writes (
-  id TEXT PRIMARY KEY,
+  operation_id TEXT PRIMARY KEY,
+  range_id TEXT NOT NULL,
   range_type TEXT NOT NULL,
   low_value TEXT,
   high_value TEXT,

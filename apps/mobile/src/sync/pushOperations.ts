@@ -33,7 +33,7 @@ import {
 } from '../db/repositories/mealsRepository';
 import { getObservationById, markServerSequence } from '../db/repositories/observationsRepository';
 import { readProfile, type LocalProfile } from '../db/repositories/profileRepository';
-import { getRangeWrite, type RangeWrite } from '../db/repositories/rangesRepository';
+import { getRangeWriteForOperation, type RangeWrite } from '../db/repositories/rangesRepository';
 import {
   markRejected,
   recordAttempt,
@@ -57,11 +57,13 @@ import type { DecodedPushResult } from './responseDecoding';
  */
 
 /**
- * An operation whose entity row has vanished from `observations`.
+ * An operation whose local row has vanished.
  *
- * Not reachable today: `db/offlineWrites.ts` writes the row and the queue
- * entry in one transaction, and nothing deletes an observation row (a
- * delete tombstones it in place, §1). It is a reported outcome rather than
+ * Not reachable through this app's own writes: `db/offlineWrites.ts` writes
+ * the row and the queue entry in one transaction, nothing deletes an
+ * observation or meal row (a delete tombstones it in place, §1), and a
+ * range change's row is deleted only with its operation or after it has left
+ * the queue. It is a reported outcome rather than
  * a thrown error because the alternative — letting one unbuildable
  * operation throw out of the batch build — would stall every operation
  * queued behind it, forever, with no diagnostic. The queue row stays put.
@@ -172,7 +174,9 @@ export async function buildPushRequest(
     }
 
     if (entry.entityType === 'EffectiveRange') {
-      const range = await getRangeWrite(executor, entry.entityId);
+      // By OPERATION: each one carries the status it was queued with (local
+      // migration 10), so two changes queued to one range send what each meant.
+      const range = await getRangeWriteForOperation(executor, entry.operationId);
       if (range === undefined) {
         unbuildable.push({
           operationId: entry.operationId,
@@ -188,7 +192,7 @@ export async function buildPushRequest(
         entityType: 'EffectiveRange',
         operationType: entry.operationType,
         clientTimestamp: entry.clientTimestamp,
-        payload: toRangePayload(range, entry.operationType),
+        payload: toRangePayload(range),
       });
       sent.push(entry);
       continue;
@@ -304,20 +308,10 @@ function toProfilePayload(profile: LocalProfile, serverId: string): ProfileSyncP
 /**
  * Projects a local range change onto the §7.6 wire payload, field by field.
  *
- * **A create always says `active`**, whatever the row says now. The row holds
- * the LATEST status, and a value set and then withdrawn before either change
- * was sent has a row reading `superseded` behind a queued create. §7.6 refuses
- * a create in any other status, so sending the row's status would turn an
- * ordinary set-then-withdraw into a rejection. The update queued behind it
- * carries the withdrawal.
- *
  * `previousRangeId` is always `null`: the server assigns it, and §7.6 accepts
  * `null` on an update from a device that has not pulled since.
  */
-function toRangePayload(
-  range: RangeWrite,
-  operationType: 'create' | 'update',
-): EffectiveRangeSyncPayload {
+function toRangePayload(range: RangeWrite): EffectiveRangeSyncPayload {
   const asNumber = (value: string | null) => (value === null ? null : Number(value));
   return {
     id: toEntityId(range.id),
@@ -327,7 +321,7 @@ function toRangePayload(
     targetValue: asNumber(range.targetValue),
     unit: range.unit,
     provenance: range.provenance,
-    status: operationType === 'create' ? 'active' : range.status,
+    status: range.status,
     previousRangeId: null,
   };
 }

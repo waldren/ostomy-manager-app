@@ -15,7 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { readRangeForm } from './rangeForm';
+import { readRangeForm, toEditableText } from './rangeForm';
 
 const LIMITS = { minValue: 0.0001, maxValue: 99999999.9999 };
 const SIGNED = { minValue: -99999999.9999, maxValue: 99999999.9999 };
@@ -61,7 +61,7 @@ describe('readRangeForm', () => {
   });
 
   /** `Number('1e3')` is 1000 and `Number('')` is 0; neither is a number the patient typed. */
-  it.each(['abc', '1e3', '5,5', '1.', '.5'])('refuses %p as not a number', (text) => {
+  it.each(['abc', '1e3', '5,5', '1.', '.5', '500 mL'])('refuses %p as not a number', (text) => {
     expect(read(text, '')).toEqual({
       status: 'invalid',
       errors: [{ field: 'low', code: 'not-a-number' }],
@@ -88,24 +88,48 @@ describe('readRangeForm', () => {
     });
   });
 
-  it('refuses a value outside the type limits', () => {
+  /** WCAG 3.3.3: each says what the app CAN store, so each is its own code. */
+  it('refuses zero for a type whose values are positive, as "bigger than 0"', () => {
     expect(read('0', '')).toEqual({
       status: 'invalid',
-      errors: [{ field: 'low', code: 'outside-limits' }],
+      errors: [{ field: 'low', code: 'not-positive' }],
     });
+  });
+
+  it('refuses a value above the highest the app can store', () => {
     expect(read('', '100000000')).toEqual({
       status: 'invalid',
-      errors: [{ field: 'high', code: 'outside-limits' }],
+      errors: [{ field: 'high', code: 'too-big' }],
+    });
+  });
+
+  it('refuses a value below a floor that is not merely "positive"', () => {
+    expect(read('50', '', { limits: { minValue: 100, maxValue: 5000 } })).toEqual({
+      status: 'invalid',
+      errors: [{ field: 'low', code: 'too-small' }],
     });
   });
 
   it('accepts a negative value only where the type allows one (net fluid balance)', () => {
-    expect(read('-500', '').status).toBe('invalid');
+    expect(read('-500', '')).toEqual({
+      status: 'invalid',
+      errors: [{ field: 'low', code: 'not-positive' }],
+    });
     expect(read('-500', '', { limits: SIGNED })).toEqual({
       status: 'valid',
       lowValue: '-500',
       highValue: null,
     });
+  });
+
+  /** Some keyboards substitute a typographic minus or dash; it means the same thing. */
+  it.each(['\u2212500', '\u2013500'])('reads %p as a minus sign', (text) => {
+    expect(read(text, '', { limits: SIGNED })).toMatchObject({ status: 'valid', lowValue: '-500' });
+  });
+
+  it('reads thousands separators, and only where they group thousands', () => {
+    expect(read('1,500', '')).toMatchObject({ status: 'valid', lowValue: '1500' });
+    expect(read('15,00', '').status).toBe('invalid');
   });
 
   it('refuses an upper bound below the lower one', () => {
@@ -125,5 +149,21 @@ describe('readRangeForm', () => {
       'low',
       'high',
     ]);
+  });
+});
+
+describe('toEditableText', () => {
+  it('gives back what the patient can save again, at the column scale', () => {
+    expect(toEditableText(591.4706, 'imperial')).toBe('20');
+    expect(toEditableText(1500.25, 'metric')).toBe('1500.25');
+    expect(toEditableText(null, 'metric')).toBe('');
+  });
+
+  /** Pre-filled and saved unchanged, it must store what was there. */
+  it('round-trips through the form', () => {
+    const text = toEditableText(591.4706, 'imperial');
+    expect(read(text, '', { measurementSystem: 'imperial' })).toMatchObject({
+      lowValue: '591.4706',
+    });
   });
 });
