@@ -350,10 +350,65 @@ export interface ProfileSyncPayload {
   readonly measurementSystem: MeasurementSystem;
 }
 
+/**
+ * Where a range's value came from (SRS §3.9), lowercase on the wire. Also its
+ * precedence, highest first: a physician's value is in force over a patient's,
+ * a patient's own over a suggestion they confirmed, and a confirmed suggestion
+ * over the clinical default.
+ */
+export const RANGE_PROVENANCE = [
+  'physician_set',
+  'patient_set',
+  'patient_confirmed_suggestion',
+  'clinical_default',
+] as const;
+export type RangeProvenance = (typeof RANGE_PROVENANCE)[number];
+
+/**
+ * A range row's lifecycle. Only `active` is ever a threshold: a `proposed` row
+ * is a suggestion awaiting a human (AC 14.1 AC2), and `superseded` and
+ * `dismissed` are history.
+ */
+export const RANGE_STATUS = ['proposed', 'active', 'superseded', 'dismissed'] as const;
+export type RangeStatus = (typeof RANGE_STATUS)[number];
+
+/**
+ * One of the patient's target ranges (P4.S3, SRS §3.9/§3.10), with where it
+ * came from. App-native and so without a `resourceType`, for `Meal`'s reason.
+ *
+ * The delta pull carries every row of every provenance, a physician's included,
+ * because a device must be able to show which value is in force and why. A
+ * PUSH may only do what a patient may do (§7.6): create their own active value
+ * — set by them, or a suggestion they confirmed — or move a row through the
+ * lifecycle. It can never write a physician's value (AC 14.1 AC4) and never
+ * any row of a safety range type such as the heart-rate red flag.
+ *
+ * A value is immutable once written. A new value is a new row, and the row it
+ * replaces is kept as `superseded` with this one's `previousRangeId` pointing
+ * at it, so "why did this change" has an answer without reading audit rows.
+ */
+export interface EffectiveRangeSyncPayload {
+  readonly id: EntityId;
+  /** A `clinical_default_range_limits` key, such as `daily_output_ml`. Which keys exist is data, not a type. */
+  readonly rangeType: string;
+  /** Canonical units (ADR-0004), a JSON number like `valueQuantity.value`. `null` when the range has no lower bound. */
+  readonly lowValue: number | null;
+  readonly highValue: number | null;
+  /** For a single-target range (a target dry weight, P6) rather than a band. */
+  readonly targetValue: number | null;
+  /** The range type's canonical unit, which must match its limits row. */
+  readonly unit: string;
+  readonly provenance: RangeProvenance;
+  readonly status: RangeStatus;
+  /** The row this one replaced. Server-assigned: `null` on a create, and unchanged on an update. */
+  readonly previousRangeId: EntityId | null;
+}
+
 export interface SyncPayloadByEntityType {
   readonly Observation: ObservationSyncPayload;
   readonly Meal: MealSyncPayload;
   readonly Profile: ProfileSyncPayload;
+  readonly EffectiveRange: EffectiveRangeSyncPayload;
 }
 
 export type SyncEntityType = keyof SyncPayloadByEntityType;
@@ -380,4 +435,6 @@ export const SYNC_ENTITY_TYPE = {
    * cursor (§7.2).
    */
   PROFILE: 'Profile',
+  /** P4.S3 slice 3 (§7.6). Additive, like `MEAL` and `PROFILE`. */
+  EFFECTIVE_RANGE: 'EffectiveRange',
 } as const;

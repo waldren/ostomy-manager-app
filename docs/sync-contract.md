@@ -411,7 +411,7 @@ App-native fields that FHIR has no element for travel as **plain siblings**, spe
 
 ### 7.2 `Observation`
 
-`EffectiveRange` is a synced entity in the schema but has no wire payload until P4.S3 slice 3; adding it is additive (§8). **`Profile` gained its payload at P4.S3 (§7.5).**
+**`Profile` (§7.5) and `EffectiveRange` (§7.6) gained their payloads at P4.S3**, additively (§8).
 
 **P3.S1 added a second entity type, `Meal` (§7.4).** §8 already places the obligation on the client and has since P2.S0: a new `entityType` is additive without a version bump, and "Clients MUST tolerate all four". So a delta page may contain an entity type a given client does not handle, and that client **skips the change and still advances its cursor** — the alternative, withholding it, would need a client-capability signal this wire deliberately does not have (§8, "nothing on this wire tells the server which client version sent a request").
 
@@ -495,6 +495,56 @@ Five behaviours are specific to this entity:
 - **History is not re-validated.** Moving the surgery date later can make an already-accepted entry look "before surgery". It stays accepted: Tier 1 applies on write, and re-checking history against a mutable profile is the shape ADR-0016 refuses for `localDate`.
 
 As in §7.2 there is no `patientId`, no `serverSequence`, no `deletedAt` and no `createdAt`/`updatedAt`. A delta page carries the profile as an ordinary change, which is how an edit on one device reaches the patient's others (SRS §3.10). A client that does not handle `Profile` skips it and advances its cursor (§7.2).
+
+### 7.6 `EffectiveRange`
+
+One of the patient's target ranges, with where its value came from (P4.S3, SRS §3.9 and §3.10, AC 14.1). App-native, so it carries no `resourceType`. This is the **only** write path for the entity: `GET /api/v1/ranges` is read-only by design (#130).
+
+| Wire field | Source | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | app-native | yes | Equals the operation's `entityId`. |
+| `rangeType` | app-native | yes | A `clinical_default_range_limits` key, such as `"daily_output_ml"`. Which keys exist is data, not a wire enum. |
+| `lowValue`, `highValue` | app-native | yes, nullable | Canonical units (ADR-0004), JSON numbers. `null` when the range has no bound on that side, never `0`. |
+| `targetValue` | app-native | yes, nullable | For a single-target range, such as a target dry weight (P6), rather than a band. A row carries a target **or** a band, never both. |
+| `unit` | app-native | yes | The range type's canonical unit. |
+| `provenance` | app-native | yes | `"physician_set"`, `"patient_set"`, `"patient_confirmed_suggestion"` or `"clinical_default"`. This is also the precedence order, highest first. |
+| `status` | app-native | yes | `"proposed"`, `"active"`, `"superseded"` or `"dismissed"`. Only `active` is ever a threshold. A `proposed` row is a suggestion awaiting a human (AC 14.1 AC2). |
+| `previousRangeId` | app-native | yes, nullable | The row this one replaced. **Server-assigned.** A create must send `null`. An update may send `null` or the stored value: a device that has not pulled since the server assigned it can only send `null`. The server sets it when a create or an accepted proposal replaces a patient value. |
+
+**The delta pull carries every row,** of every provenance and status, a physician's included. A device needs those rows to show which value is in force and why.
+
+**A push may only do what a patient may do.** Anything else is rejected per operation, with `PAYLOAD_FIELD_INVALID` naming the field that makes it wrong:
+
+- **Create** an `active` row whose provenance is `patient_set` or `patient_confirmed_suggestion`. The rules:
+  - It cannot be a `physician_set` row (AC 14.1 AC4), a `clinical_default` row, or a `proposed` row.
+  - Its range type cannot be a **safety** type such as `heart_rate_red_flag_bpm`, which is not patient-adjustable.
+  - Its range type must have a limits row, and its `unit` must be that row's unit.
+  - It needs at least one bound, every bound must sit inside the type's limits, and the band cannot be inverted.
+  - A bound the `DECIMAL(12,4)` column cannot hold is refused, never rounded.
+- **Update only the status** of a row whose provenance is the patient's own. The allowed changes:
+  - accept a proposal (`proposed` → `active`), which must pass the same safety-type and limits checks as a new value;
+  - dismiss a proposal (`proposed` → `dismissed`);
+  - withdraw a value (`active` → `superseded`), which falls back to a physician's value or the default.
+
+  Every other field is immutable, because a new value is a new row. No other status change is allowed: once superseded or dismissed, a row stays that way, and the patient creates the value again instead.
+- **Never delete.** A delete is `UNSUPPORTED_CODE` naming `operationType`, as for a profile.
+
+**One patient value per range type is in force.** Precedence ranks `patient_set` above `patient_confirmed_suggestion`. Without this rule, a patient who set a value and later confirmed the suggestion would stay on their own value with no visible reason. So a new patient value, or an accepted proposal, supersedes whichever patient value was active for that type, and its `previousRangeId` points at it. The superseded row's audit entry has its own reason code, `range_replaced_by_new_value`, and names its successor. A value the patient withdrew and a value their new one replaced are different answers to "who changed my threshold". A physician's row is never touched. It outranks both and stays in force, and the read flags the patient's divergence from it (AC4).
+
+**The latest patient decision wins, across rows.** Suppose one device creates a value at T5 while offline, and it reaches the server after another device's T10 decision for the same type. That decision may be a new value **or a withdrawal**. The T5 value is stored as `superseded` history, and the operation still answers `accepted`, because the row was written; the delta pull shows its status. An accepted proposal that loses this way is answered and stored the same way. Last-write-wins by client timestamp (§4) applied only within one row would let a stale device revert a newer decision. A withdrawal affects only the row it names.
+
+**What the patient may write is checked before when they wrote it.** On an existing row, the provenance and immutability rules run **before** the timestamp comparison. So a write the patient may never make is `rejected` whatever its timestamp: it is not answered `superseded` and copied into the audit store under a physician's row. Only the status change itself is checked after the comparison. Two consequences:
+
+- A replayed or out-of-date operation resolves to `superseded`, not to a correction the patient could not make.
+- A **create** whose row exists with a different status is a replay, because the creation landed and a later decision has since moved the row on. It is answered `superseded`.
+
+An update that writes the status a row already has changes nothing and is answered `accepted` without a write. A write would move the row's timestamp and let a no-op win a later comparison.
+
+**Every write takes one advisory lock per (patient, range type) first.** These rules read one row and write another. Without the lock, two devices confirming at the same moment would both see nothing in force and both become active.
+
+**The provenance label of a confirmed suggestion is not checked against the default.** The default can change between an offline patient's decision and its push, and so can the post-operative window it came from. Refusing then would reject a decision made correctly. Since only one patient value can be in force for a type, the label never decides which value wins.
+
+A create naming an id that belongs to **another patient's** row answers `ENTITY_ID_CONFLICT`, and the attempt goes to the security log. Any refusal there reveals that the id exists: answering as for a nonexistent id would mean letting the create succeed. With random v4 ids an honest client cannot collide, so the only caller who reaches this already holds someone else's id. An update or delete naming such an id answers `ENTITY_NOT_FOUND`, exactly as an id that belongs to nobody does (§2).
 
 ---
 

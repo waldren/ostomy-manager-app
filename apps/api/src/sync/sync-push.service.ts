@@ -50,12 +50,30 @@ import {
 } from '../onboarding/profile-payload';
 import { toWireSurgeryDate } from '../onboarding/surgery-date';
 import {
+  incomingRangeSnapshot,
+  interpretRangePayload,
+  newPatientRangeViolation,
+  PATIENT_PROVENANCES,
+  RANGE_ENTITY_TYPE,
+  RANGE_REPLACED_REASON,
+  rangeLockKey,
+  rangeRequestParseSchema,
+  rangeRowViolation,
+  statusTransitionViolation,
+  toNumberOrNull,
+  toRangeAuditSnapshot,
+  type RangeTypeLimits,
+  type RangeWriteInput,
+} from '../ranges/range-payload';
+import {
   MeasurementSystem,
   ObservationStatus,
   Prisma,
+  RangeStatus,
   SyncEntityType,
   SyncOperationStatus,
   SyncOperationType,
+  type EffectiveRange,
   type Meal,
   type Observation,
   type SyncOperation,
@@ -328,6 +346,9 @@ export class SyncPushService {
     if (operation.entityType === SYNC_ENTITY_TYPE.PROFILE) {
       return this.applyProfile(context, operation, correlationId);
     }
+    if (operation.entityType === SYNC_ENTITY_TYPE.EFFECTIVE_RANGE) {
+      return this.applyEffectiveRange(context, operation, correlationId);
+    }
     return this.applyObservation(context, operation, correlationId);
   }
 
@@ -400,6 +421,7 @@ export class SyncPushService {
         this.securityLog.crossPatientEntityAccess({
           actorSubject: context.actorId,
           patientId: context.patientId,
+          entityType: PROFILE_ENTITY_TYPE,
           entityId: operation.entityId,
           requestId: correlationId,
         });
@@ -513,6 +535,454 @@ export class SyncPushService {
       await this.writeOperationRecord(tx, context, operation, result);
       return { result, applied: true, surgeryDate: toWireSurgeryDate(written.surgeryDate) };
     });
+  }
+
+  /**
+   * The `EffectiveRange` push path (P4.S3 slice 3, §7.6): a patient confirming
+   * a suggestion, setting their own value, or moving a row through its
+   * lifecycle. This is the only write path for this entity.
+   *
+   * What a patient may do, and nothing else:
+   *
+   * - **Create** an `active` row of their own — `patient_set` or
+   *   `patient_confirmed_suggestion` — for a range type that is not a safety
+   *   type, with bounds inside that type's limits. Never a `physician_set` row
+   *   (AC 14.1 AC4) and never a `proposed` one: a suggestion awaiting a human is
+   *   the system's to make.
+   * - **Update** the STATUS of a row of their own: accept a proposal
+   *   (`proposed` → `active`), dismiss one (`proposed` → `dismissed`), or
+   *   withdraw their value (`active` → `superseded`), which falls back to a
+   *   physician's value or the default. Every other field is immutable; a new
+   *   value is a new row.
+   * - **Never delete.** History is kept, and a withdrawn value is `superseded`.
+   *
+   * **One patient value per type is in force.** Precedence ranks `patient_set`
+   * above `patient_confirmed_suggestion`, so without this a patient who set a
+   * value and later confirmed the suggestion would stay on their own value with
+   * no way to tell why. So a new patient value supersedes whichever patient
+   * value was active for that type, and links to it through `previousRangeId`.
+   * A physician's row is never touched; it outranks both and stays in force,
+   * and the patient's divergence from it is flagged by the read (AC4).
+   *
+   * **The latest patient decision wins, across rows.** A value created offline
+   * at T5 that arrives after another device's T10 decision for the same type —
+   * a new value OR a withdrawal — is stored as `superseded` history rather than
+   * taking over. Last-write-wins by client timestamp is the contract's rule
+   * (§4), and applying it only within one row would let a stale device revert a
+   * newer decision.
+   *
+   * **What, then when.** On an existing row, the rules about what this patient
+   * may write run BEFORE the timestamp comparison: a write they may never make
+   * is `rejected` whatever its timestamp, rather than answered `superseded`
+   * and copied into the append-only audit store under a physician's row (#146
+   * review — the profile path's #140 rule, applied here too). Only the status
+   * change itself is checked after, so that a replayed or out-of-date
+   * operation resolves to `superseded` instead of a correction no patient
+   * could make.
+   *
+   * Everything runs under one advisory lock per (patient, range type), taken
+   * first in every write, because these rules read one row and write another:
+   * two devices confirming at once would otherwise both see "nothing active"
+   * and both become active.
+   */
+  private async applyEffectiveRange(
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    correlationId: string | undefined,
+  ): Promise<OperationOutcome> {
+    if (operation.operationType === SYNC_OPERATION_TYPE.DELETE) {
+      return {
+        result: rejection(
+          operation,
+          SYNC_REASON_CODE.UNSUPPORTED_CODE,
+          SYNC_FIELD_PATH.OPERATION_TYPE,
+        ),
+        applied: false,
+      };
+    }
+    const isCreate = operation.operationType === SYNC_OPERATION_TYPE.CREATE;
+
+    // Shape first, before any comparison, so a losing version copied into the
+    // audit store has always passed validation (#140 review).
+    let input: RangeWriteInput;
+    try {
+      input = interpretRangePayload(rangeRequestParseSchema.parse(operation.payload));
+    } catch (error) {
+      const detail = firstRejectionDetail(error);
+      return { result: rejection(operation, detail.reasonCode, detail.field), applied: false };
+    }
+
+    // §2: by (patient, id) together. The type is read here only to choose the
+    // lock; it is immutable, so reading it outside the lock is safe.
+    const own = await this.prisma.effectiveRange.findFirst({
+      where: { id: operation.entityId, patientId: context.patientId },
+      select: { rangeType: true },
+    });
+    if (own === null) {
+      const foreign = await this.prisma.effectiveRange.findUnique({
+        where: { id: operation.entityId },
+        select: { id: true },
+      });
+      if (foreign !== null) {
+        this.securityLog.crossPatientEntityAccess({
+          actorSubject: context.actorId,
+          patientId: context.patientId,
+          entityType: RANGE_ENTITY_TYPE,
+          entityId: operation.entityId,
+          requestId: correlationId,
+        });
+        // A CREATE naming another patient's id cannot be answered like a
+        // nonexistent id — that create would succeed — so any refusal here
+        // reveals the id exists. Random v4 ids make an honest collision
+        // practically impossible, so this answers an attacker who already
+        // holds the id, and the security log has the attempt.
+        return {
+          result: rejection(
+            operation,
+            isCreate ? SYNC_REASON_CODE.ENTITY_ID_CONFLICT : SYNC_REASON_CODE.ENTITY_NOT_FOUND,
+            SYNC_FIELD_PATH.ENTITY_ID,
+          ),
+          applied: false,
+        };
+      }
+      if (!isCreate) {
+        return {
+          result: rejection(
+            operation,
+            SYNC_REASON_CODE.ENTITY_NOT_FOUND,
+            SYNC_FIELD_PATH.ENTITY_ID,
+          ),
+          applied: false,
+        };
+      }
+      const violation = await this.newRangeViolation(input);
+      if (violation !== null) {
+        return {
+          result: rejection(operation, violation.reasonCode, violation.field),
+          applied: false,
+        };
+      }
+    }
+
+    const rangeType = own?.rangeType ?? input.rangeType;
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(hashtextextended(${rangeLockKey(context.patientId, rangeType)}, 0))
+      `;
+
+      const stored = await tx.effectiveRange.findFirst({
+        where: { id: operation.entityId, patientId: context.patientId },
+      });
+
+      if (stored === null) {
+        return this.createPatientRange(tx, context, operation, input, correlationId);
+      }
+
+      // WHAT before WHEN — see this method's comment.
+      const breach = rangeRowViolation(stored, input);
+      if (breach !== null) {
+        return { result: rejection(operation, breach.reasonCode, breach.field), applied: false };
+      }
+
+      // The row already holds this status: nothing to write, and writing anyway
+      // would move its timestamp and let a no-op win a later comparison.
+      if (input.status === stored.status) {
+        const result = acceptedResultFor(operation, stored.serverSequence);
+        await this.writeOperationRecord(tx, context, operation, result);
+        return { result, applied: false };
+      }
+
+      // Out of date: a newer write to this row exists (§4). And a CREATE whose
+      // row exists with a different status is the same thing seen from a
+      // replay — the creation landed, and a later decision has since moved the
+      // row on — so it is `superseded`, never a status correction the patient
+      // would be asked to make.
+      if (operation.clientTimestamp.getTime() < stored.clientUpdatedAt.getTime() || isCreate) {
+        return this.recordRangeSuperseded(tx, context, operation, stored, input, correlationId);
+      }
+
+      const refusal = statusTransitionViolation(stored.status, input.status);
+      if (refusal !== null) {
+        return { result: rejection(operation, refusal.reasonCode, refusal.field), applied: false };
+      }
+      return this.changeRangeStatus(tx, context, operation, stored, input.status, correlationId);
+    });
+  }
+
+  /** The incoming range lost. Result `superseded`, and the INCOMING version — validated — goes to the audit log (§4.1). */
+  private async recordRangeSuperseded(
+    tx: Prisma.TransactionClient,
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    stored: EffectiveRange,
+    input: RangeWriteInput,
+    correlationId: string | undefined,
+  ): Promise<OperationOutcome> {
+    const result = syncSupersededResult({
+      operationId: toOperationId(operation.operationId),
+      entityId: toEntityId(operation.entityId),
+      appliedServerSequence: toServerSequence(stored.serverSequence.toString()),
+      replayed: false,
+    });
+    await this.audit.record(
+      {
+        actorType: 'PATIENT',
+        actorId: context.actorId,
+        action: 'UPDATE',
+        entityType: RANGE_ENTITY_TYPE,
+        entityId: operation.entityId,
+        reasonCode: SYNC_CONFLICT_LOSER_REASON,
+        beforeValue: incomingRangeSnapshot(operation.entityId, input, operation.clientTimestamp),
+        ...(correlationId !== undefined ? { correlationId } : {}),
+      },
+      tx,
+    );
+    await this.writeOperationRecord(tx, context, operation, result);
+    return { result, applied: false };
+  }
+
+  /** The limits row for a range type, in the shape `newPatientRangeViolation` takes. */
+  private async rangeTypeLimits(rangeType: string): Promise<RangeTypeLimits | undefined> {
+    const limits = await this.prisma.clinicalDefaultRangeLimits.findUnique({
+      where: { rangeType },
+    });
+    return limits === null
+      ? undefined
+      : {
+          unit: limits.unit,
+          minValue: limits.minValue.toNumber(),
+          maxValue: limits.maxValue.toNumber(),
+        };
+  }
+
+  /** The create-only rules that need the limits table (`newPatientRangeViolation`). */
+  private async newRangeViolation(
+    input: RangeWriteInput,
+  ): Promise<{ reasonCode: SyncReasonCode; field: SyncFieldPath } | null> {
+    const invalidField = (field: SyncFieldPath) => ({
+      reasonCode: SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID,
+      field,
+    });
+    // Never a physician's value (AC 14.1 AC4), never a default's: those are not
+    // a patient's to assert.
+    if (!PATIENT_PROVENANCES.has(input.provenance)) return invalidField(SYNC_FIELD_PATH.PROVENANCE);
+    // Never a proposal: a suggestion awaiting a human is the system's to make,
+    // and a patient creating one would be confirming nothing.
+    if (input.status !== RangeStatus.ACTIVE) return invalidField(SYNC_FIELD_PATH.STATUS);
+    // Server-assigned (§7.6), so a client cannot rewrite which row this replaced.
+    if (input.previousRangeId !== null) return invalidField(SYNC_FIELD_PATH.PREVIOUS_RANGE_ID);
+
+    const field = newPatientRangeViolation(input, await this.rangeTypeLimits(input.rangeType));
+    return field === null ? null : invalidField(field);
+  }
+
+  /**
+   * Makes the incoming decision the patient's value in force for its type,
+   * unless a newer patient decision already is — a newer value, or a newer
+   * WITHDRAWAL. Returns the status the incoming row should take and the row it
+   * replaced, having superseded every other active patient value.
+   *
+   * Read under the advisory lock, so nothing can become active between this
+   * read and the write that follows it.
+   */
+  private async takeOverFromPatientRanges(
+    tx: Prisma.TransactionClient,
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    rangeType: string,
+    correlationId: string | undefined,
+  ): Promise<{ status: RangeStatus; previousRangeId: string | null }> {
+    // ACTIVE and SUPERSEDED both carry a decision time: when a value was set,
+    // and when one was withdrawn or replaced. The newest of them is the
+    // patient's latest decision for this type. Proposals and dismissals are
+    // not decisions about the value in force, so they do not count.
+    const decided = await tx.effectiveRange.findMany({
+      where: {
+        patientId: context.patientId,
+        rangeType,
+        id: { not: operation.entityId },
+        status: { in: [RangeStatus.ACTIVE, RangeStatus.SUPERSEDED] },
+        provenance: { in: [...PATIENT_PROVENANCES] },
+        deletedAt: null,
+      },
+      orderBy: { clientUpdatedAt: 'desc' },
+    });
+    const latest = decided[0];
+    if (
+      latest !== undefined &&
+      latest.clientUpdatedAt.getTime() > operation.clientTimestamp.getTime()
+    ) {
+      // A newer decision already stands. This one is kept as history.
+      return { status: RangeStatus.SUPERSEDED, previousRangeId: null };
+    }
+
+    const active = decided.filter((row) => row.status === RangeStatus.ACTIVE);
+    for (const other of active) {
+      const superseded = await tx.effectiveRange.update({
+        where: { id: other.id, patientId: context.patientId },
+        data: { status: RangeStatus.SUPERSEDED, clientUpdatedAt: operation.clientTimestamp },
+      });
+      await this.audit.record(
+        {
+          actorType: 'PATIENT',
+          actorId: context.actorId,
+          action: 'UPDATE',
+          entityType: RANGE_ENTITY_TYPE,
+          entityId: other.id,
+          // Its own reason, and the successor named, so "who changed my
+          // threshold" is answerable from this row alone — a withdrawal the
+          // patient chose and a value their new one replaced are different
+          // answers (#146 review).
+          reasonCode: RANGE_REPLACED_REASON,
+          beforeValue: toRangeAuditSnapshot(other),
+          afterValue: { ...toRangeAuditSnapshot(superseded), supersededBy: operation.entityId },
+          ...(correlationId !== undefined ? { correlationId } : {}),
+        },
+        tx,
+      );
+    }
+    return { status: RangeStatus.ACTIVE, previousRangeId: active[0]?.id ?? null };
+  }
+
+  private async createPatientRange(
+    tx: Prisma.TransactionClient,
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    input: RangeWriteInput,
+    correlationId: string | undefined,
+  ): Promise<OperationOutcome> {
+    const { status, previousRangeId } = await this.takeOverFromPatientRanges(
+      tx,
+      context,
+      operation,
+      input.rangeType,
+      correlationId,
+    );
+
+    const written = await tx.effectiveRange.create({
+      data: {
+        id: operation.entityId,
+        patientId: context.patientId,
+        rangeType: input.rangeType,
+        lowValue: input.lowValue,
+        highValue: input.highValue,
+        targetValue: input.targetValue,
+        unit: input.unit,
+        provenance: input.provenance,
+        status,
+        previousRangeId,
+        clientUpdatedAt: operation.clientTimestamp,
+      },
+    });
+
+    await this.audit.record(
+      {
+        actorType: 'PATIENT',
+        actorId: context.actorId,
+        action: 'CREATE',
+        entityType: RANGE_ENTITY_TYPE,
+        entityId: operation.entityId,
+        reasonCode: SYNC_APPLIED_REASON,
+        afterValue: toRangeAuditSnapshot(written),
+        ...(correlationId !== undefined ? { correlationId } : {}),
+      },
+      tx,
+    );
+
+    // `accepted` even when the row was stored as superseded history: the row
+    // DOES reflect this operation — it was written, with the status a newer
+    // decision gave it — and the delta pull tells the device so (§7.6).
+    const result = acceptedResultFor(operation, written.serverSequence);
+    await this.writeOperationRecord(tx, context, operation, result);
+    return { result, applied: true };
+  }
+
+  private async changeRangeStatus(
+    tx: Prisma.TransactionClient,
+    context: PatientContext,
+    operation: SyncPushOperationParsed,
+    stored: EffectiveRange,
+    requested: RangeStatus,
+    correlationId: string | undefined,
+  ): Promise<OperationOutcome> {
+    let status = requested;
+    let previousRangeId = stored.previousRangeId;
+
+    if (stored.status === RangeStatus.PROPOSED && requested === RangeStatus.ACTIVE) {
+      // Accepting makes a proposal a threshold, so it must pass what a new
+      // patient value must pass — today's proposals have no writer, and
+      // whichever one is built must not be able to route a safety bound or an
+      // out-of-limits value through a patient's tap (#146 review).
+      const field = newPatientRangeViolation(
+        {
+          rangeType: stored.rangeType,
+          lowValue: toNumberOrNull(stored.lowValue),
+          highValue: toNumberOrNull(stored.highValue),
+          targetValue: toNumberOrNull(stored.targetValue),
+          unit: stored.unit,
+          provenance: stored.provenance,
+          status: requested,
+          previousRangeId: stored.previousRangeId,
+        },
+        await this.rangeTypeLimits(stored.rangeType),
+      );
+      if (field !== null) {
+        return {
+          result: rejection(operation, SYNC_REASON_CODE.PAYLOAD_FIELD_INVALID, field),
+          applied: false,
+        };
+      }
+      // The same takeover rule as a create, and the same link to what it
+      // replaced (§7.6) — unless the proposal already carried one.
+      const takeover = await this.takeOverFromPatientRanges(
+        tx,
+        context,
+        operation,
+        stored.rangeType,
+        correlationId,
+      );
+      status = takeover.status;
+      previousRangeId = stored.previousRangeId ?? takeover.previousRangeId;
+    }
+
+    const written = await tx.effectiveRange.update({
+      where: { id: operation.entityId, patientId: context.patientId },
+      data: { status, previousRangeId, clientUpdatedAt: operation.clientTimestamp },
+    });
+
+    await this.audit.record(
+      {
+        actorType: 'PATIENT',
+        actorId: context.actorId,
+        action: 'UPDATE',
+        entityType: RANGE_ENTITY_TYPE,
+        entityId: operation.entityId,
+        reasonCode: SYNC_APPLIED_REASON,
+        beforeValue: toRangeAuditSnapshot(stored),
+        afterValue: toRangeAuditSnapshot(written),
+        ...(correlationId !== undefined ? { correlationId } : {}),
+      },
+      tx,
+    );
+    // §4.1: the displaced version as its own row, as every other entity does.
+    await this.audit.record(
+      {
+        actorType: 'PATIENT',
+        actorId: context.actorId,
+        action: 'UPDATE',
+        entityType: RANGE_ENTITY_TYPE,
+        entityId: operation.entityId,
+        reasonCode: SYNC_CONFLICT_LOSER_REASON,
+        beforeValue: toRangeAuditSnapshot(stored),
+        ...(correlationId !== undefined ? { correlationId } : {}),
+      },
+      tx,
+    );
+
+    const result = acceptedResultFor(operation, written.serverSequence);
+    await this.writeOperationRecord(tx, context, operation, result);
+    return { result, applied: true };
   }
 
   /**
@@ -847,6 +1317,7 @@ export class SyncPushService {
         this.securityLog.crossPatientEntityAccess({
           actorSubject: context.actorId,
           patientId: context.patientId,
+          entityType: OBSERVATION_ENTITY_TYPE,
           entityId: operation.entityId,
           requestId: correlationId,
         });
@@ -1253,12 +1724,14 @@ const HANDLED_ENTITY_TYPES: ReadonlySet<string> = new Set<string>([
   SYNC_ENTITY_TYPE.OBSERVATION,
   SYNC_ENTITY_TYPE.MEAL,
   SYNC_ENTITY_TYPE.PROFILE,
+  SYNC_ENTITY_TYPE.EFFECTIVE_RANGE,
 ]);
 
 const STORED_ENTITY_TYPE: Readonly<Record<string, SyncEntityType>> = {
   [SYNC_ENTITY_TYPE.OBSERVATION]: SyncEntityType.OBSERVATION,
   [SYNC_ENTITY_TYPE.MEAL]: SyncEntityType.MEAL,
   [SYNC_ENTITY_TYPE.PROFILE]: SyncEntityType.PROFILE,
+  [SYNC_ENTITY_TYPE.EFFECTIVE_RANGE]: SyncEntityType.EFFECTIVE_RANGE,
 };
 
 function toStoredEntityType(entityType: string): SyncEntityType {

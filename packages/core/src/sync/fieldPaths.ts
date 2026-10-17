@@ -88,6 +88,16 @@ export const SYNC_FIELD_PATH = {
   OSTOMY_TYPE: 'ostomyType',
   SURGERY_DATE: 'surgeryDate',
   MEASUREMENT_SYSTEM: 'measurementSystem',
+  // `EffectiveRange` payload fields (P4.S3 slice 3, §7.6). `id` and `status`
+  // above are shared. `unit` is the range's own, a different field from an
+  // observation's `valueQuantity.unit`.
+  RANGE_TYPE: 'rangeType',
+  LOW_VALUE: 'lowValue',
+  HIGH_VALUE: 'highValue',
+  TARGET_VALUE: 'targetValue',
+  UNIT: 'unit',
+  PROVENANCE: 'provenance',
+  PREVIOUS_RANGE_ID: 'previousRangeId',
 } as const;
 
 export type SyncFieldPath = (typeof SYNC_FIELD_PATH)[keyof typeof SYNC_FIELD_PATH];
