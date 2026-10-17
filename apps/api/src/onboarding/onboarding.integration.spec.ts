@@ -29,12 +29,12 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-import { type INestApplication } from '@nestjs/common';
+import { Logger as NestLogger, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Client as PgClient } from 'pg';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../app.module';
 import { PATIENT_JWKS_RESOLVER } from '../auth/patient-jwks-resolver.token';
@@ -185,6 +185,7 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
 
       expect(response.status).toBe(201);
       expect(response.body).toEqual({
+        id: expect.any(String),
         ostomyType: 'ileostomy',
         surgeryDate: '2026-01-15',
         measurementSystem: 'metric',
@@ -392,6 +393,7 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
 
       expect(response.status).toBe(200);
       expect(response.body).toEqual({
+        id: expect.any(String),
         ostomyType: 'ileostomy',
         surgeryDate: '2026-01-15',
         measurementSystem: 'imperial',
@@ -409,21 +411,28 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
       expect(response.body.error.code).toBe('PATIENT_NOT_PROVISIONED');
     });
 
-    it('carries no patient identifier', async () => {
-      // The caller is the patient; the subject comes from the verified token. An
-      // id in the body would be a patient identifier on the wire that nothing
-      // needs — the property `GET /api/v1/observations` already holds.
+    it('carries no patient identifier, and the profile’s own id', async () => {
+      // The caller is the patient; the subject comes from the verified token. A
+      // patient id in the body would be one on the wire that nothing needs — the
+      // property `GET /api/v1/observations` already holds. The PROFILE's id is
+      // there since P4.S3, as every observation's is: it is the `entityId` a
+      // sync edit names (docs/sync-contract.md §7.5).
       const { subject, token } = await newSubject();
       await onboard(token, body()).expect(201);
 
       const response = await readProfile(token);
 
       expect(Object.keys(response.body).sort()).toEqual([
+        'id',
         'measurementSystem',
         'ostomyType',
         'surgeryDate',
       ]);
+      const row = await profileRow(subject);
+      expect(response.body.id).toBe(row.id);
+      expect(response.body.id).not.toBe(row.patient_id);
       expect(JSON.stringify(response.body)).not.toContain(subject);
+      expect(JSON.stringify(response.body)).not.toContain(row.patient_id);
     });
   });
 
@@ -444,6 +453,644 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
 
       const rows = await db.query(`SELECT 1 FROM patients WHERE oidc_subject = $1`, [subject]);
       expect(rows.rowCount).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // P4.S3 — editing the profile, through sync
+  // -------------------------------------------------------------------------
+
+  /** The profile row for a subject, as stored. */
+  async function profileRow(subject: string): Promise<Record<string, string>> {
+    const rows = await db.query(
+      `SELECT pr.id, pr.patient_id, pr.ostomy_type, pr.surgery_date::text AS surgery_date,
+              pr.measurement_system, pr.client_updated_at
+         FROM patients p JOIN profiles pr ON pr.patient_id = p.id
+        WHERE p.oidc_subject = $1`,
+      [subject],
+    );
+    return rows.rows[0];
+  }
+
+  function push(token: string, operations: unknown[]) {
+    return request(app.getHttpServer())
+      .post('/api/v1/sync/push')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ operations });
+  }
+
+  function delta(token: string, since = '0') {
+    return request(app.getHttpServer())
+      .get('/api/v1/sync/delta')
+      .set('Authorization', `Bearer ${token}`)
+      .query({ since });
+  }
+
+  /** A device's clock reading, `seconds` from now — the lexical form §7.3 pins. */
+  function clientTime(seconds = 0): string {
+    return new Date(Date.now() + seconds * 1000).toISOString();
+  }
+
+  function profileEdit(
+    profileId: string,
+    fields: Record<string, unknown>,
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      operationId: randomUUID(),
+      entityType: 'Profile',
+      entityId: profileId,
+      operationType: 'update',
+      clientTimestamp: clientTime(),
+      payload: { id: profileId, ...body(), ...fields },
+      ...overrides,
+    };
+  }
+
+  /** Onboards a fresh subject and returns what a device would hold afterwards. */
+  async function provisioned(overrides: Record<string, unknown> = {}) {
+    const { subject, token } = await newSubject();
+    const response = await onboard(token, body(overrides)).expect(201);
+    return { subject, token, profileId: response.body.id as string };
+  }
+
+  describe('P4.S3 — both write paths persist the same profile fields', () => {
+    /**
+     * CLAUDE.md's "both write paths persist every field", for the entity that
+     * now has two: provisioning creates a profile over REST, and every later
+     * edit arrives over sync. Each names its columns explicitly, so a new
+     * column added to one and forgotten in the other typechecks cleanly and
+     * loses data for every patient who wrote it through the other path — the
+     * `fluidTypeCode` defect, which survived two sprints.
+     *
+     * So this reads the column list from the DATABASE rather than from a list
+     * in this file, and fails when a column appears that neither path was
+     * taught about. Written before the sync payload existed, as P4.S1 committed
+     * this sprint to.
+     */
+    const BOOKKEEPING_COLUMNS = [
+      'id',
+      'patient_id',
+      'client_updated_at',
+      'server_sequence',
+      'deleted_at',
+      'created_at',
+      'updated_at',
+    ];
+
+    it('knows every content column the profiles table has', async () => {
+      const columns = await db.query(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'profiles'
+          ORDER BY column_name`,
+      );
+      const content = columns.rows
+        .map((row: { column_name: string }) => row.column_name)
+        .filter((name: string) => !BOOKKEEPING_COLUMNS.includes(name));
+
+      // If this fails, a column was added to `profiles`. Teach BOTH
+      // `OnboardingService.provision` and `SyncPushService.applyProfile` to
+      // write it, then add it here and to the round trip below.
+      expect(content).toEqual(['measurement_system', 'ostomy_type', 'surgery_date']);
+    });
+
+    it('stores the same row whichever path wrote the same answers', async () => {
+      const answers = {
+        ostomyType: 'colostomy',
+        surgeryDate: '2025-11-30',
+        measurementSystem: 'imperial',
+      };
+
+      // Path 1: provisioned with these answers directly.
+      const viaRest = await provisioned(answers);
+
+      // Path 2: provisioned with DIFFERENT answers, then edited to these.
+      const viaSync = await provisioned();
+      const edit = await push(viaSync.token, [profileEdit(viaSync.profileId, answers)]);
+      expect(edit.status).toBe(200);
+      expect(edit.body.results[0].status).toBe('accepted');
+
+      const restRow = await profileRow(viaRest.subject);
+      const syncRow = await profileRow(viaSync.subject);
+      for (const column of ['ostomy_type', 'surgery_date', 'measurement_system']) {
+        expect({ column, value: syncRow[column] }).toEqual({ column, value: restRow[column] });
+      }
+      expect(syncRow).toMatchObject({
+        ostomy_type: 'COLOSTOMY',
+        surgery_date: '2025-11-30',
+        measurement_system: 'IMPERIAL',
+      });
+    });
+
+    it('reads back the same profile through GET /profile and the delta pull', async () => {
+      // The two READ paths name their fields separately too.
+      const patient = await provisioned({ measurementSystem: 'imperial' });
+
+      const rest = await readProfile(patient.token).expect(200);
+      const pulled = await delta(patient.token).expect(200);
+
+      const change = pulled.body.changes.find(
+        (entry: { entityType: string }) => entry.entityType === 'Profile',
+      );
+      expect(change).toMatchObject({ entityId: patient.profileId, deleted: false });
+      expect(change.payload).toEqual(rest.body);
+    });
+  });
+
+  describe('P4.S3 — editing the profile over sync', () => {
+    it('applies an edit, and audits it with before and after values', async () => {
+      // SRS §3.10: "editable but audit-logged, since the surgery date is a
+      // validation boundary".
+      const patient = await provisioned();
+
+      const response = await push(patient.token, [
+        profileEdit(patient.profileId, { surgeryDate: '2026-01-10' }),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'accepted',
+        entityId: patient.profileId,
+      });
+      expect((await profileRow(patient.subject)).surgery_date).toBe('2026-01-10');
+
+      const audit = await db.query(
+        `SELECT action, reason_code, before_value, after_value, actor_id
+           FROM audit_events
+          WHERE entity_type = $1 AND entity_id = $2 AND reason_code = 'sync_applied'`,
+        [PROFILE_ENTITY_TYPE, patient.profileId],
+      );
+      expect(audit.rowCount).toBe(1);
+      expect(audit.rows[0]).toMatchObject({ action: 'UPDATE', actor_id: patient.subject });
+      expect(audit.rows[0].before_value).toMatchObject({ surgeryDate: '2026-01-15' });
+      expect(audit.rows[0].after_value).toMatchObject({ surgeryDate: '2026-01-10' });
+
+      // §4.1's second obligation: the displaced stored version, as its own row.
+      // Nothing asserted it, so deleting that write would have passed.
+      const displaced = await db.query(
+        `SELECT before_value, after_value FROM audit_events
+          WHERE entity_type = $1 AND entity_id = $2 AND reason_code = 'sync_conflict_loser'`,
+        [PROFILE_ENTITY_TYPE, patient.profileId],
+      );
+      expect(displaced.rowCount).toBe(1);
+      expect(displaced.rows[0].before_value).toMatchObject({ surgeryDate: '2026-01-15' });
+      expect(displaced.rows[0].after_value).toBeNull();
+    });
+
+    it('answers a replayed edit with its first result, and writes nothing twice', async () => {
+      // §3.7. A lost response makes the device re-push the same operation.
+      const patient = await provisioned();
+      const edit = profileEdit(patient.profileId, { measurementSystem: 'imperial' });
+
+      const first = await push(patient.token, [edit]).expect(200);
+      const second = await push(patient.token, [edit]).expect(200);
+
+      expect(second.body.results[0]).toEqual({ ...first.body.results[0], replayed: true });
+      const audit = await db.query(
+        `SELECT count(*)::int AS n FROM audit_events WHERE entity_id = $1 AND reason_code LIKE 'sync_%'`,
+        [patient.profileId],
+      );
+      expect(audit.rows[0].n).toBe(2);
+    });
+
+    it('records the idempotency row as a PROFILE operation', async () => {
+      const patient = await provisioned();
+      const edit = profileEdit(patient.profileId, { measurementSystem: 'imperial' });
+
+      await push(patient.token, [edit]).expect(200);
+
+      const rows = await db.query(
+        `SELECT entity_type FROM sync_operations WHERE operation_id = $1`,
+        [edit.operationId],
+      );
+      expect(rows.rows[0].entity_type).toBe('PROFILE');
+    });
+
+    it('wins against provisioning even from a phone whose clock runs slow', async () => {
+      // Provisioning asserts no client time. It used to record the server's
+      // now(), so a phone two minutes slow that changed a setting right after
+      // onboarding sent a clientTimestamp EARLIER than the provisioning version:
+      // superseded, moved to the audit log, and the phone silently reverted on
+      // its next pull.
+      const patient = await provisioned();
+
+      const response = await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { measurementSystem: 'imperial' },
+          { clientTimestamp: clientTime(-120) },
+        ),
+      ]);
+
+      expect(response.body.results[0].status).toBe('accepted');
+      expect((await profileRow(patient.subject)).measurement_system).toBe('IMPERIAL');
+    });
+
+    it('resolves two devices’ edits by last-write-wins, auditing the loser', async () => {
+      const patient = await provisioned();
+      const newer = profileEdit(
+        patient.profileId,
+        { ostomyType: 'colostomy' },
+        { clientTimestamp: clientTime(-10) },
+      );
+      const older = profileEdit(
+        patient.profileId,
+        { measurementSystem: 'imperial' },
+        { clientTimestamp: clientTime(-60) },
+      );
+
+      await push(patient.token, [newer]).expect(200);
+      const response = await push(patient.token, [older]);
+
+      expect(response.body.results[0].status).toBe('superseded');
+      expect(await profileRow(patient.subject)).toMatchObject({
+        ostomy_type: 'COLOSTOMY',
+        measurement_system: 'METRIC',
+      });
+      // The INCOMING version that lost, preserved rather than discarded (§4.1).
+      // Selected by content, not by recency: the first push's displaced-version
+      // row and this one can share a millisecond, and ids are random.
+      const loser = await db.query(
+        `SELECT before_value FROM audit_events
+          WHERE entity_id = $1 AND reason_code = 'sync_conflict_loser'
+            AND before_value->>'measurementSystem' = 'imperial'`,
+        [patient.profileId],
+      );
+      expect(loser.rowCount).toBe(1);
+      expect(loser.rows[0].before_value).toMatchObject({ clientUpdatedAt: older.clientTimestamp });
+    });
+
+    it('rejects an invalid edit even when it is older, so its content never reaches the audit store', async () => {
+      // Validated before the conflict comparison. Compared first, an older
+      // payload carrying anything at all in a known field would be superseded
+      // and its raw value copied into an append-only table.
+      const patient = await provisioned();
+      await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { ostomyType: 'colostomy' },
+          { clientTimestamp: clientTime(-10) },
+        ),
+      ]).expect(200);
+
+      const response = await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { ostomyType: 'free text the patient never typed' },
+          { clientTimestamp: clientTime(-60) },
+        ),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'PAYLOAD_FIELD_INVALID',
+        field: 'ostomyType',
+      });
+      const audit = await db.query(
+        `SELECT 1 FROM audit_events WHERE entity_id = $1 AND before_value::text LIKE '%free text%'`,
+        [patient.profileId],
+      );
+      expect(audit.rowCount).toBe(0);
+    });
+
+    it('lets a concurrent edit finish before comparing, so the older one cannot win', async () => {
+      // Two devices, one row. A newer version is being written and has not
+      // committed; an older push arrives. Compared against a read taken outside
+      // the transaction, the older push sees the provisioning version, passes,
+      // waits on the row lock for the UPDATE, then overwrites the newer one —
+      // and its audit row names the wrong version as displaced. Under the row
+      // lock it waits BEFORE comparing, and loses.
+      const patient = await provisioned();
+      const writer = new PgClient({ connectionString: runtimeDatabaseUrl });
+      await writer.connect();
+      try {
+        await writer.query('BEGIN');
+        await writer.query(
+          `UPDATE profiles SET ostomy_type = 'COLOSTOMY', client_updated_at = $2 WHERE id = $1`,
+          [patient.profileId, clientTime(-10)],
+        );
+
+        const pending = push(patient.token, [
+          profileEdit(
+            patient.profileId,
+            { measurementSystem: 'imperial' },
+            { clientTimestamp: clientTime(-60) },
+          ),
+        ]).then((response) => response);
+        // Long enough for the push to reach the lock and block on it.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await writer.query('COMMIT');
+
+        const response = await pending;
+        expect(response.body.results[0].status).toBe('superseded');
+        expect(await profileRow(patient.subject)).toMatchObject({
+          ostomy_type: 'COLOSTOMY',
+          measurement_system: 'METRIC',
+        });
+      } finally {
+        await writer.query('ROLLBACK').catch(() => undefined);
+        await writer.end();
+      }
+    });
+
+    it('refuses a create or a delete, naming operationType', async () => {
+      // A profile is created by provisioning and deleted by account deletion
+      // (ADR-0017); neither is a sync write.
+      const patient = await provisioned();
+      const create = profileEdit(patient.profileId, {}, { operationType: 'create' });
+      const remove = {
+        ...profileEdit(patient.profileId, {}, { operationType: 'delete' }),
+        payload: undefined,
+      };
+
+      const response = await push(patient.token, [create, remove]);
+
+      for (const result of response.body.results) {
+        expect(result).toMatchObject({
+          status: 'rejected',
+          reasonCode: 'UNSUPPORTED_CODE',
+          field: 'operationType',
+        });
+      }
+      const rows = await db.query(`SELECT deleted_at FROM profiles WHERE id = $1`, [
+        patient.profileId,
+      ]);
+      expect(rows.rows[0].deleted_at).toBeNull();
+    });
+
+    it('cannot edit another patient’s profile', async () => {
+      // §2: by (patient, id) together. Answered exactly as an id that exists
+      // for nobody, so the response cannot confirm the other profile exists.
+      const victim = await provisioned();
+      const attacker = await provisioned();
+      const auditBefore = await db.query(
+        `SELECT count(*)::int AS n FROM audit_events WHERE entity_id = $1`,
+        [victim.profileId],
+      );
+
+      const lines: string[] = [];
+      const spy = vi.spyOn(NestLogger.prototype, 'warn').mockImplementation((message: unknown) => {
+        lines.push(String(message));
+      });
+      let theirs;
+      let nobodys;
+      try {
+        theirs = await push(attacker.token, [
+          profileEdit(victim.profileId, { surgeryDate: '2020-01-01' }),
+        ]);
+        nobodys = await push(attacker.token, [
+          profileEdit(randomUUID(), { surgeryDate: '2020-01-01' }),
+        ]);
+      } finally {
+        spy.mockRestore();
+      }
+
+      // The operator sees the probe against a real profile, and only that one.
+      const probes = lines.filter((line) => line.includes('sync.push.cross_patient_entity'));
+      expect(probes).toHaveLength(1);
+      expect(probes[0]).toContain(victim.profileId);
+      const auditAfter = await db.query(
+        `SELECT count(*)::int AS n FROM audit_events WHERE entity_id = $1`,
+        [victim.profileId],
+      );
+      expect(auditAfter.rows[0].n).toBe(auditBefore.rows[0].n);
+
+      expect(theirs.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'ENTITY_NOT_FOUND',
+        field: 'entityId',
+      });
+      expect(nobodys.body.results[0]).toMatchObject({
+        reasonCode: theirs.body.results[0].reasonCode,
+        field: theirs.body.results[0].field,
+      });
+      expect((await profileRow(victim.subject)).surgery_date).toBe('2026-01-15');
+    });
+
+    it.each([
+      ['an ostomy type v1 does not cover', { ostomyType: 'urostomy' }, 'ostomyType'],
+      [
+        'a measurement system that does not exist',
+        { measurementSystem: 'cubits' },
+        'measurementSystem',
+      ],
+      ['a surgery date that is not a date', { surgeryDate: '2026-02-30' }, 'surgeryDate'],
+      ['a surgery date implausibly far in the past', { surgeryDate: '1025-03-04' }, 'surgeryDate'],
+    ])('refuses %s, naming the field and never the value', async (_label, fields, field) => {
+      const patient = await provisioned();
+
+      const response = await push(patient.token, [profileEdit(patient.profileId, fields)]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'PAYLOAD_FIELD_INVALID',
+        field,
+      });
+      expect(JSON.stringify(response.body)).not.toContain(String(Object.values(fields)[0]));
+      expect(await profileRow(patient.subject)).toMatchObject({
+        ostomy_type: 'ILEOSTOMY',
+        surgery_date: '2026-01-15',
+        measurement_system: 'METRIC',
+      });
+    });
+
+    it('refuses a surgery date in the future, with onboarding’s allowance', async () => {
+      // Two days out, for the reason the onboarding test above gives: "tomorrow"
+      // is inside MAX_TIMEZONE_HOURS_AHEAD_OF_UTC for part of every UTC day.
+      const patient = await provisioned();
+      const inTwoDays = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+      const response = await push(patient.token, [
+        profileEdit(patient.profileId, { surgeryDate: inTwoDays }),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({
+        reasonCode: 'PAYLOAD_FIELD_INVALID',
+        field: 'surgeryDate',
+      });
+    });
+
+    it('refuses a field the profile does not have', async () => {
+      const patient = await provisioned();
+
+      const response = await push(patient.token, [
+        profileEdit(patient.profileId, { targetDryWeightKg: 70 }),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({
+        reasonCode: 'PAYLOAD_FIELD_UNRECOGNIZED',
+        field: 'payload',
+      });
+      // Never the key: it is client-supplied content (§6.2).
+      expect(JSON.stringify(response.body)).not.toContain('targetDryWeightKg');
+    });
+
+    it('refuses a clock set too far ahead, which would win every later conflict', async () => {
+      const patient = await provisioned();
+
+      const response = await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { ostomyType: 'colostomy' },
+          { clientTimestamp: clientTime(3600) },
+        ),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({
+        reasonCode: 'CLIENT_TIMESTAMP_OUT_OF_RANGE',
+        field: 'clientTimestamp',
+      });
+    });
+  });
+
+  describe('P4.S3 — a moved surgery date is the bound for what follows it', () => {
+    function entryBefore(
+      clientSeconds: number,
+      effectiveDateTime: string,
+    ): Record<string, unknown> {
+      const id = randomUUID();
+      return {
+        operationId: randomUUID(),
+        entityType: 'Observation',
+        entityId: id,
+        operationType: 'create',
+        clientTimestamp: clientTime(clientSeconds),
+        payload: {
+          resourceType: 'Observation',
+          id,
+          status: 'final',
+          code: '79560-9',
+          valueQuantity: { value: 300, unit: 'mL' },
+          effectiveDateTime,
+          method: null,
+          enteredMeasurementSystem: 'metric',
+          enteredTimezone: 'UTC',
+        },
+      };
+    }
+
+    it('validates an entry queued after the edit against the NEW date', async () => {
+      // The device moved the surgery date earlier and then backdated an entry
+      // into the newly valid days. It validated that entry against the new date;
+      // the server must too, or it refuses an entry the patient made correctly.
+      const patient = await provisioned(); // surgery 2026-01-15
+
+      const response = await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { surgeryDate: '2026-01-05' },
+          { clientTimestamp: clientTime(-20) },
+        ),
+        entryBefore(-10, '2026-01-10T12:00:00.000Z'),
+      ]);
+
+      expect(response.body.results.map((r: { status: string }) => r.status)).toEqual([
+        'accepted',
+        'accepted',
+      ]);
+    });
+
+    it('validates an entry queued BEFORE the edit against the old date', async () => {
+      const patient = await provisioned();
+
+      const response = await push(patient.token, [
+        entryBefore(-20, '2026-01-10T12:00:00.000Z'),
+        profileEdit(
+          patient.profileId,
+          { surgeryDate: '2026-01-05' },
+          { clientTimestamp: clientTime(-10) },
+        ),
+      ]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'EFFECTIVE_DATE_TIME_BEFORE_SURGERY',
+      });
+      expect(response.body.results[1].status).toBe('accepted');
+    });
+
+    it('does not move the bound when the edit loses', async () => {
+      // Only an ACCEPTED edit changes the stored date, so only an accepted one
+      // may change what the rest of the batch is checked against. Carrying any
+      // non-rejected result would let a superseded edit relax the bound.
+      const patient = await provisioned();
+      await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { ostomyType: 'colostomy' },
+          { clientTimestamp: clientTime(-10) },
+        ),
+      ]).expect(200);
+
+      const response = await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { surgeryDate: '2026-01-05' },
+          { clientTimestamp: clientTime(-60) },
+        ),
+        entryBefore(-5, '2026-01-10T12:00:00.000Z'),
+      ]);
+
+      expect(response.body.results[0].status).toBe('superseded');
+      expect(response.body.results[1]).toMatchObject({
+        status: 'rejected',
+        reasonCode: 'EFFECTIVE_DATE_TIME_BEFORE_SURGERY',
+      });
+    });
+
+    it('does not re-validate entries already accepted', async () => {
+      // Moving the date LATER makes an accepted entry look "before surgery".
+      // Tier 1 applies on write; history is not re-checked against a mutable
+      // profile (the shape ADR-0016 refuses for local_date).
+      const patient = await provisioned();
+      const entry = entryBefore(-20, '2026-01-20T12:00:00.000Z');
+      await push(patient.token, [entry]).expect(200);
+
+      await push(patient.token, [
+        profileEdit(
+          patient.profileId,
+          { surgeryDate: '2026-02-01' },
+          { clientTimestamp: clientTime(-10) },
+        ),
+      ]).expect(200);
+
+      const rows = await db.query(`SELECT deleted_at FROM observations WHERE id = $1`, [
+        entry.entityId,
+      ]);
+      expect(rows.rowCount).toBe(1);
+      expect(rows.rows[0].deleted_at).toBeNull();
+    });
+  });
+
+  describe('P4.S3 — an edit on one device reaches the others', () => {
+    it('appears in the delta pull with the edited values', async () => {
+      // SRS §3.10: "Preferences synchronize across devices via the Section 4.5
+      // pull-sync delta endpoint". A second device is a second pull with the
+      // same account's token.
+      const patient = await provisioned();
+      const before = await delta(patient.token).expect(200);
+
+      await push(patient.token, [
+        profileEdit(patient.profileId, { measurementSystem: 'imperial' }),
+      ]).expect(200);
+      const after = await delta(patient.token, before.body.cursor).expect(200);
+
+      expect(after.body.changes).toHaveLength(1);
+      expect(after.body.changes[0]).toMatchObject({
+        entityType: 'Profile',
+        entityId: patient.profileId,
+        payload: { id: patient.profileId, measurementSystem: 'imperial' },
+      });
+    });
+
+    it('never shows one patient another’s profile', async () => {
+      const mine = await provisioned();
+      const theirs = await provisioned();
+
+      const pulled = await delta(mine.token).expect(200);
+
+      const ids = pulled.body.changes.map((change: { entityId: string }) => change.entityId);
+      expect(ids).toContain(mine.profileId);
+      expect(ids).not.toContain(theirs.profileId);
     });
   });
 });

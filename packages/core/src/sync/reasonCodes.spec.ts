@@ -166,9 +166,10 @@ describe('wire vocabularies', () => {
    * despite being app-native, because the convention belongs to this wire
    * rather than to FHIR.
    */
-  it('§7 — the entity types P3 exchanges, spelled as the wire spells them', () => {
+  it('§7 — the entity types this wire exchanges, spelled as the wire spells them', () => {
     const entityTypes: readonly SyncEntityType[] = Object.values(SYNC_ENTITY_TYPE);
-    expect([...entityTypes].sort()).toEqual(['Meal', 'Observation']);
+    // `Profile` since P4.S3 (§7.5).
+    expect([...entityTypes].sort()).toEqual(['Meal', 'Observation', 'Profile']);
   });
 
   it('§3.1 — operation types are create, update, delete', () => {

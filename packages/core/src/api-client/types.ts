@@ -114,7 +114,7 @@ export type ObservationWarning = {
 };
 
 export type SyncDeltaChange = {
-  readonly entityType: 'Observation' | 'Meal';
+  readonly entityType: 'Observation' | 'Meal' | 'Profile';
   readonly entityId: string;
   /** A server sequence. A JSON string, never a number — 64-bit (§7.3). */
   readonly serverSequence: string;
@@ -186,7 +186,10 @@ export type SyncOperationResult = {
     | 'urineColorCode'
     | 'description'
     | 'size'
-    | 'tagCodes';
+    | 'tagCodes'
+    | 'ostomyType'
+    | 'surgeryDate'
+    | 'measurementSystem';
   /** Diagnostic. A client MUST NOT branch clinical behaviour on it (§3.7). */
   readonly replayed: boolean;
 };
@@ -208,7 +211,7 @@ export type SyncProtocolErrorResponse = {
 export type SyncPushOperation = {
   /** Client-generated at enqueue. Never the entity id (§1). */
   readonly operationId: string;
-  readonly entityType: 'Observation' | 'Meal';
+  readonly entityType: 'Observation' | 'Meal' | 'Profile';
   readonly entityId: string;
   readonly operationType: 'create' | 'update' | 'delete';
   /** When the WRITE was made. Orders the batch and decides last-write-wins — distinct from effectiveDateTime, the clinical moment (§1). */

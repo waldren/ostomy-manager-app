@@ -301,6 +301,22 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       .query(query);
   }
 
+  /**
+   * The cursor just past a seeded patient's own profile.
+   *
+   * Since P4.S3 the profile is a synced entity, so a `since=0` pull serves it
+   * first — which is correct, and is how a new device learns the patient's
+   * settings. Tests about the cursor's MECHANICS start here instead, so that
+   * their exact counts are about the rows they wrote rather than off by the one
+   * row every patient has.
+   */
+  async function afterProfile(patient: SeededPatient): Promise<string> {
+    const result = await db.query(`SELECT server_sequence FROM profiles WHERE patient_id = $1`, [
+      patient.patientId,
+    ]);
+    return String(result.rows[0].server_sequence);
+  }
+
   async function observationRows(entityId: string): Promise<Array<Record<string, unknown>>> {
     const result = await db.query(`SELECT * FROM observations WHERE id = $1`, [entityId]);
     return result.rows;
@@ -726,6 +742,35 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
         field: 'effectiveDateTime',
         reasonCode: 'EFFECTIVE_DATE_TIME_IN_FUTURE',
       });
+    });
+
+    /**
+     * §3.8's poisoned-clock bound, for a meal. Meals were dispatched before the
+     * clock-skew check ran, so from P3.S1 until P4.S3 a phone with its clock set
+     * a year ahead won every meal conflict, permanently. The test above is about
+     * WHEN THE MEAL WAS EATEN; this one is about the device's clock.
+     */
+    it('rejects a client clock beyond the allowance, naming clientTimestamp', async () => {
+      const future = new Date(Date.now() + (CLOCK_SKEW_SECONDS + 600) * 1000).toISOString();
+
+      const response = await push(mealPatient, [mealOp({ clientTimestamp: future })]);
+
+      expect(response.body.results[0]).toMatchObject({
+        status: 'rejected',
+        field: 'clientTimestamp',
+        reasonCode: 'CLIENT_TIMESTAMP_OUT_OF_RANGE',
+      });
+    });
+
+    it('records its idempotency row as a MEAL operation, not an observation', async () => {
+      // Every record said OBSERVATION from P3.S1 until P4.S3. Replay keys on
+      // (patient, operationId) and was unaffected; the row still misdescribed
+      // what it was about.
+      const op = mealOp();
+      await push(mealPatient, [op]);
+
+      const row = await operationRow(op.operationId as string);
+      expect(row?.entity_type).toBe('MEAL');
     });
 
     it('refuses an update naming an entity this patient does not have (§6.2)', async () => {
@@ -1701,7 +1746,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       const ops = [createOp({ clientTimestamp: at }), createOp({ clientTimestamp: at })];
       await push(fresh, ops).expect(200);
 
-      const response = await delta(fresh, { since: 0 });
+      const response = await delta(fresh, { since: await afterProfile(fresh) });
 
       expect(response.status).toBe(200);
       expect(response.body.changes).toHaveLength(2);
@@ -1772,7 +1817,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
         Array.from({ length: 3 }, () => createOp({ clientTimestamp: at })),
       ).expect(200);
 
-      const first = await delta(fresh, { since: 0, limit: 2 });
+      const first = await delta(fresh, { since: await afterProfile(fresh), limit: 2 });
       expect(first.body.changes).toHaveLength(2);
       expect(first.body.hasMore).toBe(true);
 
@@ -1850,6 +1895,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
 
     it('withholds a committed row whose lower-sequenced sibling is still in flight, then releases both in order', async () => {
       const fresh = await seedPatient();
+      const since = await afterProfile(fresh);
       const earlyId = randomUUID();
       const lateId = randomUUID();
 
@@ -1882,19 +1928,19 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
 
         // What the endpoint actually serves: nothing. The in-flight window is
         // withheld, so no cursor is issued that would skip A.
-        const duringFlight = await delta(fresh, { since: 0 });
+        const duringFlight = await delta(fresh, { since });
         expect(duringFlight.status).toBe(200);
         expect(duringFlight.body.changes).toEqual([]);
         expect(duringFlight.body.hasMore).toBe(false);
         // The cursor did not advance past anything, so a client re-polling
         // asks for the same window again rather than skipping ahead.
-        expect(duringFlight.body.cursor).toBe('0');
+        expect(duringFlight.body.cursor).toBe(since);
 
         await slow.query('COMMIT');
 
         // Once A commits, BOTH become visible, in sequence order — A first,
         // which is the row the naive query had already skipped past.
-        const afterCommit = await delta(fresh, { since: 0 });
+        const afterCommit = await delta(fresh, { since });
         expect(afterCommit.body.changes.map((c: { entityId: string }) => c.entityId)).toEqual([
           earlyId,
           lateId,
@@ -1924,7 +1970,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
       await push(fresh, ops).expect(200);
 
       const seen: string[] = [];
-      let cursor = '0';
+      let cursor = await afterProfile(fresh);
       for (let page = 0; page < 10; page += 1) {
         const response = await delta(fresh, { since: cursor, limit: 2 });
         for (const change of response.body.changes as Array<{ entityId: string }>) {
@@ -2149,7 +2195,7 @@ describe.skipIf(!dockerAvailable)('P2.S1b — sync push and delta', () => {
 
       // `since` is required on `SyncDeltaQuery`, and the query bag itself is
       // required because of it — `client.sync.delta()` does not compile.
-      const page = await client.sync.delta({ since: '0' });
+      const page = await client.sync.delta({ since: await afterProfile(fresh) });
 
       expect(page.changes).toHaveLength(1);
       expect(page.changes[0]!.entityId).toBe(op.entityId);

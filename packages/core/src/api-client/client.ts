@@ -262,11 +262,15 @@ export function createApiClient(options: ApiClientOptions) {
        * How a client decides whether to show onboarding. Answers 403 PATIENT_NOT_PROVISIONED when there is no profile — the same code every write gives for the same state (#80), rather than a second vocabulary for it. A read, so no audit row (SRS 5.2), and it carries no patient identifier: the caller is the patient.
        */
       profile: (): Promise<{
+        /** The profile's own id: the entityId of a sync update to it. Not the patient's id, which no response carries. */
+        readonly id: string;
         readonly ostomyType: 'colostomy' | 'ileostomy';
         readonly surgeryDate: string;
         readonly measurementSystem: 'metric' | 'imperial';
       }> =>
         request<{
+          /** The profile's own id: the entityId of a sync update to it. Not the patient's id, which no response carries. */
+          readonly id: string;
           readonly ostomyType: 'colostomy' | 'ileostomy';
           readonly surgeryDate: string;
           readonly measurementSystem: 'metric' | 'imperial';
@@ -289,11 +293,15 @@ export function createApiClient(options: ApiClientOptions) {
         /** Governs every volume AND weight (SRS 3.0, revised in Phase 5, ADR-0004). One choice for both dimensions, so incoherent pairings such as mL with pounds are unrepresentable rather than merely unselectable. */
         readonly measurementSystem: 'metric' | 'imperial';
       }): Promise<{
+        /** The profile's own id: the entityId of a sync update to it. Not the patient's id, which no response carries. */
+        readonly id: string;
         readonly ostomyType: 'colostomy' | 'ileostomy';
         readonly surgeryDate: string;
         readonly measurementSystem: 'metric' | 'imperial';
       }> =>
         request<{
+          /** The profile's own id: the entityId of a sync update to it. Not the patient's id, which no response carries. */
+          readonly id: string;
           readonly ostomyType: 'colostomy' | 'ileostomy';
           readonly surgeryDate: string;
           readonly measurementSystem: 'metric' | 'imperial';

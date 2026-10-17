@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { OSTOMY_TYPE } from '@ostomy/core/sync';
 import { z } from 'zod';
 
 // From the observations wire module rather than re-declared here, because it is
@@ -65,7 +66,7 @@ import { MEASUREMENT_SYSTEMS } from '../observations/observation-wire';
  */
 
 /** v1 covers colostomy and ileostomy only — urostomy was cut in SRS Phase 4 Appendix A, because a urostomy's stoma output IS urine and that is a different data model rather than a third enum value. */
-export const ONBOARDING_OSTOMY_TYPES = ['colostomy', 'ileostomy'] as const;
+export const ONBOARDING_OSTOMY_TYPES = OSTOMY_TYPE;
 
 export const onboardingRequestSchema = z
   .object({
@@ -96,13 +97,28 @@ export type OnboardingRequest = z.infer<typeof onboardingRequestSchema>;
 /**
  * What a client reads back, and what `GET /profile` answers with.
  *
- * Carries no patient identifier. The caller is the patient — every route here is
- * behind `JwtAuthGuard` and resolves the subject from the verified token — so an
- * id in the body would be a patient identifier on the wire that nothing needs,
- * which is the shape `GET /api/v1/observations` already refuses for the same
- * reason.
+ * Carries no PATIENT identifier. The caller is the patient — every route here
+ * is behind `JwtAuthGuard` and resolves the subject from the verified token — so
+ * a patient id in the body would be one on the wire that nothing needs, which is
+ * the shape `GET /api/v1/observations` already refuses for the same reason.
+ *
+ * It does carry the profile's OWN id, since P4.S3, and the distinction is the
+ * same one observations draw: every observation's `id` is on the wire because a
+ * client cannot edit an entity it cannot name. An edit to a profile is a sync
+ * `update` whose `entityId` is this value (`docs/sync-contract.md` §7.5), and
+ * the delta pull carries it as that change's `entityId` regardless, so leaving
+ * it out here would hide nothing and would leave a freshly installed device
+ * unable to make an edit until its first delta pull.
+ *
+ * It is still a stable, one-per-patient handle, so §7.5's rules bind every
+ * consumer: never in a URL path or query string, never in analytics, crash
+ * reports or push payloads, and never as or in Epic 5's share link.
  */
 export const profileResponseSchema = z.object({
+  id: z.uuid().meta({
+    description:
+      "The profile's own id: the entityId of a sync update to it. Not the patient's id, which no response carries.",
+  }),
   ostomyType: z.enum(ONBOARDING_OSTOMY_TYPES),
   surgeryDate: z.iso.date(),
   measurementSystem: z.enum(MEASUREMENT_SYSTEMS),

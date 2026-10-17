@@ -58,6 +58,8 @@ export type {
   ObservationMethodWireValue,
   MealSize,
   MealSyncPayload,
+  OstomyType,
+  ProfileSyncPayload,
   ObservationSyncPayload,
   ObservationValueQuantity,
   ObservationWireStatus,
@@ -65,7 +67,7 @@ export type {
   SyncPayloadByEntityType,
   WireInstant,
 } from './payload.js';
-export { MEAL_SIZE, SYNC_ENTITY_TYPE } from './payload.js';
+export { MEAL_SIZE, OSTOMY_TYPE, SYNC_ENTITY_TYPE } from './payload.js';
 
 export type { SyncReasonCode, SyncSpecificReasonCode, Tier1ReasonCode } from './reasonCodes.js';
 export {
