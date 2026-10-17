@@ -404,11 +404,60 @@ export interface EffectiveRangeSyncPayload {
   readonly previousRangeId: EntityId | null;
 }
 
+/**
+ * What a patient decided about one Quick-Add widget (P4.S3 slice 5, SRS
+ * §3.10, Epic 15 story 3). `none` is how a decision is undone: a row is never
+ * deleted, for the reason a profile is not (§7.7).
+ */
+export const QUICK_ADD_DECISION = ['pinned', 'hidden', 'none'] as const;
+export type QuickAddDecision = (typeof QUICK_ADD_DECISION)[number];
+
+/**
+ * The patient's decision about one Quick-Add routine (P4.S3 slice 5, §7.7).
+ *
+ * ## A decision ABOUT a routine, never a stored template
+ *
+ * A Quick-Add widget is derived on the device from the patient's own recent
+ * entries, grouped by every field they asserted (`apps/mobile/src/quickadd`).
+ * This entity stores none of that history and nothing a tap could log: only
+ * which routine a decision is about, and the decision. The widget a tap logs
+ * is still built from the entries, so it still carries a value the patient
+ * actually entered (#139 decision 3).
+ *
+ * The routine's fields are those grouping fields, so a decision names exactly
+ * one widget, and a removed widget stays removed however often the routine
+ * recurs.
+ *
+ * ## The id is derived, not random
+ *
+ * `quickAddPreferenceId`: a UUIDv5 of the routine within the profile's id. Two
+ * devices deciding about the same widget therefore write the SAME row, and
+ * last-write-wins (§4) settles it; with random ids they would write two rows
+ * that disagree with nothing to say which is in force. The server refuses any
+ * other id.
+ */
+export interface QuickAddPreferenceSyncPayload {
+  /** `quickAddPreferenceId(profileId, routineKey)` — equal to the operation's `entityId`. */
+  readonly id: EntityId;
+  /** One of the three Quick-Add observation codes (LOINC). */
+  readonly code: string;
+  /** The routine's canonical volume in mL, a JSON number. `null` only for a colour-only urine routine. */
+  readonly valueMl: number | null;
+  /** The SNOMED Measured/Estimated qualifier the routine carries, or `null` where it has no volume. */
+  readonly method: string | null;
+  readonly fluidTypeCode: string | null;
+  readonly urineColorCode: string | null;
+  /** The system the routine's entries were made in — part of what identifies it. */
+  readonly enteredMeasurementSystem: MeasurementSystem;
+  readonly decision: QuickAddDecision;
+}
+
 export interface SyncPayloadByEntityType {
   readonly Observation: ObservationSyncPayload;
   readonly Meal: MealSyncPayload;
   readonly Profile: ProfileSyncPayload;
   readonly EffectiveRange: EffectiveRangeSyncPayload;
+  readonly QuickAddPreference: QuickAddPreferenceSyncPayload;
 }
 
 export type SyncEntityType = keyof SyncPayloadByEntityType;
@@ -437,4 +486,6 @@ export const SYNC_ENTITY_TYPE = {
   PROFILE: 'Profile',
   /** P4.S3 slice 3 (§7.6). Additive, like `MEAL` and `PROFILE`. */
   EFFECTIVE_RANGE: 'EffectiveRange',
+  /** P4.S3 slice 5 (§7.7). Additive, like the three before it. */
+  QUICK_ADD_PREFERENCE: 'QuickAddPreference',
 } as const;
