@@ -26,12 +26,19 @@ import {
   type SyncDeltaResponse,
 } from '@ostomy/core/sync';
 
-import { Prisma, type Meal, type Observation, type Profile } from '../generated/prisma/client';
+import {
+  Prisma,
+  type EffectiveRange,
+  type Meal,
+  type Observation,
+  type Profile,
+} from '../generated/prisma/client';
 import { SecurityLogService } from '../logging/security-log.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { toObservationResource } from '../observations/observation-payload';
 import { toMealResource } from '../meals/meal-payload';
 import { toProfileResource } from '../onboarding/profile-payload';
+import { toRangeResource } from '../ranges/range-payload';
 import { patientNotProvisioned } from '../observations/observation-rejection';
 import type { SyncDeltaQueryParsed } from './sync-delta.pipe';
 
@@ -202,6 +209,12 @@ export class SyncDeltaService {
           WHERE patient_id = ${patientId}::uuid
             AND server_sequence > ${query.since}
             AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)
+          UNION ALL
+          SELECT id, 'EffectiveRange' AS entity_type, server_sequence
+          FROM effective_ranges
+          WHERE patient_id = ${patientId}::uuid
+            AND server_sequence > ${query.since}
+            AND age(xmin) > age(pg_snapshot_xmin(pg_current_snapshot())::text::xid)
           ORDER BY server_sequence ASC
           LIMIT ${query.limit + 1}
         `;
@@ -216,12 +229,15 @@ export class SyncDeltaService {
         const profileIds = pageRefs
           .filter((ref) => ref.entity_type === 'Profile')
           .map((ref) => ref.id);
+        const rangeIds = pageRefs
+          .filter((ref) => ref.entity_type === 'EffectiveRange')
+          .map((ref) => ref.id);
 
         // Re-scoped to the patient here as well as above. Belt and braces at
         // a seam where a future edit could plausibly drop one of the two, and
         // §2 admits no exception: every entity lookup is by (patient, id)
         // together.
-        const [observations, meals, profiles] = await Promise.all([
+        const [observations, meals, profiles, ranges] = await Promise.all([
           observationIds.length === 0
             ? Promise.resolve([])
             : tx.observation.findMany({
@@ -240,6 +256,12 @@ export class SyncDeltaService {
                 where: { id: { in: profileIds }, patientId },
                 orderBy: { serverSequence: 'asc' },
               }),
+          rangeIds.length === 0
+            ? Promise.resolve([])
+            : tx.effectiveRange.findMany({
+                where: { id: { in: rangeIds }, patientId },
+                orderBy: { serverSequence: 'asc' },
+              }),
         ]);
 
         // Re-merged into ONE sequence-ordered page. The two typed reads above
@@ -251,6 +273,7 @@ export class SyncDeltaService {
           ...observations.map((row): DeltaRow => ({ kind: 'observation', row })),
           ...meals.map((row): DeltaRow => ({ kind: 'meal', row })),
           ...profiles.map((row): DeltaRow => ({ kind: 'profile', row })),
+          ...ranges.map((row): DeltaRow => ({ kind: 'range', row })),
         ].sort((a, b) => (a.row.serverSequence < b.row.serverSequence ? -1 : 1));
 
         return { page, hasMore: more };
@@ -297,7 +320,8 @@ export class SyncDeltaService {
 export type DeltaRow =
   | { readonly kind: 'observation'; readonly row: Observation }
   | { readonly kind: 'meal'; readonly row: Meal }
-  | { readonly kind: 'profile'; readonly row: Profile };
+  | { readonly kind: 'profile'; readonly row: Profile }
+  | { readonly kind: 'range'; readonly row: EffectiveRange };
 
 function nextCursor(page: readonly DeltaRow[], since: bigint): bigint {
   const last = page[page.length - 1];
@@ -320,9 +344,52 @@ function toChange(entry: DeltaRow): SyncDeltaChange {
       return toMealChange(entry.row);
     case 'profile':
       return toProfileChange(entry.row);
+    case 'range':
+      return toRangeChange(entry.row);
     case 'observation':
       return toObservationChange(entry.row);
   }
+}
+
+/**
+ * An `EffectiveRange` change (P4.S3 slice 3, §7.6). Every row of every
+ * provenance and status, a physician's included: a device has to be able to
+ * say which value is in force and why, and that needs the rows that outrank
+ * the patient's as well as the patient's own history.
+ */
+function toRangeChange(row: EffectiveRange): SyncDeltaChange {
+  const entityId = toEntityId(row.id);
+  const serverSequence = toServerSequence(row.serverSequence.toString());
+  const clientUpdatedAt = row.clientUpdatedAt.toISOString();
+
+  if (row.deletedAt !== null) {
+    return syncDeltaTombstone({
+      entityType: SYNC_ENTITY_TYPE.EFFECTIVE_RANGE,
+      entityId,
+      serverSequence,
+      clientUpdatedAt,
+    });
+  }
+
+  const resource = toRangeResource(row);
+  return syncDeltaUpsert({
+    entityType: SYNC_ENTITY_TYPE.EFFECTIVE_RANGE,
+    entityId,
+    serverSequence,
+    clientUpdatedAt,
+    // Named field by field, never spread from `resource`.
+    payload: {
+      id: entityId,
+      rangeType: resource.rangeType,
+      lowValue: resource.lowValue,
+      highValue: resource.highValue,
+      targetValue: resource.targetValue,
+      unit: resource.unit,
+      provenance: resource.provenance,
+      status: resource.status,
+      previousRangeId: resource.previousRangeId,
+    },
+  });
 }
 
 /**
