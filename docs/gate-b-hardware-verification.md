@@ -6,7 +6,7 @@ This document is the remainder — the checks that exist to prove the **device-s
 
 Every step has an ID. Cite it — "HW-6 is still open" — instead of re-describing the check each time it comes up.
 
-**v1 ships Android only ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)), so the in-scope steps are HW-1, HW-2, HW-3, HW-6, HW-7, HW-8, HW-10 and HW-11.** HW-4, HW-5 and HW-9 are iOS-specific and are marked out of scope below rather than deleted: they are the list iOS reinstatement starts from, and deleting them would mean rediscovering it. The IDs never move — issue #39 and the implementation plan both cite them by number.
+**v1 ships Android only ([ADR-0020](../design-specs/decisions/0020-android-only-v1.md)), so the in-scope steps are HW-1, HW-2, HW-3, HW-6, HW-7, HW-8, HW-10, HW-11 and HW-12.** HW-4, HW-5 and HW-9 are iOS-specific and are marked out of scope below rather than deleted: they are the list iOS reinstatement starts from, and deleting them would mean rediscovering it. The IDs never move — issue #39 and the implementation plan both cite them by number.
 
 ## Why an emulator cannot close them
 
@@ -195,11 +195,25 @@ Start from a wiped device with **a screen lock set and no biometric enrolled** (
 
 **Also record** whether the patient is shown anything about the weaker protection. Nothing is shown today, deliberately (no copy was invented for it), and a run is the first chance to judge whether that is right.
 
+### HW-12 — no API response is kept in the app's HTTP cache
+
+Issue #152. React Native's networking keeps an OkHttp disk cache in `cache/http-cache`, and until the API sent `Cache-Control: no-store` it held the profile, the target ranges and every sync delta page there in plain text, outside SQLCipher (ADR-0014) and outside the sign-out purge. Found on an emulator; the API fix is tested in CI, but whether a real handset's build writes anything there is not something jest can see. On a debuggable development build, against an API that includes the #152 fix:
+
+```
+adb shell run-as org.ostomy.diary ls cache/http-cache
+```
+
+Run it three times: after a launch on a build that had cached entries before the fix (the startup clear must remove them), after a sync cycle and a visit to Settings and Target ranges, and after sign-out.
+
+**Pass:** each time the directory is absent, or holds no file whose first line is an `/api/v1/` URL. Print only the first line of each file (`head -n1`); the bodies are clinical data.
+
+**A failure means** a response is reaching the cache without `no-store`, or the purge is not deleting the directory, and the previous patient's diary is readable from the sandbox after sign-out.
+
 ## Recording a result
 
 A step is closed by a recorded run naming the handset, the OS version, the build, and the outcome — not by an argument that it ought to work. Add a row below, keep the failures, and open a fix rather than editing the step to match what happened.
 
-When every **in-scope** step is closed — HW-1, HW-2, HW-3, HW-6, HW-7, HW-8, HW-10, HW-11 — CLAUDE.md's "none of the mobile device-side controls are verified on hardware" is the sentence to change, in the same commit. The out-of-scope iOS steps do not hold it open.
+When every **in-scope** step is closed — HW-1, HW-2, HW-3, HW-6, HW-7, HW-8, HW-10, HW-11, HW-12 — CLAUDE.md's "none of the mobile device-side controls are verified on hardware" is the sentence to change, in the same commit. The out-of-scope iOS steps do not hold it open.
 
 | Step                 | Device                        | OS                  | Build     | Date       | Outcome                                                                                       |
 | -------------------- | ----------------------------- | ------------------- | --------- | ---------- | --------------------------------------------------------------------------------------------- |

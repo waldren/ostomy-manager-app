@@ -106,6 +106,40 @@ describe('HTTP surface — GET /api/v1/*', () => {
     expect(response.body).toMatchObject({ status: 'ok' });
   });
 
+  /**
+   * #152: React Native's HTTP stack kept a plain-text disk cache of the
+   * profile, ranges and sync delta pages, outside the encrypted store. Every
+   * answer says not to store it, including a refusal and an unknown route.
+   */
+  it.each([
+    ['a 200', '/api/v1/health', 200],
+    ['a 401', '/api/v1/auth-stub', 401],
+    ['an unknown route', '/api/v1/no-such-route', 404],
+  ])('%s says not to store it and carries no ETag', async (_name, path, status) => {
+    app = await bootTestApp();
+
+    const response = await request(app.getHttpServer()).get(path);
+
+    expect(response.status).toBe(status);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers.etag).toBeUndefined();
+  });
+
+  /** A client holding an entry from before #152 must get the answer, never "use what you stored". */
+  it.each([['*'], ['W/"anything"']])(
+    'never answers If-None-Match: %s with 304',
+    async (ifNoneMatch) => {
+      app = await bootTestApp();
+
+      const response = await request(app.getHttpServer())
+        .get('/api/v1/health')
+        .set('If-None-Match', ifNoneMatch)
+        .set('If-Modified-Since', new Date().toUTCString());
+
+      expect(response.status).toBe(200);
+    },
+  );
+
   it('GET /api/v1/auth-stub with no bearer token returns 401 AUTH_MISSING_TOKEN', async () => {
     app = await bootTestApp();
 

@@ -19,12 +19,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // (ADR-0006) before any screen renders and calls `useTranslation()`.
 import '../src/i18n/i18n';
 
+import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider } from '../src/auth/AuthContext';
 import { DatabaseProvider } from '../src/db/DatabaseProvider';
+import { clearHttpCache } from '../src/db/httpCache';
 import { ProfileProvider } from '../src/onboarding/ProfileProvider';
 import { SyncProvider } from '../src/sync/SyncProvider';
 
@@ -46,6 +48,12 @@ import { SyncProvider } from '../src/sync/SyncProvider';
  * until the next launch.
  */
 export default function RootLayout(): React.JSX.Element {
+  // Entries an older build left in React Native's HTTP cache, which hold PHI
+  // in plain text (#152). Once per launch; see `clearHttpCache`.
+  useEffect(() => {
+    clearHttpCache();
+  }, []);
+
   return (
     // `SafeAreaProvider` outermost: `src/ui/Screen` renders a
     // `SafeAreaView` and every screen goes through it, so without this the
