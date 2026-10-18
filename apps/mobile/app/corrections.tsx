@@ -36,6 +36,7 @@ import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import {
   discardRejectedCreate,
+  discardRejectedQuickAddDecision,
   discardRejectedRangeWrite,
   reenqueueCorrectedObservation,
   undoRejectedProfileEdit,
@@ -176,6 +177,8 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
    * target ranges screen, so the one action is to remove the change.
    */
   const [rangeRejections, setRangeRejections] = useState<readonly RangeRejection[]>([]);
+  /** Refused Quick-Add decisions (P4.S3 slice 5b), with one action: remove. */
+  const [quickAddRejections, setQuickAddRejections] = useState<readonly SyncQueueEntry[]>([]);
   const [undoUnreachable, setUndoUnreachable] = useState(false);
   const { port: profilePort, refresh: refreshProfile } = useProfileState();
 
@@ -191,9 +194,14 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     const resolved: RejectedEntry[] = [];
     const profiles: SyncQueueEntry[] = [];
     const ranges: RangeRejection[] = [];
+    const quickAdds: SyncQueueEntry[] = [];
     for (const operation of rejected) {
       if (operation.entityType === 'Profile') {
         profiles.push(operation);
+        continue;
+      }
+      if (operation.entityType === 'QuickAddPreference') {
+        quickAdds.push(operation);
         continue;
       }
       if (operation.entityType === 'EffectiveRange') {
@@ -213,6 +221,7 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     setEntries(resolved);
     setProfileRejections(profiles);
     setRangeRejections(ranges);
+    setQuickAddRejections(quickAdds);
     setCached((await readThresholds(database.executor)) ?? null);
   }, [database]);
 
@@ -384,6 +393,18 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     [database, load, profilePort, refreshProfile],
   );
 
+  const discardQuickAddChange = useCallback(
+    async (operation: SyncQueueEntry) => {
+      if (database.status !== 'ready') return;
+      await discardRejectedQuickAddDecision(database.executor, {
+        rejectedOperationId: operation.operationId,
+        entityId: operation.entityId,
+      });
+      await load();
+    },
+    [database, load],
+  );
+
   const discardRangeChange = useCallback(
     async (operation: SyncQueueEntry) => {
       if (database.status !== 'ready') return;
@@ -431,7 +452,10 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
 
       {entries === undefined ? (
         <BodyText>{t('mobile:common.loadingLabel')}</BodyText>
-      ) : nothingToShow && profileRejections.length === 0 && rangeRejections.length === 0 ? (
+      ) : nothingToShow &&
+        profileRejections.length === 0 &&
+        rangeRejections.length === 0 &&
+        quickAddRejections.length === 0 ? (
         <BodyText>{t('common:corrections.empty')}</BodyText>
       ) : (
         <>
@@ -455,6 +479,18 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
                   {t('common:corrections.profileUndoUnreachable')}
                 </BodyText>
               ) : null}
+            </View>
+          ))}
+          {quickAddRejections.map((operation) => (
+            <View key={operation.operationId} style={{ gap: 8 }}>
+              <BodyText tone="error">{t('common:corrections.quickAddProblem')}</BodyText>
+              <BodyText tone="muted">{t('common:corrections.quickAddDiscardHint')}</BodyText>
+              <Button
+                label={t('common:corrections.quickAddDiscardButton')}
+                onPress={() => {
+                  void discardQuickAddChange(operation);
+                }}
+              />
             </View>
           ))}
           {rangeRejections.map(({ operation, change }) => (

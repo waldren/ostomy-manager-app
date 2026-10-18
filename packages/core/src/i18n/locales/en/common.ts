@@ -63,6 +63,39 @@ export const common = {
   'quickAdd.editButton': 'Change before saving',
   'quickAdd.editHint': 'Opens the entry form with these details filled in, so you can adjust them.',
 
+  /**
+   * Keeping and removing Quick-Add buttons (P4.S3 slice 5b, SRS §3.10, Epic 15
+   * story 3). "Keep" rather than "pin": the patient-facing word for what it
+   * does. Removing is never final — the screen that removes is the screen that
+   * brings back — and the copy says so, because a removed shortcut otherwise
+   * reads as gone for good.
+   */
+  'quickAdd.kept': 'You chose to keep this one.',
+  'quickAdd.manageHeading': 'Quick-Add buttons',
+  'quickAdd.manageIntro':
+    'These buttons on your home screen repeat entries you make often. Keep one so it always stays, or remove one you do not want.',
+  'quickAdd.manageEmpty':
+    'You have no Quick-Add buttons yet. A button appears after you log the same entry at least twice in two weeks.',
+  'quickAdd.removedHeading': 'Removed buttons',
+  'quickAdd.removedIntro': 'These stay off your home screen, even if you log them again.',
+  'quickAdd.keepButton': 'Keep this button',
+  'quickAdd.keepSpoken': 'Keep this button: {{label}}',
+  'quickAdd.keepHint': 'It stays on your home screen even if you stop logging it.',
+  'quickAdd.unkeepButton': 'Stop keeping this button',
+  'quickAdd.unkeepSpoken': 'Stop keeping this button: {{label}}',
+  'quickAdd.unkeepHint': 'It stays only while you keep logging it.',
+  'quickAdd.removeButton': 'Remove this button',
+  'quickAdd.removeSpoken': 'Remove this button: {{label}}',
+  'quickAdd.removeHint': 'It will not come back on its own. You can bring it back on this screen.',
+  'quickAdd.restoreButton': 'Bring this button back',
+  'quickAdd.restoreSpoken': 'Bring this button back: {{label}}',
+  'quickAdd.restoreHint': 'It shows again when you log it often.',
+  'quickAdd.announceKept': 'Saved. This button will stay on your home screen.',
+  'quickAdd.announceUnkept': 'Saved. This button will stay only while you keep logging it.',
+  'quickAdd.announceRemoved': 'Saved. This button is removed from your home screen.',
+  'quickAdd.announceRestored': 'Saved. This button will show again when you log it often.',
+  'quickAdd.saveFailed': 'Something went wrong, and your change was not saved. Please try again.',
+
   // Entry-form copy. Clinical meaning, so `common` rather than `mobile`:
   // the web client will eventually ask the same questions, and the two
   // must not drift into wording them differently.
@@ -464,6 +497,12 @@ export const common = {
     'Your phone needs a connection to undo this. Check your connection, then try again.',
   // P4.S3 slice 4. A refused range change has nothing to correct in place: a
   // new value is a new row, set again on the target ranges screen.
+  // P4.S3 slice 5b. Reachable only if this phone built a decision the server
+  // could not read, which its own checks are meant to make impossible.
+  'corrections.quickAddProblem': 'A change to your Quick-Add buttons was not accepted.',
+  'corrections.quickAddDiscardHint':
+    'Removing it puts that button back how it was on this phone. You can change it again in Settings.',
+  'corrections.quickAddDiscardButton': 'Remove this change',
   'corrections.rangeProblem': 'A change to your ranges was not accepted.',
   'corrections.rangeProblemSet': 'Your new range for {{measure}} ({{value}}) was not accepted.',
   'corrections.rangeProblemStop':
@@ -500,6 +539,9 @@ export const common = {
   'settings.needsConnectionBody':
     'Your phone needs to connect once before you can change these. Check your connection, then try again.',
   'settings.retryButton': 'Try again',
+  'settings.quickAddHeading': 'Quick-Add buttons',
+  'settings.quickAddIntro': 'Choose which shortcut buttons stay on your home screen.',
+  'settings.quickAddButton': 'Your Quick-Add buttons',
   'settings.targetRangesHeading': 'Target ranges',
   'settings.targetRangesIntro': 'See the typical ranges for you, and set your own.',
   'settings.targetRangesButton': 'Your target ranges',

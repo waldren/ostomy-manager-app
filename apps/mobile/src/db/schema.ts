@@ -652,6 +652,50 @@ CREATE TABLE IF NOT EXISTS range_writes (
 );
 `;
 
+/**
+ * Local migration 11 (P4.S3 slice 5b): the patient's Quick-Add decisions, and
+ * a one-time re-pull.
+ *
+ * ## `quick_add_decisions`
+ *
+ * One row per routine the patient has decided about: keep it pinned, remove
+ * it, or neither (`docs/sync-contract.md` §7.7). It is a decision ABOUT a
+ * routine, never a template: a widget is still derived from `observations`,
+ * so a tap still logs a value the patient entered. The id is the derived one
+ * the server checks (`quickAddPreferenceId`), so a decision made on another
+ * device lands on the same row here.
+ *
+ * `client_updated_at` is when the decision was made, on whichever device, and
+ * is what a delta change is compared against (§4, as `deltaPull.ts` applies it
+ * to every other entity). `value_ml` is TEXT for migration 1's reason.
+ *
+ * ## Why the cursor goes back to 0, once
+ *
+ * Builds before this one skipped `QuickAddPreference` changes in a delta page
+ * and advanced their cursor past them (§8), which is safe only because "a
+ * client that later learns the type re-syncs from `since=0`". This is that
+ * re-sync: without it, decisions another device made before this phone was
+ * updated would never arrive. Every change it re-delivers is applied by the
+ * same last-write-wins rule as the first time, so it re-downloads and changes
+ * nothing else. It costs one full pull, once.
+ */
+const MIGRATION_11_QUICK_ADD_DECISIONS = `
+CREATE TABLE IF NOT EXISTS quick_add_decisions (
+  id TEXT PRIMARY KEY,
+  code TEXT NOT NULL,
+  value_ml TEXT,
+  method TEXT,
+  fluid_type_code TEXT,
+  urine_color_code TEXT,
+  entered_measurement_system TEXT NOT NULL CHECK (entered_measurement_system IN ('metric', 'imperial')),
+  decision TEXT NOT NULL CHECK (decision IN ('pinned', 'hidden', 'none')),
+  client_updated_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+UPDATE sync_cursor SET cursor = '0';
+`;
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
@@ -704,5 +748,11 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
     version: 10,
     description: "range_cache and range_writes — the patient's target ranges, offline (P4.S3)",
     sql: () => MIGRATION_10_RANGES,
+  },
+  {
+    version: 11,
+    description:
+      'quick_add_decisions, and a one-time re-pull for the decisions older builds skipped',
+    sql: () => MIGRATION_11_QUICK_ADD_DECISIONS,
   },
 ];

@@ -18,12 +18,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { useCallback, useEffect, useState } from 'react';
 
 import type { DatabaseState } from '../db/DatabaseProvider';
+import { listQuickAddDecisions } from '../db/repositories/quickAddDecisionsRepository';
 import { listQuickAddCandidates } from '../db/repositories/quickAddRepository';
 import { now as clockNow, toWireInstant } from '../lib/utils/clock';
 
 import {
   QUICK_ADD_CODES,
-  rankQuickAddSuggestions,
+  buildQuickAddWidgets,
   recentWindowStart,
   type QuickAddSuggestion,
 } from './quickAddSuggestions';
@@ -52,13 +53,24 @@ import {
  * the local store has no change feed, and inventing one for a dashboard that
  * is re-entered on every save would be machinery for nothing.
  */
-export function useQuickAddSuggestions(database: DatabaseState): {
+export function useQuickAddSuggestions(
+  database: DatabaseState,
+  /**
+   * Any value that changes when the widgets may have: the dashboard passes the
+   * sync worker's running flag, so a widget pinned or removed on another device
+   * moves here when the pull that brought the decision settles.
+   */
+  refreshKey?: unknown,
+): {
   readonly suggestions: readonly QuickAddSuggestion[] | undefined;
+  /** Widgets the patient removed, for the screen that can bring them back. */
+  readonly removed: readonly QuickAddSuggestion[];
   readonly reload: () => void;
 } {
   const [suggestions, setSuggestions] = useState<readonly QuickAddSuggestion[] | undefined>(
     undefined,
   );
+  const [removed, setRemoved] = useState<readonly QuickAddSuggestion[]>([]);
   const [nonce, setNonce] = useState(0);
 
   const reload = useCallback(() => {
@@ -69,12 +81,18 @@ export function useQuickAddSuggestions(database: DatabaseState): {
     if (database.status !== 'ready') return undefined;
     let cancelled = false;
 
-    void listQuickAddCandidates(database.executor, {
-      codes: QUICK_ADD_CODES,
-      since: toWireInstant(recentWindowStart(clockNow())),
-    })
-      .then((candidates) => {
-        if (!cancelled) setSuggestions(rankQuickAddSuggestions(candidates));
+    void Promise.all([
+      listQuickAddCandidates(database.executor, {
+        codes: QUICK_ADD_CODES,
+        since: toWireInstant(recentWindowStart(clockNow())),
+      }),
+      listQuickAddDecisions(database.executor),
+    ])
+      .then(([candidates, decisions]) => {
+        if (cancelled) return;
+        const widgets = buildQuickAddWidgets(candidates, decisions);
+        setSuggestions(widgets.shown);
+        setRemoved(widgets.removed);
       })
       .catch(() => {
         // An empty list, not a thrown render. Quick-Add is an accelerator: a
@@ -83,13 +101,16 @@ export function useQuickAddSuggestions(database: DatabaseState): {
         // screen. The same reasoning `home.tsx` applies to its pending count,
         // except that there "unknown" is its own answer worth showing and here
         // there is nothing to say.
-        if (!cancelled) setSuggestions([]);
+        if (!cancelled) {
+          setSuggestions([]);
+          setRemoved([]);
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [database, nonce]);
+  }, [database, nonce, refreshKey]);
 
-  return { suggestions, reload };
+  return { suggestions, removed, reload };
 }

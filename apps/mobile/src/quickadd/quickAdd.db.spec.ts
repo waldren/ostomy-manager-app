@@ -279,6 +279,15 @@ describe('Quick-Add over the local store', () => {
         enteredMeasurementSystem: 'metric',
         occurrences: 2,
         lastEnteredAt: NOW.toISOString(),
+        routine: {
+          code: 'stub',
+          valueMl: null,
+          method: null,
+          fluidTypeCode: null,
+          urineColorCode: null,
+          enteredMeasurementSystem: 'metric',
+        },
+        pinned: false,
       };
 
       const written = await logQuickAdd(executor, suggestion, 'metric', nowFn);

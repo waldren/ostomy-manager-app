@@ -79,7 +79,7 @@ export function QuickAddWidgets({
       <BodyText tone="muted">{t('mobile:home.quickAddBody')}</BodyText>
 
       {suggestions.map((suggestion) => {
-        const label = describe(suggestion, measurementSystem, t);
+        const label = describeQuickAdd(suggestion, measurementSystem, t);
         // A suggestion this release cannot NAME is not offered. A value-set
         // member an admin added after the release shipped has no catalog copy
         // (CLAUDE.md: "renders as 'Another option' — a reachable state, not a
@@ -107,9 +107,7 @@ export function QuickAddWidgets({
               suggestion inspectable at all — there is no review screen for
               these until P4.S3.
             */}
-            <BodyText tone="muted">
-              {t('common:quickAdd.repeatCount', { count: suggestion.occurrences })}
-            </BodyText>
+            <BodyText tone="muted">{quickAddStatus(suggestion, t)}</BodyText>
             <Button
               label={t('common:quickAdd.editButton')}
               variant="secondary"
@@ -143,7 +141,7 @@ export function QuickAddWidgets({
  * substitutes `fluidType.other`: an admin's new member is not "something
  * else".
  */
-function describe(
+export function describeQuickAdd(
   suggestion: QuickAddSuggestion,
   measurementSystem: MeasurementSystem,
   // i18next's own type, not a structural `(key, options) => string`: under
@@ -180,4 +178,20 @@ function describe(
   }
 
   return t('common:quickAdd.volumeLabel', { amount, method });
+}
+
+/**
+ * The line under a widget: how often the patient logged it, and whether they
+ * chose to keep it (P4.S3 slice 5b). A kept widget whose routine has left the
+ * window says only that it was kept — "You logged this 0 times recently" would
+ * read as a fault.
+ */
+export function quickAddStatus(
+  suggestion: QuickAddSuggestion,
+  t: TFunction<readonly ['common', 'mobile']>,
+): string {
+  if (!suggestion.pinned)
+    return t('common:quickAdd.repeatCount', { count: suggestion.occurrences });
+  if (suggestion.occurrences === 0) return t('common:quickAdd.kept');
+  return `${t('common:quickAdd.repeatCount', { count: suggestion.occurrences })} ${t('common:quickAdd.kept')}`;
 }

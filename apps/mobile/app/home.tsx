@@ -79,7 +79,7 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
   const params = useLocalSearchParams<{ saved?: string }>();
 
   const cachedThresholds = useCachedThresholds(database);
-  const { suggestions, reload: reloadSuggestions } = useQuickAddSuggestions(database);
+  const { suggestions, reload: reloadSuggestions } = useQuickAddSuggestions(database, isRunning);
   // Destructured so the callbacks below depend on these VALUES rather than on
   // `profile`, whose identity the gate controls.
   const { measurementSystem, surgeryDate } = profile;

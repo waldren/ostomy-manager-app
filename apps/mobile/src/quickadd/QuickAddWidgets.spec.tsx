@@ -49,6 +49,15 @@ const VOLUMETRIC: QuickAddSuggestion = {
   enteredMeasurementSystem: 'metric',
   occurrences: 4,
   lastEnteredAt: '2026-10-02T08:00:00.000Z',
+  routine: {
+    code: 'stub',
+    valueMl: null,
+    method: null,
+    fluidTypeCode: null,
+    urineColorCode: null,
+    enteredMeasurementSystem: 'metric',
+  },
+  pinned: false,
 };
 
 async function renderWidgets(suggestions: readonly QuickAddSuggestion[] | undefined) {
@@ -108,6 +117,15 @@ describe('the label states what a tap would record', () => {
         enteredMeasurementSystem: 'metric',
         occurrences: 2,
         lastEnteredAt: '2026-10-02T08:00:00.000Z',
+        routine: {
+          code: 'stub',
+          valueMl: null,
+          method: null,
+          fluidTypeCode: null,
+          urineColorCode: null,
+          enteredMeasurementSystem: 'metric',
+        },
+        pinned: false,
       },
     ]);
 
@@ -148,6 +166,15 @@ describe('a suggestion this release cannot name is not offered', () => {
         enteredMeasurementSystem: 'metric',
         occurrences: 2,
         lastEnteredAt: '2026-10-02T08:00:00.000Z',
+        routine: {
+          code: 'stub',
+          valueMl: null,
+          method: null,
+          fluidTypeCode: null,
+          urineColorCode: null,
+          enteredMeasurementSystem: 'metric',
+        },
+        pinned: false,
       },
     ]);
 

@@ -28,6 +28,10 @@ import {
   type MealSize,
 } from '../db/repositories/mealsRepository';
 import { readProfileClientUpdatedAt, writeProfile } from '../db/repositories/profileRepository';
+import {
+  getQuickAddDecision,
+  writeQuickAddDecision,
+} from '../db/repositories/quickAddDecisionsRepository';
 import { getObservationById } from '../db/repositories/observationsRepository';
 import { setCursor } from '../db/repositories/syncCursorRepository';
 
@@ -77,6 +81,12 @@ export interface DeltaOutcome {
    * are re-read every cycle instead (`responseDecoding.ts`'s `range-change`).
    */
   readonly rangeChanges: number;
+  /**
+   * Quick-Add decisions applied (also counted in `upserts`). Reported so the
+   * dashboard can re-read its widgets: a widget pinned or removed on another
+   * device should move here without a restart.
+   */
+  readonly quickAddUpserts: number;
 }
 
 /**
@@ -100,6 +110,7 @@ export async function applyDeltaPage(
   let unsupportedEntity = 0;
   let profileUpserts = 0;
   let rangeChanges = 0;
+  let quickAddUpserts = 0;
 
   for (const change of page.changes) {
     if (change.kind === 'undecodable') {
@@ -124,6 +135,7 @@ export async function applyDeltaPage(
     if (change.kind === 'tombstone') tombstones += 1;
     else upserts += 1;
     if (change.kind === 'profile-upsert') profileUpserts += 1;
+    if (change.kind === 'quick-add-upsert') quickAddUpserts += 1;
   }
 
   // AFTER every change in the page is committed. See this module's header.
@@ -137,6 +149,7 @@ export async function applyDeltaPage(
     unsupportedEntity,
     profileUpserts,
     rangeChanges,
+    quickAddUpserts,
   };
 }
 
@@ -174,6 +187,7 @@ async function applyChange(
     | { kind: 'tombstone' }
     | { kind: 'meal-upsert' }
     | { kind: 'profile-upsert' }
+    | { kind: 'quick-add-upsert' }
   >,
   appliedAt: string,
 ): Promise<boolean> {
@@ -183,6 +197,10 @@ async function applyChange(
 
   if (change.kind === 'profile-upsert') {
     return applyProfileUpsert(executor, change, appliedAt);
+  }
+
+  if (change.kind === 'quick-add-upsert') {
+    return applyQuickAddUpsert(executor, change, appliedAt);
   }
 
   if (change.kind === 'tombstone' && change.entityType === 'Profile') {
@@ -416,6 +434,33 @@ async function applyProfileUpsert(
     },
     appliedAt,
     change.clientUpdatedAt,
+  );
+  return true;
+}
+
+/**
+ * Writes a Quick-Add decision from another device (or the server's own
+ * version), unless this device holds a strictly newer one — the same
+ * comparison every other entity makes here. A decision made on this phone and
+ * not yet pushed keeps showing until the server has decided between the two.
+ */
+async function applyQuickAddUpsert(
+  executor: SqliteExecutor,
+  change: Extract<DecodedDeltaChange, { kind: 'quick-add-upsert' }>,
+  appliedAt: string,
+): Promise<boolean> {
+  const existing = await getQuickAddDecision(executor, change.entityId);
+  if (existing !== undefined && change.clientUpdatedAt < existing.clientUpdatedAt) return false;
+
+  await writeQuickAddDecision(
+    executor,
+    {
+      id: change.entityId,
+      routine: change.payload.routine,
+      decision: change.payload.decision,
+      clientUpdatedAt: change.clientUpdatedAt,
+    },
+    appliedAt,
   );
   return true;
 }

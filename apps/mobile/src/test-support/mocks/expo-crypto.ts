@@ -26,8 +26,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * which produces the same RFC 4122 v4 UUID shape the real
  * `expo-crypto` implementation does.
  */
-import { randomUUID as nodeRandomUUID } from 'node:crypto';
+import { createHash, randomUUID as nodeRandomUUID } from 'node:crypto';
 
 export function randomUUID(): string {
   return nodeRandomUUID();
+}
+
+/** The digest algorithms this app uses, spelled as `expo-crypto` spells them. */
+export enum CryptoDigestAlgorithm {
+  SHA1 = 'SHA-1',
+}
+
+/** `expo-crypto`'s `digest`, over Node's: SHA-1 is the only one this app asks for. */
+export function digest(algorithm: CryptoDigestAlgorithm, data: Uint8Array): Promise<ArrayBuffer> {
+  if (algorithm !== CryptoDigestAlgorithm.SHA1) throw new Error(`Unmocked digest: ${algorithm}`);
+  const bytes = createHash('sha1').update(data).digest();
+  return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 }

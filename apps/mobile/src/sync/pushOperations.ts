@@ -20,6 +20,7 @@ import type {
   MealSyncPayload,
   ObservationSyncPayload,
   ProfileSyncPayload,
+  QuickAddPreferenceSyncPayload,
   SyncPushOperation,
   SyncPushRequest,
 } from '@ostomy/core/sync';
@@ -33,6 +34,10 @@ import {
 } from '../db/repositories/mealsRepository';
 import { getObservationById, markServerSequence } from '../db/repositories/observationsRepository';
 import { readProfile, type LocalProfile } from '../db/repositories/profileRepository';
+import {
+  getQuickAddDecision,
+  type LocalQuickAddDecision,
+} from '../db/repositories/quickAddDecisionsRepository';
 import { getRangeWriteForOperation, type RangeWrite } from '../db/repositories/rangesRepository';
 import {
   markRejected,
@@ -168,6 +173,32 @@ export async function buildPushRequest(
         operationType: entry.operationType,
         clientTimestamp: entry.clientTimestamp,
         payload: toProfilePayload(profile, entry.entityId),
+      });
+      sent.push(entry);
+      continue;
+    }
+
+    if (entry.entityType === 'QuickAddPreference') {
+      // From the row as it is now: a decision is a full replacement (§4), and
+      // two queued decisions about one widget both send the latest, which is
+      // what the patient last chose.
+      const decision = await getQuickAddDecision(executor, entry.entityId);
+      if (decision === undefined) {
+        unbuildable.push({
+          operationId: entry.operationId,
+          entityId: entry.entityId,
+          reason: 'entity-row-missing',
+        });
+        continue;
+      }
+
+      operations.push({
+        operationId: toOperationId(entry.operationId),
+        entityId: toEntityId(entry.entityId),
+        entityType: 'QuickAddPreference',
+        operationType: entry.operationType,
+        clientTimestamp: entry.clientTimestamp,
+        payload: toQuickAddPayload(decision),
       });
       sent.push(entry);
       continue;
@@ -323,6 +354,20 @@ function toRangePayload(range: RangeWrite): EffectiveRangeSyncPayload {
     provenance: range.provenance,
     status: range.status,
     previousRangeId: null,
+  };
+}
+
+/** Projects a local decision onto the §7.7 wire payload, field by field. */
+function toQuickAddPayload(decision: LocalQuickAddDecision): QuickAddPreferenceSyncPayload {
+  return {
+    id: toEntityId(decision.id),
+    code: decision.routine.code,
+    valueMl: decision.routine.valueMl,
+    method: decision.routine.method,
+    fluidTypeCode: decision.routine.fluidTypeCode,
+    urineColorCode: decision.routine.urineColorCode,
+    enteredMeasurementSystem: decision.routine.enteredMeasurementSystem,
+    decision: decision.decision,
   };
 }
 

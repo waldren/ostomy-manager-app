@@ -16,10 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import { toLocalDate, type MeasurementSystem } from '@ostomy/core/units';
-import type { CanonicalWireUnit } from '@ostomy/core/sync';
+import {
+  quickAddPreferenceId,
+  type CanonicalWireUnit,
+  type QuickAddDecision,
+  type QuickAddRoutine,
+} from '@ostomy/core/sync';
 import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 
 import { deviceTimeZone, toWireInstant } from '../lib/utils/clock';
+import { sha1 } from '../lib/utils/sha1';
 import { generateUuid } from '../lib/utils/uuid';
 
 import type { SqliteExecutor } from './executor';
@@ -46,6 +52,7 @@ import {
   type PatientRangeProvenance,
   type RangeWrite,
 } from './repositories/rangesRepository';
+import { writeQuickAddDecision } from './repositories/quickAddDecisionsRepository';
 import { enqueueOperation, removeOperation } from './repositories/syncQueueRepository';
 
 /**
@@ -860,5 +867,74 @@ export async function discardRejectedRangeWrite(
   await executor.withTransactionAsync(async () => {
     await removeOperation(executor, rejectedOperationId);
     await deleteRangeWriteForOperation(executor, rejectedOperationId);
+  });
+}
+
+/**
+ * The patient's decision about one Quick-Add routine (P4.S3 slice 5b,
+ * `docs/sync-contract.md` §7.7): keep it pinned, remove it, or undo either.
+ *
+ * The id is derived from the routine within the profile's id, so this phone
+ * and any other the patient owns name the same row for the same widget. That
+ * is why the profile's server id is required: a phone set up before P4.S3 gets
+ * it from `ProfileProvider`'s one-time fetch, and until then has nothing to
+ * name the row with.
+ *
+ * Always queued as a `create`. A phone cannot know whether another device made
+ * the row first, and §7.7 compares a create against an existing row like any
+ * other write; an `update` naming a row the server does not have yet would be
+ * refused instead.
+ */
+export async function enqueueQuickAddDecision(
+  executor: SqliteExecutor,
+  fields: {
+    readonly profileServerId: string;
+    readonly routine: QuickAddRoutine;
+    readonly decision: QuickAddDecision;
+  },
+  now: () => Date,
+): Promise<{ id: string; operationId: string }> {
+  const id = await quickAddPreferenceId(fields.profileServerId, fields.routine, sha1);
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+
+  await executor.withTransactionAsync(async () => {
+    await writeQuickAddDecision(
+      executor,
+      { id, routine: fields.routine, decision: fields.decision, clientUpdatedAt: nowIso },
+      nowIso,
+    );
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'QuickAddPreference',
+        entityId: id,
+        operationType: 'create',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
+  });
+
+  return { id, operationId };
+}
+
+/**
+ * Drops a Quick-Add decision the server refused, and this phone's copy of it,
+ * together (the correction inbox's one action for one).
+ *
+ * Reachable only if this phone built a payload the server could not read, which
+ * the derived id and the decoder are meant to make impossible. The row goes
+ * with it so the phone stops showing a decision no other device will ever see;
+ * the widget then shows as it would with no decision at all.
+ */
+export async function discardRejectedQuickAddDecision(
+  executor: SqliteExecutor,
+  fields: { readonly rejectedOperationId: string; readonly entityId: string },
+): Promise<void> {
+  await executor.withTransactionAsync(async () => {
+    await removeOperation(executor, fields.rejectedOperationId);
+    await executor.runAsync('DELETE FROM quick_add_decisions WHERE id = ?;', [fields.entityId]);
   });
 }

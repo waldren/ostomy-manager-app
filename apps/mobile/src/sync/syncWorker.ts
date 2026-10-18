@@ -220,6 +220,7 @@ const EMPTY_DELTA: DeltaOutcome = {
   unsupportedEntity: 0,
   profileUpserts: 0,
   rangeChanges: 0,
+  quickAddUpserts: 0,
 };
 
 export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncCycleResult> {
@@ -699,6 +700,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
   let unsupportedEntity = 0;
   let profileUpserts = 0;
   let rangeChanges = 0;
+  let quickAddUpserts = 0;
 
   for (;;) {
     const since = await getCursor(deps.executor);
@@ -719,6 +721,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
         unsupportedEntity,
         profileUpserts,
         rangeChanges,
+        quickAddUpserts,
       };
       if (error instanceof MissingAccessTokenError) {
         return { outcome, stoppedBecause: { kind: 'unauthenticated' } };
@@ -748,6 +751,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
     unsupportedEntity += applied.unsupportedEntity;
     profileUpserts += applied.profileUpserts;
     rangeChanges += applied.rangeChanges;
+    quickAddUpserts += applied.quickAddUpserts;
     pages += 1;
 
     if (!decodedPage.hasMore) {
@@ -761,6 +765,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
           unsupportedEntity,
           profileUpserts,
           rangeChanges,
+          quickAddUpserts,
         },
         stoppedBecause: { kind: 'completed' },
       };
@@ -781,6 +786,7 @@ async function runDeltaPhase(deps: SyncCycleDeps): Promise<DeltaPhaseResult> {
           unsupportedEntity,
           profileUpserts,
           rangeChanges,
+          quickAddUpserts,
         },
         stoppedBecause: { kind: 'unavailable' },
       };

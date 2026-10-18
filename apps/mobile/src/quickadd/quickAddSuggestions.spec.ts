@@ -28,7 +28,9 @@ import {
   MINIMUM_OCCURRENCES,
   QUICK_ADD_CODES,
   RECENT_WINDOW_DAYS,
+  buildQuickAddWidgets,
   rankQuickAddSuggestions,
+  type QuickAddDecisionInput,
   recentWindowStart,
   toSuggestion,
   type QuickAddCandidate,
@@ -158,6 +160,16 @@ describe('the colour-only urine entry (AC 12.1 AC2, §3.7)', () => {
       enteredMeasurementSystem: 'metric',
       occurrences: 3,
       lastEnteredAt: '2026-10-01T08:00:00.000Z',
+      // The routine a decision about this widget names (§7.7) — no volume, no toggle.
+      routine: {
+        code: VOIDED_URINE_LOINC_CODE,
+        valueMl: null,
+        method: null,
+        fluidTypeCode: null,
+        urineColorCode: 'dark_yellow',
+        enteredMeasurementSystem: 'metric',
+      },
+      pinned: false,
     });
   });
 
@@ -276,5 +288,147 @@ describe('the recent window', () => {
     const b = recentWindowStart(new Date('2026-06-01T00:00:00.000Z'));
 
     expect(a.toISOString()).not.toBe(b.toISOString());
+  });
+});
+
+/**
+ * The patient's decisions about widgets (P4.S3 slice 5b, SRS §3.10, Epic 15
+ * story 3): keep one so it stays, remove one so it stays gone.
+ */
+describe('buildQuickAddWidgets', () => {
+  function decision(
+    over: Partial<QuickAddCandidate>,
+    kind: QuickAddDecisionInput['decision'],
+  ): QuickAddDecisionInput {
+    const c = candidate(over);
+    return {
+      routine: {
+        code: c.code,
+        valueMl: c.valueQuantityValue === null ? null : Number(c.valueQuantityValue),
+        method: c.method,
+        fluidTypeCode: c.fluidTypeCode,
+        urineColorCode: c.urineColorCode,
+        enteredMeasurementSystem: c.enteredMeasurementSystem,
+      },
+      decision: kind,
+    };
+  }
+
+  const values = (list: readonly { routine: { valueMl: number | null } }[]) =>
+    list.map((suggestion) => suggestion.routine.valueMl);
+
+  it('shows the same widgets as before when the patient has decided nothing', () => {
+    const candidates = [
+      candidate({ valueQuantityValue: '250' }),
+      candidate({ valueQuantityValue: '500' }),
+    ];
+
+    expect(buildQuickAddWidgets(candidates, []).shown).toEqual(rankQuickAddSuggestions(candidates));
+  });
+
+  /** Epic 15 story 3: "a removed widget does not come back merely because the routine recurs". */
+  it('never shows a removed widget, however often it recurs, and lists it as removed', () => {
+    const widgets = buildQuickAddWidgets(
+      [
+        candidate({ valueQuantityValue: '250', occurrences: 40 }),
+        candidate({ valueQuantityValue: '500' }),
+      ],
+      [decision({ valueQuantityValue: '250' }, 'hidden')],
+    );
+
+    expect(values(widgets.shown)).toEqual([500]);
+    expect(values(widgets.removed)).toEqual([250]);
+  });
+
+  it('shows a kept widget first, marked as kept', () => {
+    const widgets = buildQuickAddWidgets(
+      [
+        candidate({ valueQuantityValue: '250', occurrences: 9 }),
+        candidate({ valueQuantityValue: '500', occurrences: 2 }),
+      ],
+      [decision({ valueQuantityValue: '500' }, 'pinned')],
+    );
+
+    expect(values(widgets.shown)).toEqual([500, 250]);
+    expect(widgets.shown.map((suggestion) => suggestion.pinned)).toEqual([true, false]);
+  });
+
+  /** Keeping is what pinning means: the routine stopping does not take the widget away. */
+  it('keeps a kept widget whose routine is no longer recent, built from the decision', () => {
+    const widgets = buildQuickAddWidgets([], [decision({ valueQuantityValue: '250' }, 'pinned')]);
+
+    expect(widgets.shown).toEqual([
+      expect.objectContaining({
+        kind: 'volumetric',
+        canonicalValue: '250',
+        occurrences: 0,
+        pinned: true,
+      }),
+    ]);
+  });
+
+  it('keeps a kept widget even when it recurred only once', () => {
+    const widgets = buildQuickAddWidgets(
+      [candidate({ valueQuantityValue: '250', occurrences: 1 })],
+      [decision({ valueQuantityValue: '250' }, 'pinned')],
+    );
+
+    expect(widgets.shown).toEqual([expect.objectContaining({ occurrences: 1, pinned: true })]);
+  });
+
+  it('shows every kept widget, and fills only the rest of the limit with others', () => {
+    const kept = [1, 2, 3, 4].map((n) =>
+      decision({ valueQuantityValue: String(n * 100) }, 'pinned'),
+    );
+    const widgets = buildQuickAddWidgets(
+      [candidate({ valueQuantityValue: '999', occurrences: 50 })],
+      kept,
+    );
+
+    expect(widgets.shown).toHaveLength(4);
+    expect(widgets.shown.every((suggestion) => suggestion.pinned)).toBe(true);
+  });
+
+  it('fills the limit around fewer kept widgets', () => {
+    const widgets = buildQuickAddWidgets(
+      ['100', '200', '300', '400'].map((value) => candidate({ valueQuantityValue: value })),
+      [decision({ valueQuantityValue: '400' }, 'pinned')],
+    );
+
+    expect(widgets.shown).toHaveLength(MAX_SUGGESTIONS);
+    expect(widgets.shown[0]?.pinned).toBe(true);
+  });
+
+  it('treats an undone decision as no decision at all', () => {
+    const widgets = buildQuickAddWidgets(
+      [candidate({ valueQuantityValue: '250' })],
+      [decision({ valueQuantityValue: '250' }, 'none')],
+    );
+
+    expect(widgets.shown).toEqual([expect.objectContaining({ pinned: false })]);
+    expect(widgets.removed).toEqual([]);
+  });
+
+  /** A decision names a routine by its number, so it covers however the entries were typed. */
+  it('treats "350" and "350.0" as one widget, which one decision removes', () => {
+    const widgets = buildQuickAddWidgets(
+      [
+        candidate({ valueQuantityValue: '350', occurrences: 2 }),
+        candidate({ valueQuantityValue: '350.0', occurrences: 5 }),
+      ],
+      [decision({ valueQuantityValue: '350.00' }, 'hidden')],
+    );
+
+    expect(widgets.shown).toEqual([]);
+    expect(widgets.removed).toEqual([expect.objectContaining({ canonicalValue: '350.0' })]);
+  });
+
+  it('decides about exactly one routine: a different method is a different widget', () => {
+    const widgets = buildQuickAddWidgets(
+      [candidate({ method: MEASURED }), candidate({ method: ESTIMATED })],
+      [decision({ method: MEASURED }, 'hidden')],
+    );
+
+    expect(widgets.shown).toEqual([expect.objectContaining({ method: 'estimated' })]);
   });
 });
