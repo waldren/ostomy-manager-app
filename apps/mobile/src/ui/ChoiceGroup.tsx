@@ -35,6 +35,9 @@ import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-na
  */
 const SELECTED_MARK = '✓';
 
+/** An option's width at the default text size; scaled with the OS setting at render time. */
+const OPTION_BASIS = 140;
+
 export interface Choice<TValue extends string> {
   readonly value: TValue;
   readonly label: string;
@@ -125,6 +128,15 @@ export function ChoiceGroup<TValue extends string>({
    */
   const { fontScale } = useWindowDimensions();
   const swatchSize = Math.max(tokens.spacing.xl, tokens.spacing.xl * fontScale);
+  /**
+   * How wide an option wants to be, scaled with the text in it (P4.S3 slice 6
+   * audit). At a fixed 140dp, two options stayed side by side at the largest
+   * OS text size, and on the urine scale the labels ran past their borders
+   * and dragged the swatches out with them ("Orange-bro|wn", measured on a
+   * Pixel 8 at 2.0×). Scaled, the options stack one per row once the text is
+   * too large for two to share one, which `flexWrap` then does by itself.
+   */
+  const optionBasis = OPTION_BASIS * Math.max(1, fontScale);
 
   return (
     <View style={styles.container}>
@@ -164,7 +176,11 @@ export function ChoiceGroup<TValue extends string>({
               accessibilityLabel={choice.label}
               accessibilityHint={choice.hint}
               accessibilityState={{ checked: selected, selected }}
-              style={[styles.option, selected ? styles.optionSelected : undefined]}
+              style={[
+                styles.option,
+                { flexBasis: optionBasis },
+                selected ? styles.optionSelected : undefined,
+              ]}
             >
               {selected ? (
                 <Text style={styles.mark} accessible={false}>
@@ -227,6 +243,8 @@ const styles = StyleSheet.create({
   swatch: {
     // Size comes from `swatchSize` at render time, not from here — see the
     // component. Only the fill and the border live in the stylesheet.
+    // Never shrunk: the LABEL gives way, by wrapping.
+    flexShrink: 0,
     borderRadius: tokens.radius.sm,
     borderWidth: 1,
     borderColor: tokens.color.border,
@@ -235,7 +253,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: tokens.spacing.xs,
     flexGrow: 1,
-    flexBasis: 140,
     minHeight: tokens.touchTarget.minSize,
     justifyContent: 'center',
     alignItems: 'center',
@@ -256,12 +273,17 @@ const styles = StyleSheet.create({
     backgroundColor: tokens.color.surface,
   },
   optionLabel: {
+    // Shrinks to the space left beside the mark and the swatch, and wraps
+    // there. Without it the text keeps its natural width and runs past the
+    // option's border at a large OS text size.
+    flexShrink: 1,
     fontSize: tokens.typography.baseFontSizePx,
     color: tokens.color.text,
     textAlign: 'center',
   },
   optionLabelSelected: { fontWeight: '700' },
   mark: {
+    flexShrink: 0,
     fontSize: tokens.typography.baseFontSizePx,
     fontWeight: '700',
     color: tokens.color.primary,
