@@ -18,6 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import * as SQLite from 'expo-sqlite';
 
 import { getDatabase, getDatabaseGeneration, resetDatabaseForTests } from './database';
+import { clearHttpCache } from './httpCache';
 import { purgeLocalDatabase } from './purge';
 
 jest.mock('expo-sqlite', () => ({
@@ -33,6 +34,7 @@ jest.mock('expo-secure-store', () => ({
 }));
 
 jest.mock('./migrations', () => ({ runMigrations: jest.fn(async () => undefined) }));
+jest.mock('./httpCache', () => ({ clearHttpCache: jest.fn() }));
 
 const mockOpen = SQLite.openDatabaseAsync as jest.Mock;
 const mockDelete = SQLite.deleteDatabaseAsync as jest.Mock;
@@ -68,6 +70,21 @@ describe('purgeLocalDatabase', () => {
     expect(db.closeAsync.mock.invocationCallOrder[0]).toBeLessThan(
       mockDelete.mock.invocationCallOrder[0]!,
     );
+  });
+
+  /** #152: React Native's HTTP cache held this patient's profile, ranges and delta pages in plain text. */
+  it('also deletes the HTTP cache, the other copy of this patient’s data', async () => {
+    await purgeLocalDatabase();
+
+    expect(clearHttpCache).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes the HTTP cache even when the database was already gone', async () => {
+    mockDelete.mockRejectedValueOnce(new Error('no such database'));
+
+    await purgeLocalDatabase();
+
+    expect(clearHttpCache).toHaveBeenCalledTimes(1);
   });
 
   it('bumps the generation so consumers know their executor is dead', async () => {

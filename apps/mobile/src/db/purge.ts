@@ -20,6 +20,7 @@ import * as SQLite from 'expo-sqlite';
 import { clearDatabaseKey } from './databaseKey';
 import { clearDatabaseOwner } from './databaseOwner';
 import { withDatabaseClosed } from './database';
+import { clearHttpCache } from './httpCache';
 import { DATABASE_NAME } from './expoSqliteExecutor';
 
 /**
@@ -83,4 +84,10 @@ export async function purgeLocalDatabase(): Promise<void> {
     await clearDatabaseKey();
     await clearDatabaseOwner();
   });
+
+  // The other copy: until the API sent `no-store`, React Native's HTTP cache
+  // held this patient's profile, ranges and delta pages in plain text (#152).
+  // Outside the closed window, because it is not the database and needs no
+  // lock against `getDatabase()`.
+  clearHttpCache();
 }

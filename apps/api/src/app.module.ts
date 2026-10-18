@@ -24,6 +24,7 @@ import { AuditStubModule } from './audit/test-support/audit-stub.module';
 import { PatientAuthModule } from './auth/patient-auth.module';
 import { ConfigModule } from './config/config.module';
 import type { AppConfig } from './config/env.schema';
+import { CacheControlModule } from './http/cache-control.module';
 import { ErrorSanitizerModule } from './http/error-sanitizer.module';
 import { HealthModule } from './health/health.module';
 import { LoggingModule } from './logging/logging.module';
@@ -88,6 +89,7 @@ export class AppModule {
         AdminConfigModule,
         PrismaModule,
         ErrorSanitizerModule,
+        CacheControlModule,
         AuditInterceptorModule,
         ...(config.nodeEnv !== 'production' ? [AuditStubModule] : []),
         ThresholdsModule,

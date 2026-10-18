@@ -400,6 +400,21 @@ describe('P4.S1 — provisioning a patient and their profile', () => {
       });
     });
 
+    it('tells the phone not to store it, and never answers "use what you stored"', async () => {
+      // #152: Android's HTTP stack kept this response in a plain-text disk
+      // cache, outside the encrypted store and the sign-out purge.
+      const { token } = await newSubject();
+      await onboard(token, body()).expect(201);
+
+      const first = await readProfile(token);
+      expect(first.headers['cache-control']).toBe('no-store');
+      expect(first.headers.etag).toBeUndefined();
+
+      const revalidated = await readProfile(token).set('If-None-Match', '*');
+      expect(revalidated.status).toBe(200);
+      expect(revalidated.body.ostomyType).toBe('ileostomy');
+    });
+
     it('answers PATIENT_NOT_PROVISIONED before they have', async () => {
       // The same code every write gives for the same state (#80), rather than a
       // second vocabulary the client would have to learn.
