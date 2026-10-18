@@ -39,13 +39,39 @@ const MOBILE_ROOT = join(__dirname, '..', '..');
 
 /** Each one stops text growing with the OS setting, or cuts it off when it does. */
 const FORBIDDEN: readonly { readonly pattern: RegExp; readonly why: string }[] = [
-  { pattern: /allowFontScaling\s*=\s*\{\s*false\s*\}/, why: 'turns OS text scaling off' },
-  { pattern: /allowFontScaling\s*:\s*false/, why: 'turns OS text scaling off' },
+  // Allowed only bare (`allowFontScaling`) or `={true}`: any other value,
+  // including a variable, is a way to turn it off (#150 review).
+  {
+    pattern: /allowFontScaling(?=\s*=)(?!\s*=\s*\{\s*true\s*\})/,
+    why: 'sets allowFontScaling to something other than true',
+  },
+  {
+    pattern: /allowFontScaling\s*:(?!\s*true\b)/,
+    why: 'sets allowFontScaling to something other than true',
+  },
+  // The classic way to switch it off everywhere at once.
+  {
+    pattern: /\.defaultProps\b/,
+    why: 'changes every instance of a component at once (nothing here needs defaultProps)',
+  },
   { pattern: /maxFontSizeMultiplier/, why: 'caps OS text scaling' },
   { pattern: /adjustsFontSizeToFit/, why: 'shrinks text to fit' },
   { pattern: /minimumFontScale/, why: 'shrinks text to fit' },
-  { pattern: /numberOfLines/, why: 'truncates text that grows' },
+  // Dividing a size by the font scale cancels the scaling out.
+  {
+    pattern: /\/\s*(fontScale|PixelRatio\.getFontScale\(\))/,
+    why: 'divides by the font scale, cancelling it',
+  },
+  {
+    pattern: /numberOfLines/,
+    why: 'truncates text that grows (for a multi-line input, use minHeight, as TextField does)',
+  },
   { pattern: /ellipsizeMode/, why: 'truncates text that grows' },
+  // Containers that can clip text which has grown. None is used today; the
+  // next one should be a deliberate decision, with a reason, not an accident.
+  { pattern: /\b(height|maxHeight)\s*:\s*\d/, why: 'fixes a height that text can outgrow' },
+  { pattern: /overflow\s*:\s*['"]hidden['"]/, why: 'clips content that has grown' },
+  { pattern: /position\s*:\s*['"]absolute['"]/, why: 'positions over content that may grow' },
 ];
 
 function sourceFiles(dir: string): string[] {
@@ -56,7 +82,15 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-/** Comments may name these props, and several explain why they are absent. */
+/**
+ * Comments may name these props, and several explain why they are absent.
+ *
+ * A regex strip, not a parser, and that has one known blind spot: a string
+ * containing a block-comment opener (a glob, say) makes everything up to the
+ * next closer look like a comment, which could hide a forbidden prop there.
+ * Accepted, because no source here contains one; a TypeScript-scanner strip
+ * is the fix if one ever does.
+ */
 function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }

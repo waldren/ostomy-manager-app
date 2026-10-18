@@ -20,6 +20,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import '../src/i18n/i18n';
 
 import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider } from '../src/auth/AuthContext';
@@ -63,6 +64,10 @@ export default function RootLayout(): React.JSX.Element {
           */}
           <ProfileProvider>
             <SyncProvider>
+              {/* Dark icons always: the app's colours are light-only, and with
+                  the phone in dark theme the system would otherwise draw light
+                  icons over this white background (#150 review). */}
+              <StatusBar style="dark" />
               <Stack screenOptions={{ headerShown: false }} />
             </SyncProvider>
           </ProfileProvider>

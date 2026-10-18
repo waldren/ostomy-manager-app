@@ -130,9 +130,16 @@ const styles = StyleSheet.create({
     borderColor: tokens.color.primary,
     backgroundColor: tokens.color.surface,
   },
-  optionLabel: { fontSize: tokens.typography.baseFontSizePx, color: tokens.color.text },
+  // Wraps beside the mark rather than running past the border at a large OS
+  // text size (#150 review; the same rule as `ChoiceGroup`).
+  optionLabel: {
+    flexShrink: 1,
+    fontSize: tokens.typography.baseFontSizePx,
+    color: tokens.color.text,
+  },
   optionLabelSelected: { fontWeight: '700' },
   mark: {
+    flexShrink: 0,
     fontSize: tokens.typography.baseFontSizePx,
     fontWeight: '700',
     color: tokens.color.primary,

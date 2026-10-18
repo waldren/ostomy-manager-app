@@ -123,6 +123,14 @@ export function QuickAddWidgets({
             <BodyText tone="muted">{quickAddStatus(suggestion, t)}</BodyText>
             <Button
               label={t('common:quickAdd.editButton')}
+              // Every widget has this button, so its spoken name says which
+              // entry it changes (#150 review); the spacing above only told
+              // sighted patients.
+              accessibilityLabel={
+                spokenLabel === undefined
+                  ? undefined
+                  : t('common:quickAdd.editButtonSpoken', { entry: spokenLabel })
+              }
               variant="secondary"
               hint={t('common:quickAdd.editHint')}
               onPress={() => {

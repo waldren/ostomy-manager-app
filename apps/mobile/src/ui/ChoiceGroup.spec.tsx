@@ -26,10 +26,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * pins the two style rules that stop it, so neither can be "tidied" away.
  */
 
-import { render } from '@testing-library/react-native';
+import { fireEvent, render } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 
-import { ChoiceGroup } from './ChoiceGroup';
+import { ChoiceGroup, type Choice } from './ChoiceGroup';
 
 let mockFontScale = 1;
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({
@@ -79,15 +79,100 @@ describe('ChoiceGroup at a large OS text size', () => {
     expect((await options()).map((style) => style.flexBasis)).toEqual([140, 140]);
   });
 
+  /**
+   * #150 review: React Native's `flexShrink` defaults to 0, so a basis scaled
+   * for large text could be wider than a narrow screen (a larger "Display
+   * size" as well as a larger font) and run off its right edge.
+   */
+  it('never lets an option grow wider than the row', async () => {
+    mockFontScale = 2;
+
+    for (const style of await options()) {
+      expect(style.flexShrink).toBe(1);
+      expect(style.maxWidth).toBe('100%');
+    }
+  });
+
   /** The label gives way by wrapping, and the swatch and mark keep their size. */
-  it('lets the label wrap within its option rather than running past the border', async () => {
+  it('lets the label wrap within its option while the swatch and mark keep their size', async () => {
     const screen = await render(
       <ChoiceGroup label="What colour?" choices={CHOICES} value="pale" onChange={() => {}} />,
     );
 
     const label = StyleSheet.flatten(screen.getByText('Pale yellow').props.style);
-    const mark = StyleSheet.flatten(screen.getByText('✓').props.style);
     expect(label.flexShrink).toBe(1);
-    expect(mark.flexShrink).toBe(0);
+    for (const mark of screen.getAllByText('✓')) {
+      expect(StyleSheet.flatten(mark.props.style).flexShrink).toBe(0);
+    }
+    for (const swatch of screen.getAllByTestId('choice-swatch')) {
+      expect(StyleSheet.flatten(swatch.props.style).flexShrink).toBe(0);
+    }
+  });
+
+  /**
+   * #150 review: a mark that appeared only on selection narrowed the label,
+   * which could add a line and move the options below under the finger. It
+   * now always holds its place, and shows only on the chosen option.
+   */
+  it('keeps the mark’s space on every option, visible only on the chosen one', async () => {
+    const screen = await render(
+      <ChoiceGroup label="What colour?" choices={CHOICES} value="pale" onChange={() => {}} />,
+    );
+
+    const opacities = screen
+      .getAllByText('✓')
+      .map((mark) => StyleSheet.flatten(mark.props.style).opacity ?? 1);
+    expect(opacities).toEqual([1, 0]);
+  });
+
+  /** A colour scale is matched against, so its swatches line up in a column, as on a printed chart. */
+  it('lines up swatches and their labels on the left', async () => {
+    const screen = await render(
+      <ChoiceGroup label="What colour?" choices={CHOICES} value={undefined} onChange={() => {}} />,
+    );
+
+    expect(StyleSheet.flatten(screen.getAllByRole('radio')[0]?.props.style).justifyContent).toBe(
+      'flex-start',
+    );
+    expect(StyleSheet.flatten(screen.getByText('Pale yellow').props.style).textAlign).toBe('left');
+  });
+
+  /**
+   * #150 review, measured at 2.0× text and a larger display size: beside the
+   * mark and swatch the label had ~148dp, "Orange-brown" needs ~160, and
+   * Android broke it as "Orange-bro / wn". Once the options stack, the swatch
+   * goes above the label so the label has the option's whole width.
+   */
+  async function layoutAt(
+    fontScale: number,
+    rowWidth: number,
+    choices: readonly Choice<string>[] = CHOICES,
+  ) {
+    mockFontScale = fontScale;
+    const screen = await render(
+      <ChoiceGroup label="What colour?" choices={choices} value={undefined} onChange={() => {}} />,
+    );
+    await fireEvent(screen.getByTestId('choice-options'), 'layout', {
+      nativeEvent: { layout: { width: rowWidth, height: 400, x: 0, y: 0 } },
+    });
+    return screen
+      .getAllByRole('radio')
+      .map((option) => StyleSheet.flatten(option.props.style).flexDirection);
+  }
+
+  it('puts the swatch above the label once the options stack', async () => {
+    expect(await layoutAt(2, 257)).toEqual(['column', 'column']);
+  });
+
+  it('keeps the swatch beside the label while two options share a row', async () => {
+    expect(await layoutAt(1, 379)).toEqual(['row', 'row']);
+  });
+
+  it('leaves options without a swatch as they were, stacked or not', async () => {
+    const plain = [
+      { value: 'measured', label: 'Measured' },
+      { value: 'estimated', label: 'Estimated' },
+    ] as const;
+    expect(await layoutAt(2, 257, plain)).toEqual(['row', 'row']);
   });
 });

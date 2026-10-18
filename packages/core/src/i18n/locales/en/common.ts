@@ -74,6 +74,7 @@ export const common = {
   'quickAdd.repeatCountKept_other':
     'You logged this {{count}} times recently. You chose to keep it.',
   'quickAdd.editButton': 'Change before saving',
+  'quickAdd.editButtonSpoken': 'Change before saving: {{entry}}',
   'quickAdd.editHint': 'Opens the entry form with these details filled in, so you can adjust them.',
 
   /**
@@ -583,6 +584,12 @@ export const common = {
   'settings.needsConnectionBody':
     'Your phone needs to connect once before you can change these. Check your connection, then try again.',
   'settings.retryButton': 'Try again',
+  // P4.S3 slice 6 (#139 decision 4): the phone's own text-size and contrast
+  // settings, which the app follows, rather than a second set inside it.
+  'settings.accessibilityHeading': 'Text size and contrast',
+  'settings.accessibilityBody':
+    'This app uses your phone’s text size and contrast settings. To make text bigger or easier to read, change them in your phone’s settings.',
+  'settings.accessibilityButton': 'Open phone settings',
   'settings.quickAddHeading': 'Quick-Add buttons',
   'settings.quickAddIntro': 'Choose which buttons stay under "Log again" on your home screen.',
   'settings.quickAddButton': 'Your Quick-Add buttons',
