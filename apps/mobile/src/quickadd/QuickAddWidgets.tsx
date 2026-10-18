@@ -16,11 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import { formatVolumeQuantity } from '@ostomy/core/i18n';
+import { tokens } from '@ostomy/ui/tokens';
 import { convertVolumeForDisplay, unitsForMeasurementSystem } from '@ostomy/core/units';
 import type { MeasurementSystem } from '@ostomy/core/units';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import {
   FLUID_INTAKE_LOINC_CODE,
@@ -95,7 +96,11 @@ export function QuickAddWidgets({
         // they resolve the same code against the live cache.
         if (label === undefined) return null;
         return (
-          <View key={suggestion.key}>
+          // Each widget's buttons kept together, and apart from the next
+          // widget's (P4.S3 slice 6 audit): at the largest OS text size the
+          // "Change before saving" button sat flush against the NEXT widget's
+          // log button, so which entry it changed was a guess.
+          <View key={suggestion.key} style={styles.widget}>
             <Button
               label={label}
               // Units spelled out: "fl oz" is read letter by letter.
@@ -118,6 +123,14 @@ export function QuickAddWidgets({
             <BodyText tone="muted">{quickAddStatus(suggestion, t)}</BodyText>
             <Button
               label={t('common:quickAdd.editButton')}
+              // Every widget has this button, so its spoken name says which
+              // entry it changes (#150 review); the spacing above only told
+              // sighted patients.
+              accessibilityLabel={
+                spokenLabel === undefined
+                  ? undefined
+                  : t('common:quickAdd.editButtonSpoken', { entry: spokenLabel })
+              }
               variant="secondary"
               hint={t('common:quickAdd.editHint')}
               onPress={() => {
@@ -224,3 +237,7 @@ export function quickAddStatus(
   if (suggestion.occurrences === 0) return t('common:quickAdd.kept');
   return t('common:quickAdd.repeatCountKept', { count: suggestion.occurrences });
 }
+
+const styles = StyleSheet.create({
+  widget: { gap: tokens.spacing.xs, marginBottom: tokens.spacing.lg },
+});

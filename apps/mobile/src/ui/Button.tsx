@@ -126,6 +126,9 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.85 },
   inert: { backgroundColor: tokens.color.textMuted },
   label: {
+    // Wraps beside the busy spinner rather than running past the button's
+    // edge at a large OS text size (#150 review).
+    flexShrink: 1,
     color: tokens.color.textOnPrimary,
     fontSize: tokens.typography.baseFontSizePx,
     fontWeight: '600',

@@ -19,7 +19,7 @@ import { toLocalDate, type MeasurementSystem } from '@ostomy/core/units';
 import { Redirect, router } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { View } from 'react-native';
+import { Linking, View } from 'react-native';
 
 import { useAuth } from '../src/auth/AuthContext';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
@@ -49,6 +49,9 @@ import { ChoiceGroup } from '../src/ui/ChoiceGroup';
 import { Heading } from '../src/ui/Heading';
 import { Screen } from '../src/ui/Screen';
 import { TextField } from '../src/ui/TextField';
+
+/** Android's own accessibility settings: text size, display size and contrast. */
+const ACCESSIBILITY_SETTINGS_INTENT = 'android.settings.ACCESSIBILITY_SETTINGS';
 
 type SaveState = 'editing' | 'saving' | 'saved' | 'nothing-changed';
 
@@ -277,6 +280,22 @@ function SettingsScreen({ profile }: { readonly profile: LocalProfile }): React.
         variant="secondary"
         onPress={() => {
           router.push('/target-ranges');
+        }}
+      />
+
+      {/* SRS §3.10 lists "Accessibility: text scaling and contrast options".
+          This app follows the phone's own settings rather than adding a
+          second set (#139 decision 4, docs/accessibility/text-scaling-audit.md),
+          so the entry here explains that and opens them. */}
+      <Heading level={2}>{t('common:settings.accessibilityHeading')}</Heading>
+      <BodyText>{t('common:settings.accessibilityBody')}</BodyText>
+      <Button
+        label={t('common:settings.accessibilityButton')}
+        variant="secondary"
+        onPress={() => {
+          void Linking.sendIntent(ACCESSIBILITY_SETTINGS_INTENT).catch(() =>
+            Linking.openSettings(),
+          );
         }}
       />
 

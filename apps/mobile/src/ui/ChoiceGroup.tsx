@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import { tokens } from '@ostomy/ui/tokens';
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 /**
@@ -34,6 +34,12 @@ import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-na
  * cannot rely on the colour (WCAG 1.4.1).
  */
 const SELECTED_MARK = '✓';
+
+/** An option's width at the default text size; scaled with the OS setting at render time. */
+const OPTION_BASIS = 140;
+
+/** Space between options, horizontally and vertically. */
+const OPTIONS_GAP = tokens.spacing.sm;
 
 export interface Choice<TValue extends string> {
   readonly value: TValue;
@@ -125,6 +131,28 @@ export function ChoiceGroup<TValue extends string>({
    */
   const { fontScale } = useWindowDimensions();
   const swatchSize = Math.max(tokens.spacing.xl, tokens.spacing.xl * fontScale);
+  /**
+   * How wide an option wants to be, scaled with the text in it (P4.S3 slice 6
+   * audit). At a fixed 140dp, two options stayed side by side at the largest
+   * OS text size, and on the urine scale the labels ran past their borders
+   * and dragged the swatches out with them ("Orange-bro|wn", measured on a
+   * Pixel 8 at 2.0×). Scaled, the options stack one per row once the text is
+   * too large for two to share one, which `flexWrap` then does by itself.
+   */
+  const optionBasis = OPTION_BASIS * Math.max(1, fontScale);
+  /**
+   * Whether the options have stacked one per row, measured rather than
+   * guessed: it depends on the screen's width in dp, which a larger "Display
+   * size" narrows, as much as on the text size.
+   *
+   * Once they have, a colour option puts its swatch ABOVE its label (#150
+   * review). Beside the mark and the swatch, a label at 2.0x text on a Pixel 8
+   * at a larger display size had about 148dp, "Orange-brown" needs about 160,
+   * and Android would not break it at the hyphen: it read "Orange-bro / wn".
+   * Above them, the label has the option's whole width.
+   */
+  const [rowWidth, setRowWidth] = useState<number | undefined>(undefined);
+  const stacked = rowWidth !== undefined && optionBasis * 2 + OPTIONS_GAP > rowWidth;
 
   return (
     <View style={styles.container}>
@@ -151,9 +179,14 @@ export function ChoiceGroup<TValue extends string>({
         aria-invalid={invalid}
         aria-errormessage={invalid ? errorId : undefined}
         style={styles.options}
+        testID="choice-options"
+        onLayout={(event) => {
+          setRowWidth(event.nativeEvent.layout.width);
+        }}
       >
         {choices.map((choice) => {
           const selected = choice.value === value;
+          const swatchAbove = stacked && choice.swatchColor !== undefined;
           return (
             <Pressable
               key={choice.value}
@@ -164,31 +197,51 @@ export function ChoiceGroup<TValue extends string>({
               accessibilityLabel={choice.label}
               accessibilityHint={choice.hint}
               accessibilityState={{ checked: selected, selected }}
-              style={[styles.option, selected ? styles.optionSelected : undefined]}
+              style={[
+                styles.option,
+                { flexBasis: optionBasis },
+                choice.swatchColor === undefined ? undefined : styles.optionWithSwatch,
+                swatchAbove ? styles.optionSwatchAbove : undefined,
+                selected ? styles.optionSelected : undefined,
+              ]}
             >
-              {selected ? (
-                <Text style={styles.mark} accessible={false}>
-                  {SELECTED_MARK}
-                </Text>
-              ) : null}
-              {choice.swatchColor === undefined ? null : (
-                // `accessible={false}` and no label: a screen reader
-                // announces the text only, which is what keeps colour from
-                // being a second, unequal carrier of the same meaning.
-                // Bordered so a very pale swatch is still visible against
-                // the surface — a 1.4.11 concern for the shape, not the
-                // colour it contains.
-                <View
+              {/* Always rendered, invisible until selected (#150 review): a mark
+                  that appeared on selection narrowed the label, which could
+                  add a line and move every option below the patient's finger. */}
+              <View style={styles.marker}>
+                <Text
+                  style={[styles.mark, selected ? undefined : styles.markHidden]}
                   accessible={false}
                   importantForAccessibility="no"
-                  style={[
-                    styles.swatch,
-                    { width: swatchSize, height: swatchSize },
-                    { backgroundColor: choice.swatchColor },
-                  ]}
-                />
-              )}
-              <Text style={[styles.optionLabel, selected ? styles.optionLabelSelected : undefined]}>
+                >
+                  {SELECTED_MARK}
+                </Text>
+                {choice.swatchColor === undefined ? null : (
+                  // `accessible={false}` and no label: a screen reader
+                  // announces the text only, which is what keeps colour from
+                  // being a second, unequal carrier of the same meaning.
+                  // Bordered so a very pale swatch is still visible against
+                  // the surface — a 1.4.11 concern for the shape, not the
+                  // colour it contains.
+                  <View
+                    testID="choice-swatch"
+                    accessible={false}
+                    importantForAccessibility="no"
+                    style={[
+                      styles.swatch,
+                      { width: swatchSize, height: swatchSize },
+                      { backgroundColor: choice.swatchColor },
+                    ]}
+                  />
+                )}
+              </View>
+              <Text
+                style={[
+                  styles.optionLabel,
+                  choice.swatchColor === undefined ? undefined : styles.optionLabelWithSwatch,
+                  selected ? styles.optionLabelSelected : undefined,
+                ]}
+              >
                 {choice.label}
               </Text>
             </Pressable>
@@ -223,10 +276,12 @@ const styles = StyleSheet.create({
   // Wraps rather than forcing two options onto one line: at a large OS text
   // size two side-by-side labels truncate, and a truncated "Estimated"
   // is a clinical distinction the patient can no longer read.
-  options: { flexDirection: 'row', flexWrap: 'wrap', gap: tokens.spacing.sm },
+  options: { flexDirection: 'row', flexWrap: 'wrap', gap: OPTIONS_GAP },
   swatch: {
     // Size comes from `swatchSize` at render time, not from here — see the
     // component. Only the fill and the border live in the stylesheet.
+    // Never shrunk: the LABEL gives way, by wrapping.
+    flexShrink: 0,
     borderRadius: tokens.radius.sm,
     borderWidth: 1,
     borderColor: tokens.color.border,
@@ -235,7 +290,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: tokens.spacing.xs,
     flexGrow: 1,
-    flexBasis: 140,
+    // Never wider than the row (#150 review). React Native's `flexShrink`
+    // defaults to 0, so a basis scaled for a large text size could exceed a
+    // narrow screen — a larger "Display size" as well as a larger font — and
+    // run past the right edge.
+    flexShrink: 1,
+    maxWidth: '100%',
     minHeight: tokens.touchTarget.minSize,
     justifyContent: 'center',
     alignItems: 'center',
@@ -244,6 +304,22 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: tokens.color.textMuted,
     borderRadius: tokens.radius.md,
+  },
+  // A colour scale is something the patient MATCHES against, so its swatches
+  // line up in a column once stacked, as on a printed chart, and the label
+  // reads left-aligned beside them (#150 review).
+  optionWithSwatch: { justifyContent: 'flex-start' },
+  optionLabelWithSwatch: { textAlign: 'left' },
+  // Stacked options only: the swatch and mark on one line, the label under
+  // them with the option's whole width (see `stacked` in the component).
+  optionSwatchAbove: { flexDirection: 'column', alignItems: 'flex-start' },
+  // The mark and, on a colour scale, the swatch: they keep their size and
+  // never share their line with a label that needs the room.
+  marker: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: tokens.spacing.xs,
+    flexShrink: 0,
   },
   optionSelected: {
     // No new "selected" colour token. The selection is already carried by
@@ -256,12 +332,18 @@ const styles = StyleSheet.create({
     backgroundColor: tokens.color.surface,
   },
   optionLabel: {
+    // Shrinks to the space left beside the mark and the swatch, and wraps
+    // there. Without it the text keeps its natural width and runs past the
+    // option's border at a large OS text size.
+    flexShrink: 1,
     fontSize: tokens.typography.baseFontSizePx,
     color: tokens.color.text,
     textAlign: 'center',
   },
   optionLabelSelected: { fontWeight: '700' },
+  markHidden: { opacity: 0 },
   mark: {
+    flexShrink: 0,
     fontSize: tokens.typography.baseFontSizePx,
     fontWeight: '700',
     color: tokens.color.primary,
