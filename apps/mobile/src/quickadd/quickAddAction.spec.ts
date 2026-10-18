@@ -44,6 +44,15 @@ const VOLUMETRIC: QuickAddSuggestion = {
   enteredMeasurementSystem: 'metric',
   occurrences: 4,
   lastEnteredAt: '2026-10-02T08:00:00.000Z',
+  routine: {
+    code: 'stub',
+    valueMl: null,
+    method: null,
+    fluidTypeCode: null,
+    urineColorCode: null,
+    enteredMeasurementSystem: 'metric',
+  },
+  pinned: false,
 };
 
 const COLOUR_ONLY: QuickAddSuggestion = {
@@ -54,6 +63,15 @@ const COLOUR_ONLY: QuickAddSuggestion = {
   enteredMeasurementSystem: 'metric',
   occurrences: 3,
   lastEnteredAt: '2026-10-02T08:00:00.000Z',
+  routine: {
+    code: 'stub',
+    valueMl: null,
+    method: null,
+    fluidTypeCode: null,
+    urineColorCode: null,
+    enteredMeasurementSystem: 'metric',
+  },
+  pinned: false,
 };
 
 function decide(overrides: Partial<Parameters<typeof decideQuickAdd>[0]> = {}) {

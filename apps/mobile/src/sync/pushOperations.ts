@@ -20,6 +20,7 @@ import type {
   MealSyncPayload,
   ObservationSyncPayload,
   ProfileSyncPayload,
+  QuickAddPreferenceSyncPayload,
   SyncPushOperation,
   SyncPushRequest,
 } from '@ostomy/core/sync';
@@ -33,7 +34,12 @@ import {
 } from '../db/repositories/mealsRepository';
 import { getObservationById, markServerSequence } from '../db/repositories/observationsRepository';
 import { readProfile, type LocalProfile } from '../db/repositories/profileRepository';
+import {
+  getQuickAddDecision,
+  type LocalQuickAddDecision,
+} from '../db/repositories/quickAddDecisionsRepository';
 import { getRangeWriteForOperation, type RangeWrite } from '../db/repositories/rangesRepository';
+import { getCursor, setCursor } from '../db/repositories/syncCursorRepository';
 import {
   markRejected,
   recordAttempt,
@@ -168,6 +174,32 @@ export async function buildPushRequest(
         operationType: entry.operationType,
         clientTimestamp: entry.clientTimestamp,
         payload: toProfilePayload(profile, entry.entityId),
+      });
+      sent.push(entry);
+      continue;
+    }
+
+    if (entry.entityType === 'QuickAddPreference') {
+      // From the row as it is now: a decision is a full replacement (§4), and
+      // two queued decisions about one widget both send the latest, which is
+      // what the patient last chose.
+      const decision = await getQuickAddDecision(executor, entry.entityId);
+      if (decision === undefined) {
+        unbuildable.push({
+          operationId: entry.operationId,
+          entityId: entry.entityId,
+          reason: 'entity-row-missing',
+        });
+        continue;
+      }
+
+      operations.push({
+        operationId: toOperationId(entry.operationId),
+        entityId: toEntityId(entry.entityId),
+        entityType: 'QuickAddPreference',
+        operationType: entry.operationType,
+        clientTimestamp: entry.clientTimestamp,
+        payload: toQuickAddPayload(decision),
       });
       sent.push(entry);
       continue;
@@ -326,6 +358,47 @@ function toRangePayload(range: RangeWrite): EffectiveRangeSyncPayload {
   };
 }
 
+/** Projects a local decision onto the §7.7 wire payload, field by field. */
+function toQuickAddPayload(decision: LocalQuickAddDecision): QuickAddPreferenceSyncPayload {
+  return {
+    id: toEntityId(decision.id),
+    code: decision.routine.code,
+    valueMl: decision.routine.valueMl,
+    method: decision.routine.method,
+    fluidTypeCode: decision.routine.fluidTypeCode,
+    urineColorCode: decision.routine.urineColorCode,
+    enteredMeasurementSystem: decision.routine.enteredMeasurementSystem,
+    decision: decision.decision,
+  };
+}
+
+/**
+ * After a Quick-Add decision lost to a newer one, makes sure the next pull
+ * delivers the winner (#149 review).
+ *
+ * This phone already wrote its own, losing, decision to its local row. If its
+ * cursor is already past the winning row — it pulled that change before the
+ * patient decided here — no pull will ever deliver it again, and the two
+ * phones would disagree about a button until one was touched again. So the
+ * cursor steps back to just before the winner's sequence.
+ *
+ * Lowering is safe where advancing from a receipt is not (§3.6): it can only
+ * re-deliver changes, and every change is applied by last-write-wins, so a
+ * re-delivered one changes nothing it should not. It never moves the cursor
+ * forward.
+ */
+async function pullWinnerAgain(
+  executor: SqliteExecutor,
+  winningSequence: string,
+  updatedAt: string,
+): Promise<void> {
+  const cursor = await getCursor(executor);
+  const winner = BigInt(winningSequence);
+  if (winner > 0n && BigInt(cursor) >= winner) {
+    await setCursor(executor, (winner - 1n).toString(), updatedAt);
+  }
+}
+
 /** What one push produced, for the caller's bookkeeping. Counts only — never an operation's content (§6.3). */
 export interface PushOutcome {
   readonly accepted: number;
@@ -464,6 +537,8 @@ export async function applyPushResults(
         await markMealServerSequence(executor, result.entityId, result.appliedServerSequence);
       } else if (entry?.entityType === 'Observation') {
         await markServerSequence(executor, result.entityId, result.appliedServerSequence);
+      } else if (entry?.entityType === 'QuickAddPreference' && result.status === 'superseded') {
+        await pullWinnerAgain(executor, result.appliedServerSequence, appliedAt);
       }
       // A profile keeps no server sequence on this device (local migration 9):
       // nothing reads one, and a receipt is not a cursor. A SUPERSEDED profile

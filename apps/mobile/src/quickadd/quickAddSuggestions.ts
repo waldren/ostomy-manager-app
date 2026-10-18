@@ -15,6 +15,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { quickAddRoutineKey, type QuickAddRoutine } from '@ostomy/core/sync';
 import type { MeasurementSystem } from '@ostomy/core/units';
 import {
   ESTIMATION_METHOD_CODE,
@@ -67,12 +68,16 @@ import {
  * had measured. Both invent an answer to the one question §3.1 calls
  * mandatory.
  *
- * ## What is deliberately NOT here
+ * ## The patient's decisions (P4.S3 slice 5b)
  *
- * - **Review, edit, pin and remove** (§3.10, Epic 15) belong to P4.S3's
- *   preferences work. Their absence is why this module needs no table and no
- *   sync surface at all: a suggestion is *derived* state, recomputed from the
- *   local store, so there is nothing to keep in step with anything.
+ * A patient may keep a widget pinned or remove it (§3.10, Epic 15 story 3).
+ * A decision is ABOUT a routine and is stored as one (`quick_add_decisions`,
+ * `docs/sync-contract.md` §7.7); the widget itself is still derived here, so
+ * a tap still logs a value the patient entered. `buildQuickAddWidgets` is
+ * where decisions apply. "Edit" is deliberately absent: an edited widget would
+ * put a number on a one-tap button that the patient never recorded.
+ *
+ * ## What is deliberately NOT here
  * - **Custom default container sizes** (Epic 3's third story) are also P4.S3.
  *   The Add Intake screen's quick-select sizes (AC 2.3 AC2) already exist and
  *   are a different feature: a fixed value set, not the patient's history.
@@ -145,6 +150,10 @@ export interface QuickAddCandidate {
 interface SuggestionBase {
   /** Stable within a render, derived from the grouping key — not a row id, because a suggestion is not a row. */
   readonly key: string;
+  /** The routine this widget repeats, as a decision about it names it (§7.7). */
+  readonly routine: QuickAddRoutine;
+  /** The patient chose to keep this widget, so it stays whether or not the routine still recurs. */
+  readonly pinned: boolean;
   readonly code: string;
   readonly enteredMeasurementSystem: MeasurementSystem;
   readonly occurrences: number;
@@ -235,6 +244,8 @@ export function toSuggestion(candidate: QuickAddCandidate): QuickAddSuggestion |
   const key = candidateKey(candidate);
   const base = {
     key,
+    routine: routineOf(candidate),
+    pinned: false,
     code: candidate.code,
     enteredMeasurementSystem: candidate.enteredMeasurementSystem,
     occurrences: candidate.occurrences,
@@ -285,20 +296,141 @@ export function rankQuickAddSuggestions(
   candidates: readonly QuickAddCandidate[],
   options: { minimumOccurrences?: number; limit?: number } = {},
 ): QuickAddSuggestion[] {
+  return buildQuickAddWidgets(candidates, [], options).shown;
+}
+
+/** A decision as `buildQuickAddWidgets` needs it — the routine and what was decided. */
+export interface QuickAddDecisionInput {
+  readonly routine: QuickAddRoutine;
+  readonly decision: 'pinned' | 'hidden' | 'none';
+}
+
+/**
+ * The widgets to show, with the patient's decisions applied, and the ones they
+ * removed (for the screen that can bring them back).
+ *
+ * - **Pinned first, and all of them.** A pinned widget stays even when its
+ *   routine no longer recurs in the window: keeping it is what pinning means.
+ *   It is rebuilt from the decision itself in that case, which is still a
+ *   value the patient entered, because only a widget they were shown can be
+ *   pinned. Pinned widgets do not count against the limit — a patient who
+ *   chose four keeps four.
+ * - **Removed never comes back** merely because the routine recurs (Epic 15
+ *   story 3), and appears in `removed` instead.
+ * - **The rest are ranked as before**, filling up to the limit.
+ *
+ * Decisions are matched by the routine key (`quickAddRoutineKey`), which reads
+ * a volume as a number. So entries typed "350" and "350.0" are one widget
+ * here: its count is the two together, and a tap logs whichever spelling the
+ * patient typed more often — still a value they entered. One decision covers
+ * both.
+ *
+ * A kept or removed routine also hides its twin in the OTHER measurement
+ * system (#149 review). A tap records the patient's current system, so after
+ * a switch from metric to imperial, tapping a kept "350 mL" button twice makes
+ * an imperial routine with the same value, which would otherwise rank as a
+ * second, identically labelled button — permanently, because the kept one
+ * never ages out.
+ */
+export function buildQuickAddWidgets(
+  candidates: readonly QuickAddCandidate[],
+  decisions: readonly QuickAddDecisionInput[],
+  options: { minimumOccurrences?: number; limit?: number } = {},
+): { readonly shown: QuickAddSuggestion[]; readonly removed: QuickAddSuggestion[] } {
   const minimum = options.minimumOccurrences ?? MINIMUM_OCCURRENCES;
   const limit = options.limit ?? MAX_SUGGESTIONS;
 
-  return candidates
-    .filter((candidate) => candidate.occurrences >= minimum)
-    .flatMap((candidate) => {
-      const suggestion = toSuggestion(candidate);
-      return suggestion === undefined ? [] : [suggestion];
-    })
-    .sort(
-      (a, b) =>
-        b.occurrences - a.occurrences || b.lastEnteredAt.localeCompare(a.lastEnteredAt) || 0,
+  // One suggestion per routine: the most frequent, then most recent, spelling,
+  // counted with every other spelling of the same number.
+  const spellings = new Map<string, QuickAddSuggestion[]>();
+  for (const suggestion of candidates.flatMap((candidate) => {
+    const built = toSuggestion(candidate);
+    return built === undefined ? [] : [built];
+  })) {
+    const routineKey = quickAddRoutineKey(suggestion.routine);
+    spellings.set(routineKey, [...(spellings.get(routineKey) ?? []), suggestion]);
+  }
+  const byRoutine = new Map<string, QuickAddSuggestion>();
+  for (const [routineKey, group] of spellings) {
+    const [best] = [...group].sort(byRank);
+    if (best === undefined) continue;
+    byRoutine.set(routineKey, {
+      ...best,
+      occurrences: group.reduce((total, suggestion) => total + suggestion.occurrences, 0),
+      lastEnteredAt: group.reduce(
+        (latest, suggestion) =>
+          suggestion.lastEnteredAt > latest ? suggestion.lastEnteredAt : latest,
+        '',
+      ),
+    });
+  }
+
+  const decided = new Map<string, QuickAddDecisionInput>();
+  const decidedInAnySystem = new Set<string>();
+  for (const decision of decisions) {
+    if (decision.decision === 'none') continue;
+    decided.set(quickAddRoutineKey(decision.routine), decision);
+    decidedInAnySystem.add(routineKeyInAnySystem(decision.routine));
+  }
+
+  const fromDecision = (decision: QuickAddDecisionInput): QuickAddSuggestion | undefined =>
+    byRoutine.get(quickAddRoutineKey(decision.routine)) ??
+    toSuggestion({
+      code: decision.routine.code,
+      valueQuantityValue:
+        decision.routine.valueMl === null ? null : String(decision.routine.valueMl),
+      method: decision.routine.method,
+      fluidTypeCode: decision.routine.fluidTypeCode,
+      urineColorCode: decision.routine.urineColorCode,
+      enteredMeasurementSystem: decision.routine.enteredMeasurementSystem,
+      occurrences: 0,
+      lastEnteredAt: '',
+    });
+
+  const withDecision = (wanted: 'pinned' | 'hidden') =>
+    [...decided.values()]
+      .filter((decision) => decision.decision === wanted)
+      .flatMap((decision) => {
+        const suggestion = fromDecision(decision);
+        return suggestion === undefined ? [] : [suggestion];
+      })
+      .sort(byRank);
+
+  const pinned = withDecision('pinned').map((suggestion) => ({ ...suggestion, pinned: true }));
+  const removed = withDecision('hidden');
+  const ranked = [...byRoutine.entries()]
+    .filter(
+      ([routineKey, suggestion]) =>
+        suggestion.occurrences >= minimum &&
+        !decided.has(routineKey) &&
+        !decidedInAnySystem.has(routineKeyInAnySystem(suggestion.routine)),
     )
-    .slice(0, limit);
+    .map(([, suggestion]) => suggestion)
+    .sort(byRank)
+    .slice(0, Math.max(0, limit - pinned.length));
+
+  return { shown: [...pinned, ...ranked], removed };
+}
+
+function byRank(a: QuickAddSuggestion, b: QuickAddSuggestion): number {
+  return b.occurrences - a.occurrences || b.lastEnteredAt.localeCompare(a.lastEnteredAt) || 0;
+}
+
+/** The routine key with the measurement system left out — what two systems' twins share. */
+function routineKeyInAnySystem(routine: QuickAddRoutine): string {
+  return quickAddRoutineKey({ ...routine, enteredMeasurementSystem: 'metric' });
+}
+
+/** The fields a decision names the routine by, from a grouped row. */
+function routineOf(candidate: QuickAddCandidate): QuickAddRoutine {
+  return {
+    code: candidate.code,
+    valueMl: candidate.valueQuantityValue === null ? null : Number(candidate.valueQuantityValue),
+    method: candidate.method,
+    fluidTypeCode: candidate.fluidTypeCode,
+    urineColorCode: candidate.urineColorCode,
+    enteredMeasurementSystem: candidate.enteredMeasurementSystem,
+  };
 }
 
 /**

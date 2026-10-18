@@ -33,7 +33,11 @@ import { render } from '@testing-library/react-native';
 
 import '../i18n/i18n';
 
-import { FLUID_INTAKE_LOINC_CODE, VOIDED_URINE_LOINC_CODE } from '../entry/observationCodes';
+import {
+  FLUID_INTAKE_LOINC_CODE,
+  STOMA_OUTPUT_LOINC_CODE,
+  VOIDED_URINE_LOINC_CODE,
+} from '../entry/observationCodes';
 
 import { QuickAddWidgets } from './QuickAddWidgets';
 import type { QuickAddSuggestion } from './quickAddSuggestions';
@@ -49,6 +53,15 @@ const VOLUMETRIC: QuickAddSuggestion = {
   enteredMeasurementSystem: 'metric',
   occurrences: 4,
   lastEnteredAt: '2026-10-02T08:00:00.000Z',
+  routine: {
+    code: 'stub',
+    valueMl: null,
+    method: null,
+    fluidTypeCode: null,
+    urineColorCode: null,
+    enteredMeasurementSystem: 'metric',
+  },
+  pinned: false,
 };
 
 async function renderWidgets(suggestions: readonly QuickAddSuggestion[] | undefined) {
@@ -70,6 +83,29 @@ describe('the label states what a tap would record', () => {
 
     expect(await queryByText(/250 mL/)).not.toBeNull();
     expect(await queryByText(/Measured/)).not.toBeNull();
+  });
+
+  /**
+   * #149 review: a 250 mL stoma output and a 250 mL urine entry were two
+   * buttons with one name, and a one tap away from logging the wrong kind.
+   */
+  it('names the kind of entry first, so two kinds at one amount differ', async () => {
+    const { queryByText } = await renderWidgets([
+      { ...VOLUMETRIC, key: 'o', code: STOMA_OUTPUT_LOINC_CODE },
+      { ...VOLUMETRIC, key: 'u', code: VOIDED_URINE_LOINC_CODE },
+      { ...VOLUMETRIC, key: 'i' },
+    ]);
+
+    expect(await queryByText(/^Stoma output: 250 mL, Measured$/)).not.toBeNull();
+    expect(await queryByText(/^Urine: 250 mL, Measured$/)).not.toBeNull();
+    expect(await queryByText(/^Drink: 250 mL, Measured$/)).not.toBeNull();
+  });
+
+  /** "fl oz" is read letter by letter, so the button's spoken name spells it out. */
+  it('speaks the amount with its unit in full', async () => {
+    const { queryByLabelText } = await renderWidgets([VOLUMETRIC]);
+
+    expect(await queryByLabelText(/^Drink: 250 milliliters, Measured$/)).not.toBeNull();
   });
 
   it('names the Estimated answer when that is what the patient said', async () => {
@@ -108,6 +144,15 @@ describe('the label states what a tap would record', () => {
         enteredMeasurementSystem: 'metric',
         occurrences: 2,
         lastEnteredAt: '2026-10-02T08:00:00.000Z',
+        routine: {
+          code: 'stub',
+          valueMl: null,
+          method: null,
+          fluidTypeCode: null,
+          urineColorCode: null,
+          enteredMeasurementSystem: 'metric',
+        },
+        pinned: false,
       },
     ]);
 
@@ -148,6 +193,15 @@ describe('a suggestion this release cannot name is not offered', () => {
         enteredMeasurementSystem: 'metric',
         occurrences: 2,
         lastEnteredAt: '2026-10-02T08:00:00.000Z',
+        routine: {
+          code: 'stub',
+          valueMl: null,
+          method: null,
+          fluidTypeCode: null,
+          urineColorCode: null,
+          enteredMeasurementSystem: 'metric',
+        },
+        pinned: false,
       },
     ]);
 

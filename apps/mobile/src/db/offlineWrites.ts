@@ -16,10 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import { toLocalDate, type MeasurementSystem } from '@ostomy/core/units';
-import type { CanonicalWireUnit } from '@ostomy/core/sync';
+import {
+  quickAddPreferenceId,
+  type CanonicalWireUnit,
+  type QuickAddDecision,
+  type QuickAddRoutine,
+} from '@ostomy/core/sync';
 import { ESTIMATION_METHOD_CODE, MEASURED_METHOD_CODE } from '@ostomy/core/validation';
 
 import { deviceTimeZone, toWireInstant } from '../lib/utils/clock';
+import { sha1 } from '../lib/utils/sha1';
 import { generateUuid } from '../lib/utils/uuid';
 
 import type { SqliteExecutor } from './executor';
@@ -46,6 +52,7 @@ import {
   type PatientRangeProvenance,
   type RangeWrite,
 } from './repositories/rangesRepository';
+import { writeQuickAddDecision } from './repositories/quickAddDecisionsRepository';
 import { enqueueOperation, removeOperation } from './repositories/syncQueueRepository';
 
 /**
@@ -860,5 +867,119 @@ export async function discardRejectedRangeWrite(
   await executor.withTransactionAsync(async () => {
     await removeOperation(executor, rejectedOperationId);
     await deleteRangeWriteForOperation(executor, rejectedOperationId);
+  });
+}
+
+/**
+ * The patient's decision about one Quick-Add routine (P4.S3 slice 5b,
+ * `docs/sync-contract.md` §7.7): keep it pinned, remove it, or undo either.
+ *
+ * The id is derived from the routine within the profile's id, so this phone
+ * and any other the patient owns name the same row for the same widget. That
+ * is why the profile's server id is required: a phone set up before P4.S3 gets
+ * it from `ProfileProvider`'s one-time fetch, and until then has nothing to
+ * name the row with.
+ *
+ * Always queued as a `create`. A phone cannot know whether another device made
+ * the row first, and §7.7 compares a create against an existing row like any
+ * other write; an `update` naming a row the server does not have yet would be
+ * refused instead.
+ */
+export async function enqueueQuickAddDecision(
+  executor: SqliteExecutor,
+  fields: {
+    readonly profileServerId: string;
+    readonly routine: QuickAddRoutine;
+    readonly decision: QuickAddDecision;
+  },
+  now: () => Date,
+): Promise<{ id: string; operationId: string }> {
+  const id = await quickAddPreferenceId(fields.profileServerId, fields.routine, sha1);
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+
+  await executor.withTransactionAsync(async () => {
+    await writeQuickAddDecision(
+      executor,
+      { id, routine: fields.routine, decision: fields.decision, clientUpdatedAt: nowIso },
+      nowIso,
+    );
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'QuickAddPreference',
+        entityId: id,
+        operationType: 'create',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
+  });
+
+  return { id, operationId };
+}
+
+/**
+ * Drops a Quick-Add decision the server refused (the correction inbox's
+ * "clear" action), and this phone's copy of it unless another change to the
+ * same button is still waiting.
+ *
+ * The row goes so the phone stops showing a choice no other device will see;
+ * the button then shows as it would with no choice saved. It STAYS if another
+ * operation names it (#149 review): that operation is built from the row at
+ * push time, and without it would be unbuildable forever — never sent, never
+ * in the inbox, and counted as unsent on the home screen for good.
+ */
+export async function discardRejectedQuickAddDecision(
+  executor: SqliteExecutor,
+  fields: { readonly rejectedOperationId: string; readonly entityId: string },
+): Promise<void> {
+  await executor.withTransactionAsync(async () => {
+    await removeOperation(executor, fields.rejectedOperationId);
+    await executor.runAsync(
+      `DELETE FROM quick_add_decisions WHERE id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM sync_queue WHERE entity_type = 'QuickAddPreference' AND entity_id = ?
+         );`,
+      [fields.entityId, fields.entityId],
+    );
+  });
+}
+
+/**
+ * Sends a refused decision again, as a new operation stamped now (the
+ * correction inbox's "try again", for a §3.8 clock refusal).
+ *
+ * §3.8: a refused timestamp is fixed by re-enqueueing with the corrected
+ * clock, never by resubmitting the operation (§9.2, §9.7). The payload is
+ * built from the row at push time, so restamping the row and queuing a fresh
+ * `create` is the whole correction; the old operation goes in the same
+ * transaction so the inbox and the queue never both hold it.
+ */
+export async function retryRejectedQuickAddDecision(
+  executor: SqliteExecutor,
+  fields: { readonly rejectedOperationId: string; readonly entityId: string },
+  now: () => Date,
+): Promise<void> {
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+  await executor.withTransactionAsync(async () => {
+    await removeOperation(executor, fields.rejectedOperationId);
+    await executor.runAsync(
+      'UPDATE quick_add_decisions SET client_updated_at = ?, updated_at = ? WHERE id = ?;',
+      [nowIso, nowIso, fields.entityId],
+    );
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'QuickAddPreference',
+        entityId: fields.entityId,
+        operationType: 'create',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
   });
 }

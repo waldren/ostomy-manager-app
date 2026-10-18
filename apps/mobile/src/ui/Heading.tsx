@@ -29,6 +29,8 @@ export interface HeadingProps {
    * user is not dropped back at the top.
    */
   readonly ref?: Ref<Text>;
+  /** What a screen reader says instead of the visible text, e.g. an amount with its unit spelled out. */
+  readonly accessibilityLabel?: string | undefined;
 }
 
 /**
@@ -41,9 +43,14 @@ export interface HeadingProps {
  * navigation found exactly one stop per screen, and on the login screen
  * that one stop was the product name rather than the actual heading.
  */
-export function Heading({ children, level = 1, ref }: HeadingProps) {
+export function Heading({ children, level = 1, ref, accessibilityLabel }: HeadingProps) {
   return (
-    <Text ref={ref} accessibilityRole="header" style={level === 1 ? styles.h1 : styles.h2}>
+    <Text
+      ref={ref}
+      accessibilityRole="header"
+      accessibilityLabel={accessibilityLabel}
+      style={level === 1 ? styles.h1 : styles.h2}
+    >
       {children}
     </Text>
   );

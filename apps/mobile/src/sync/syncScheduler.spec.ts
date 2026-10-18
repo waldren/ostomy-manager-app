@@ -37,6 +37,7 @@ function cycle(stoppedBecause: SyncStopReason): SyncCycleResult {
       unsupportedEntity: 0,
       profileUpserts: 0,
       rangeChanges: 0,
+      quickAddUpserts: 0,
     },
     stoppedBecause,
     unbuildable: [],

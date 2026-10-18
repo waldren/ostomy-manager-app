@@ -37,6 +37,15 @@ const VOLUMETRIC: QuickAddSuggestion = {
   enteredMeasurementSystem: 'metric',
   occurrences: 4,
   lastEnteredAt: '2026-10-02T08:00:00.000Z',
+  routine: {
+    code: FLUID_INTAKE_LOINC_CODE,
+    valueMl: 250,
+    method: '258104002',
+    fluidTypeCode: null,
+    urineColorCode: null,
+    enteredMeasurementSystem: 'metric',
+  },
+  pinned: false,
 };
 
 describe('where a draft opens', () => {
@@ -91,6 +100,15 @@ describe('what crosses to the entry screen', () => {
         enteredMeasurementSystem: 'metric',
         occurrences: 2,
         lastEnteredAt: '2026-10-02T08:00:00.000Z',
+        routine: {
+          code: VOIDED_URINE_LOINC_CODE,
+          valueMl: null,
+          method: null,
+          fluidTypeCode: null,
+          urineColorCode: 'dark_yellow',
+          enteredMeasurementSystem: 'metric',
+        },
+        pinned: false,
       },
       'metric',
     );

@@ -22,6 +22,7 @@ import type {
   SyncOperationResult,
   SyncPushResponse,
 } from '@ostomy/core/api-client';
+import type { QuickAddDecision, QuickAddRoutine } from '@ostomy/core/sync';
 import type { MeasurementSystem } from '@ostomy/core/units';
 
 import { OSTOMY_TYPES, type OstomyType } from '../db/repositories/profileRepository';
@@ -226,6 +227,16 @@ export type DecodedDeltaChange =
    * meaning "a type this build does not know".
    */
   | { readonly kind: 'range-change' }
+  /** A Quick-Add decision (P4.S3 slice 5b, §7.7), stored so the dashboard can apply it offline. */
+  | {
+      readonly kind: 'quick-add-upsert';
+      readonly entityId: string;
+      readonly clientUpdatedAt: string;
+      readonly payload: {
+        readonly routine: QuickAddRoutine;
+        readonly decision: QuickAddDecision;
+      };
+    }
   | { readonly kind: 'undecodable' };
 
 export interface DecodedDeltaPage {
@@ -257,6 +268,15 @@ function decodeDeltaChange(change: SyncDeltaChange): DecodedDeltaChange {
   // observation upsert and `deltaPull` wrote its fields into the observations
   // table — a well-formed row of nonsense, with no error anywhere.
   if (change.entityType === 'EffectiveRange') return { kind: 'range-change' };
+  if (change.entityType === 'QuickAddPreference') {
+    // A decision is never deleted (§7.7), so a tombstone is not a shape this
+    // release expects, and is not guessed at.
+    if (change.deleted) return { kind: 'undecodable' };
+    const payload = decodeQuickAddPayload(change.payload, entityId);
+    return payload === undefined
+      ? { kind: 'undecodable' }
+      : { kind: 'quick-add-upsert', entityId, clientUpdatedAt, payload };
+  }
 
   if (
     change.entityType !== 'Observation' &&
@@ -391,4 +411,40 @@ function decodeProfilePayload(
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * The §7.7 payload, field by field, or `undefined`. Shape only: the server
+ * validated the routine on write, and what matters here is that a value read
+ * from the wire is what the type says it is.
+ */
+function decodeQuickAddPayload(
+  raw: unknown,
+  entityId: string,
+): Extract<DecodedDeltaChange, { kind: 'quick-add-upsert' }>['payload'] | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const payload = raw as Record<string, unknown>;
+  const optionalText = (value: unknown) =>
+    value === null || typeof value === 'string' ? value : undefined;
+
+  const method = optionalText(payload.method);
+  const fluidTypeCode = optionalText(payload.fluidTypeCode);
+  const urineColorCode = optionalText(payload.urineColorCode);
+  const { code, valueMl, enteredMeasurementSystem, decision } = payload;
+  if (
+    payload.id !== entityId ||
+    typeof code !== 'string' ||
+    (valueMl !== null && (typeof valueMl !== 'number' || !Number.isFinite(valueMl))) ||
+    method === undefined ||
+    fluidTypeCode === undefined ||
+    urineColorCode === undefined ||
+    (enteredMeasurementSystem !== 'metric' && enteredMeasurementSystem !== 'imperial') ||
+    (decision !== 'pinned' && decision !== 'hidden' && decision !== 'none')
+  ) {
+    return undefined;
+  }
+  return {
+    routine: { code, valueMl, method, fluidTypeCode, urineColorCode, enteredMeasurementSystem },
+    decision,
+  };
 }

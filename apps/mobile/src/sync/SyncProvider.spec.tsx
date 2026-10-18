@@ -104,6 +104,7 @@ function completedCycle(overrides: Partial<SyncCycleResult> = {}): SyncCycleResu
       unsupportedEntity: 0,
       profileUpserts: 0,
       rangeChanges: 0,
+      quickAddUpserts: 0,
     },
     stoppedBecause: { kind: 'completed' },
     unbuildable: [],
@@ -369,6 +370,7 @@ describe('SyncProvider', () => {
           unsupportedEntity: 0,
           profileUpserts: 1,
           rangeChanges: 0,
+          quickAddUpserts: 0,
         },
       }),
     );

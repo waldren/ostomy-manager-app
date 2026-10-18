@@ -165,7 +165,10 @@ export const mobile = {
   // no section at all, because a heading explaining why there are no shortcuts
   // yet is a worse use of the fold than the entry buttons.
   'home.quickAddHeading': 'Log again',
-  'home.quickAddBody': 'Entries you have made more than once in the last two weeks.',
+  // Since P4.S3 slice 5b a patient may KEEP a button whose routine has
+  // stopped, so "made more than once in the last two weeks" is no longer
+  // always true of what is listed under it.
+  'home.quickAddBody': 'Entries you make often, and any you chose to keep.',
   // The local write IS the save, so a failure here means nothing was recorded.
   // It says so, and says what to do, rather than leaving the patient to guess
   // from a shortcut that did nothing when tapped.
