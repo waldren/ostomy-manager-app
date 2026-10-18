@@ -26,11 +26,15 @@ On a Pixel 8 emulator running Android 16, at the largest system text size (`font
 | Settings | Passes, with one layout fix (below). |
 | Quick-Add buttons | Passes. |
 | Add a stoma entry | Passes: the amount field, the Measured/Estimated choice, the date and time, and Save. |
-| Add a urine entry | **Failed**, then fixed (below). |
+| Add a urine entry | **Failed**, then fixed (below), and re-checked: passes. |
+| Add a drink | Passes, after the fix: the Measured/Estimated and drink-type choices stack. |
+| Add a meal | Passes, after the fix: the size choices stack and the tags wrap. |
+| Your target ranges | Passes. |
+| Entries that need your attention | Passes (nothing to correct at the time). |
 
 Line heights in this app are written in density-independent pixels. React Native scales them with the text when `allowFontScaling` is on, which the screenshots confirm: no line overlapped another on any screen.
 
-**What the emulator could not reach.** The screens behind the app's unlock — Add intake, Add meal, the correction inbox and the target ranges screen — were not re-checked after the fix below, because unlocking needs the device PIN typed into a secure system window that `adb` cannot drive (`scripts/android-emulator.sh` documents this). They use the same components as the screens that were checked: `Screen`, `Heading`, `BodyText`, `Button`, `NumericField`, `TextField`, `ChoiceGroup` and `TagGroup`.
+**After the fixes**, every screen above was opened again at 2.0× (the device PIN entered by hand, since `adb` cannot type into the secure unlock window that `scripts/android-emulator.sh` documents). The home screen's buttons were confirmed spaced apart. The emulator was then returned to the default text size.
 
 ### 3. Contrast
 
@@ -45,7 +49,7 @@ Android's own **high contrast text** setting reaches this app. With it on, body 
    - the label shrinks and wraps within its option;
    - the swatch and the check mark keep their size.
 
-   The same change un-crams the two-option choices elsewhere, such as the units question in Settings, where "Millilitres and kilograms (mL, kg)" was squeezed onto four lines beside the check mark. Pinned by `apps/mobile/src/ui/ChoiceGroup.spec.tsx`.
+   The same change un-crams the two-option choices elsewhere, such as the units question in Settings, where "Millilitres and kilograms (mL, kg)" was squeezed onto four lines beside the check mark. Pinned by `apps/mobile/src/ui/ChoiceGroup.spec.tsx`, and re-checked on the emulator: each colour is now on its own row, inside its option, with "Orange-brown" whole.
 2. **The "Log again" buttons ran together at large text. Fixed.** Each button's "Change before saving" sat flush against the next button below it, so which entry it changed was a guess. Each button's group now has space after it.
 
 ## Decision: no in-app contrast toggle
