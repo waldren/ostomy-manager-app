@@ -321,7 +321,16 @@ export interface QuickAddDecisionInput {
  *
  * Decisions are matched by the routine key (`quickAddRoutineKey`), which reads
  * a volume as a number. So entries typed "350" and "350.0" are one widget
- * here, kept at whichever is more frequent, and one decision covers both.
+ * here: its count is the two together, and a tap logs whichever spelling the
+ * patient typed more often — still a value they entered. One decision covers
+ * both.
+ *
+ * A kept or removed routine also hides its twin in the OTHER measurement
+ * system (#149 review). A tap records the patient's current system, so after
+ * a switch from metric to imperial, tapping a kept "350 mL" button twice makes
+ * an imperial routine with the same value, which would otherwise rank as a
+ * second, identically labelled button — permanently, because the kept one
+ * never ages out.
  */
 export function buildQuickAddWidgets(
   candidates: readonly QuickAddCandidate[],
@@ -331,22 +340,37 @@ export function buildQuickAddWidgets(
   const minimum = options.minimumOccurrences ?? MINIMUM_OCCURRENCES;
   const limit = options.limit ?? MAX_SUGGESTIONS;
 
-  // One suggestion per routine: the most frequent, then most recent, spelling.
-  const byRoutine = new Map<string, QuickAddSuggestion>();
+  // One suggestion per routine: the most frequent, then most recent, spelling,
+  // counted with every other spelling of the same number.
+  const spellings = new Map<string, QuickAddSuggestion[]>();
   for (const suggestion of candidates.flatMap((candidate) => {
     const built = toSuggestion(candidate);
     return built === undefined ? [] : [built];
   })) {
     const routineKey = quickAddRoutineKey(suggestion.routine);
-    const existing = byRoutine.get(routineKey);
-    if (existing === undefined || byRank(suggestion, existing) < 0) {
-      byRoutine.set(routineKey, suggestion);
-    }
+    spellings.set(routineKey, [...(spellings.get(routineKey) ?? []), suggestion]);
+  }
+  const byRoutine = new Map<string, QuickAddSuggestion>();
+  for (const [routineKey, group] of spellings) {
+    const [best] = [...group].sort(byRank);
+    if (best === undefined) continue;
+    byRoutine.set(routineKey, {
+      ...best,
+      occurrences: group.reduce((total, suggestion) => total + suggestion.occurrences, 0),
+      lastEnteredAt: group.reduce(
+        (latest, suggestion) =>
+          suggestion.lastEnteredAt > latest ? suggestion.lastEnteredAt : latest,
+        '',
+      ),
+    });
   }
 
   const decided = new Map<string, QuickAddDecisionInput>();
+  const decidedInAnySystem = new Set<string>();
   for (const decision of decisions) {
-    if (decision.decision !== 'none') decided.set(quickAddRoutineKey(decision.routine), decision);
+    if (decision.decision === 'none') continue;
+    decided.set(quickAddRoutineKey(decision.routine), decision);
+    decidedInAnySystem.add(routineKeyInAnySystem(decision.routine));
   }
 
   const fromDecision = (decision: QuickAddDecisionInput): QuickAddSuggestion | undefined =>
@@ -376,7 +400,10 @@ export function buildQuickAddWidgets(
   const removed = withDecision('hidden');
   const ranked = [...byRoutine.entries()]
     .filter(
-      ([routineKey, suggestion]) => suggestion.occurrences >= minimum && !decided.has(routineKey),
+      ([routineKey, suggestion]) =>
+        suggestion.occurrences >= minimum &&
+        !decided.has(routineKey) &&
+        !decidedInAnySystem.has(routineKeyInAnySystem(suggestion.routine)),
     )
     .map(([, suggestion]) => suggestion)
     .sort(byRank)
@@ -387,6 +414,11 @@ export function buildQuickAddWidgets(
 
 function byRank(a: QuickAddSuggestion, b: QuickAddSuggestion): number {
   return b.occurrences - a.occurrences || b.lastEnteredAt.localeCompare(a.lastEnteredAt) || 0;
+}
+
+/** The routine key with the measurement system left out — what two systems' twins share. */
+function routineKeyInAnySystem(routine: QuickAddRoutine): string {
+  return quickAddRoutineKey({ ...routine, enteredMeasurementSystem: 'metric' });
 }
 
 /** The fields a decision names the routine by, from a grouped row. */

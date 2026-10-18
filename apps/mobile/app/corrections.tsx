@@ -23,6 +23,7 @@ import {
   rangeTypeLabelKey,
 } from '@ostomy/core/i18n';
 import type { MeasuredOrEstimated } from '@ostomy/core/validation';
+import { SYNC_REASON_CODE } from '@ostomy/core/sync';
 import { Redirect, router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -37,11 +38,18 @@ import { useDatabaseState } from '../src/db/DatabaseProvider';
 import {
   discardRejectedCreate,
   discardRejectedQuickAddDecision,
+  retryRejectedQuickAddDecision,
   discardRejectedRangeWrite,
   reenqueueCorrectedObservation,
   undoRejectedProfileEdit,
 } from '../src/db/offlineWrites';
 import { getObservationById } from '../src/db/repositories/observationsRepository';
+import {
+  getQuickAddDecision,
+  type LocalQuickAddDecision,
+} from '../src/db/repositories/quickAddDecisionsRepository';
+import type { QuickAddSuggestion } from '../src/quickadd/quickAddSuggestions';
+import { describeQuickAdd } from '../src/quickadd/QuickAddWidgets';
 import {
   getRangeWriteForOperation,
   type RangeWrite,
@@ -141,6 +149,15 @@ function editableAmountIn(canonicalMl: number, system: MeasurementSystem): strin
   return String(Math.round(inPatientUnits * factor) / factor);
 }
 
+/** A refused Quick-Add decision, with this phone's copy of it so the inbox can name the button. */
+interface QuickAddRejection {
+  readonly operation: SyncQueueEntry;
+  readonly decision: LocalQuickAddDecision | undefined;
+}
+
+/** §3.8's refusal of a timestamp outside the allowance — the one a patient can fix by retrying. */
+const CLOCK_REFUSAL = SYNC_REASON_CODE.CLIENT_TIMESTAMP_OUT_OF_RANGE;
+
 /** A refused range change, with this phone's copy of it so the inbox can say which range. */
 interface RangeRejection {
   readonly operation: SyncQueueEntry;
@@ -178,7 +195,7 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
    */
   const [rangeRejections, setRangeRejections] = useState<readonly RangeRejection[]>([]);
   /** Refused Quick-Add decisions (P4.S3 slice 5b), with one action: remove. */
-  const [quickAddRejections, setQuickAddRejections] = useState<readonly SyncQueueEntry[]>([]);
+  const [quickAddRejections, setQuickAddRejections] = useState<readonly QuickAddRejection[]>([]);
   const [undoUnreachable, setUndoUnreachable] = useState(false);
   const { port: profilePort, refresh: refreshProfile } = useProfileState();
 
@@ -194,14 +211,17 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     const resolved: RejectedEntry[] = [];
     const profiles: SyncQueueEntry[] = [];
     const ranges: RangeRejection[] = [];
-    const quickAdds: SyncQueueEntry[] = [];
+    const quickAdds: QuickAddRejection[] = [];
     for (const operation of rejected) {
       if (operation.entityType === 'Profile') {
         profiles.push(operation);
         continue;
       }
       if (operation.entityType === 'QuickAddPreference') {
-        quickAdds.push(operation);
+        quickAdds.push({
+          operation,
+          decision: await getQuickAddDecision(database.executor, operation.entityId),
+        });
         continue;
       }
       if (operation.entityType === 'EffectiveRange') {
@@ -393,6 +413,59 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
     [database, load, profilePort, refreshProfile],
   );
 
+  const retryQuickAddChange = useCallback(
+    async (operation: SyncQueueEntry) => {
+      if (database.status !== 'ready') return;
+      await retryRejectedQuickAddDecision(
+        database.executor,
+        { rejectedOperationId: operation.operationId, entityId: operation.entityId },
+        clockNow,
+      );
+      requestSync();
+      await load();
+    },
+    [database, load, requestSync],
+  );
+
+  /**
+   * The button a refused decision was about, as the patient sees it — and
+   * spoken with units in full. `undefined` when this phone no longer holds the
+   * decision or cannot name its routine.
+   */
+  const quickAddLabels = (decision: LocalQuickAddDecision | undefined) => {
+    if (decision === undefined) return undefined;
+    const { routine } = decision;
+    const method = methodFromStoredCode(routine.method);
+    const base = {
+      key: decision.id,
+      routine,
+      pinned: false,
+      code: routine.code,
+      enteredMeasurementSystem: routine.enteredMeasurementSystem,
+      occurrences: 0,
+      lastEnteredAt: '',
+    };
+    const suggestion: QuickAddSuggestion | undefined =
+      routine.valueMl === null
+        ? routine.urineColorCode === null
+          ? undefined
+          : { ...base, kind: 'volumeless-urine', urineColorCode: routine.urineColorCode }
+        : method === undefined
+          ? undefined
+          : {
+              ...base,
+              kind: 'volumetric',
+              canonicalValue: String(routine.valueMl),
+              method,
+              fluidTypeCode: routine.fluidTypeCode,
+              urineColorCode: routine.urineColorCode,
+            };
+    if (suggestion === undefined) return undefined;
+    const label = describeQuickAdd(suggestion, measurementSystem, t);
+    const spoken = describeQuickAdd(suggestion, measurementSystem, t, 'long');
+    return label === undefined || spoken === undefined ? undefined : { label, spoken };
+  };
+
   const discardQuickAddChange = useCallback(
     async (operation: SyncQueueEntry) => {
       if (database.status !== 'ready') return;
@@ -481,18 +554,50 @@ function CorrectionsScreen({ profile }: { readonly profile: LocalProfile }): Rea
               ) : null}
             </View>
           ))}
-          {quickAddRejections.map((operation) => (
-            <View key={operation.operationId} style={{ gap: 8 }}>
-              <BodyText tone="error">{t('common:corrections.quickAddProblem')}</BodyText>
-              <BodyText tone="muted">{t('common:corrections.quickAddDiscardHint')}</BodyText>
-              <Button
-                label={t('common:corrections.quickAddDiscardButton')}
-                onPress={() => {
-                  void discardQuickAddChange(operation);
-                }}
-              />
-            </View>
-          ))}
+          {quickAddRejections.map(({ operation, decision }) => {
+            const named = quickAddLabels(decision);
+            // §3.8: a clock refusal is fixed by sending again with the
+            // corrected clock, which is the one refusal a patient can fix.
+            const clock = operation.rejectedReasonCode === CLOCK_REFUSAL;
+            return (
+              <View key={operation.operationId} style={{ gap: 8 }}>
+                <BodyText tone="error">
+                  {named === undefined
+                    ? t('common:corrections.quickAddProblemUnnamed')
+                    : t('common:corrections.quickAddProblem', { label: named.label })}
+                </BodyText>
+                {clock ? (
+                  <>
+                    <BodyText tone="muted">{t('common:corrections.quickAddClockProblem')}</BodyText>
+                    <Button
+                      label={t('common:corrections.quickAddRetryButton')}
+                      accessibilityLabel={
+                        named === undefined
+                          ? undefined
+                          : t('common:corrections.quickAddRetrySpoken', { label: named.spoken })
+                      }
+                      onPress={() => {
+                        void retryQuickAddChange(operation);
+                      }}
+                    />
+                  </>
+                ) : null}
+                <BodyText tone="muted">{t('common:corrections.quickAddDiscardHint')}</BodyText>
+                <Button
+                  label={t('common:corrections.quickAddDiscardButton')}
+                  variant={clock ? 'secondary' : 'primary'}
+                  accessibilityLabel={
+                    named === undefined
+                      ? undefined
+                      : t('common:corrections.quickAddDiscardSpoken', { label: named.spoken })
+                  }
+                  onPress={() => {
+                    void discardQuickAddChange(operation);
+                  }}
+                />
+              </View>
+            );
+          })}
           {rangeRejections.map(({ operation, change }) => (
             <View key={operation.operationId} style={{ gap: 8 }}>
               <BodyText tone="error">{describeRangeChange(change)}</BodyText>

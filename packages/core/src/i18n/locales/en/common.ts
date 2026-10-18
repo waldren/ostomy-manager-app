@@ -48,18 +48,31 @@ export const common = {
   // a screen-reader user hearing only "350 millilitres, button" would be one
   // tap from asserting a measurement they did not make. So the hint spells out
   // what tapping does, including the toggle.
-  'quickAdd.volumeLabel': '{{amount}} · {{method}}',
-  'quickAdd.volumeWithTypeLabel': '{{amount}} {{fluidType}} · {{method}}',
+  //
+  // The KIND comes first (#149 review): a 350 mL stoma output and a 350 mL
+  // urine entry both read "350 mL · Measured" before it, two buttons with one
+  // name, and a one-tap log of the wrong one is a data-quality defect. Commas,
+  // not "·", which some speech engines read aloud as "middle dot".
+  'quickAdd.kindOutput': 'Stoma output',
+  'quickAdd.kindIntake': 'Drink',
+  'quickAdd.kindUrine': 'Urine',
+  'quickAdd.volumeLabel': '{{kind}}: {{amount}}, {{method}}',
+  'quickAdd.volumeWithTypeLabel': '{{kind}}: {{amount}} {{fluidType}}, {{method}}',
   // A colour-only urine entry (AC 12.1 AC2) has no amount at all. Naming the
   // colour alone, without an amount, is the honest rendering — and "no amount"
   // is said out loud rather than left as an absence, because a missing volume
   // is never zero.
-  'quickAdd.colorOnlyLabel': '{{color}} · no amount',
+  'quickAdd.colorOnlyLabel': '{{kind}}: {{color}}, no amount',
   'quickAdd.logHint': 'Records this entry now, with the time set to right now.',
   // Said plainly, because the number is the patient's own and the honesty of
   // it is what makes the widget trustworthy.
   'quickAdd.repeatCount_one': 'You logged this once recently.',
   'quickAdd.repeatCount_other': 'You logged this {{count}} times recently.',
+  // One sentence pair per key, not two keys joined in code, so a translation
+  // can order them (ADR-0006).
+  'quickAdd.repeatCountKept_one': 'You logged this once recently. You chose to keep it.',
+  'quickAdd.repeatCountKept_other':
+    'You logged this {{count}} times recently. You chose to keep it.',
   'quickAdd.editButton': 'Change before saving',
   'quickAdd.editHint': 'Opens the entry form with these details filled in, so you can adjust them.',
 
@@ -72,10 +85,18 @@ export const common = {
    */
   'quickAdd.kept': 'You chose to keep this one.',
   'quickAdd.manageHeading': 'Quick-Add buttons',
+  // Names the home screen's own heading, "Log again", so the patient can tell
+  // this screen is about those buttons (#149 review).
   'quickAdd.manageIntro':
-    'These buttons on your home screen repeat entries you make often. Keep one so it always stays, or remove one you do not want.',
+    'These are the buttons under "Log again" on your home screen. Each one logs an entry you make often, with one tap. Keep a button so it always stays. Remove a button you do not want.',
   'quickAdd.manageEmpty':
     'You have no Quick-Add buttons yet. A button appears after you log the same entry at least twice in two weeks.',
+  'quickAdd.manageEmptyAllRemoved':
+    'No buttons are on your home screen right now. A button appears after you log the same entry at least twice in two weeks.',
+  'quickAdd.shownHeading': 'On your home screen',
+  // A button whose decision was just undone and that no longer qualifies stays
+  // listed until the patient leaves, so the undo is never a dead end (#149).
+  'quickAdd.leftHome': 'This button is no longer on your home screen.',
   'quickAdd.removedHeading': 'Removed buttons',
   'quickAdd.removedIntro': 'These stay off your home screen, even if you log them again.',
   'quickAdd.keepButton': 'Keep this button',
@@ -83,17 +104,29 @@ export const common = {
   'quickAdd.keepHint': 'It stays on your home screen even if you stop logging it.',
   'quickAdd.unkeepButton': 'Stop keeping this button',
   'quickAdd.unkeepSpoken': 'Stop keeping this button: {{label}}',
-  'quickAdd.unkeepHint': 'It stays only while you keep logging it.',
+  'quickAdd.unkeepHint':
+    'It stays on your home screen only while you log it at least twice in two weeks.',
   'quickAdd.removeButton': 'Remove this button',
   'quickAdd.removeSpoken': 'Remove this button: {{label}}',
   'quickAdd.removeHint': 'It will not come back on its own. You can bring it back on this screen.',
   'quickAdd.restoreButton': 'Bring this button back',
   'quickAdd.restoreSpoken': 'Bring this button back: {{label}}',
-  'quickAdd.restoreHint': 'It shows again when you log it often.',
+  'quickAdd.restoreHint':
+    'It can show on your home screen again when you log it at least twice in two weeks.',
   'quickAdd.announceKept': 'Saved. This button will stay on your home screen.',
-  'quickAdd.announceUnkept': 'Saved. This button will stay only while you keep logging it.',
+  'quickAdd.announceUnkept':
+    'Saved. This button now stays only while you log it at least twice in two weeks.',
+  'quickAdd.announceUnkeptGone':
+    'Saved. This button has left your home screen. It comes back if you log it twice in two weeks.',
   'quickAdd.announceRemoved': 'Saved. This button is removed from your home screen.',
-  'quickAdd.announceRestored': 'Saved. This button will show again when you log it often.',
+  'quickAdd.announceRestoredShown': 'Saved. This button is back on your home screen.',
+  'quickAdd.announceRestoredLater':
+    'Saved. This button can come back to your home screen when you log it at least twice in two weeks.',
+  'quickAdd.needsConnectionBody':
+    'Your phone needs to connect once before you can change these buttons. Check your connection, then try again.',
+  'quickAdd.stillNoConnection':
+    'Your phone still could not connect. Check your connection, then try again.',
+  'quickAdd.connected': 'Connected. You can change your buttons now.',
   'quickAdd.saveFailed': 'Something went wrong, and your change was not saved. Please try again.',
 
   // Entry-form copy. Clinical meaning, so `common` rather than `mobile`:
@@ -499,10 +532,21 @@ export const common = {
   // new value is a new row, set again on the target ranges screen.
   // P4.S3 slice 5b. Reachable only if this phone built a decision the server
   // could not read, which its own checks are meant to make impossible.
-  'corrections.quickAddProblem': 'A change to your Quick-Add buttons was not accepted.',
+  // Names the button, because "Remove this change" is not a decision anyone can
+  // make about a change they cannot identify. Reachable: a phone whose clock
+  // has drifted beyond the allowance has every change refused (§3.8), and
+  // then "try again" is the fix.
+  'corrections.quickAddProblem': 'Your change to the button "{{label}}" was not accepted.',
+  'corrections.quickAddProblemUnnamed':
+    'A change to one of your Log again buttons was not accepted.',
+  'corrections.quickAddClockProblem':
+    'Your phone’s clock seemed wrong when this was saved. Check the time on your phone, then try again.',
+  'corrections.quickAddRetryButton': 'Try again',
+  'corrections.quickAddRetrySpoken': 'Try again: the button {{label}}',
   'corrections.quickAddDiscardHint':
-    'Removing it puts that button back how it was on this phone. You can change it again in Settings.',
-  'corrections.quickAddDiscardButton': 'Remove this change',
+    'Removing it clears your choice for that button on this phone. You can choose again in Settings.',
+  'corrections.quickAddDiscardButton': 'Clear this change',
+  'corrections.quickAddDiscardSpoken': 'Clear this change to the button {{label}}',
   'corrections.rangeProblem': 'A change to your ranges was not accepted.',
   'corrections.rangeProblemSet': 'Your new range for {{measure}} ({{value}}) was not accepted.',
   'corrections.rangeProblemStop':
@@ -540,7 +584,7 @@ export const common = {
     'Your phone needs to connect once before you can change these. Check your connection, then try again.',
   'settings.retryButton': 'Try again',
   'settings.quickAddHeading': 'Quick-Add buttons',
-  'settings.quickAddIntro': 'Choose which shortcut buttons stay on your home screen.',
+  'settings.quickAddIntro': 'Choose which buttons stay under "Log again" on your home screen.',
   'settings.quickAddButton': 'Your Quick-Add buttons',
   'settings.targetRangesHeading': 'Target ranges',
   'settings.targetRangesIntro': 'See the typical ranges for you, and set your own.',

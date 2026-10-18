@@ -22,6 +22,11 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { View } from 'react-native';
 
+import {
+  FLUID_INTAKE_LOINC_CODE,
+  STOMA_OUTPUT_LOINC_CODE,
+  VOIDED_URINE_LOINC_CODE,
+} from '../entry/observationCodes';
 import { URINE_COLOR_LABEL_NAMESPACE } from '../entry/UrineColorChoice';
 import { labelKeyFor } from '../entry/useValueSetOptions';
 import { BodyText } from '../ui/BodyText';
@@ -80,6 +85,7 @@ export function QuickAddWidgets({
 
       {suggestions.map((suggestion) => {
         const label = describeQuickAdd(suggestion, measurementSystem, t);
+        const spokenLabel = describeQuickAdd(suggestion, measurementSystem, t, SPOKEN_UNITS);
         // A suggestion this release cannot NAME is not offered. A value-set
         // member an admin added after the release shipped has no catalog copy
         // (CLAUDE.md: "renders as 'Another option' — a reachable state, not a
@@ -92,6 +98,8 @@ export function QuickAddWidgets({
           <View key={suggestion.key}>
             <Button
               label={label}
+              // Units spelled out: "fl oz" is read letter by letter.
+              accessibilityLabel={spokenLabel}
               // Spells out that tapping records an entry, and at what time.
               // The visible label is a value and a Measured/Estimated word; on
               // its own it does not say that a tap commits anything.
@@ -104,8 +112,8 @@ export function QuickAddWidgets({
               The count is the patient's own history and is what justifies the
               shortcut existing. Shown rather than hidden behind the hint,
               because a number a patient can check is what makes a generated
-              suggestion inspectable at all — there is no review screen for
-              these until P4.S3.
+              suggestion inspectable at all. Keeping and removing are on the
+              Settings screen (P4.S3 slice 5b), not here.
             */}
             <BodyText tone="muted">{quickAddStatus(suggestion, t)}</BodyText>
             <Button
@@ -122,6 +130,20 @@ export function QuickAddWidgets({
     </View>
   );
 }
+
+/**
+ * Which kind of entry a widget logs, named first in its label (#149 review): a
+ * 350 mL stoma output and a 350 mL urine entry are otherwise two buttons with
+ * one name. Keyed by the three Quick-Add codes; anything else is not offered.
+ */
+/** Amounts as a screen reader says them: "fl oz" is read letter by letter. */
+const SPOKEN_UNITS = 'long';
+
+const KIND_KEYS: Readonly<Record<string, string>> = {
+  [STOMA_OUTPUT_LOINC_CODE]: 'common:quickAdd.kindOutput',
+  [FLUID_INTAKE_LOINC_CODE]: 'common:quickAdd.kindIntake',
+  [VOIDED_URINE_LOINC_CODE]: 'common:quickAdd.kindUrine',
+};
 
 /**
  * The widget's visible label.
@@ -149,11 +171,14 @@ export function describeQuickAdd(
   // `TFunction`, and widening it here would be writing a second, looser
   // contract for the catalog than the one the rest of the app compiles against.
   t: TFunction<readonly ['common', 'mobile']>,
+  /** `'long'` for a screen reader: "fl oz" is read letter by letter. */
+  unitDisplay: 'short' | 'long' = 'short',
 ): string | undefined {
+  const kind = t(KIND_KEYS[suggestion.code] ?? 'common:quickAdd.kindOutput');
   if (suggestion.kind === 'volumeless-urine') {
     const colorKey = labelKeyFor(URINE_COLOR_LABEL_NAMESPACE, suggestion.urineColorCode);
     if (colorKey === undefined) return undefined;
-    return t('common:quickAdd.colorOnlyLabel', { color: t(colorKey) });
+    return t('common:quickAdd.colorOnlyLabel', { kind, color: t(colorKey) });
   }
 
   const amount = formatVolumeQuantity(
@@ -162,6 +187,8 @@ export function describeQuickAdd(
       unitsForMeasurementSystem(suggestion.enteredMeasurementSystem),
       unitsForMeasurementSystem(measurementSystem),
     ),
+    undefined,
+    unitDisplay,
   );
   const method = t(`common:method.${suggestion.method}`);
 
@@ -171,13 +198,14 @@ export function describeQuickAdd(
       : labelKeyFor('fluidType', suggestion.fluidTypeCode);
   if (fluidTypeKey !== undefined) {
     return t('common:quickAdd.volumeWithTypeLabel', {
+      kind,
       amount,
       fluidType: t(fluidTypeKey),
       method,
     });
   }
 
-  return t('common:quickAdd.volumeLabel', { amount, method });
+  return t('common:quickAdd.volumeLabel', { kind, amount, method });
 }
 
 /**
@@ -190,8 +218,9 @@ export function quickAddStatus(
   suggestion: QuickAddSuggestion,
   t: TFunction<readonly ['common', 'mobile']>,
 ): string {
-  if (!suggestion.pinned)
+  if (!suggestion.pinned) {
     return t('common:quickAdd.repeatCount', { count: suggestion.occurrences });
+  }
   if (suggestion.occurrences === 0) return t('common:quickAdd.kept');
-  return `${t('common:quickAdd.repeatCount', { count: suggestion.occurrences })} ${t('common:quickAdd.kept')}`;
+  return t('common:quickAdd.repeatCountKept', { count: suggestion.occurrences });
 }

@@ -29,12 +29,20 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { SyncDeltaResponse } from '@ostomy/core/api-client';
+import type { SyncDeltaResponse, SyncPushResponse } from '@ostomy/core/api-client';
 import { quickAddPreferenceId, type QuickAddRoutine } from '@ostomy/core/sync';
 
 import type { SqliteExecutor } from '../db/executor';
 import { runMigrations } from '../db/migrations';
-import { discardRejectedQuickAddDecision, enqueueQuickAddDecision } from '../db/offlineWrites';
+import {
+  discardRejectedQuickAddDecision,
+  enqueueQuickAddDecision,
+  enqueueVolumelessUrineCreate,
+  enqueueVolumetricObservationCreate,
+  retryRejectedQuickAddDecision,
+} from '../db/offlineWrites';
+import { listQuickAddCandidates } from '../db/repositories/quickAddRepository';
+import { buildQuickAddWidgets, QUICK_ADD_CODES } from '../quickadd/quickAddSuggestions';
 import {
   getQuickAddDecision,
   listQuickAddDecisions,
@@ -44,8 +52,8 @@ import { listQueuedOperations, markRejected } from '../db/repositories/syncQueue
 import { createNodeSqliteExecutor } from '../test-support/nodeSqliteExecutor';
 
 import { applyDeltaPage } from './deltaPull';
-import { buildPushRequest } from './pushOperations';
-import { decodeDeltaPage } from './responseDecoding';
+import { applyPushResults, buildPushRequest } from './pushOperations';
+import { decodeDeltaPage, decodePushResults } from './responseDecoding';
 
 const AT = (minute: number) => () => new Date(Date.UTC(2026, 9, 17, 12, minute));
 const iso = (minute: number) => AT(minute)().toISOString();
@@ -247,6 +255,174 @@ describe('Quick-Add decisions on this device, through sync (P4.S3 slice 5b, §7.
       expect(await listQuickAddDecisions(executor)).toEqual([]);
       expect(await getCursor(executor)).toBe('21');
     });
+  });
+
+  /**
+   * #149 review: deleting the row while another change to the same button was
+   * still queued left that change unbuildable forever — never sent, never in
+   * the inbox, and counted as unsent on the home screen for good.
+   */
+  it('keeps the row when clearing a refused decision while a later one waits', async () => {
+    const first = await decide('pinned', 1);
+    await markRejected(executor, first.operationId, {
+      reasonCode: 'PAYLOAD_FIELD_INVALID',
+      field: 'id',
+      rejectedAt: iso(2),
+    });
+    await decide('hidden', 3);
+
+    await discardRejectedQuickAddDecision(executor, {
+      rejectedOperationId: first.operationId,
+      entityId: first.id,
+    });
+
+    const built = await buildPushRequest(executor, await listQueuedOperations(executor));
+    expect(built.unbuildable).toEqual([]);
+    expect(payloadOf(built.request.operations[0])).toMatchObject({ decision: 'hidden' });
+  });
+
+  /** §3.8: a clock refusal is fixed by sending again, stamped with the corrected clock. */
+  it('sends a clock-refused decision again as a new operation stamped now', async () => {
+    const { id, operationId } = await decide('pinned', 1);
+    await markRejected(executor, operationId, {
+      reasonCode: 'CLIENT_TIMESTAMP_OUT_OF_RANGE',
+      field: 'clientTimestamp',
+      rejectedAt: iso(2),
+    });
+
+    await retryRejectedQuickAddDecision(
+      executor,
+      { rejectedOperationId: operationId, entityId: id },
+      AT(9),
+    );
+
+    const queued = await listQueuedOperations(executor);
+    expect(queued).toEqual([
+      expect.objectContaining({ entityId: id, operationType: 'create', clientTimestamp: iso(9) }),
+    ]);
+    expect(queued[0]?.operationId).not.toBe(operationId);
+    expect(await getQuickAddDecision(executor, id)).toMatchObject({
+      decision: 'pinned',
+      clientUpdatedAt: iso(9),
+    });
+    expect(
+      await executor.getAllAsync("SELECT * FROM sync_queue WHERE status = 'rejected';"),
+    ).toEqual([]);
+  });
+
+  describe('a decision that lost to a newer one', () => {
+    async function supersede(winningSequence: string): Promise<void> {
+      await decide('hidden', 1);
+      const built = await buildPushRequest(executor, await listQueuedOperations(executor));
+      await applyPushResults(
+        executor,
+        built.sent,
+        decodePushResults({
+          results: built.request.operations.map((operation) => ({
+            operationId: operation.operationId,
+            entityId: operation.entityId,
+            status: 'superseded',
+            appliedServerSequence: winningSequence,
+            replayed: false,
+          })),
+        } as unknown as SyncPushResponse),
+        iso(2),
+      );
+    }
+
+    /**
+     * #149 review: this phone wrote its losing decision locally, and a cursor
+     * already past the winner would never bring it back — the two phones would
+     * disagree about a button indefinitely.
+     */
+    it('steps the cursor back so the next pull delivers the winner', async () => {
+      await setCursor(executor, '50', iso(0));
+
+      await supersede('40');
+
+      expect(await getCursor(executor)).toBe('39');
+    });
+
+    it('never moves the cursor forward', async () => {
+      await setCursor(executor, '12', iso(0));
+
+      await supersede('40');
+
+      expect(await getCursor(executor)).toBe('12');
+    });
+  });
+
+  /**
+   * The whole chain, from what the patient typed to what the server checks:
+   * the entries' own spellings, grouped into widgets, decided about, and
+   * pushed. The server derives the id from the payload it receives and refuses
+   * any other, so the payload's id must be the derivation of the payload's own
+   * fields — for "350.50", an imperial conversion, and a colour-only entry.
+   */
+  it('pushes, for every kind of widget, an id the server derives from the payload itself', async () => {
+    const write = (code: string, value: string, system: 'metric' | 'imperial', day: number) =>
+      enqueueVolumetricObservationCreate(
+        executor,
+        {
+          code,
+          valueQuantityValue: value,
+          valueQuantityUnit: 'mL',
+          effectiveDatetime: new Date(Date.UTC(2026, 9, 17 - day, 9)).toISOString(),
+          measuredOrEstimated: 'estimated',
+          enteredMeasurementSystem: system,
+          fluidTypeCode: code === '9000-1' ? 'water' : null,
+        },
+        AT(0),
+      );
+    for (const day of [1, 2]) {
+      await write('79560-9', '350.50', 'metric', day);
+      await write('9000-1', '354.8824', 'imperial', day);
+      await enqueueVolumelessUrineCreate(
+        executor,
+        {
+          code: '9187-6',
+          urineColorCode: 'pale_yellow',
+          effectiveDatetime: new Date(Date.UTC(2026, 9, 17 - day, 10)).toISOString(),
+          enteredMeasurementSystem: 'metric',
+        },
+        AT(0),
+      );
+    }
+    await executor.runAsync('DELETE FROM sync_queue;');
+    const widgets = buildQuickAddWidgets(
+      await listQuickAddCandidates(executor, { codes: QUICK_ADD_CODES, since: iso(-60 * 24 * 14) }),
+      [],
+    ).shown;
+    expect(widgets).toHaveLength(3);
+
+    for (const widget of widgets) {
+      await enqueueQuickAddDecision(
+        executor,
+        { profileServerId: PROFILE_ID, routine: widget.routine, decision: 'pinned' },
+        AT(5),
+      );
+    }
+    const built = await buildPushRequest(executor, await listQueuedOperations(executor));
+
+    for (const operation of built.request.operations) {
+      const payload = payloadOf(operation) as unknown as QuickAddRoutine & { id: string };
+      const value = payload.valueMl;
+      // What the server's precision rule demands of a JSON number.
+      if (value !== null) expect(Math.round(value * 1e4) / 1e4).toBe(value);
+      expect(payload.id).toBe(
+        await serverId({
+          code: payload.code,
+          valueMl: value,
+          method: payload.method,
+          fluidTypeCode: payload.fluidTypeCode,
+          urineColorCode: payload.urineColorCode,
+          enteredMeasurementSystem: payload.enteredMeasurementSystem,
+        }),
+      );
+    }
+    expect(
+      built.request.operations.map((operation) => payloadOf(operation).valueMl).sort(),
+    ).toEqual([350.5, 354.8824, null]);
   });
 
   it('drops a refused decision and this phone’s copy of it together', async () => {

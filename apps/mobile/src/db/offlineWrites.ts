@@ -921,13 +921,15 @@ export async function enqueueQuickAddDecision(
 }
 
 /**
- * Drops a Quick-Add decision the server refused, and this phone's copy of it,
- * together (the correction inbox's one action for one).
+ * Drops a Quick-Add decision the server refused (the correction inbox's
+ * "clear" action), and this phone's copy of it unless another change to the
+ * same button is still waiting.
  *
- * Reachable only if this phone built a payload the server could not read, which
- * the derived id and the decoder are meant to make impossible. The row goes
- * with it so the phone stops showing a decision no other device will ever see;
- * the widget then shows as it would with no decision at all.
+ * The row goes so the phone stops showing a choice no other device will see;
+ * the button then shows as it would with no choice saved. It STAYS if another
+ * operation names it (#149 review): that operation is built from the row at
+ * push time, and without it would be unbuildable forever — never sent, never
+ * in the inbox, and counted as unsent on the home screen for good.
  */
 export async function discardRejectedQuickAddDecision(
   executor: SqliteExecutor,
@@ -935,6 +937,49 @@ export async function discardRejectedQuickAddDecision(
 ): Promise<void> {
   await executor.withTransactionAsync(async () => {
     await removeOperation(executor, fields.rejectedOperationId);
-    await executor.runAsync('DELETE FROM quick_add_decisions WHERE id = ?;', [fields.entityId]);
+    await executor.runAsync(
+      `DELETE FROM quick_add_decisions WHERE id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM sync_queue WHERE entity_type = 'QuickAddPreference' AND entity_id = ?
+         );`,
+      [fields.entityId, fields.entityId],
+    );
+  });
+}
+
+/**
+ * Sends a refused decision again, as a new operation stamped now (the
+ * correction inbox's "try again", for a §3.8 clock refusal).
+ *
+ * §3.8: a refused timestamp is fixed by re-enqueueing with the corrected
+ * clock, never by resubmitting the operation (§9.2, §9.7). The payload is
+ * built from the row at push time, so restamping the row and queuing a fresh
+ * `create` is the whole correction; the old operation goes in the same
+ * transaction so the inbox and the queue never both hold it.
+ */
+export async function retryRejectedQuickAddDecision(
+  executor: SqliteExecutor,
+  fields: { readonly rejectedOperationId: string; readonly entityId: string },
+  now: () => Date,
+): Promise<void> {
+  const operationId = generateUuid();
+  const nowIso = toWireInstant(now());
+  await executor.withTransactionAsync(async () => {
+    await removeOperation(executor, fields.rejectedOperationId);
+    await executor.runAsync(
+      'UPDATE quick_add_decisions SET client_updated_at = ?, updated_at = ? WHERE id = ?;',
+      [nowIso, nowIso, fields.entityId],
+    );
+    await enqueueOperation(
+      executor,
+      {
+        operationId,
+        entityType: 'QuickAddPreference',
+        entityId: fields.entityId,
+        operationType: 'create',
+        clientTimestamp: nowIso,
+      },
+      nowIso,
+    );
   });
 }

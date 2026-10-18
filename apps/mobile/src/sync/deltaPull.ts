@@ -82,9 +82,9 @@ export interface DeltaOutcome {
    */
   readonly rangeChanges: number;
   /**
-   * Quick-Add decisions applied (also counted in `upserts`). Reported so the
-   * dashboard can re-read its widgets: a widget pinned or removed on another
-   * device should move here without a restart.
+   * Quick-Add decisions applied (also counted in `upserts`). Diagnostic: the
+   * dashboard re-reads its widgets whenever a sync cycle settles, so a widget
+   * kept or removed on another device moves without this count being read.
    */
   readonly quickAddUpserts: number;
 }

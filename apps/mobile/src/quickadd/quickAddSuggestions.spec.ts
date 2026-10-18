@@ -423,6 +423,52 @@ describe('buildQuickAddWidgets', () => {
     expect(widgets.removed).toEqual([expect.objectContaining({ canonicalValue: '350.0' })]);
   });
 
+  /** #149 review: the count is the routine's, however its entries were typed. */
+  it('counts every spelling of one number together, and offers it once that total recurs', () => {
+    const widgets = buildQuickAddWidgets(
+      [
+        candidate({
+          valueQuantityValue: '350',
+          occurrences: 1,
+          lastEnteredAt: '2026-10-01T08:00:00.000Z',
+        }),
+        candidate({
+          valueQuantityValue: '350.0',
+          occurrences: 1,
+          lastEnteredAt: '2026-10-03T08:00:00.000Z',
+        }),
+      ],
+      [],
+    );
+
+    expect(widgets.shown).toEqual([
+      expect.objectContaining({ occurrences: 2, lastEnteredAt: '2026-10-03T08:00:00.000Z' }),
+    ]);
+  });
+
+  /**
+   * #149 review: a tap records the patient's CURRENT system, so after a switch
+   * to imperial, tapping a kept metric button makes an imperial twin of it,
+   * which would otherwise rank as a second button with the same label for good.
+   */
+  it.each([
+    ['kept', 'pinned' as const],
+    ['removed', 'hidden' as const],
+  ])('does not offer the other-system twin of a %s routine', (_name, kind) => {
+    const widgets = buildQuickAddWidgets(
+      [
+        candidate({
+          valueQuantityValue: '250',
+          enteredMeasurementSystem: 'imperial',
+          occurrences: 4,
+        }),
+      ],
+      [decision({ valueQuantityValue: '250', enteredMeasurementSystem: 'metric' }, kind)],
+    );
+
+    expect(widgets.shown.filter((suggestion) => !suggestion.pinned)).toEqual([]);
+  });
+
   it('decides about exactly one routine: a different method is a different widget', () => {
     const widgets = buildQuickAddWidgets(
       [candidate({ method: MEASURED }), candidate({ method: ESTIMATED })],

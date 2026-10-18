@@ -31,16 +31,17 @@ import { join } from 'node:path';
 import '../i18n/i18n';
 
 import { en } from '@ostomy/core/i18n';
-import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { AccessibilityInfo } from 'react-native';
 
+import Corrections from '../../app/corrections';
 import QuickAdd from '../../app/quick-add';
 import type { SqliteExecutor } from '../db/executor';
 import { runMigrations } from '../db/migrations';
 import { enqueueQuickAddDecision, enqueueVolumetricObservationCreate } from '../db/offlineWrites';
 import { writeProfile, type LocalProfile } from '../db/repositories/profileRepository';
 import { listQuickAddDecisions } from '../db/repositories/quickAddDecisionsRepository';
-import { listQueuedOperations } from '../db/repositories/syncQueueRepository';
+import { listQueuedOperations, markRejected } from '../db/repositories/syncQueueRepository';
 import { STOMA_OUTPUT_LOINC_CODE } from '../entry/observationCodes';
 import { ProfileProvider } from '../onboarding/ProfileProvider';
 import type { ProfilePort } from '../onboarding/provisionProfile';
@@ -99,8 +100,11 @@ jest.mock('../lib/utils/clock', () => ({
   toWireInstant: (date: Date) => date.toISOString(),
 }));
 
-function port(profile: LocalProfile): ProfilePort {
-  return { provision: () => Promise.resolve(profile), read: () => Promise.resolve(profile) };
+function port(profile: LocalProfile, read?: ProfilePort['read']): ProfilePort {
+  return {
+    provision: () => Promise.resolve(profile),
+    read: read ?? (() => Promise.resolve(profile)),
+  };
 }
 
 /** Logs a measured stoma output `times` times in the last few days. */
@@ -124,16 +128,42 @@ async function logOutput(value: string, times: number): Promise<void> {
   await mockExecutor.runAsync('DELETE FROM sync_queue;');
 }
 
-async function renderScreen(profile: LocalProfile = PROFILE): Promise<void> {
+async function renderScreen(
+  profile: LocalProfile = PROFILE,
+  options: { read?: ProfilePort['read']; screen?: React.JSX.Element } = {},
+): Promise<void> {
   await writeProfile(mockExecutor, profile, NOW_ISO);
   await act(async () => {
     render(
-      <ProfileProvider port={port(profile)}>
-        <QuickAdd />
+      <ProfileProvider port={port(profile, options.read)}>
+        {options.screen ?? <QuickAdd />}
       </ProfileProvider>,
     );
   });
 }
+
+const OUTPUT_350 = {
+  code: STOMA_OUTPUT_LOINC_CODE,
+  valueMl: 350,
+  method: '258104002',
+  fluidTypeCode: null,
+  urineColorCode: null,
+  enteredMeasurementSystem: 'metric' as const,
+};
+
+/** A decision already saved, as a decision made earlier or on another device would be. */
+async function decided(
+  decision: 'pinned' | 'hidden',
+): Promise<{ id: string; operationId: string }> {
+  const written = await enqueueQuickAddDecision(
+    mockExecutor,
+    { profileServerId: PROFILE.serverId as string, routine: OUTPUT_350, decision },
+    () => new Date(NOW_ISO),
+  );
+  return written;
+}
+
+const SPOKEN_350 = 'Stoma output: 350 milliliters, Measured';
 
 async function press(label: RegExp | string): Promise<void> {
   await act(async () => {
@@ -169,7 +199,7 @@ describe('the Quick-Add buttons screen', () => {
     await logOutput('350', 2);
     await renderScreen();
 
-    await press(/^Keep this button: 350 mL/);
+    await press(/^Keep this button: Stoma output: 350 milliliters, Measured/);
 
     expect(await listQuickAddDecisions(mockExecutor)).toEqual([
       expect.objectContaining({
@@ -182,8 +212,10 @@ describe('the Quick-Add buttons screen', () => {
     ]);
     expect(announce).toHaveBeenCalledWith(en.common['quickAdd.announceKept']);
     expect(mockRequestSync).toHaveBeenCalled();
-    expect(screen.getByText(/You chose to keep this one\./)).toBeTruthy();
-    expect(screen.getByLabelText(/^Stop keeping this button: 350 mL/)).toBeTruthy();
+    expect(screen.getByText(/You chose to keep it\./)).toBeTruthy();
+    expect(
+      screen.getByLabelText(/^Stop keeping this button: Stoma output: 350 milliliters, Measured/),
+    ).toBeTruthy();
   });
 
   /** Epic 15 story 3, and the way back: removing is never final. */
@@ -191,16 +223,20 @@ describe('the Quick-Add buttons screen', () => {
     await logOutput('350', 3);
     await renderScreen();
 
-    await press(/^Remove this button: 350 mL/);
+    await press(/^Remove this button: Stoma output: 350 milliliters, Measured/);
 
     expect(screen.getByText(en.common['quickAdd.removedHeading'])).toBeTruthy();
-    expect(screen.queryByLabelText(/^Keep this button: 350 mL/)).toBeNull();
+    expect(
+      screen.queryByLabelText(/^Keep this button: Stoma output: 350 milliliters, Measured/),
+    ).toBeNull();
     expect(announce).toHaveBeenCalledWith(en.common['quickAdd.announceRemoved']);
 
-    await press(/^Bring this button back: 350 mL/);
+    await press(/^Bring this button back: Stoma output: 350 milliliters, Measured/);
 
     expect((await listQuickAddDecisions(mockExecutor))[0]).toMatchObject({ decision: 'none' });
-    expect(screen.getByLabelText(/^Keep this button: 350 mL/)).toBeTruthy();
+    expect(
+      screen.getByLabelText(/^Keep this button: Stoma output: 350 milliliters, Measured/),
+    ).toBeTruthy();
     expect(screen.queryByText(en.common['quickAdd.removedHeading'])).toBeNull();
   });
 
@@ -230,7 +266,9 @@ describe('the Quick-Add buttons screen', () => {
 
     expect(screen.getByText(en.common['quickAdd.kept'])).toBeTruthy();
     expect(screen.queryByText(/times recently/)).toBeNull();
-    expect(screen.getByLabelText(/^Stop keeping this button: 350 mL/)).toBeTruthy();
+    expect(
+      screen.getByLabelText(/^Stop keeping this button: Stoma output: 350 milliliters, Measured/),
+    ).toBeTruthy();
   });
 
   /** A phone set up before P4.S3 has nothing to name the row with until it has been online once. */
@@ -239,9 +277,104 @@ describe('the Quick-Add buttons screen', () => {
     const { serverId: _serverId, ...legacy } = PROFILE;
     await renderScreen(legacy as LocalProfile);
 
-    expect(screen.getByText(en.common['settings.needsConnectionBody'])).toBeTruthy();
-    await press(/^Keep this button: 350 mL/);
+    expect(screen.getByText(en.common['quickAdd.needsConnectionBody'])).toBeTruthy();
+    await press(/^Keep this button: Stoma output: 350 milliliters, Measured/);
 
+    expect(await listQuickAddDecisions(mockExecutor)).toEqual([]);
+  });
+
+  /**
+   * #149 review: "Stop keeping" on a button whose routine has stopped made it
+   * vanish from both lists, with nothing on screen to undo it. It stays listed,
+   * saying it has left the home screen, with Keep still beside it.
+   */
+  it('keeps a just-unkept button listed when it has left the home screen, and says so', async () => {
+    await decided('pinned');
+    await renderScreen();
+
+    await press(`Stop keeping this button: ${SPOKEN_350}`);
+
+    await waitFor(() => {
+      expect(announce).toHaveBeenCalledWith(en.common['quickAdd.announceUnkeptGone']);
+    });
+    expect(screen.getByText(en.common['quickAdd.leftHome'])).toBeTruthy();
+    expect(screen.getByLabelText(`Keep this button: ${SPOKEN_350}`)).toBeTruthy();
+  });
+
+  it('says a button is back when bringing it back puts it on the home screen', async () => {
+    await logOutput('350', 2);
+    await decided('hidden');
+    await renderScreen();
+    expect(screen.getByText(en.common['quickAdd.manageEmptyAllRemoved'])).toBeTruthy();
+
+    await press(`Bring this button back: ${SPOKEN_350}`);
+
+    await waitFor(() => {
+      expect(announce).toHaveBeenCalledWith(en.common['quickAdd.announceRestoredShown']);
+    });
+  });
+
+  it('says when a brought-back button will return, and keeps it listed until then', async () => {
+    await decided('hidden');
+    await renderScreen();
+
+    await press(`Bring this button back: ${SPOKEN_350}`);
+
+    await waitFor(() => {
+      expect(announce).toHaveBeenCalledWith(en.common['quickAdd.announceRestoredLater']);
+    });
+    expect(screen.getByLabelText(`Remove this button: ${SPOKEN_350}`)).toBeTruthy();
+  });
+
+  /** Otherwise "Try again" changes nothing on screen when it fails, and says nothing. */
+  it('says so when trying to connect again still fails', async () => {
+    const { serverId: _serverId, ...legacy } = PROFILE;
+    await renderScreen(legacy as LocalProfile, {
+      read: () => Promise.reject(new TypeError('Network request failed')),
+    });
+
+    await press(en.common['settings.retryButton']);
+
+    await waitFor(() => {
+      expect(announce).toHaveBeenCalledWith(en.common['quickAdd.stillNoConnection']);
+    });
+  });
+});
+
+describe('a refused Quick-Add decision in the correction inbox', () => {
+  /** §3.8: reachable on a phone whose clock has drifted, and fixed by sending again. */
+  it('names the button and sends a clock-refused decision again', async () => {
+    const { operationId } = await decided('pinned');
+    await markRejected(mockExecutor, operationId, {
+      reasonCode: 'CLIENT_TIMESTAMP_OUT_OF_RANGE',
+      field: 'clientTimestamp',
+      rejectedAt: NOW_ISO,
+    });
+    await renderScreen(PROFILE, { screen: <Corrections /> });
+
+    expect(
+      screen.getByText(/^Your change to the button "Stoma output: 350 mL, Measured"/),
+    ).toBeTruthy();
+    await press(`Try again: the button ${SPOKEN_350}`);
+
+    const queued = await listQueuedOperations(mockExecutor);
+    expect(queued).toEqual([expect.objectContaining({ entityType: 'QuickAddPreference' })]);
+    expect(queued[0]?.operationId).not.toBe(operationId);
+  });
+
+  it('offers only to clear a decision refused for any other reason', async () => {
+    const { operationId } = await decided('hidden');
+    await markRejected(mockExecutor, operationId, {
+      reasonCode: 'PAYLOAD_FIELD_INVALID',
+      field: 'id',
+      rejectedAt: NOW_ISO,
+    });
+    await renderScreen(PROFILE, { screen: <Corrections /> });
+
+    expect(screen.queryByText(en.common['corrections.quickAddRetryButton'])).toBeNull();
+    await press(`Clear this change to the button ${SPOKEN_350}`);
+
+    expect(await mockExecutor.getAllAsync('SELECT * FROM sync_queue;')).toEqual([]);
     expect(await listQuickAddDecisions(mockExecutor)).toEqual([]);
   });
 });
