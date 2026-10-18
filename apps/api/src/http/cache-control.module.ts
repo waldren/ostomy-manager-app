@@ -45,7 +45,11 @@ import type { NextFunction, Request, Response } from 'express';
  *   remove an entry written before this change; `apps/mobile` deletes those.
  * - Express's ETag is turned off, so the API never answers `304 Not Modified`.
  *   A client still holding an entry from before sent `If-None-Match`, and a
- *   304 tells it to keep using what it stored.
+ *   304 tells it to keep using what it stored. It was also a bug in its own
+ *   right: the 304 reached the app's code as a non-2xx, so `GET /profile`
+ *   read as "unreachable" and Settings refused every edit with "Your phone
+ *   needs to connect once" while the API was answering. Measured on the
+ *   emulator before and after this change.
  *
  * A module imported by `AppModule`, rather than a call in `main.ts`, so every
  * test that builds the app gets it too: a setting made only in `main.ts` is
