@@ -33,18 +33,36 @@ across two places:
   `ELSE` branch and kept whatever attributes it already had, making every
   `GRANT` below decorative against it. An unconditional `ALTER ROLE
   "ostomy_runtime" NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
-  NOREPLICATION NOBYPASSRLS;` immediately after the `DO` block now runs
-  every time, regardless of which branch was taken.
+  NOREPLICATION NOBYPASSRLS;` immediately after the `DO` block runs every
+  time, regardless of which branch was taken, whenever the migrating owner
+  is a superuser (as it is here); under any other owner the attributes are
+  asserted instead, per the next item.
 - **On a managed database the attributes are asserted, not re-applied**
-  (P4.S6, #168). PostgreSQL 16+ refuses any non-superuser that names the
-  SUPERUSER, REPLICATION or BYPASSRLS attribute, even to turn it off, and an
-  RDS master user is not a superuser. So the unconditional `ALTER ROLE` above
-  runs only when the migrating owner IS a superuser (this dev stack, the
-  integration suite). Otherwise the migration checks the role's attributes
-  and refuses to continue if any is unsafe; such an owner cannot have
-  created an unsafe role, so that only fires for one that already existed.
+  (P4.S6, #168). PostgreSQL refuses any non-superuser that names the
+  SUPERUSER, REPLICATION or BYPASSRLS attribute, even to turn it off
+  (measured on 17), and a managed database's migration owner is not a
+  superuser: on RDS it is a role the master user creates with CREATEROLE
+  and CREATEDB (ADR-0011), and the master user itself is only a member of
+  `rds_superuser`. So the `ALTER ROLE` above runs only when the migrating
+  owner IS a superuser (this dev stack, the integration suite). Otherwise
+  the migration checks the role's attributes and refuses to continue if any
+  is unsafe.
+- **The runtime role must be a member of nothing, under either owner**
+  (#170 review). A membership can carry privileges its grants do not show:
+  one in the owner, `rds_superuser` or `pg_write_all_data` lets it SET ROLE
+  and UPDATE or DELETE `audit_events`, and on PostgreSQL 16+ NOINHERIT does
+  not govern an existing grant. The API's boot-time privilege check does not
+  see a SET-only path, so the migration refuses such a role.
   `apps/api/src/prisma/managed-owner.integration.spec.ts` runs every
-  migration under a CREATEROLE, non-superuser owner to keep this true.
+  migration under a CREATEROLE, non-superuser owner and covers each of the
+  six attributes and the membership refusal.
+- **`prisma migrate dev` asks to reset a database that ran the first
+  migration before P4.S6.** That file was edited in place (its own comment
+  says why). `migrate deploy`, `migrate status` and
+  `scripts/dev-stack-status.sh` do not compare checksums and are unaffected;
+  `migrate dev` does. The data here is synthetic, so the simplest answer is
+  `scripts/dev-reset.sh` once. Accepting `migrate dev`'s own reset does the
+  same thing.
 - **This file's only remaining job is the password** — the one part of
   role setup that genuinely is a secret and therefore cannot live in a
   committed migration. It runs `ALTER ROLE ... WITH LOGIN PASSWORD ...`

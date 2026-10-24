@@ -28,7 +28,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // attributes that would make its grants decorative; and the API's boot-time
 // privilege check passes for it and refuses the owner. And the guard that
 // replaced the unconditional ALTER ROLE for such an owner: a runtime role
-// that already exists with an unsafe attribute refuses the migration.
+// that already exists with an unsafe attribute, or with any role membership
+// (under either owner), refuses the migration.
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -212,7 +213,7 @@ describe.skipIf(!dockerAvailable)('migrations under a managed-database owner (P4
     });
   });
 
-  describe('when the runtime role already exists with an unsafe attribute', () => {
+  describe('when the runtime role already exists', () => {
     let container: StartedPostgreSqlContainer;
 
     beforeAll(async () => {
@@ -223,15 +224,32 @@ describe.skipIf(!dockerAvailable)('migrations under a managed-database owner (P4
       await container?.stop();
     });
 
-    it.each([['INHERIT'], ['CREATEDB'], ['BYPASSRLS']])(
-      'refuses the migration for a pre-existing role with %s, which this owner cannot remove',
+    /** A fresh `ostomy` database, and the runtime role pre-created by the superuser. */
+    async function preProvision(roleSql: string, extra: string[] = []): Promise<void> {
+      await asSuperuser(container, [
+        'DROP DATABASE IF EXISTS ostomy',
+        `DROP ROLE IF EXISTS "${RUNTIME_ROLE}"`,
+        `CREATE ROLE "${RUNTIME_ROLE}" NOLOGIN ${roleSql}`,
+        ...extra,
+        `CREATE DATABASE ostomy OWNER ${OWNER}`,
+      ]);
+    }
+
+    // All six, each alone: dropping any one from the migration's OR chain
+    // must fail here.
+    it.each([
+      ['SUPERUSER'],
+      ['CREATEDB'],
+      ['CREATEROLE'],
+      ['INHERIT'],
+      ['REPLICATION'],
+      ['BYPASSRLS'],
+    ])(
+      'refuses the migration for a role with %s, which this owner cannot remove',
       async (attribute) => {
-        await asSuperuser(container, [
-          `DROP ROLE IF EXISTS "${RUNTIME_ROLE}"`,
-          `CREATE ROLE "${RUNTIME_ROLE}" NOLOGIN ${attribute}`,
-          'DROP DATABASE IF EXISTS ostomy',
-          `CREATE DATABASE ostomy OWNER ${OWNER}`,
-        ]);
+        // CREATE ROLE defaults to INHERIT, so every other case names
+        // NOINHERIT; without it each would be caught by INHERIT alone.
+        await preProvision(attribute === 'INHERIT' ? 'INHERIT' : `NOINHERIT ${attribute}`);
 
         const output = migrateDeployFailure(url(container, OWNER, OWNER_PASSWORD, 'ostomy'));
 
@@ -241,5 +259,56 @@ describe.skipIf(!dockerAvailable)('migrations under a managed-database owner (P4
       },
       120_000,
     );
+
+    // #170 review: clean attributes, but a membership it could SET ROLE through.
+    it('refuses the migration for a role that is a member of another role', async () => {
+      await preProvision('NOINHERIT', [`GRANT ${OWNER} TO "${RUNTIME_ROLE}"`]);
+
+      const output = migrateDeployFailure(url(container, OWNER, OWNER_PASSWORD, 'ostomy'));
+
+      expect(output).toMatch(/ostomy_runtime is a member of another role/);
+    }, 120_000);
+
+    it('refuses it under a superuser owner too, which could otherwise only fix the attributes', async () => {
+      await preProvision('NOINHERIT', [`GRANT ${OWNER} TO "${RUNTIME_ROLE}"`]);
+
+      const output = migrateDeployFailure(
+        url(container, 'bootstrap_superuser', 'bootstrap-test-only-password', 'ostomy'),
+      );
+
+      expect(output).toMatch(/ostomy_runtime is a member of another role/);
+    }, 120_000);
+
+    // The branch the dev stack and the rest of the integration suite take:
+    // still CORRECTS an unsafe role rather than refusing it.
+    it('under a superuser owner, removes the unsafe attributes instead', async () => {
+      await preProvision('INHERIT CREATEDB BYPASSRLS');
+
+      runMigrateDeploy(
+        url(container, 'bootstrap_superuser', 'bootstrap-test-only-password', 'ostomy'),
+      );
+
+      const client = new PgClient({
+        connectionString: url(container, OWNER, OWNER_PASSWORD, 'ostomy'),
+      });
+      await client.connect();
+      try {
+        const { rows } = await client.query(
+          `SELECT rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolreplication, rolbypassrls
+           FROM pg_roles WHERE rolname = $1`,
+          [RUNTIME_ROLE],
+        );
+        expect(Object.values(rows[0] as object)).toEqual([
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+        ]);
+      } finally {
+        await client.end();
+      }
+    }, 120_000);
   });
 });
