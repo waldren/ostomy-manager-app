@@ -1,0 +1,40 @@
+run 1 TotalTime: 949
+run 1 WaitTime: 951
+run 1 10-24 08:30:27.612 I/ReactNativeJS(13396): perf:unlock-to-home 98.2
+run 1 10-24 08:30:27.711 I/ReactNativeJS(13396): perf:history-90d-query 88.2
+run 2 TotalTime: 774
+run 2 WaitTime: 781
+run 2 10-24 08:30:44.100 I/ReactNativeJS(13621): perf:unlock-to-home 112.0
+run 2 10-24 08:30:44.294 I/ReactNativeJS(13621): perf:history-90d-query 186.1
+run 3 TotalTime: 795
+run 3 WaitTime: 799
+run 3 10-24 08:31:00.634 I/ReactNativeJS(13851): perf:unlock-to-home 113.4
+run 3 10-24 08:31:00.735 I/ReactNativeJS(13851): perf:history-90d-query 83.0
+run 4 TotalTime: 792
+run 4 WaitTime: 794
+run 4 10-24 08:31:17.250 I/ReactNativeJS(14070): perf:unlock-to-home 56.9
+run 4 10-24 08:31:17.381 I/ReactNativeJS(14070): perf:history-90d-query 111.5
+run 5 TotalTime: 731
+run 5 WaitTime: 734
+run 5 10-24 08:31:33.834 I/ReactNativeJS(14289): perf:unlock-to-home 48.0
+run 5 10-24 08:31:33.928 I/ReactNativeJS(14289): perf:history-90d-query 86.6
+run 6 TotalTime: 655
+run 6 WaitTime: 660
+run 6 10-24 08:31:50.328 I/ReactNativeJS(14508): perf:unlock-to-home 52.5
+run 6 10-24 08:31:50.436 I/ReactNativeJS(14508): perf:history-90d-query 101.4
+run 7 TotalTime: 847
+run 7 WaitTime: 859
+run 7 10-24 08:32:07.099 I/ReactNativeJS(14730): perf:unlock-to-home 110.1
+run 7 10-24 08:32:07.168 I/ReactNativeJS(14730): perf:history-90d-query 59.4
+run 8 TotalTime: 926
+run 8 WaitTime: 929
+run 8 10-24 08:32:24.048 I/ReactNativeJS(14953): perf:unlock-to-home 78.5
+run 8 10-24 08:32:24.105 I/ReactNativeJS(14953): perf:history-90d-query 49.5
+run 9 TotalTime: 626
+run 9 WaitTime: 645
+run 9 10-24 08:32:40.399 I/ReactNativeJS(15174): perf:unlock-to-home 69.8
+run 9 10-24 08:32:40.512 I/ReactNativeJS(15174): perf:history-90d-query 106.6
+run 10 TotalTime: 755
+run 10 WaitTime: 833
+run 10 10-24 08:32:57.089 I/ReactNativeJS(15398): perf:unlock-to-home 55.0
+run 10 10-24 08:32:57.188 I/ReactNativeJS(15398): perf:history-90d-query 88.5

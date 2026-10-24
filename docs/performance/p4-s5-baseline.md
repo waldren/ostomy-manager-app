@@ -53,7 +53,46 @@ None for the API itself. §5.1 is about what the patient perceives, and no API c
 
 ## 2. Phone (slices 2 and 3)
 
-Not yet measured.
+### How
+
+`scripts/perf/phone-baseline.sh` drives the app through `adb`; `scripts/perf/summarise-marks.mjs` turns the collected lines into the tables below. Raw lines and summaries: [`runs/2026-10-24-phone/`](runs/2026-10-24-phone/).
+
+- **The build.** A release APK (Hermes, no Metro), x86_64 only, made 2026-10-24 from `main` at `b9777c0` with `EXPO_PUBLIC_PERF_MARKS=1` and `EXPO_PUBLIC_API_URL=http://localhost:3000` (slice 2's marks, `apps/mobile/src/perf/perfMarks.ts`). Two deviations from a real release, both local and uncommitted:
+  - `-PreactNativeArchitectures=x86_64`, because the full four-architecture release build fails on Windows at CMake's path-length limit, the trap `.npmrc` records;
+  - `android:usesCleartextTraffic="true"` added to the **generated** `android/app/src/main/AndroidManifest.xml` (gitignored build output). A release build blocks plain HTTP, which is right for production (TLS only) and which also meant the first batch could not reach the dev stack at all. That turned out to be useful: it gave a clean "no sync running" baseline.
+- **The device.** Android emulator, Pixel 8 AVD, Android 16 (API 36) Google APIs x86_64 image, 4 virtual cores, 4 GB RAM, default text and display size. The host is the one in section 1. **It held synthetic data only**, the dev patient's seeded history, as `docs/security-hipaa.md` requires of any device running a flagged build.
+- **What is timed.** Cold start is Android's own `am start -W` `TotalTime`: process start to the first frame of the activity, which is the lock screen. Everything else is the app's own marks (slice 2), each a duration measured in the app, so `adb`'s own latency is not in them.
+- **Two batches.** **No sync**: the first install, before cleartext was allowed, so no sync cycle ran (62 entries queued unsent). **With sync**: the cleartext build, where every save starts a sync cycle. 10 cold starts, 30 saves through the Add a stoma entry form and 30 Quick-Add taps each. 5 of the first batch's 30 save marks were lost to logcat's ring buffer before collection; the driver now enlarges it.
+- **The history.** About 1,500 observations over 90 days for the dev patient (`colostomy-baseline` plus the entries these runs added).
+
+### Results (milliseconds)
+
+| Mark | No sync: p50 / p95 / max | With sync: p50 / p95 / max | n |
+| --- | --- | --- | --- |
+| Cold start to the lock screen (`am start -W`) | 774 / 949 / 949 | 759 / 926 / 926 | 10 |
+| Unlock accepted to Home ready (`unlock-to-home`) | 70 / 113 / 113 | 112 / 247 / 247 | 10 |
+| 90-day local history read (`history-90d-query`) | 88 / 186 / 186 | 146 / 276 / 276 | 10 |
+| Save: validated to committed (`save-write`) | 27 / 39 / 40 | 25 / 35 / 53 | 25 / 30 |
+| **Save: validated to "Saved" on Home (`save-confirmed`)** | **79 / 108 / 119** | **235 / 545 / 697** | 25 / 30 |
+| Quick-Add tap to committed (`quickadd-write`) | 11 / 17 / 17 | 12 / 21 / 26 | 30 |
+| One sync cycle after a save (`sync-cycle`) | — | 745 / 1,116 / 1,365 | 70 |
+| **First full sync, new install (`sync-cycle`)** | — | **11,824** (11,322 to 12,364) | 3 |
+
+### What they show
+
+- **A save is fast where it matters, and Quick-Add is immediate.** The local write, validation excluded, is about 25 ms, and a Quick-Add write about 12 ms. With nothing else running, a save reaches its "Saved" confirmation in about 80 ms, and a Quick-Add tap has no loading state to wait on (§5.1, both bullets).
+- **Background sync visibly delays the confirmation.** With a sync cycle running, the confirmation took 235 ms at p50 and up to 697 ms. The write itself is no slower; Home's render competes with the cycle every save starts just before navigating. §5.1 says sync must never visibly interfere with entry, and 0.5 to 0.7 s on a fast emulator is visible. **#164.**
+- **One sync cycle costs about 745 ms on the phone** against about 10 ms of server time for its push (section 1). Most of the cycle is on the device. #164 lists candidates.
+- **A new phone's first sync of 90 days takes about 12 seconds**, against about 0.1 s of server time for the same pull. That is roughly 8 ms per row applied on the device. Home is usable meanwhile, because the sync runs in the background, but a year of typical history would take about 45 seconds this way, and a heavy user's longer. Worth P5.S1's attention, since a history screen on a new phone shows nothing until it finishes.
+- **Cold start to the lock screen is under a second** (759 to 774 ms p50), and **unlock to a usable Home is 70 to 112 ms** after the patient's fingerprint or PIN. So a returning patient's first sight of their diary is about a second plus however long they take to unlock.
+- **The 90-day local read a history screen will make is 88 to 146 ms** at p50 and up to 276 ms, for about 1,500 rows read and decoded in full. Acceptable as a baseline; P5.S1 should page it rather than read it all, since it grows with history.
+- **Contention shows everywhere.** Every mark taken while a cycle could be running is slower in the second batch except the database write. The JavaScript thread is the shared resource, which is #164's point.
+
+### What they cannot speak for
+
+- **Real phones.** A desktop-hosted emulator with 4 virtual cores is far faster than the low-end Android phones this population is likely to own. Every number here is a **floor**. How much slower a real budget phone is was not measured, and guessing would be worse than saying so; `docs/gate-b-hardware-verification.md` is where a real-device run belongs.
+- **A real network.** The API was on the same machine, through `adb reverse`. Sync cycles on mobile data would be longer, though they run in the background.
+- **Production builds exactly.** The perf APK allowed cleartext and was single-architecture, as described above.
 
 ## 3. Web (slice 4)
 
