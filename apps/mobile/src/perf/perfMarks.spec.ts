@@ -16,8 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 /**
- * The P4.S5 perf marks (#158): silent without the build flag, and saying
- * nothing but a name and a number with it.
+ * The P4.S5 perf marks (#158): silent without the build flag or against
+ * anything but the development stack, and saying nothing but a name and a
+ * number when on.
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -31,14 +32,24 @@ type HistoryProbe = typeof import('./historyProbe');
 const MOBILE_ROOT = join(__dirname, '..', '..');
 /** The whole of what a mark may print. */
 const MARK_LINE = /^perf:[a-z0-9-]+ \d+\.\d$/;
+const DEV_API = 'http://localhost:3000';
 
 let logSpy: jest.SpyInstance;
 const originalFlag = process.env.EXPO_PUBLIC_PERF_MARKS;
+const originalApiUrl = process.env.EXPO_PUBLIC_API_URL;
 
-/** A fresh copy of the modules, with the flag as a build would have inlined it. */
-function load(flag: string | undefined): { marks: PerfMarks; probe: HistoryProbe } {
-  if (flag === undefined) delete process.env.EXPO_PUBLIC_PERF_MARKS;
-  else process.env.EXPO_PUBLIC_PERF_MARKS = flag;
+function setEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+/** A fresh copy of the modules, with the flag and API address as a build would have inlined them. */
+function load(
+  flag: string | undefined,
+  apiUrl: string | undefined = DEV_API,
+): { marks: PerfMarks; probe: HistoryProbe } {
+  setEnv('EXPO_PUBLIC_PERF_MARKS', flag);
+  setEnv('EXPO_PUBLIC_API_URL', apiUrl);
   let loaded!: { marks: PerfMarks; probe: HistoryProbe };
   jest.isolateModules(() => {
     loaded = {
@@ -60,14 +71,26 @@ function recordingExecutor(): SqliteExecutor & { queries: unknown[][] } {
   } as unknown as SqliteExecutor & { queries: unknown[][] };
 }
 
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) return name === 'node_modules' ? [] : sourceFiles(path);
+    return /\.(ts|tsx|js|jsx|mjs)$/.test(name) && !/\.spec\.[jt]sx?$/.test(name) ? [path] : [];
+  });
+}
+
+function appSourceFiles(): string[] {
+  return ['app', 'src'].flatMap((dir) => sourceFiles(join(MOBILE_ROOT, dir)));
+}
+
 beforeEach(() => {
   logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
 });
 
 afterEach(() => {
   logSpy.mockRestore();
-  if (originalFlag === undefined) delete process.env.EXPO_PUBLIC_PERF_MARKS;
-  else process.env.EXPO_PUBLIC_PERF_MARKS = originalFlag;
+  setEnv('EXPO_PUBLIC_PERF_MARKS', originalFlag);
+  setEnv('EXPO_PUBLIC_API_URL', originalApiUrl);
 });
 
 describe('without EXPO_PUBLIC_PERF_MARKS', () => {
@@ -94,7 +117,30 @@ describe('without EXPO_PUBLIC_PERF_MARKS', () => {
   });
 });
 
-describe('with EXPO_PUBLIC_PERF_MARKS=1', () => {
+/**
+ * #162 privacy review: the mechanical guard. Staging and production are always
+ * TLS, so a flagged build pointed at real data writes nothing.
+ */
+describe('with the flag on, against anything but the development stack', () => {
+  it.each([
+    ['a TLS API', 'https://api.example.org'],
+    ['an empty API address', ''],
+    ['an address that only mentions http://', 'https://proxy.example.org/?u=http://x'],
+  ])('writes nothing and reads nothing with %s', async (_name, apiUrl) => {
+    const { marks, probe } = load('1', apiUrl);
+    const executor = recordingExecutor();
+
+    marks.startSpan('save-write');
+    marks.endSpan('save-write');
+    await probe.runHistoryProbeOnce(executor);
+
+    expect(marks.perfMarksEnabled()).toBe(false);
+    expect(executor.queries).toEqual([]);
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('with EXPO_PUBLIC_PERF_MARKS=1 against the development stack', () => {
   it('writes one line per span: the name and a duration, nothing else', () => {
     const { marks } = load('1');
 
@@ -116,6 +162,16 @@ describe('with EXPO_PUBLIC_PERF_MARKS=1', () => {
     marks.endSpan('unlock-to-home');
 
     expect(logSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes nothing for a cancelled span: the step it measured did not happen', () => {
+    const { marks } = load('1');
+
+    marks.startSpan('save-write');
+    marks.cancelSpan('save-write');
+    marks.endSpan('save-write');
+
+    expect(logSpy).not.toHaveBeenCalled();
   });
 
   it('times a step that fails, and still throws its error', async () => {
@@ -146,18 +202,31 @@ describe('with EXPO_PUBLIC_PERF_MARKS=1', () => {
     expect(logSpy).toHaveBeenCalledTimes(1);
     expect(logSpy.mock.calls[0][0]).toMatch(/^perf:history-90d-query \d+\.\d$/);
   });
+
+  /** A sign-out purge can close the database mid-read; the probe must stay inert. */
+  it('never throws when the history read fails', async () => {
+    const { probe } = load('1');
+    const executor = {
+      getAllAsync: async () => {
+        throw new Error('database is closed');
+      },
+    } as unknown as SqliteExecutor;
+
+    await expect(probe.runHistoryProbeOnce(executor)).resolves.toBeUndefined();
+  });
 });
 
-describe('what makes the flag a build-time switch', () => {
+describe('what keeps the exception narrow', () => {
   /**
    * Expo inlines `process.env.EXPO_PUBLIC_X` only when written exactly like
    * that. A bracket access or a destructure is left alone and reads
-   * `undefined` on a device, so the marks would silently never fire.
+   * `undefined` on a device; both conditions would then silently be off.
    */
-  it('reads the flag as a literal property access', () => {
+  it('reads the flag and the API address as literal property accesses', () => {
     const source = readFileSync(join(__dirname, 'perfMarks.ts'), 'utf8');
 
     expect(source).toMatch(/process\.env\.EXPO_PUBLIC_PERF_MARKS === '1'/);
+    expect(source).toMatch(/process\.env\.EXPO_PUBLIC_API_URL\b/);
   });
 
   /**
@@ -165,20 +234,31 @@ describe('what makes the flag a build-time switch', () => {
    * a handler logging a payload. The marks are the one exception, and they
    * stay the only one.
    */
-  it('makes the perf marks the only place the app may write to the console', () => {
-    const files = ['app', 'src'].flatMap((dir) => sourceFiles(join(MOBILE_ROOT, dir)));
-    const exempted = files
+  it('makes the perf marks the only file that may disable no-console', () => {
+    const exempted = appSourceFiles()
       .filter((file) => /eslint-disable[^\n]*no-console/.test(readFileSync(file, 'utf8')))
       .map((file) => relative(MOBILE_ROOT, file).replace(/\\/g, '/'));
 
     expect(exempted).toEqual(['src/perf/perfMarks.ts']);
   });
-});
 
-function sourceFiles(dir: string): string[] {
-  return readdirSync(dir).flatMap((name) => {
-    const path = join(dir, name);
-    if (statSync(path).isDirectory()) return name === 'node_modules' ? [] : sourceFiles(path);
-    return /\.(ts|tsx)$/.test(name) && !/\.spec\.tsx?$/.test(name) ? [path] : [];
+  /** An `eslint-disable` with no rule list turns `no-console` off with everything else. */
+  it('has no eslint-disable without a rule list anywhere in the app', () => {
+    const blanket = appSourceFiles()
+      .filter((file) =>
+        /eslint-disable(?:-next-line|-line)?\s*(?:\*\/|--|$)/m.test(readFileSync(file, 'utf8')),
+      )
+      .map((file) => relative(MOBILE_ROOT, file));
+
+    expect(blanket).toEqual([]);
   });
-}
+
+  /** A second console call in this file would be covered by nothing, so there is exactly one. */
+  it('keeps exactly one console call in the perf marks, behind exactly one exception', () => {
+    const source = readFileSync(join(__dirname, 'perfMarks.ts'), 'utf8');
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+    expect(code.match(/\bconsole\./g)).toHaveLength(1);
+    expect(source.match(/eslint-disable[^\n]*no-console/g)).toHaveLength(1);
+  });
+});

@@ -31,7 +31,7 @@ import { deviceTimeZone, now as clockNow } from '../src/lib/utils/clock';
 import { decideQuickAdd } from '../src/quickadd/quickAddAction';
 import { draftHrefFor } from '../src/quickadd/draftParams';
 import { runHistoryProbeOnce } from '../src/perf/historyProbe';
-import { endSpan, startSpan } from '../src/perf/perfMarks';
+import { cancelSpan, endSpan, startSpan } from '../src/perf/perfMarks';
 import { logQuickAdd } from '../src/quickadd/logQuickAdd';
 import { QuickAddWidgets } from '../src/quickadd/QuickAddWidgets';
 import { useQuickAddSuggestions } from '../src/quickadd/useQuickAddSuggestions';
@@ -168,7 +168,6 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
   const onQuickAdd = useCallback(
     async (suggestion: QuickAddSuggestion) => {
       if (database.status !== 'ready') return;
-      startSpan('quickadd-write');
 
       const decision = decideQuickAdd({
         suggestion,
@@ -186,6 +185,8 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
       }
 
       setQuickAddFailed(false);
+      // P4.S5 (#158): after the open-draft exit, so a tap that opens the form leaves no span open.
+      startSpan('quickadd-write');
       try {
         await logQuickAdd(database.executor, suggestion, measurementSystem, clockNow);
         endSpan('quickadd-write');
@@ -194,6 +195,7 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
         // recorded. Said plainly rather than swallowed — and the patient is
         // left on this screen with the entry buttons, not sent to a
         // confirmation for something that did not happen.
+        cancelSpan('quickadd-write');
         setQuickAddFailed(true);
         return;
       }

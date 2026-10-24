@@ -19,19 +19,40 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * Performance marks for the P4.S5 spike (#158, SRS §5.1), off unless a build
  * asks for them.
  *
- * `EXPO_PUBLIC_PERF_MARKS=1` at BUILD time turns them on. Expo inlines an
- * `EXPO_PUBLIC_*` variable as a literal, so in a build without it the check
- * below is `undefined === '1'` and every mark is dead code: an ordinary build
- * carries no instrumentation, not merely instrumentation that is switched off.
+ * Two conditions, both inlined by Expo at BUILD time:
  *
- * ## What a mark may say
+ * - `EXPO_PUBLIC_PERF_MARKS=1`. Without it the check below is a constant
+ *   `false`, so an ordinary build carries no working instrumentation.
+ * - **`EXPO_PUBLIC_API_URL` is plain `http://`.** Only the local development
+ *   stack is served that way, and it holds synthetic data only; staging and
+ *   production are always TLS. So a flagged build pointed at real data writes
+ *   nothing, mechanically, rather than because someone remembered not to ship
+ *   one (#162 privacy review). It is the guarantee the rest of this header
+ *   depends on.
  *
- * `perf:<name> <milliseconds>`, and nothing else. This runs on the paths that
- * handle clinical values, and logcat is readable by anything with `adb` on a
- * debuggable build, so a mark must never carry a value, a code, an entry's
- * time, a count of entries, or an identifier. That is enforced by shape rather
- * than by care: the name is a closed union, and the only other thing written
- * is a number this module measured itself.
+ * ## What a mark may say, and what it still reveals
+ *
+ * `perf:<name> <milliseconds>`, and nothing else: never a value, a code, an
+ * entry's time, a count of entries, or an identifier. That is enforced by
+ * shape rather than by care: the name is a closed union, and the only other
+ * thing written is a number this module measured itself.
+ *
+ * That is not the same as revealing nothing, and the difference is why the
+ * condition above exists:
+ *
+ * - **Where the lines go.** React Native does not strip `console.log` from a
+ *   release build, so a line reaches logcat in debug and release alike. It is
+ *   readable through `adb` on any phone with USB debugging enabled, and it is
+ *   included in an Android bug report. Ordinary apps cannot read it.
+ * - **Each line is timestamped by logcat.** A `save-write` at 02:10, 03:40 and
+ *   05:05 says when someone emptied a pouch, with no value on it. All four entry
+ *   screens share one name, so the kind of entry is not revealed.
+ * - **Durations leak sizes.** `history-90d-query` grows with the number of rows
+ *   read, a noisy proxy for how much a patient logged; a `sync-cycle` that
+ *   pushed takes longer than one that did not.
+ *
+ * None of that matters on a development device holding synthetic data, which
+ * is the only place the condition above lets a mark be written.
  *
  * ## Why the app measures itself
  *
@@ -42,11 +63,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 /** Every mark there is. A new one is added here, never built from a string. */
 export type PerfMarkName =
-  /** Save tapped → the observation and its queue row committed (validation included). */
+  /** A validated save → the observation and its queue row committed. Validation is synchronous and excluded. */
   | 'save-write'
-  /** Save tapped → Home rendering its "Saved" confirmation. What §5.1 means by a save. */
+  /** A validated save → Home rendering its "Saved" confirmation. What §5.1 means by a save. */
   | 'save-confirmed'
-  /** Quick-Add widget tapped → the entry committed. */
+  /** A Quick-Add tap that logs directly → the entry committed. */
   | 'quickadd-write'
   /** Unlock accepted → Home showing the patient's Quick-Add widgets. */
   | 'unlock-to-home'
@@ -56,11 +77,13 @@ export type PerfMarkName =
   | 'sync-cycle';
 
 /**
- * Read exactly once, as a literal property access, so Expo's inlining can
- * replace it. `process.env['EXPO_PUBLIC_PERF_MARKS']` or a destructure would
- * not be inlined, and the flag would silently read `undefined` on a device.
+ * Read exactly once, as literal property accesses, so Expo's inlining can
+ * replace them. A bracket access or a destructure is not inlined, and would
+ * silently read `undefined` on a device. Both fail safe: `undefined` is off.
  */
-const ENABLED = process.env.EXPO_PUBLIC_PERF_MARKS === '1';
+const ENABLED =
+  process.env.EXPO_PUBLIC_PERF_MARKS === '1' &&
+  (process.env.EXPO_PUBLIC_API_URL ?? '').startsWith('http://');
 
 export function perfMarksEnabled(): boolean {
   return ENABLED;
@@ -85,6 +108,12 @@ export function endSpan(name: PerfMarkName): void {
   if (start === undefined) return;
   openSpans.delete(name);
   writeMark(name, performance.now() - start);
+}
+
+/** Forgets a span without writing it: the step it measured did not happen. */
+export function cancelSpan(name: PerfMarkName): void {
+  if (!ENABLED) return;
+  openSpans.delete(name);
 }
 
 /** Times one asynchronous step and writes its mark, whether or not it succeeds. */

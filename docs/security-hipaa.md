@@ -48,6 +48,7 @@ Google Auto Backup belongs on the BAA-review list as **must be disabled**, not a
 - Sentry (or equivalent) ships with `beforeSend` redaction from the first client, with request bodies and breadcrumbs disabled. This is not deferred to hardening.
 - Prisma query logging with parameter values is never enabled anywhere that could see real data.
 - Audit events are the _only_ place before/after PHI values are written, and they go to an append-only store separate from application logs.
+- **One sanctioned console call in shipped code: `apps/mobile/src/perf/perfMarks.ts`** (P4.S5 performance marks, #158). `no-console` is an error everywhere else in `apps/` and `packages/`, and a test keeps this the only exception. It writes `perf:<name> <ms>`, a closed-union name and a duration, and only when **both** build-time conditions hold: `EXPO_PUBLIC_PERF_MARKS=1` and an `EXPO_PUBLIC_API_URL` that is plain `http://`, which only the synthetic-data development stack is. Staging and production are TLS, so a flagged build pointed at real data writes nothing. The guard is mechanical because the lines are not harmless: React Native keeps `console.log` in release builds, logcat is readable over `adb` and included in Android bug reports, each line carries a timestamp (when someone logged an entry), and durations leak sizes (how much they logged). Flagged builds run only on development devices holding synthetic data, and are never distributed. #163 tracks a release-pipeline check that refuses a flagged build.
 
 ### No real PHI outside production
 

@@ -32,7 +32,7 @@ import {
   enqueueVolumelessUrineCreate,
   enqueueVolumetricObservationCreate,
 } from '../src/db/offlineWrites';
-import { endSpan, startSpan } from '../src/perf/perfMarks';
+import { cancelSpan, endSpan, startSpan } from '../src/perf/perfMarks';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
 import { parseDraftParams } from '../src/quickadd/draftParams';
 import { UrineColorChoice } from '../src/entry/UrineColorChoice';
@@ -154,9 +154,6 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
   const save = useCallback(
     async (confirmedWarning: boolean) => {
       if (database.status !== 'ready' || cached == null) return;
-      // P4.S5 (#158): from the tap. Inert unless the build sets EXPO_PUBLIC_PERF_MARKS.
-      startSpan('save-write');
-      startSpan('save-confirmed');
 
       const outcome = checkUrineEntry({
         draft: { amountText, method, urineColorCode, effectiveDateTime },
@@ -171,6 +168,11 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
       if (outcome.kind === 'blocked' || outcome.kind === 'estimated-unavailable') return;
       if (outcome.kind === 'needs-confirmation' && !confirmedWarning) return;
 
+      // P4.S5 (#158): started here, after every validation exit, so a blocked or
+      // abandoned save leaves no span open. Inert unless the build sets
+      // EXPO_PUBLIC_PERF_MARKS.
+      startSpan('save-write');
+      startSpan('save-confirmed');
       setSaving(true);
       setSaveFailed(false);
       try {
@@ -219,6 +221,8 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
       } catch {
         setSaving(false);
         setSaveFailed(true);
+        cancelSpan('save-write');
+        cancelSpan('save-confirmed');
         return;
       }
 

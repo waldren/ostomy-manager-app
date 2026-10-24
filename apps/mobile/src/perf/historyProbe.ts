@@ -43,7 +43,7 @@ let ran = false;
  * through SQLCipher. It returns nothing and renders nothing; only its duration
  * leaves the function.
  *
- * Runs only in a build with `EXPO_PUBLIC_PERF_MARKS=1`, and at most once per
+ * Runs only when the marks are on (see `perfMarks.ts`), and at most once per
  * launch, after Home is ready, so it measures a warm database the way a
  * patient opening their history would meet it.
  */
@@ -54,6 +54,8 @@ export async function runHistoryProbeOnce(executor: SqliteExecutor): Promise<voi
     new Date(clockNow().getTime() - HISTORY_DAYS * DAY_MS),
     deviceTimeZone(),
   );
+  // Caught and dropped: a sign-out purge mid-read rejects it, and this module's
+  // whole job is to be inert. Nothing is logged; there is nothing useful to say.
   await timeAsync('history-90d-query', async () => {
     for (const code of [
       STOMA_OUTPUT_LOINC_CODE,
@@ -65,7 +67,7 @@ export async function runHistoryProbeOnce(executor: SqliteExecutor): Promise<voi
         [code, since],
       );
     }
-  });
+  }).catch(() => undefined);
 }
 
 /** Test-only. */
