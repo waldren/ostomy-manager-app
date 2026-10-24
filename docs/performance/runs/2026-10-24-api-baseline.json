@@ -1,0 +1,119 @@
+{
+  "measuredAt": "2026-10-24T05:47:46.831Z",
+  "api": "http://localhost:3000",
+  "buildCommit": "70d4b81",
+  "runId": "6a9fc6a6",
+  "samples": 200,
+  "warmup": 20,
+  "throttledWaits": 10,
+  "results": [
+    {
+      "name": "POST /sync/push, 50 operations (typical)",
+      "n": 27,
+      "p50": 597,
+      "p95": 781.4,
+      "p99": 802.2,
+      "max": 802.2,
+      "mean": 529.1
+    },
+    {
+      "name": "POST /sync/push, 50 operations (heavy)",
+      "n": 54,
+      "p50": 653.2,
+      "p95": 731,
+      "p99": 783,
+      "max": 783,
+      "mean": 603.1
+    },
+    {
+      "name": "GET /sync/delta, full first pull (typical)",
+      "n": 20,
+      "p50": 70,
+      "p95": 91.8,
+      "p99": 113,
+      "max": 113,
+      "mean": 73.4,
+      "pages": 7,
+      "bytes": 655896,
+      "changes": 1351
+    },
+    {
+      "name": "GET /observations, 30 days (typical)",
+      "n": 200,
+      "p50": 9.1,
+      "p95": 11.7,
+      "p99": 351.6,
+      "max": 410,
+      "mean": 17.4,
+      "returned": 450,
+      "bytes": 140148,
+      "truncated": false
+    },
+    {
+      "name": "GET /observations, 90 days (typical)",
+      "n": 200,
+      "p50": 9.5,
+      "p95": 11.7,
+      "p99": 13.4,
+      "max": 17.7,
+      "mean": 9.7,
+      "returned": 500,
+      "bytes": 155716,
+      "truncated": true
+    },
+    {
+      "name": "GET /sync/delta, full first pull (heavy)",
+      "n": 20,
+      "p50": 129.4,
+      "p95": 162.6,
+      "p99": 174.6,
+      "max": 174.6,
+      "mean": 135,
+      "pages": 14,
+      "bytes": 1311494,
+      "changes": 2701
+    },
+    {
+      "name": "GET /observations, 30 days (heavy)",
+      "n": 200,
+      "p50": 9.3,
+      "p95": 12,
+      "p99": 13.3,
+      "max": 16,
+      "mean": 9.6,
+      "returned": 500,
+      "bytes": 155716,
+      "truncated": true
+    },
+    {
+      "name": "GET /observations, 90 days (heavy)",
+      "n": 200,
+      "p50": 9.8,
+      "p95": 12.9,
+      "p99": 14,
+      "max": 14.7,
+      "mean": 10.2,
+      "returned": 500,
+      "bytes": 155716,
+      "truncated": true
+    },
+    {
+      "name": "POST /sync/push, 1 operation",
+      "n": 200,
+      "p50": 9.2,
+      "p95": 12.9,
+      "p99": 24,
+      "max": 47.7,
+      "mean": 9.9
+    },
+    {
+      "name": "POST /observations",
+      "n": 200,
+      "p50": 7.6,
+      "p95": 11,
+      "p99": 12.8,
+      "max": 20.3,
+      "mean": 8
+    }
+  ]
+}
