@@ -28,6 +28,7 @@ import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
+import { endSpan, startSpan } from '../src/perf/perfMarks';
 import { parseDraftParams } from '../src/quickadd/draftParams';
 import { EntryTimestampField } from '../src/entry/EntryTimestampField';
 import {
@@ -116,6 +117,9 @@ function AddOutputScreen({ profile }: { readonly profile: LocalProfile }): React
   const save = useCallback(
     async (confirmedWarning: boolean) => {
       if (database.status !== 'ready' || cached == null) return;
+      // P4.S5 (#158): from the tap. Inert unless the build sets EXPO_PUBLIC_PERF_MARKS.
+      startSpan('save-write');
+      startSpan('save-confirmed');
 
       const outcome = checkEntry({
         draft: { amountText, method, effectiveDateTime },
@@ -163,6 +167,7 @@ function AddOutputScreen({ profile }: { readonly profile: LocalProfile }): React
       }
 
       // Committed. Ask the worker to run, but never wait on it: §9.5.
+      endSpan('save-write');
       requestSync();
       router.replace('/home?saved=1');
     },

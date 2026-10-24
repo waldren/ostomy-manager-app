@@ -23,6 +23,7 @@ import { useAuth } from '../src/auth/AuthContext';
 import type { LocalProfile } from '../src/db/repositories/profileRepository';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { enqueueMealCreate } from '../src/db/offlineWrites';
+import { endSpan, startSpan } from '../src/perf/perfMarks';
 import { MEAL_SIZES, type MealSize } from '../src/db/repositories/mealsRepository';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
 import { EntryTimestampField } from '../src/entry/EntryTimestampField';
@@ -89,6 +90,9 @@ function AddMeal({ profile }: { readonly profile: LocalProfile }): React.JSX.Ele
 
   const save = useCallback(async () => {
     if (database.status !== 'ready') return;
+    // P4.S5 (#158): from the tap. Inert unless the build sets EXPO_PUBLIC_PERF_MARKS.
+    startSpan('save-write');
+    startSpan('save-confirmed');
 
     if (size === undefined) {
       setSizeMissing(true);
@@ -131,6 +135,7 @@ function AddMeal({ profile }: { readonly profile: LocalProfile }): React.JSX.Ele
       return;
     }
 
+    endSpan('save-write');
     requestSync();
     router.replace('/home?saved=1');
   }, [description, size, tagCodes, effectiveDateTime, surgeryDate, cached, database, requestSync]);

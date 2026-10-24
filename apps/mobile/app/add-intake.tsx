@@ -29,6 +29,7 @@ import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { EntryTimestampField } from '../src/entry/EntryTimestampField';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
+import { endSpan, startSpan } from '../src/perf/perfMarks';
 import {
   VALUE_SET_KEY,
   type CachedValueSetMember,
@@ -150,6 +151,9 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
   const save = useCallback(
     async (confirmedWarning: boolean) => {
       if (database.status !== 'ready' || cached == null) return;
+      // P4.S5 (#158): from the tap. Inert unless the build sets EXPO_PUBLIC_PERF_MARKS.
+      startSpan('save-write');
+      startSpan('save-confirmed');
 
       const outcome = checkEntry({
         draft: { amountText, method, effectiveDateTime },
@@ -192,6 +196,7 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
         return;
       }
 
+      endSpan('save-write');
       requestSync();
       router.replace('/home?saved=1');
     },

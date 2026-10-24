@@ -32,6 +32,7 @@ import {
   enqueueVolumelessUrineCreate,
   enqueueVolumetricObservationCreate,
 } from '../src/db/offlineWrites';
+import { endSpan, startSpan } from '../src/perf/perfMarks';
 import { VALUE_SET_KEY } from '../src/db/repositories/valueSetsRepository';
 import { parseDraftParams } from '../src/quickadd/draftParams';
 import { UrineColorChoice } from '../src/entry/UrineColorChoice';
@@ -153,6 +154,9 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
   const save = useCallback(
     async (confirmedWarning: boolean) => {
       if (database.status !== 'ready' || cached == null) return;
+      // P4.S5 (#158): from the tap. Inert unless the build sets EXPO_PUBLIC_PERF_MARKS.
+      startSpan('save-write');
+      startSpan('save-confirmed');
 
       const outcome = checkUrineEntry({
         draft: { amountText, method, urineColorCode, effectiveDateTime },
@@ -218,6 +222,7 @@ function AddUrineScreen({ profile }: { readonly profile: LocalProfile }): React.
         return;
       }
 
+      endSpan('save-write');
       requestSync();
       router.replace('/home?saved=1');
     },

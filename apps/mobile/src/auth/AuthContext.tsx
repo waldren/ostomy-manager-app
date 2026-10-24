@@ -35,6 +35,7 @@ import { deriveAuthPhase, type AuthPhase } from './authPhase';
 import { readSubjectClaim } from './tokenSubject';
 import { getDatabaseOwner, setDatabaseOwner } from '../db/databaseOwner';
 import { purgeLocalDatabase } from '../db/purge';
+import { startSpan } from '../perf/perfMarks';
 import { getOidcClientConfig } from './oidcConfig';
 import {
   useAutoDiscovery,
@@ -568,6 +569,8 @@ export function AuthProvider({ children }: { children: ReactNode }): React.JSX.E
     const outcome = await authenticate(i18next.t('mobile:login.unlockPromptMessage'));
     if (outcome.outcome !== 'success') return outcome;
 
+    // P4.S5 (#158): Home ends it once the patient's widgets are on screen.
+    startSpan('unlock-to-home');
     setPhase('authenticated');
 
     /**
