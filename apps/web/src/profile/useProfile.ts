@@ -62,23 +62,55 @@ export interface UseProfileOptions {
 }
 
 /**
- * Fetches the profile once per client, not once per day.
+ * Fetches the profile once per client, not once per day, and again whenever
+ * the tab becomes visible (P4.S4, #154).
  *
  * Keyed on `apiClient` alone: the profile does not vary by the date being
  * viewed, and folding it into the observations effect would refetch it on every
  * press of "previous day".
  *
+ * ## Why it is read again when the tab comes back
+ *
+ * The profile is edited on the phone (P4.S3, through sync), so a patient who
+ * switches to ounces in the app and then returns to a tab already open here
+ * would otherwise keep reading millilitres until they reloaded. Returning to
+ * the tab is exactly that moment, so that is when it asks; a timer would be a
+ * request every few seconds from every open tab, for a value that changes
+ * perhaps once in an account's life.
+ *
+ * ## What a failed second read does
+ *
  * This app is online-only by explicit decision (SRS §4.2), so there is no cache
- * and no offline path — a failure here is a failure to know, which is why the
- * page waits rather than rendering amounts in a guessed system.
+ * and no offline path — a failure on the FIRST read is a failure to know, which
+ * is why the page waits rather than rendering amounts in a guessed system.
+ *
+ * A failure on a later read is different: the system is already known from a
+ * read that succeeded, so nothing is guessed by keeping it, and blanking a page
+ * the reader was just looking at because a refresh failed would be worse. Only
+ * a 401 changes anything then, because it means the session is over.
  */
 export function useProfile({ apiClient, onUnauthenticated }: UseProfileOptions): ProfileState {
   const [state, setState] = useState<ProfileState>({ status: 'loading' });
+  const [readNonce, setReadNonce] = useState(0);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') setReadNonce((n) => n + 1);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
+
+  // A new client is a new session's profile: start again from "loading".
+  useEffect(() => {
+    setState({ status: 'loading' });
+  }, [apiClient]);
 
   useEffect(() => {
     let cancelled = false;
 
-    setState({ status: 'loading' });
     apiClient.onboarding
       .profile()
       .then((profile) => {
@@ -94,17 +126,22 @@ export function useProfile({ apiClient, onUnauthenticated }: UseProfileOptions):
           onUnauthenticated();
           return;
         }
-        if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
-          setState({ status: 'not-provisioned' });
-          return;
-        }
-        setState({ status: 'error' });
+        // A second read that fails keeps what the first one learned (see above).
+        setState((previous) => {
+          if (previous.status === 'loaded') return previous;
+          if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+            return { status: 'not-provisioned' };
+          }
+          return { status: 'error' };
+        });
       });
 
+    // Only the latest read may answer: a slow first response landing after a
+    // faster second one would otherwise put the old system back.
     return () => {
       cancelled = true;
     };
-  }, [apiClient, onUnauthenticated]);
+  }, [apiClient, onUnauthenticated, readNonce]);
 
   return state;
 }

@@ -25,7 +25,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * which day's heading.
  */
 
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -672,6 +672,165 @@ describe('PhysicianOutputView — the patient’s measurement system', () => {
 
       await waitFor(() => expect(authValue.signOut).toHaveBeenCalledWith('session_expired'));
     });
+  });
+});
+
+/**
+ * P4.S4 slice 1 (#154): a units change made on the phone reaches a tab that was
+ * already open, and one switch moves every figure on the page together.
+ */
+describe('PhysicianOutputView — switching measurement system', () => {
+  /** In its own `act`, so two returns in a row are two renders, as they are in a browser. */
+  function setVisibility(state: DocumentVisibilityState) {
+    Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+  }
+
+  function profileIn(measurementSystem: 'metric' | 'imperial') {
+    return { ostomyType: 'ileostomy', surgeryDate: '2026-01-15', measurementSystem };
+  }
+
+  beforeEach(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    listMock.mockResolvedValue({
+      observations: [observation({ valueQuantity: { value: 350, unit: 'mL' } })],
+    });
+  });
+
+  it('reads the profile again when the reader returns to the tab, and follows it', async () => {
+    render(<PhysicianOutputView />);
+    expect(await screen.findAllByText(/350 mL/)).not.toHaveLength(0);
+
+    // The patient switched to ounces on the phone while this tab was in the background.
+    profileMock.mockResolvedValue(profileIn('imperial'));
+    setVisibility('hidden');
+    setVisibility('visible');
+
+    expect(await screen.findAllByText(/12 fl oz/)).not.toHaveLength(0);
+    expect(screen.queryAllByText(/350 mL/)).toHaveLength(0);
+    expect(profileMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks nothing when the tab is hidden', async () => {
+    render(<PhysicianOutputView />);
+    await screen.findAllByText(/350 mL/);
+
+    setVisibility('hidden');
+
+    expect(profileMock).toHaveBeenCalledTimes(1);
+  });
+
+  /** Decision 2: a control that a background fetch reverts is a control that does not hold. */
+  it('keeps a units choice the reader made in this tab', async () => {
+    profileMock.mockResolvedValue(profileIn('imperial'));
+    render(<PhysicianOutputView />);
+    await userEvent.click(await screen.findByRole('radio', { name: /milliliters/i }));
+    expect(await screen.findAllByText(/350 mL/)).not.toHaveLength(0);
+
+    setVisibility('visible');
+    await waitFor(() => expect(profileMock).toHaveBeenCalledTimes(2));
+
+    expect(screen.getAllByText(/350 mL/)).not.toHaveLength(0);
+    expect(screen.queryAllByText(/12 fl oz/)).toHaveLength(0);
+  });
+
+  /**
+   * Decision 3. The first read has to succeed before anything renders; a later
+   * one that fails guesses nothing by keeping what the first one learned.
+   */
+  it.each([
+    ['a network failure', new Error('network down')],
+    ['a refusal', new ApiError(403, { error: { code: 'PATIENT_NOT_PROVISIONED' } })],
+  ])('keeps the page in the system it knew after %s on the second read', async (_name, error) => {
+    render(<PhysicianOutputView />);
+    await screen.findAllByText(/350 mL/);
+
+    profileMock.mockRejectedValue(error);
+    setVisibility('visible');
+    await waitFor(() => expect(profileMock).toHaveBeenCalledTimes(2));
+
+    expect(screen.getAllByText(/350 mL/)).not.toHaveLength(0);
+    expect(screen.queryByText(/could not load your settings/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/set up your diary in the mobile app/i)).not.toBeInTheDocument();
+  });
+
+  it('signs out when the second read is rejected as unauthenticated', async () => {
+    render(<PhysicianOutputView />);
+    await screen.findAllByText(/350 mL/);
+
+    profileMock.mockRejectedValue(new ApiError(401, { error: { code: 'UNAUTHENTICATED' } }));
+    setVisibility('visible');
+
+    await waitFor(() => expect(authValue.signOut).toHaveBeenCalledWith('session_expired'));
+  });
+
+  it('never lets an older read land over a newer one', async () => {
+    render(<PhysicianOutputView />);
+    await screen.findAllByText(/350 mL/);
+
+    const older = deferred<ReturnType<typeof profileIn>>();
+    const newer = deferred<ReturnType<typeof profileIn>>();
+    profileMock.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    setVisibility('visible');
+    setVisibility('visible');
+    newer.resolve(profileIn('imperial'));
+    expect(await screen.findAllByText(/12 fl oz/)).not.toHaveLength(0);
+
+    older.resolve(profileIn('metric'));
+    await waitFor(() => expect(profileMock).toHaveBeenCalledTimes(3));
+
+    expect(screen.getAllByText(/12 fl oz/)).not.toHaveLength(0);
+    expect(screen.queryAllByText(/350 mL/)).toHaveLength(0);
+  });
+
+  /**
+   * Exit criterion 3. One memo feeds every unit-bearing block, so they cannot
+   * disagree; this is what would notice a new block that reads the system
+   * from somewhere else. "No figure left in millilitres" is checked over the
+   * whole page's text, the chart's accessible description included.
+   */
+  it('moves every figure on the page with one switch, and writes nothing', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    listMock.mockResolvedValue({
+      observations: [
+        observation({ id: 'output', valueQuantity: { value: 350, unit: 'mL' } }),
+        observation({ id: 'intake', code: '9000-1', valueQuantity: { value: 1000, unit: 'mL' } }),
+        observation({ id: 'urine', code: '9187-6', valueQuantity: { value: 500, unit: 'mL' } }),
+      ],
+    });
+    rangesMock.mockResolvedValue({
+      ranges: [
+        {
+          rangeType: 'daily_output_ml',
+          unit: 'mL',
+          lowValue: 600,
+          highValue: 1500,
+          provenance: 'CLINICAL_DEFAULT',
+          isActiveThreshold: false,
+          divergesFromPhysician: false,
+          basis: { ostomyType: 'ileostomy', daysPostOp: 10, minDaysPostOp: 0, maxDaysPostOp: 30 },
+        },
+      ],
+    });
+    render(<PhysicianOutputView />);
+    expect(await screen.findByText(/600 mL to 1,?500 mL/)).toBeVisible();
+    await screen.findByText(/minus stoma output/i);
+
+    await userEvent.click(screen.getByRole('radio', { name: /ounces/i }));
+
+    const page = await waitFor(() => {
+      const text = document.body.textContent ?? '';
+      expect(text).not.toMatch(/\d\s*mL\b/);
+      return text;
+    });
+    expect(page).toMatch(/12 fl oz/); // the output entry and the day's total
+    expect(page).toMatch(/22 fl oz/); // the balance: 1000 - 350 = 650 mL, rounded once
+    expect(page).toMatch(/17 fl oz/); // urine, beside the balance and not in it
+    expect(page).toMatch(/20 fl oz to 51 fl oz/); // the target range
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });
 

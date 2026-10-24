@@ -26,7 +26,7 @@ Sequence the remaining work from today's repository through complete v1, as boun
 
 ---
 
-## 2. Current state (verified 2026-09-26)
+## 2. Current state (verified 2026-10-18)
 
 ### 2.1 What is built
 
@@ -35,13 +35,14 @@ Sequence the remaining work from today's repository through complete v1, as boun
 | **P0** — repo foundations | **Complete** | `packages/config` (tsconfig, ESLint flat config, Prettier); root `pnpm verify` running check:env + format + build:deps + lint + typecheck + test + three verify steps; `.github/workflows/pr.yml` and `deploy-dev.yml`; three build-failing lint rules with their own tests |
 | **P1** — foundation | **Complete** | API skeleton with typed config, structurally separate patient/admin OIDC guards, Pino logger with credential redaction; Compose dev stack; Prisma schema + migrations; `packages/core` kernel; global `AuditInterceptor` with `route-guard-coverage.spec.ts` failing the build on an unaudited mutating route |
 | **P2** — stoma output slice | **Complete, gate passed** | P2.S0 sync contract; P2.S1a/b observations + sync endpoints; P2.S2a/b mobile substrate, entry screen, sync worker, correction inbox; P2.S3 web SPA; P2.S4 seed generator. **Gate B passed on run 4, 2026-09-23**, all six clauses, recorded in `docs/gate-b-walkthrough.md` — on an emulator, so it closes no HW step |
-| **P3** — entry types + config | **S1, S1b, S2 done; S3 next** | P3.S1 fluid intake and meals (PRs A–E); P3.S1b Daily Net Fluid Balance on web; P3.S2 voided urine — the colour scale, colour-without-volume, and its exclusion from the balance (#64) |
+| **P3** — entry types + config | **Complete** | P3.S1 fluid intake and meals (PRs A–E); P3.S1b Daily Net Fluid Balance on web; P3.S2 voided urine — the colour scale, colour-without-volume, and its exclusion from the balance (#64); P3.S3 the admin config API at final shape and `scripts/admin-config.mjs` (#88, #91, #96, #99); P3.S4 Quick-Add widgets; P3.S5 four further seed scenarios |
+| **P4** — onboarding, preferences, ranges | **S1–S3 done; S4 in progress** | P4.S1 onboarding in three fields (#122); P4.S2 suggested ranges, never a threshold until confirmed (#130); P4.S3 preferences, every edit through sync, Quick-Add keep/remove and the text-scaling audit (#139); P4.S4 units switch re-rendering without rewriting (#154). S5–S7 and Gate C not started |
 
 Twenty-one ADRs accepted (ADR-0001 to ADR-0021) — ADR-0020 Android-only v1, ADR-0021 the redirect route completing the OIDC exchange, and **ADR-0015 amended twice**: at #74 for a device with no biometric enrolled, and at #116 making the device passcode a **peer** of the biometric rather than a fallback, which removes the refresh token's `requireAuthentication` gating. The second amendment changes the decision rather than extending it; SRS is at **v2.7** for the same change. `docs/sync-contract.md` is normative and governs its implementations.
 
 ### 2.2 What is not built, and is scheduled
 
-all of P4–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
+P4.S4–P4.S7, and all of P5–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
 
 ### 2.3 What is not built, and was owned by nobody until this revision
 
@@ -167,7 +168,7 @@ _Exit:_ every statement in CLAUDE.md and `docs/` that this review found stale is
 | Sprint | Size | Owner | Goal | Spec / AC |
 | ------ | ---- | ----- | ---- | --------- |
 | **P3.S2** _done 2026-09-25 (#64)_ | M | `expo-mobile-developer` + `nestjs-api-developer` (serial) | Voided urine: same Measured/Estimated contract, the pale-to-dark colour scale **with a text label on every step**, colour-without-volume as a valid entry, and **exclusion from Daily Net Fluid Balance** | §3.7, AC 12.1 AC1–AC4 |
-| **P3.S3** | M | `nestjs-api-developer` + `fhir-data-modeler` | `/api/v1/admin/...` config API at final shape: value sets (retire, never delete), default range tables, validation thresholds. Separate guard, separate audience, every change audit-logged. **Plus the maintenance script R7 promised and revision 1 never scheduled** — today a threshold can only be changed by editing a migration | §3.11, §5.2, ADR-0008 |
+| **P3.S3** _done_ | M | `nestjs-api-developer` + `fhir-data-modeler` | `/api/v1/admin/...` config API at final shape: value sets (retire, never delete), default range tables, validation thresholds. Separate guard, separate audience, every change audit-logged. **Plus the maintenance script R7 promised and revision 1 never scheduled** — today a threshold can only be changed by editing a migration | §3.11, §5.2, ADR-0008 |
 | **P3.S4** _done_ | S | `expo-mobile-developer` | _done_ — Quick-Add widgets generated from the patient's own recent entries, tap-to-log and open-as-draft. Resolves with **no loading state** and needed no table: a widget is derived state, recomputed from `observations`. Exit criteria were written in the sprint rather than the dispatch, since the spec has no AC — see the outcome note below | §3.1, Epic 3 |
 | **P3.S5** | S | `fhir-data-modeler` | _done_ — `high-output-dehydration`, `new-post-op`, `colostomy-baseline`, `validation-edge-cases`. Larger than S: the seeder could express a stoma-output row and nothing else, so two of `high-output-dehydration`'s three curves were unrepresentable and `SeedObservation` had to catch up to a schema it had been behind since P3.S2. `deployment-development.md`'s "correlated intake, output, medication timing, appliance and skin data" was also unmeetable by any scenario — three of those five have no table — and is corrected rather than quietly missed | `deployment-development.md` |
 
@@ -192,10 +193,10 @@ _This is where the app becomes usable by a real patient. Note the prerequisite n
 
 | Sprint | Size | Owner | Goal | Spec / AC |
 | ------ | ---- | ----- | ---- | --------- |
-| **P4.S1** | M | `expo-mobile-developer`, then `react-web-developer` | Onboarding: **only three mandatory fields** (ostomy type, surgery date, measurement system), everything else skippable with deferred prompts. Surgery date becomes the Tier 1 lower timestamp bound | §3.0, Epic 7 |
-| **P4.S2** | M | `nestjs-api-developer` + `react-web-developer` | Suggested ranges seeded from clinical defaults keyed to ostomy type and time since surgery; **an unconfirmed suggestion is never an active threshold**; adaptation proposed, never silent; physician-set values never auto-changed | §3.9, AC 14.1 AC1–AC4 |
-| **P4.S3** | M | `expo-mobile-developer` + `react-web-developer` | Preferences covering everything §3.10 lists; preference changes queue through the sync path like any other write | §3.10, Epic 15 |
-| **P4.S4** | S | `react-web-developer` | Measurement-system switch re-renders all history in the new units **without rewriting stored canonical values** | §3.10, ADR-0004 |
+| **P4.S1** _done (#122)_ | M | `expo-mobile-developer`, then `react-web-developer` | Onboarding: **only three mandatory fields** (ostomy type, surgery date, measurement system), everything else skippable with deferred prompts. Surgery date becomes the Tier 1 lower timestamp bound | §3.0, Epic 7 |
+| **P4.S2** _done (#130)_ | M | `nestjs-api-developer` + `react-web-developer` | Suggested ranges seeded from clinical defaults keyed to ostomy type and time since surgery; **an unconfirmed suggestion is never an active threshold**; adaptation proposed, never silent; physician-set values never auto-changed | §3.9, AC 14.1 AC1–AC4 |
+| **P4.S3** _done (#139)_ | M | `expo-mobile-developer` + `react-web-developer` | Preferences covering everything §3.10 lists; preference changes queue through the sync path like any other write | §3.10, Epic 15 |
+| **P4.S4** _in progress (#154)_ | S | `react-web-developer` | Measurement-system switch re-renders all history in the new units **without rewriting stored canonical values** | §3.10, ADR-0004 |
 | **P4.S5** | S | `nestjs-api-developer` + clients | **The §5.1 performance spike.** Measure real p95 save latency, cold start, and 30–90 day history load, so §5.1's directional statements can become testable targets at P9.S4 | §5.1 |
 | **P4.S6** | M | `devops-deployment-engineer` | **The staging/Cognito spike** (decision 3). A minimal Fargate task, a real Cognito user pool, TLS. Proves only two things: the OIDC adapter's claim mapping works against real Cognito with no code change, and the container runs under Fargate's health-check semantics. Not full staging | R2 |
 | **P4.S7** | S | `react-web-developer` + `expo-mobile-developer` | **Two deferred decisions, closed with ADRs either way:** does `packages/ui` share across React Native and web (R4), and what mobile e2e tooling (ADR-0002). The emulator harness is now evidence for the second | R4, ADR-0002 |
