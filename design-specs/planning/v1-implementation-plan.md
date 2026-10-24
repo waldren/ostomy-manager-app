@@ -26,7 +26,7 @@ Sequence the remaining work from today's repository through complete v1, as boun
 
 ---
 
-## 2. Current state (verified 2026-10-18)
+## 2. Current state (verified 2026-10-24)
 
 ### 2.1 What is built
 

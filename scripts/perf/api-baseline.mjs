@@ -19,20 +19,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 /**
  * P4.S5 slice 1 (#158): API latency baseline for SRS §5.1.
  *
- *   node scripts/perf/api-baseline.mjs [--samples 200] [--json out.json]
+ *   node scripts/perf/api-baseline.mjs [--samples 200] [--warmup 20]
+ *                                      [--json out.json] [--allow-remote]
  *
- * Against the LOCAL development stack only. It provisions two synthetic
- * patients of its own (never the emulator's), gives each 90 days of history
- * through the sync push the phone uses, then times each operation
- * sequentially after a warm-up:
+ * Against the LOCAL development stack. It provisions two synthetic patients of
+ * its own (never the emulator's), gives each 90 days of history through the
+ * sync push the phone uses, then times each operation sequentially:
  *
- * - `POST /sync/push`, one operation and a 50-operation batch (the phone's
- *   write path: §5.1's "save" reaches the server this way, after the fact);
- * - `POST /observations` (the direct write path);
  * - `GET /sync/delta` from 0 to the end, at the server's default page size,
  *   which is what a new or reinstalled phone does on first sync;
  * - `GET /observations` over 30 and over 90 days, the read a history view
- *   would make.
+ *   would make;
+ * - `POST /sync/push` with 1 operation (one saved entry, pushed later), 50
+ *   (a steady-state batch), and 500 (the phone's own batch ceiling,
+ *   `DEFAULT_MAX_OPERATIONS_PER_BATCH`);
+ * - `POST /observations` (the direct write path).
+ *
+ * The seeding pushes are timed too, and reported as what they are: 50-operation
+ * batches with no warm-up, in order, while the patient's history grows from
+ * empty to full. Their raw timings, in order, are in the JSON so a trend with
+ * history size can be seen rather than guessed.
  *
  * Sequential on purpose: §5.1 is about one patient's experience, not
  * throughput, and concurrency would measure the database pool instead. Each
@@ -43,7 +49,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * staging spike is what speaks for production.
  *
  * Writes synthetic rows and their audit rows to the dev database, under
- * subjects named `perf-<kind>-<run id>`. `scripts/dev-reset.sh` removes them.
+ * subjects named `perf-<kind>-<run id>`, and makes dozens of `since=0` pulls,
+ * each of which the API records in its security log (docs/sync-contract.md
+ * §2). `scripts/dev-reset.sh` removes the rows.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -64,8 +72,15 @@ const ESTIMATED = '414135002';
 const ZONE = 'America/Chicago';
 
 const HISTORY_DAYS = 90;
-const BATCH_SIZE = 50;
+const SEED_BATCH_SIZE = 50;
+/** The phone's batch ceiling: `apps/mobile/src/sync/SyncProvider.tsx`'s `DEFAULT_MAX_OPERATIONS_PER_BATCH`. */
+const PHONE_BATCH_SIZE = 500;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Below this many samples, nearest-rank p99 is just the maximum, so it is not reported. */
+const MIN_SAMPLES_FOR_P99 = 100;
+/** A server that answers 429 forever would otherwise hang the run. */
+const MAX_THROTTLED_WAITS_PER_REQUEST = 30;
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 /** Entries a day: `colostomy-baseline`'s density, and twice it (#158 decision 6). */
 const DENSITIES = { typical: 15, heavy: 30 };
@@ -73,10 +88,15 @@ const DENSITIES = { typical: 15, heavy: 30 };
 class Refused extends Error {}
 
 function parseArgs(argv) {
-  const args = { samples: 200, warmup: 20, json: undefined };
+  const args = { samples: 200, warmup: 20, json: undefined, allowRemote: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
+    if (flag === '--allow-remote') {
+      args.allowRemote = true;
+      continue;
+    }
     const value = argv[i + 1];
+    if (value === undefined || value.startsWith('--')) throw new Refused(`${flag} needs a value`);
     if (flag === '--samples') args.samples = Number(value);
     else if (flag === '--warmup') args.warmup = Number(value);
     else if (flag === '--json') args.json = value;
@@ -85,6 +105,9 @@ function parseArgs(argv) {
   }
   if (!Number.isInteger(args.samples) || args.samples < 20) {
     throw new Refused('--samples must be an integer of at least 20, or p95 means nothing');
+  }
+  if (!Number.isInteger(args.warmup) || args.warmup < 0) {
+    throw new Refused('--warmup must be a non-negative integer');
   }
   return args;
 }
@@ -104,7 +127,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * measure the limiter rather than the latency.
  */
 async function call(method, path, token, body) {
-  for (;;) {
+  for (let waits = 0; ; waits += 1) {
     const start = performance.now();
     const response = await fetch(`${API_URL}/api/v1${path}`, {
       method,
@@ -117,6 +140,9 @@ async function call(method, path, token, body) {
     const text = await response.text();
     const ms = performance.now() - start;
     if (response.status === 429) {
+      if (waits >= MAX_THROTTLED_WAITS_PER_REQUEST) {
+        throw new Refused(`${method} ${path} was still rate-limited after ${waits} waits`);
+      }
       throttledWaits += 1;
       const retryAfter = Number(response.headers.get('retry-after'));
       await sleep((Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60) * 1000);
@@ -125,14 +151,26 @@ async function call(method, path, token, body) {
     return {
       status: response.status,
       body: text.length > 0 ? JSON.parse(text) : undefined,
-      bytes: text.length,
+      bytes: Buffer.byteLength(text),
       ms,
     };
   }
 }
 
-/** The same gate `admin-config.mjs` uses: only the dev stack reports a build commit. */
-async function assertDevelopmentStack() {
+/**
+ * Local only, unless asked otherwise.
+ *
+ * Two checks, because each alone is weak. The host must be this machine, which
+ * stops a mistyped `API_URL` writing thousands of rows somewhere real; and the
+ * API must report a build commit, which only the dev stack does. Neither is a
+ * security boundary. `--allow-remote` lifts the first for P9.S4's own run
+ * against staging, deliberately and visibly.
+ */
+async function assertDevelopmentStack(allowRemote) {
+  const host = new URL(API_URL).hostname;
+  if (!allowRemote && !LOCAL_HOSTS.has(host)) {
+    throw new Refused(`${API_URL} is not this machine; pass --allow-remote to run against it`);
+  }
   let health;
   try {
     health = await call('GET', '/health');
@@ -162,7 +200,19 @@ async function mintToken(subject) {
   return (await response.json()).access_token;
 }
 
-/** One synthetic entry, on the wire exactly as the phone sends it (docs/sync-contract.md §7.2). */
+/**
+ * A request as a patient. A run is long (the rate limiter sees to that), so an
+ * expired token is re-minted once and the request repeated, rather than the
+ * run dying an hour in.
+ */
+async function asPatient(patient, method, path, body) {
+  const response = await call(method, path, patient.token, body);
+  if (response.status !== 401) return response;
+  patient.token = await mintToken(patient.subject);
+  return call(method, path, patient.token, body);
+}
+
+/** One synthetic entry, on the wire as the phone sends it (docs/sync-contract.md §7.2, `pushOperations.ts`). */
 function entry(index, at) {
   const kind = index % 15;
   const id = randomUUID();
@@ -173,6 +223,8 @@ function entry(index, at) {
     effectiveDateTime: at.toISOString(),
     enteredMeasurementSystem: 'metric',
     enteredTimezone: ZONE,
+    // Always present on the phone's wire, possibly null (§7.2).
+    fluidTypeCode: null,
   };
   let payload;
   if (kind < 6) {
@@ -221,31 +273,50 @@ function history(perDay, now) {
   return operations;
 }
 
+/** `count` fresh entries from the last day, for the write measurements. */
+function freshEntries(count, now) {
+  return Array.from({ length: count }, (_, i) =>
+    entry(i, new Date(now - DAY_MS / 2 + (i * DAY_MS) / (4 * count))),
+  );
+}
+
 async function provision(kind, runId) {
   const subject = `perf-${kind}-${runId}`;
-  const token = await mintToken(subject);
+  const patient = { kind, subject, token: await mintToken(subject) };
   const surgeryDate = new Date(Date.now() - (HISTORY_DAYS + 30) * DAY_MS)
     .toISOString()
     .slice(0, 10);
-  const response = await call('POST', '/onboarding', token, {
-    ostomyType: 'ileostomy',
+  const response = await asPatient(patient, 'POST', '/onboarding', {
+    ostomyType: 'colostomy',
     surgeryDate,
     measurementSystem: 'metric',
   });
-  if (response.status !== 201)
+  if (response.status !== 201) {
     throw new Refused(`onboarding ${subject} answered ${response.status}`);
-  return { kind, subject, token };
+  }
+  return patient;
 }
 
-function assertAccepted(response, label) {
+/**
+ * One result per operation, in order, every one `accepted` (§3.4). A fresh
+ * UUID create has no other correct answer, so anything else is a seeding
+ * failure, and a short or missing `results` would otherwise read as success.
+ */
+async function push(patient, operations, label) {
+  const response = await asPatient(patient, 'POST', '/sync/push', { operations });
   if (response.status !== 200) throw new Refused(`${label} answered HTTP ${response.status}`);
-  const results = response.body?.results ?? [];
-  const refused = results.filter((result) => result.status !== 'accepted');
-  if (refused.length > 0) {
+  const results = response.body?.results;
+  if (!Array.isArray(results) || results.length !== operations.length) {
     throw new Refused(
-      `${label}: ${refused.length} operation(s) not accepted, first: ${JSON.stringify(refused[0])}`,
+      `${label}: ${operations.length} operations sent, ${Array.isArray(results) ? results.length : 'no'} results`,
     );
   }
+  results.forEach((result, i) => {
+    if (result.operationId !== operations[i].operationId || result.status !== 'accepted') {
+      throw new Refused(`${label}: operation ${i} answered ${JSON.stringify(result)}`);
+    }
+  });
+  return response.ms;
 }
 
 function summarise(name, samples, extra = {}) {
@@ -255,32 +326,36 @@ function summarise(name, samples, extra = {}) {
   return {
     name,
     n: sorted.length,
+    min: round(sorted[0]),
     p50: round(at(0.5)),
     p95: round(at(0.95)),
-    p99: round(at(0.99)),
+    // Nearest-rank p99 of fewer than 100 samples is the maximum, so it is withheld.
+    p99: sorted.length >= MIN_SAMPLES_FOR_P99 ? round(at(0.99)) : null,
     max: round(sorted.at(-1)),
     mean: round(sorted.reduce((sum, ms) => sum + ms, 0) / sorted.length),
     ...extra,
+    // In the order they were taken, so a trend or a cluster of slow samples can be seen.
+    samples: samples.map(round),
   };
 }
 
 /** Warm up, then `samples` runs of `fn`, which returns the milliseconds it measured. */
-async function measure(name, fn, { samples, warmup }, extra) {
+async function measure(name, fn, { samples, warmup }, extra = {}) {
   for (let i = 0; i < warmup; i += 1) await fn();
   const timings = [];
   for (let i = 0; i < samples; i += 1) timings.push(await fn());
-  return summarise(name, timings, extra);
+  return summarise(name, timings, { warmup, ...extra });
 }
 
 /** Every delta page from 0, at the server's default page size, as a new phone pulls. */
-async function fullPull(token) {
+async function fullPull(patient) {
   let since = '0';
   let pages = 0;
   let bytes = 0;
   let changes = 0;
   let ms = 0;
   for (;;) {
-    const response = await call('GET', `/sync/delta?since=${since}`, token);
+    const response = await asPatient(patient, 'GET', `/sync/delta?since=${since}`);
     if (response.status !== 200) throw new Refused(`delta answered ${response.status}`);
     ms += response.ms;
     pages += 1;
@@ -291,17 +366,21 @@ async function fullPull(token) {
   }
 }
 
+const mean = (values) => values.reduce((sum, value) => sum + value, 0) / values.length;
+
 /** A plain aligned table: the numbers first, any shape notes after. */
 function formatTable(rows) {
-  const columns = ['name', 'n', 'p50', 'p95', 'p99', 'max', 'mean'];
+  const columns = ['name', 'n', 'min', 'p50', 'p95', 'p99', 'max', 'mean'];
   const notes = (row) =>
     Object.entries(row)
-      .filter(([key]) => !columns.includes(key))
+      .filter(([key]) => !columns.includes(key) && key !== 'samples')
       .map(([key, value]) => `${key}=${value}`)
       .join(' ');
   const cells = [
     columns.concat('notes'),
-    ...rows.map((row) => columns.map((key) => String(row[key])).concat(notes(row))),
+    ...rows.map((row) =>
+      columns.map((key) => (row[key] === null ? '-' : String(row[key]))).concat(notes(row)),
+    ),
   ];
   const widths = cells[0].map((_, i) => Math.max(...cells.map((line) => line[i].length)));
   return cells
@@ -317,7 +396,7 @@ function formatTable(rows) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const buildCommit = await assertDevelopmentStack();
+  const buildCommit = await assertDevelopmentStack(args.allowRemote);
   const runId = randomUUID().slice(0, 8);
   const now = Date.now();
   const results = [];
@@ -328,26 +407,33 @@ async function main() {
   for (const [kind, perDay] of Object.entries(DENSITIES)) {
     const patient = await provision(kind, runId);
     const operations = history(perDay, now);
-    const batchTimings = [];
-    for (let i = 0; i < operations.length; i += BATCH_SIZE) {
-      const batch = operations.slice(i, i + BATCH_SIZE);
-      const result = await call('POST', '/sync/push', patient.token, { operations: batch });
-      assertAccepted(result, `seeding ${patient.subject}`);
-      if (batch.length === BATCH_SIZE) batchTimings.push(result.ms);
+    const timings = [];
+    for (let i = 0; i < operations.length; i += SEED_BATCH_SIZE) {
+      const batch = operations.slice(i, i + SEED_BATCH_SIZE);
+      const ms = await push(patient, batch, `seeding ${patient.subject}`);
+      if (batch.length === SEED_BATCH_SIZE) timings.push(ms);
     }
-    results.push(summarise(`POST /sync/push, ${BATCH_SIZE} operations (${kind})`, batchTimings));
+    const quarter = Math.max(1, Math.floor(timings.length / 4));
+    results.push(
+      summarise(`seeding push, ${SEED_BATCH_SIZE} operations, no warm-up (${kind})`, timings, {
+        // Does a batch cost more as the history it lands on grows?
+        firstQuarterMean: Math.round(mean(timings.slice(0, quarter))),
+        lastQuarterMean: Math.round(mean(timings.slice(-quarter))),
+      }),
+    );
     log(`seeded ${patient.subject}: ${operations.length} entries over ${HISTORY_DAYS} days`);
-    patients.push({ ...patient, entries: operations.length });
+    patients.push(patient);
   }
 
   // Reads first, so the history they measure is exactly the seeded one.
   for (const patient of patients) {
-    const { ms: _first, ...shape } = await fullPull(patient.token);
+    const { ms: _first, ...shape } = await fullPull(patient);
     results.push(
       await measure(
         `GET /sync/delta, full first pull (${patient.kind})`,
-        async () => (await fullPull(patient.token)).ms,
-        { samples: Math.max(20, Math.round(args.samples / 10)), warmup: 2 },
+        async () => (await fullPull(patient)).ms,
+        // Each sample is 7 to 14 requests against the rate limiter, so fewer.
+        { samples: 20, warmup: 2 },
         shape,
       ),
     );
@@ -355,20 +441,20 @@ async function main() {
       const from = new Date(now - days * DAY_MS).toISOString();
       const to = new Date(now).toISOString();
       const path = `/observations?effectiveDateTimeFrom=${from}&effectiveDateTimeTo=${to}&limit=500`;
-      const probe = await call('GET', path, patient.token);
+      const probe = await asPatient(patient, 'GET', path);
       if (probe.status !== 200) throw new Refused(`list answered ${probe.status}`);
       const returned = probe.body.observations.length;
       results.push(
         await measure(
           `GET /observations, ${days} days (${patient.kind})`,
-          async () => (await call('GET', path, patient.token)).ms,
+          async () => (await asPatient(patient, 'GET', path)).ms,
           args,
           {
             returned,
             bytes: probe.bytes,
-            // The list caps a page at 500 and has no cursor: a window holding more
-            // than that cannot be read in one request (a finding for P5.S1).
-            truncated: returned >= 500,
+            // The list caps a page at 500 and has no cursor, so a full page is
+            // the only sign a window held more (a finding for P5.S1).
+            fullPage: returned >= 500,
           },
         ),
       );
@@ -379,13 +465,7 @@ async function main() {
   results.push(
     await measure(
       'POST /sync/push, 1 operation',
-      async () => {
-        const response = await call('POST', '/sync/push', typical.token, {
-          operations: [entry(0, new Date(now - DAY_MS / 2))],
-        });
-        assertAccepted(response, 'single push');
-        return response.ms;
-      },
+      () => push(typical, freshEntries(1, now), 'single push'),
       args,
     ),
   );
@@ -393,13 +473,28 @@ async function main() {
     await measure(
       'POST /observations',
       async () => {
-        const { payload } = entry(0, new Date(now - DAY_MS / 2));
-        const response = await call('POST', '/observations', typical.token, payload);
-        if (response.status !== 201)
+        const { payload } = freshEntries(1, now)[0];
+        const response = await asPatient(typical, 'POST', '/observations', payload);
+        if (response.status !== 201) {
           throw new Refused(`POST /observations answered ${response.status}`);
+        }
         return response.ms;
       },
       args,
+    ),
+  );
+  results.push(
+    await measure(
+      `POST /sync/push, ${SEED_BATCH_SIZE} operations (steady state)`,
+      () => push(typical, freshEntries(SEED_BATCH_SIZE, now), 'batch push'),
+      { samples: 30, warmup: 2 },
+    ),
+  );
+  results.push(
+    await measure(
+      `POST /sync/push, ${PHONE_BATCH_SIZE} operations (the phone's ceiling)`,
+      () => push(typical, freshEntries(PHONE_BATCH_SIZE, now), 'full batch push'),
+      { samples: 10, warmup: 1 },
     ),
   );
 
