@@ -65,11 +65,16 @@ export class AdminJwtAuthGuard implements CanActivate {
       throw new UnauthorizedException({ code: ADMIN_AUTH_ERROR_CODE.MISSING_TOKEN });
     }
 
+    const { audienceClaim = 'aud', requiredTokenUse } = this.config.adminOidc.claimMapping;
+
     let payload: Record<string, unknown>;
     try {
       const verified = await jwtVerify(token, this.getKey, {
         issuer: this.config.adminOidc.issuer,
-        audience: this.config.adminOidc.audience,
+        // Only when the client is named in `aud`. Otherwise jose would demand
+        // an `aud` that a Cognito access token never carries, and the claim
+        // that does name the client is compared below instead.
+        ...(audienceClaim === 'aud' ? { audience: this.config.adminOidc.audience } : {}),
         algorithms: ['RS256'],
         // See JwtAuthGuard's identical option for why these are required,
         // not merely conventional, claims — mirrored here per this file's
@@ -80,6 +85,14 @@ export class AdminJwtAuthGuard implements CanActivate {
       payload = verified.payload;
     } catch (error) {
       throw new UnauthorizedException({ code: mapVerificationError(error) });
+    }
+
+    // Mirrors JwtAuthGuard's two checks one-for-one; see its comments.
+    if (audienceClaim !== 'aud' && payload[audienceClaim] !== this.config.adminOidc.audience) {
+      throw new UnauthorizedException({ code: ADMIN_AUTH_ERROR_CODE.INVALID_AUDIENCE });
+    }
+    if (requiredTokenUse !== undefined && payload.token_use !== requiredTokenUse) {
+      throw new UnauthorizedException({ code: ADMIN_AUTH_ERROR_CODE.INVALID_TOKEN_USE });
     }
 
     const subjectClaim = this.config.adminOidc.claimMapping.subjectClaim;
@@ -104,6 +117,7 @@ export const ADMIN_AUTH_ERROR_CODE = {
   INVALID_SIGNATURE: 'ADMIN_AUTH_INVALID_SIGNATURE',
   INVALID_ISSUER: 'ADMIN_AUTH_INVALID_ISSUER',
   INVALID_AUDIENCE: 'ADMIN_AUTH_INVALID_AUDIENCE',
+  INVALID_TOKEN_USE: 'ADMIN_AUTH_INVALID_TOKEN_USE',
   INVALID_ALGORITHM: 'ADMIN_AUTH_INVALID_ALGORITHM',
   TOKEN_EXPIRED: 'ADMIN_AUTH_TOKEN_EXPIRED',
   MISSING_SUBJECT_CLAIM: 'ADMIN_AUTH_MISSING_SUBJECT_CLAIM',

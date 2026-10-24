@@ -47,6 +47,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       audience: env.OIDC_AUDIENCE,
       claimMapping: {
         subjectClaim: env.OIDC_SUBJECT_CLAIM,
+        audienceClaim: emptyToUndefined(env.OIDC_AUDIENCE_CLAIM),
+        requiredTokenUse: emptyToUndefined(env.OIDC_REQUIRED_TOKEN_USE),
       },
     },
     adminOidc: {
@@ -55,6 +57,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       audience: env.ADMIN_OIDC_AUDIENCE,
       claimMapping: {
         subjectClaim: env.ADMIN_OIDC_SUBJECT_CLAIM,
+        audienceClaim: emptyToUndefined(env.ADMIN_OIDC_AUDIENCE_CLAIM),
+        requiredTokenUse: emptyToUndefined(env.ADMIN_OIDC_REQUIRED_TOKEN_USE),
       },
     },
     syncPushMaxOperations: env.SYNC_PUSH_MAX_OPERATIONS,
@@ -112,6 +116,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
 
   return result.data;
+}
+
+/**
+ * An empty variable means "not set". Compose and CDK both write `NAME=` for an
+ * unset optional, and `''` would otherwise fail `audienceClaim`'s enum or set
+ * a `requiredTokenUse` no token can carry.
+ */
+function emptyToUndefined(value: string | undefined): string | undefined {
+  return value === undefined || value.trim() === '' ? undefined : value;
 }
 
 /**

@@ -46,6 +46,13 @@ export interface TestOidcIssuer {
     subjectClaim?: string;
     expiresIn?: string;
   }) => Promise<string>;
+  /**
+   * Signs exactly `payload` with this issuer's key, plus `iss`, `iat` and a
+   * one-hour `exp`, and no `aud` unless the payload carries one. For tokens
+   * shaped like a particular provider's (P4.S6, #168): a Cognito access token
+   * names its app client in `client_id` and has no `aud` at all.
+   */
+  signPayload: (issuer: string, payload: Record<string, unknown>) => Promise<string>;
   /** Signs a token with no `exp` claim at all — never call `.setExpirationTime()`. jose only checks `exp` `if (exp !== undefined)`, so a guard that doesn't pass `requiredClaims: ['exp', ...]` would accept this token forever. */
   signWithoutExpiration: (claims: {
     issuer: string;
@@ -76,6 +83,14 @@ export async function createTestOidcIssuer(): Promise<TestOidcIssuer> {
         .setAudience(audience)
         .setIssuedAt()
         .setExpirationTime(expiresIn)
+        .sign(privateKey);
+    },
+    async signPayload(issuer, payload) {
+      return new SignJWT(payload)
+        .setProtectedHeader({ alg: 'RS256', kid: KEY_ID })
+        .setIssuer(issuer)
+        .setIssuedAt()
+        .setExpirationTime('1h')
         .sign(privateKey);
     },
     async signWithoutExpiration({ issuer, audience, subject, subjectClaim = 'sub' }) {

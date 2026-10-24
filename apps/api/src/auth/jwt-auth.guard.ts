@@ -73,11 +73,16 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException({ code: AUTH_ERROR_CODE.MISSING_TOKEN });
     }
 
+    const { audienceClaim = 'aud', requiredTokenUse } = this.config.oidc.claimMapping;
+
     let payload: Record<string, unknown>;
     try {
       const verified = await jwtVerify(token, this.getKey, {
         issuer: this.config.oidc.issuer,
-        audience: this.config.oidc.audience,
+        // Only when the client is named in `aud`. Otherwise jose would demand
+        // an `aud` that a Cognito access token never carries, and the claim
+        // that does name the client is compared below instead.
+        ...(audienceClaim === 'aud' ? { audience: this.config.oidc.audience } : {}),
         algorithms: ['RS256'],
         // A token minted without `exp` — a misconfigured mock OIDC provider,
         // or a pool misconfiguration — verifies forever otherwise: jose only
@@ -93,6 +98,18 @@ export class JwtAuthGuard implements CanActivate {
       payload = verified.payload;
     } catch (error) {
       throw new UnauthorizedException({ code: mapVerificationError(error) });
+    }
+
+    // P4.S6 (#168): a provider that names the client somewhere other than
+    // `aud` (Cognito access tokens: `client_id`). Exact string equality, as
+    // jose applies to `aud`; an array or a missing claim is refused.
+    if (audienceClaim !== 'aud' && payload[audienceClaim] !== this.config.oidc.audience) {
+      throw new UnauthorizedException({ code: AUTH_ERROR_CODE.INVALID_AUDIENCE });
+    }
+    // An ID token is not an access credential. Cognito's carries `aud` = the
+    // client id, so without this a guard configured for `aud` accepts one.
+    if (requiredTokenUse !== undefined && payload.token_use !== requiredTokenUse) {
+      throw new UnauthorizedException({ code: AUTH_ERROR_CODE.INVALID_TOKEN_USE });
     }
 
     const subjectClaim = this.config.oidc.claimMapping.subjectClaim;
@@ -117,6 +134,7 @@ export const AUTH_ERROR_CODE = {
   INVALID_SIGNATURE: 'AUTH_INVALID_SIGNATURE',
   INVALID_ISSUER: 'AUTH_INVALID_ISSUER',
   INVALID_AUDIENCE: 'AUTH_INVALID_AUDIENCE',
+  INVALID_TOKEN_USE: 'AUTH_INVALID_TOKEN_USE',
   INVALID_ALGORITHM: 'AUTH_INVALID_ALGORITHM',
   TOKEN_EXPIRED: 'AUTH_TOKEN_EXPIRED',
   MISSING_SUBJECT_CLAIM: 'AUTH_MISSING_SUBJECT_CLAIM',
