@@ -555,7 +555,32 @@ $$;
 -- statement in this file decorative. Running this every deploy is
 -- idempotent and cheap; there is no correctness reason to skip it when the
 -- role was "just created" a few lines up.
-ALTER ROLE "ostomy_runtime" NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+--
+-- P4.S6 (#168): only a superuser may run it. PostgreSQL 16+ refuses any
+-- role without SUPERUSER that so much as NAMES the SUPERUSER, REPLICATION or
+-- BYPASSRLS attribute, even to turn it off, and a managed database's owner
+-- is not a superuser (the RDS master user holds CREATEROLE and CREATEDB
+-- only). Run unconditionally, this statement failed the first migration on
+-- RDS. Such an owner cannot have created an over-privileged role either, so
+-- for it the attributes are ASSERTED instead: a role that already existed
+-- with any of them refuses the migration loudly, which keeps B3's guarantee
+-- without a privilege the owner does not have. Edited in place because a
+-- fresh RDS database never gets past this file; `prisma migrate deploy`
+-- does not re-check an applied migration, so databases that already ran
+-- the original are unaffected.
+DO $$
+BEGIN
+  IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+    ALTER ROLE "ostomy_runtime" NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+  ELSIF EXISTS (
+    SELECT 1 FROM pg_roles
+    WHERE rolname = 'ostomy_runtime'
+      AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit OR rolreplication OR rolbypassrls)
+  ) THEN
+    RAISE EXCEPTION 'ostomy_runtime already exists with an attribute that defeats its grants (SUPERUSER, CREATEDB, CREATEROLE, INHERIT, REPLICATION or BYPASSRLS), and this owner is not a superuser so cannot remove it. Fix the role as a superuser, then re-run (ADR-0011).';
+  END IF;
+END
+$$;
 
 -- No password set above and none ever will be here — see this file's
 -- header comment. `db-roles` (infra/docker-compose.yml, now sequenced

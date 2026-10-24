@@ -35,6 +35,16 @@ across two places:
   "ostomy_runtime" NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
   NOREPLICATION NOBYPASSRLS;` immediately after the `DO` block now runs
   every time, regardless of which branch was taken.
+- **On a managed database the attributes are asserted, not re-applied**
+  (P4.S6, #168). PostgreSQL 16+ refuses any non-superuser that names the
+  SUPERUSER, REPLICATION or BYPASSRLS attribute, even to turn it off, and an
+  RDS master user is not a superuser. So the unconditional `ALTER ROLE` above
+  runs only when the migrating owner IS a superuser (this dev stack, the
+  integration suite). Otherwise the migration checks the role's attributes
+  and refuses to continue if any is unsafe; such an owner cannot have
+  created an unsafe role, so that only fires for one that already existed.
+  `apps/api/src/prisma/managed-owner.integration.spec.ts` runs every
+  migration under a CREATEROLE, non-superuser owner to keep this true.
 - **This file's only remaining job is the password** — the one part of
   role setup that genuinely is a secret and therefore cannot live in a
   committed migration. It runs `ALTER ROLE ... WITH LOGIN PASSWORD ...`
