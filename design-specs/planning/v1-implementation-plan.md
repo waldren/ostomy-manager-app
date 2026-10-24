@@ -26,7 +26,7 @@ Sequence the remaining work from today's repository through complete v1, as boun
 
 ---
 
-## 2. Current state (verified 2026-10-18)
+## 2. Current state (verified 2026-10-24)
 
 ### 2.1 What is built
 
@@ -36,13 +36,13 @@ Sequence the remaining work from today's repository through complete v1, as boun
 | **P1** — foundation | **Complete** | API skeleton with typed config, structurally separate patient/admin OIDC guards, Pino logger with credential redaction; Compose dev stack; Prisma schema + migrations; `packages/core` kernel; global `AuditInterceptor` with `route-guard-coverage.spec.ts` failing the build on an unaudited mutating route |
 | **P2** — stoma output slice | **Complete, gate passed** | P2.S0 sync contract; P2.S1a/b observations + sync endpoints; P2.S2a/b mobile substrate, entry screen, sync worker, correction inbox; P2.S3 web SPA; P2.S4 seed generator. **Gate B passed on run 4, 2026-09-23**, all six clauses, recorded in `docs/gate-b-walkthrough.md` — on an emulator, so it closes no HW step |
 | **P3** — entry types + config | **Complete** | P3.S1 fluid intake and meals (PRs A–E); P3.S1b Daily Net Fluid Balance on web; P3.S2 voided urine — the colour scale, colour-without-volume, and its exclusion from the balance (#64); P3.S3 the admin config API at final shape and `scripts/admin-config.mjs` (#88, #91, #96, #99); P3.S4 Quick-Add widgets; P3.S5 four further seed scenarios |
-| **P4** — onboarding, preferences, ranges | **S1–S3 done; S4 in progress** | P4.S1 onboarding in three fields (#122); P4.S2 suggested ranges, never a threshold until confirmed (#130); P4.S3 preferences, every edit through sync, Quick-Add keep/remove and the text-scaling audit (#139); P4.S4 units switch re-rendering without rewriting (#154). S5–S7 and Gate C not started |
+| **P4** — onboarding, preferences, ranges | **S1–S4 done; S5 in progress** | P4.S1 onboarding in three fields (#122); P4.S2 suggested ranges, never a threshold until confirmed (#130); P4.S3 preferences, every edit through sync, Quick-Add keep/remove and the text-scaling audit (#139); P4.S4 units switch re-rendering without rewriting (#154); P4.S5 the §5.1 performance spike (#158), recorded in `docs/performance/p4-s5-baseline.md`. S6, S7 and Gate C not started |
 
 Twenty-one ADRs accepted (ADR-0001 to ADR-0021) — ADR-0020 Android-only v1, ADR-0021 the redirect route completing the OIDC exchange, and **ADR-0015 amended twice**: at #74 for a device with no biometric enrolled, and at #116 making the device passcode a **peer** of the biometric rather than a fallback, which removes the refresh token's `requireAuthentication` gating. The second amendment changes the decision rather than extending it; SRS is at **v2.7** for the same change. `docs/sync-contract.md` is normative and governs its implementations.
 
 ### 2.2 What is not built, and is scheduled
 
-P4.S4–P4.S7, and all of P5–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
+P4.S5–P4.S7, and all of P5–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
 
 ### 2.3 What is not built, and was owned by nobody until this revision
 
@@ -196,8 +196,8 @@ _This is where the app becomes usable by a real patient. Note the prerequisite n
 | **P4.S1** _done (#122)_ | M | `expo-mobile-developer`, then `react-web-developer` | Onboarding: **only three mandatory fields** (ostomy type, surgery date, measurement system), everything else skippable with deferred prompts. Surgery date becomes the Tier 1 lower timestamp bound | §3.0, Epic 7 |
 | **P4.S2** _done (#130)_ | M | `nestjs-api-developer` + `react-web-developer` | Suggested ranges seeded from clinical defaults keyed to ostomy type and time since surgery; **an unconfirmed suggestion is never an active threshold**; adaptation proposed, never silent; physician-set values never auto-changed | §3.9, AC 14.1 AC1–AC4 |
 | **P4.S3** _done (#139)_ | M | `expo-mobile-developer` + `react-web-developer` | Preferences covering everything §3.10 lists; preference changes queue through the sync path like any other write | §3.10, Epic 15 |
-| **P4.S4** _in progress (#154)_ | S | `react-web-developer` | Measurement-system switch re-renders all history in the new units **without rewriting stored canonical values** | §3.10, ADR-0004 |
-| **P4.S5** | S | `nestjs-api-developer` + clients | **The §5.1 performance spike.** Measure real p95 save latency, cold start, and 30–90 day history load, so §5.1's directional statements can become testable targets at P9.S4 | §5.1 |
+| **P4.S4** _done (#154)_ | S | `react-web-developer` | Measurement-system switch re-renders all history in the new units **without rewriting stored canonical values** | §3.10, ADR-0004 |
+| **P4.S5** _in progress (#158)_ | S | `nestjs-api-developer` + clients | **The §5.1 performance spike.** Measure real p95 save latency, cold start, and 30–90 day history load, so §5.1's directional statements can become testable targets at P9.S4 | §5.1 |
 | **P4.S6** | M | `devops-deployment-engineer` | **The staging/Cognito spike** (decision 3). A minimal Fargate task, a real Cognito user pool, TLS. Proves only two things: the OIDC adapter's claim mapping works against real Cognito with no code change, and the container runs under Fargate's health-check semantics. Not full staging | R2 |
 | **P4.S7** | S | `react-web-developer` + `expo-mobile-developer` | **Two deferred decisions, closed with ADRs either way:** does `packages/ui` share across React Native and web (R4), and what mobile e2e tooling (ADR-0002). The emulator harness is now evidence for the second | R4, ADR-0002 |
 
