@@ -29,6 +29,7 @@ import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { EntryTimestampField } from '../src/entry/EntryTimestampField';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
+import { cancelSpan, endSpan, startSpan } from '../src/perf/perfMarks';
 import {
   VALUE_SET_KEY,
   type CachedValueSetMember,
@@ -167,6 +168,11 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
       const canonical = toCanonicalValueString(amountText, measurementSystem);
       if (canonical === undefined || method === undefined) return;
 
+      // P4.S5 (#158): started here, after every validation exit, so a blocked or
+      // abandoned save leaves no span open. Inert unless the build sets
+      // EXPO_PUBLIC_PERF_MARKS.
+      startSpan('save-write');
+      startSpan('save-confirmed');
       setSaving(true);
       setSaveFailed(false);
       try {
@@ -189,9 +195,12 @@ function AddIntakeScreen({ profile }: { readonly profile: LocalProfile }): React
       } catch {
         setSaving(false);
         setSaveFailed(true);
+        cancelSpan('save-write');
+        cancelSpan('save-confirmed');
         return;
       }
 
+      endSpan('save-write');
       requestSync();
       router.replace('/home?saved=1');
     },

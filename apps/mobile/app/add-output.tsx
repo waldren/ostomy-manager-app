@@ -28,6 +28,7 @@ import { withProfile } from '../src/onboarding/withProfile';
 import { useDatabaseState } from '../src/db/DatabaseProvider';
 import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { enqueueVolumetricObservationCreate } from '../src/db/offlineWrites';
+import { cancelSpan, endSpan, startSpan } from '../src/perf/perfMarks';
 import { parseDraftParams } from '../src/quickadd/draftParams';
 import { EntryTimestampField } from '../src/entry/EntryTimestampField';
 import {
@@ -138,6 +139,11 @@ function AddOutputScreen({ profile }: { readonly profile: LocalProfile }): React
       const canonical = toCanonicalValueString(amountText, measurementSystem);
       if (canonical === undefined || method === undefined) return;
 
+      // P4.S5 (#158): started here, after every validation exit, so a blocked or
+      // abandoned save leaves no span open. Inert unless the build sets
+      // EXPO_PUBLIC_PERF_MARKS.
+      startSpan('save-write');
+      startSpan('save-confirmed');
       setSaving(true);
       setSaveFailed(false);
       try {
@@ -159,10 +165,13 @@ function AddOutputScreen({ profile }: { readonly profile: LocalProfile }): React
         // this screen must never tell.
         setSaving(false);
         setSaveFailed(true);
+        cancelSpan('save-write');
+        cancelSpan('save-confirmed');
         return;
       }
 
       // Committed. Ask the worker to run, but never wait on it: §9.5.
+      endSpan('save-write');
       requestSync();
       router.replace('/home?saved=1');
     },

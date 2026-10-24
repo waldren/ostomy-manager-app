@@ -30,6 +30,8 @@ import { useCachedThresholds } from '../src/entry/useCachedThresholds';
 import { deviceTimeZone, now as clockNow } from '../src/lib/utils/clock';
 import { decideQuickAdd } from '../src/quickadd/quickAddAction';
 import { draftHrefFor } from '../src/quickadd/draftParams';
+import { runHistoryProbeOnce } from '../src/perf/historyProbe';
+import { cancelSpan, endSpan, startSpan } from '../src/perf/perfMarks';
 import { logQuickAdd } from '../src/quickadd/logQuickAdd';
 import { QuickAddWidgets } from '../src/quickadd/QuickAddWidgets';
 import { useQuickAddSuggestions } from '../src/quickadd/useQuickAddSuggestions';
@@ -133,6 +135,18 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
   // dropping it would narrow what triggers a refresh for no gain.
   useEffect(() => refreshCounts(), [refreshCounts, isRunning, lastRejected]);
 
+  // P4.S5 (#158), all inert unless the build sets EXPO_PUBLIC_PERF_MARKS. The
+  // "Saved" confirmation is what §5.1 calls a save finishing; widgets loaded
+  // is what "Home is ready" means after an unlock.
+  useEffect(() => {
+    if (params.saved === '1') endSpan('save-confirmed');
+  }, [params.saved]);
+  useEffect(() => {
+    if (suggestions === undefined || database.status !== 'ready') return;
+    endSpan('unlock-to-home');
+    void runHistoryProbeOnce(database.executor);
+  }, [suggestions, database]);
+
   /**
    * Opens the entry form for a suggestion, pre-filled.
    *
@@ -171,13 +185,17 @@ function HomeScreen({ profile }: { readonly profile: LocalProfile }): React.JSX.
       }
 
       setQuickAddFailed(false);
+      // P4.S5 (#158): after the open-draft exit, so a tap that opens the form leaves no span open.
+      startSpan('quickadd-write');
       try {
         await logQuickAdd(database.executor, suggestion, measurementSystem, clockNow);
+        endSpan('quickadd-write');
       } catch {
         // The local write IS the save, so a failure here means nothing was
         // recorded. Said plainly rather than swallowed — and the patient is
         // left on this screen with the entry buttons, not sent to a
         // confirmation for something that did not happen.
+        cancelSpan('quickadd-write');
         setQuickAddFailed(true);
         return;
       }

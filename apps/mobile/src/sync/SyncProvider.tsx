@@ -43,6 +43,7 @@ import {
   nextSchedulerState,
   type SchedulerState,
 } from './syncScheduler';
+import { timeAsync } from '../perf/perfMarks';
 import { runSyncCycle, type SyncClientPort, type SyncStopReason } from './syncWorker';
 
 /**
@@ -204,12 +205,15 @@ export function SyncProvider({
         if (executor === undefined || port === undefined) return;
         setIsRunning(true);
         try {
-          const result = await runSyncCycle({
-            executor,
-            client: port,
-            now,
-            maxOperationsPerBatch,
-          });
+          // P4.S5 (#158): timed so a save can be measured while one runs.
+          const result = await timeAsync('sync-cycle', () =>
+            runSyncCycle({
+              executor,
+              client: port,
+              now,
+              maxOperationsPerBatch,
+            }),
+          );
           schedulerRef.current = nextSchedulerState(schedulerRef.current, result);
           setLastStop(result.stoppedBecause);
           setLastRejected(result.push.rejected + result.quarantined);
