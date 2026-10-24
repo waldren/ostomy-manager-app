@@ -67,17 +67,37 @@ const oidcSchema = z.object({
      */
     audienceClaim: z.enum(['aud', 'client_id']).optional(),
     /**
-     * When set, the token's `token_use` claim must equal it. Against Cognito
-     * this is `access`, and it is not optional in practice: a Cognito ID token
-     * carries `aud` = the app client id plus the patient's email and phone
-     * number, so a guard reading `aud` with nothing else checked would accept
-     * an ID token as an access credential. Absent means the claim is not read.
+     * The claim in which a token says what kind of token it is. Absent means
+     * `DEFAULT_TOKEN_USE_CLAIM`, Cognito's name, because the check it feeds must refuse a Cognito
+     * ID token even where nobody configured anything (see `requiredTokenUse`).
+     * A provider that mints no such claim is unaffected: an absent claim is
+     * refused only when `requiredTokenUse` is set.
+     */
+    tokenUseClaim: z.string().min(1).optional(),
+    /**
+     * When set, `tokenUseClaim` must be present and equal it. When unset, the
+     * claim is still checked whenever a token carries it, against
+     * `DEFAULT_ACCESS_TOKEN_USE`. That half is not optional: a Cognito ID
+     * token carries `aud` = the app client id plus the patient's email and
+     * phone number, so under the default `audienceClaim` it would otherwise be
+     * accepted as an access credential (#169 review). Against Cognito set
+     * `access`, so a token with no such claim is refused as well.
      */
     requiredTokenUse: z.string().min(1).optional(),
   }),
 });
 
 export type OidcConfig = z.infer<typeof oidcSchema>;
+
+/**
+ * The `tokenUseClaim` value a token that declares its kind must carry when
+ * `requiredTokenUse` is unset. Anything else it declares (Cognito: `id`) is
+ * not an access credential.
+ */
+export const DEFAULT_ACCESS_TOKEN_USE = 'access';
+
+/** The claim `tokenUseClaim` names when unset. */
+export const DEFAULT_TOKEN_USE_CLAIM = 'token_use';
 
 const booleanFromString = z.enum(['true', 'false']).transform((value) => value === 'true');
 

@@ -48,6 +48,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       claimMapping: {
         subjectClaim: env.OIDC_SUBJECT_CLAIM,
         audienceClaim: emptyToUndefined(env.OIDC_AUDIENCE_CLAIM),
+        tokenUseClaim: emptyToUndefined(env.OIDC_TOKEN_USE_CLAIM),
         requiredTokenUse: emptyToUndefined(env.OIDC_REQUIRED_TOKEN_USE),
       },
     },
@@ -58,6 +59,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       claimMapping: {
         subjectClaim: env.ADMIN_OIDC_SUBJECT_CLAIM,
         audienceClaim: emptyToUndefined(env.ADMIN_OIDC_AUDIENCE_CLAIM),
+        tokenUseClaim: emptyToUndefined(env.ADMIN_OIDC_TOKEN_USE_CLAIM),
         requiredTokenUse: emptyToUndefined(env.ADMIN_OIDC_REQUIRED_TOKEN_USE),
       },
     },
@@ -121,10 +123,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 /**
  * An empty variable means "not set". Compose and CDK both write `NAME=` for an
  * unset optional, and `''` would otherwise fail `audienceClaim`'s enum or set
- * a `requiredTokenUse` no token can carry.
+ * a `requiredTokenUse` no token can carry. A set value is trimmed for the same
+ * reason: `access ` from a stray space boots cleanly and then refuses every
+ * token, which surfaces at the first request rather than at boot.
  */
 function emptyToUndefined(value: string | undefined): string | undefined {
-  return value === undefined || value.trim() === '' ? undefined : value;
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed === '' ? undefined : trimmed;
 }
 
 /**

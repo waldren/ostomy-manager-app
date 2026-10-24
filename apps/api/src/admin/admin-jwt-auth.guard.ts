@@ -26,7 +26,11 @@ import type { Request } from 'express';
 import { jwtVerify, type JWTVerifyGetKey } from 'jose';
 
 import { APP_CONFIG } from '../config/config.tokens';
-import type { AppConfig } from '../config/env.schema';
+import {
+  DEFAULT_ACCESS_TOKEN_USE,
+  DEFAULT_TOKEN_USE_CLAIM,
+  type AppConfig,
+} from '../config/env.schema';
 import { ADMIN_JWKS_RESOLVER } from './admin-jwks-resolver.token';
 import type { AdminActor } from './admin-actor';
 
@@ -47,8 +51,9 @@ import type { AdminActor } from './admin-actor';
  * yourself wanting to unify these, stop and re-read ADR-0008 first.
  *
  * Provider-agnostic by construction, same as the patient guard: no
- * vendor-specific SDK import, no vendor-specific claim shape — only the
- * standard OIDC/JWKS surface, taken from `AppConfig`, verified with `jose`.
+ * vendor-specific SDK import, no vendor-specific claim name in this file —
+ * only the standard OIDC/JWKS surface and the claim mapping, taken from
+ * `AppConfig`, verified with `jose`.
  */
 @Injectable()
 export class AdminJwtAuthGuard implements CanActivate {
@@ -65,7 +70,11 @@ export class AdminJwtAuthGuard implements CanActivate {
       throw new UnauthorizedException({ code: ADMIN_AUTH_ERROR_CODE.MISSING_TOKEN });
     }
 
-    const { audienceClaim = 'aud', requiredTokenUse } = this.config.adminOidc.claimMapping;
+    const {
+      audienceClaim = 'aud',
+      tokenUseClaim = DEFAULT_TOKEN_USE_CLAIM,
+      requiredTokenUse,
+    } = this.config.adminOidc.claimMapping;
 
     let payload: Record<string, unknown>;
     try {
@@ -91,7 +100,11 @@ export class AdminJwtAuthGuard implements CanActivate {
     if (audienceClaim !== 'aud' && payload[audienceClaim] !== this.config.adminOidc.audience) {
       throw new UnauthorizedException({ code: ADMIN_AUTH_ERROR_CODE.INVALID_AUDIENCE });
     }
-    if (requiredTokenUse !== undefined && payload.token_use !== requiredTokenUse) {
+    const tokenUse = payload[tokenUseClaim];
+    if (
+      (tokenUse !== undefined || requiredTokenUse !== undefined) &&
+      tokenUse !== (requiredTokenUse ?? DEFAULT_ACCESS_TOKEN_USE)
+    ) {
       throw new UnauthorizedException({ code: ADMIN_AUTH_ERROR_CODE.INVALID_TOKEN_USE });
     }
 

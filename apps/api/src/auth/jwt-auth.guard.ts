@@ -26,7 +26,11 @@ import type { Request } from 'express';
 import { jwtVerify, type JWTVerifyGetKey } from 'jose';
 
 import { APP_CONFIG } from '../config/config.tokens';
-import type { AppConfig } from '../config/env.schema';
+import {
+  DEFAULT_ACCESS_TOKEN_USE,
+  DEFAULT_TOKEN_USE_CLAIM,
+  type AppConfig,
+} from '../config/env.schema';
 import { PATIENT_JWKS_RESOLVER } from './patient-jwks-resolver.token';
 import type { PatientActor } from './patient-actor';
 
@@ -45,7 +49,8 @@ import type { PatientActor } from './patient-actor';
  *
  * Provider-agnostic by construction: this file has no knowledge of any
  * specific identity provider by name. It knows only the standard OIDC/JWKS
- * shape (issuer, audience, JWKS endpoint), taken from `AppConfig`, and
+ * shape (issuer, audience, JWKS endpoint) and claim names and values taken
+ * from `AppConfig` (whose defaults may be a provider's, never this file), and
  * verifies with `jose` — a generic JWT library, never a vendor SDK. The mock
  * OIDC provider in development and the production identity provider both
  * expose the same standard surface, so nothing here changes between them.
@@ -73,7 +78,11 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException({ code: AUTH_ERROR_CODE.MISSING_TOKEN });
     }
 
-    const { audienceClaim = 'aud', requiredTokenUse } = this.config.oidc.claimMapping;
+    const {
+      audienceClaim = 'aud',
+      tokenUseClaim = DEFAULT_TOKEN_USE_CLAIM,
+      requiredTokenUse,
+    } = this.config.oidc.claimMapping;
 
     let payload: Record<string, unknown>;
     try {
@@ -108,7 +117,14 @@ export class JwtAuthGuard implements CanActivate {
     }
     // An ID token is not an access credential. Cognito's carries `aud` = the
     // client id, so without this a guard configured for `aud` accepts one.
-    if (requiredTokenUse !== undefined && payload.token_use !== requiredTokenUse) {
+    // Checked whenever the token declares its kind, configured or not (#169
+    // review): the default settings must not be the ones that accept it.
+    // `requiredTokenUse` additionally refuses a token that declares nothing.
+    const tokenUse = payload[tokenUseClaim];
+    if (
+      (tokenUse !== undefined || requiredTokenUse !== undefined) &&
+      tokenUse !== (requiredTokenUse ?? DEFAULT_ACCESS_TOKEN_USE)
+    ) {
       throw new UnauthorizedException({ code: AUTH_ERROR_CODE.INVALID_TOKEN_USE });
     }
 
