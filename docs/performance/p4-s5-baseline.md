@@ -96,7 +96,37 @@ None for the API itself. §5.1 is about what the patient perceives, and no API c
 
 ## 3. Web (slice 4)
 
-Not yet measured.
+### How
+
+Through gstack's `browse`, a headless Chromium 145 on the host in section 1 (1280×720), signed in to `apps/web` on the local Compose stack (the web container built at `70d4b81`, the same `apps/web` as `main`) as the development patient. Two scripts run in the page and read the browser's own clocks, so the driver's latency is in neither:
+
+- **`scripts/perf/web-day-switch.js`**: 60 presses of "Show the previous day", each timed from the click until the page's status line has said "Loading" and then names the new day as loaded, plus one animation frame for the paint. That is when a reader sees the day they asked for. A `MutationObserver` watches the status line, because a fast day can load inside one frame. Two first attempts ended too early and were discarded. The date changes in the same render as the click, while the previous day's "loaded" state is still on screen, so for a moment the line names the new date before anything has been fetched.
+- **`scripts/perf/web-page-load.js`**: 11 reloads of the page on today, which held 122 entries (the phone runs' saves and Quick-Add taps). It reads Navigation Timing, the three reads' Resource Timing, and Largest Contentful Paint. These are reloads with the app's assets cached and the session already established, which is how a reader returning to the page meets it.
+
+Raw samples: [`runs/2026-10-24-web/`](runs/2026-10-24-web/).
+
+### Results (milliseconds)
+
+| | n | p50 | p95 | max |
+| --- | ---: | ---: | ---: | ---: |
+| Switch to an empty day | 14 | 17 | 56 | 56 |
+| Switch to a day with 12 to 19 entries | 46 | 33 | 40 | 317 |
+| Load: HTML and script parsed (`domContentLoaded`) | 11 | 10 | 12 | 12 |
+| Load: the day's entries arrived | 11 | 37 | 52 | 52 |
+| Load: the last of the three reads arrived (profile, entries, ranges) | 11 | 34 to 37 | 61 | 61 |
+| **Load: largest paint, the day's chart or table (LCP)** | 11 | **164** | **200** | 200 |
+
+### What they show
+
+- **Switching days is immediate.** About 33 ms for an ordinary day, from the click to the new day painted, of which the API's share is about 10 ms (section 1). That is §5.1's "responsive when switching ... date ranges" with a wide margin. The one 317 ms sample was the first switch onto a day with data, which is when the chart first renders anything, and it did not recur.
+- **The page shows a 122-entry day in about 160 ms** from a reload, with its three reads back by about 60 ms. Rendering, mostly the chart and table, is the rest.
+- **The page only ever shows one day.** §5.1's "history views over 30 to 90 days" has nothing to measure on the web yet, and section 1's 500-row cap on `GET /observations` is what a multi-day view will meet first.
+
+### What they cannot speak for
+
+- **A first visit.** These are warm reloads with a session in place. A first visit adds the sign-in round trip and an uncached download of the app's assets, both of which depend on the network and on CloudFront (P4.S6).
+- **A slower machine or browser.** A desktop with 32 hardware threads; a reader's laptop or an older browser will be slower, and by an amount this run cannot say.
+- **The network.** Browser, web server and API were on one machine.
 
 ## 4. Proposed targets (slice 5)
 
