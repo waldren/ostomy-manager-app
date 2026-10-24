@@ -57,6 +57,23 @@ const oidcSchema = z.object({
   audience: z.string().min(1, 'audience is required'),
   claimMapping: z.object({
     subjectClaim: z.string().min(1).default('sub'),
+    /**
+     * Which claim must equal `audience` (P4.S6, #168). Absent means `aud`, the
+     * RFC 9068 shape the development issuer mints. A Cognito ACCESS token
+     * carries no `aud` at all; it names its app client in `client_id`, so
+     * against Cognito this is `client_id`. A closed list rather than any
+     * string: a typo here must fail the boot, not quietly compare the client
+     * id against some other claim.
+     */
+    audienceClaim: z.enum(['aud', 'client_id']).optional(),
+    /**
+     * When set, the token's `token_use` claim must equal it. Against Cognito
+     * this is `access`, and it is not optional in practice: a Cognito ID token
+     * carries `aud` = the app client id plus the patient's email and phone
+     * number, so a guard reading `aud` with nothing else checked would accept
+     * an ID token as an access credential. Absent means the claim is not read.
+     */
+    requiredTokenUse: z.string().min(1).optional(),
   }),
 });
 
