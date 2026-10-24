@@ -2,7 +2,15 @@
 
 Issue #158. SRS §5.1 is directional ("must feel instantaneous", "without noticeable delay") and asks for numeric targets once a spike has measured the real stack. This document is that spike's record: what was measured, how, on what, and what the numbers cannot speak for. **P9.S4 sets the targets.** Every target proposed here is an implementer's proposal, with the same standing as the unratified clinical defaults.
 
-Built up slice by slice; a section not yet measured says so.
+## Summary
+
+- **Saving is fast, and stays fast offline.** The phone commits an entry in about 25 ms and confirms it in about 80 ms. The server is never on that path.
+- **Background sync is the one §5.1 breach found.** With a sync cycle running, the save confirmation took up to 0.7 s (#164).
+- **A new phone's first sync of 90 days takes about 12 s.** Nearly all of it is applying rows on the device, not the server.
+- **The web view is quick:** about 33 ms to switch days and about 160 ms to paint a busy day.
+- **The API is not the bottleneck anywhere.** Its 500-row cap on `GET /observations` is a design input for P5.S1's history view.
+- **Defects the spike found:** a rate-limit response can quarantine correct entries (#159); flaky no-PHI test assertions (#161); a release check for perf-flagged builds (#163); and sync delaying the save confirmation (#164).
+- **Every phone number comes from an emulator on a fast desktop.** The proposed targets in section 4 are therefore set for a reference budget phone, which P9.S4 has to choose and measure on.
 
 ## 1. API (slice 1)
 
@@ -130,4 +138,52 @@ Raw samples: [`runs/2026-10-24-web/`](runs/2026-10-24-web/).
 
 ## 4. Proposed targets (slice 5)
 
-Not yet written.
+### How to read these
+
+§5.1's follow-up asks for "testable numeric targets". These are **proposals for P9.S4 to ratify, change or reject**, not commitments. They carry the same standing as the unratified clinical defaults: an implementer chose them, and the choice is recorded rather than hidden.
+
+Three principles shaped them:
+
+- **A target is set on a reference device, not on this emulator.** The emulator numbers above are floors. P9.S4 has to pick a reference phone at the low end of what this population owns, and a reference laptop and browser for the web view, and measure on them with the same scripts. A target that only holds on a fast desktop protects no patient.
+- **A target describes what the patient perceives, at p95.** The p50 is what most people see; the p95 is what a patient meets several times a week. The perceptual thresholds used are the long-standing ones:
+  - about **100 ms** for a response to feel instantaneous;
+  - about **1 s** for a wait not to interrupt the flow of a task;
+  - Android's own guidance that a **cold start of 5 s or more** is excessive;
+  - Core Web Vitals' **2.5 s** for a "good" largest paint on a first visit.
+- **Each target names its mark and its script**, so it is testable in exactly the sense §5.1 asks for, and repeatable by whoever checks it.
+
+### The targets
+
+| §5.1 statement | Measure | Measured here (p95; for the phone, the worse of the two batches) | **Proposed target (reference device, p95)** |
+| --- | --- | --- | --- |
+| Saving feels instantaneous, regardless of network | `save-confirmed`, with sync idle | 108 ms | **≤ 150 ms** |
+| | `save-confirmed`, **with a sync cycle running** | 545 ms (max 697) | **≤ 150 ms, the same as idle.** Fails today: #164 |
+| | `save-write` (the local commit) | 39 ms | **≤ 75 ms** |
+| Quick-Add resolves immediately, with no loading state | `quickadd-write` | 21 ms | **≤ 75 ms**, and no loading indicator, which is architectural and already true |
+| Dashboard loads without noticeable delay | `unlock-to-home` | 247 ms | **≤ 500 ms** |
+| History over 30 to 90 days loads without noticeable delay | `history-90d-query` (stand-in until P5.S1) | 276 ms | **≤ 1 s to the first screen of history.** P5.S1 should page rather than read all 90 days at once |
+| Background sync is transparent | the save target above, with sync running | — | as above |
+| | first full sync of 90 days, new install (`sync-cycle`) | 12.4 s | **≤ 30 s**, with entry possible throughout, and a visible sign that history is still arriving |
+| Physician view responsive when switching dates | `web-day-switch.js` | 40 ms | **≤ 200 ms** |
+| (preamble) cold start | `am start -W` to the lock screen | 949 ms | **≤ 2 s** |
+| (web) a returning reader's day view | `web-page-load.js`, largest contentful paint, warm | 200 ms | **≤ 1 s** warm; **≤ 2.5 s** on a first visit |
+
+### Why each number is where it is
+
+- **Save, 150 ms.** Under the 100 ms perception threshold on the emulator today, with headroom for a slower phone, and still short of the 1 s at which a wait becomes something to sit through. The **same target with sync running** is the point of §5.1's "never visibly interfere". Proposing a looser number for that case would ratify #164 rather than fix it.
+- **Local commit and Quick-Add, 75 ms.** These are a fraction of the save. A regression in either would show up here before it shows in the confirmation.
+- **Home after unlock, 500 ms.** It is reached through a deliberate act (a fingerprint or PIN), which already takes the patient a second or more, so the bar is "do not add a noticeable wait to it".
+- **History, 1 s to the first screen.** P5.S1 has not been designed, so the target is on what the patient sees first rather than on reading all 90 days. Reading all of it already approaches 300 ms on the emulator and grows with history.
+- **First full sync, 30 s.** About twice the emulator figure, a generous allowance for a slower phone that is still short of "the app is broken". Only a new install meets it, and nothing about entering data waits for it. It does not cover a year of history, which at today's cost per row would be about 45 s on the emulator alone. If P9.S4 needs that case, the cost per row is the thing to bring down, not the target to raise.
+- **Day switching, 200 ms.** Comfortably above today's 40 ms and below the point where a reader clicking through days would notice.
+- **Cold start, 2 s.** Well inside Android's 5 s line for "excessive". It is measured to the lock screen, because that is the first thing a returning patient sees, and they unlock from there.
+- **Web, 1 s warm and 2.5 s first visit.** The first-visit figure is Core Web Vitals' "good" line, which P4.S6's staging and CloudFront would be measured against.
+
+### What is deliberately not proposed
+
+- **No API latency target.** No API call is on the path of anything §5.1 describes. The numbers in section 1 are a regression baseline for P9.S4's own run against staging (`api-baseline.mjs --allow-remote`), not a service-level objective.
+- **No target set from a desktop alone.** Each phone row above needs its reference-device measurement before it is adopted. If P9.S4 finds a phone that misses one, the finding is the useful output, not a reason to raise the number.
+
+### What happens to §5.1
+
+Nothing yet. SRS §5.1 keeps its directional statements until P9.S4 adopts targets, and the adopting change updates the SRS, this document's status, and CLAUDE.md together.
