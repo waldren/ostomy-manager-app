@@ -1,4 +1,4 @@
-# Software Requirements Specification — Ostomy Patient Management Application (v2.7)
+# Software Requirements Specification — Ostomy Patient Management Application (v2.8)
 
 Prepared by: Steven E. Waldren, MD, MS
 Supersedes: `Ostomy_App_Specification_v1.pdf` (v1.0), which is retained only as a historical reference — this document is fully self-contained and does not require consulting the v1.0 PDF.
@@ -27,6 +27,8 @@ Status: all six discussion phases complete.
 **v2.6 scope change (2026-09-19).** No new phase. v1's mobile client targets **Android only**; iOS is deferred. Recorded in [ADR-0020](../decisions/0020-android-only-v1.md).
 
 **v2.7 change (2026-10-07).** No new phase. Local unlock on mobile accepts **either the device passcode or a biometric, as peers** — a patient may decline biometrics entirely and use their passcode, or use the passcode on any single attempt when a finger will not read. Recorded in [ADR-0015](../decisions/0015-biometric-local-access.md) Amendment 2, which also removes the refresh token's `requireAuthentication` gating and explains what that gives up. The wording below said "biometric login" throughout, which is how the implementation came to exclude the passcode one layer down (#116).
+
+**v2.8 change (2026-10-25).** No new phase. Production may run on **one self-managed Linux host** under Docker Compose. That host uses Keycloak for identity, Caddy for TLS, secrets generated on the host, and encrypted off-host backups. AWS (§4.6) remains the architecture for scale, not a launch prerequisite. A host holds real data only if it was initialised for real data from an operator environment that is not the development host, and only after a signed readiness checklist (`docs/compliance/real-data-readiness.md`) is complete. Recorded in [ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md). §4.6, §4.7 and §4.8 are amended, and §5.3 carries a note.
 
 - `apps/mobile` had never been built for iOS — no build path existed, and the device-side security controls that platform would run (the SQLCipher config plugin, the keychain accessibility class, `biometryCurrentSet` invalidation) had therefore never compiled, let alone been verified. A platform claim nothing tests is the failure mode [ADR-0014](../decisions/0014-local-phi-encryption-and-device-ownership.md) and [ADR-0015](../decisions/0015-biometric-local-access.md) exist to prevent. Sections 2 and 4.2 are corrected; iPhone users reach the product through the browser SPA, which is online-only and holds no PHI at rest, so what is deferred is offline capture rather than access. This is a platform deferral, not a feature deferral, and it is deliberately **not** listed in Appendix A alongside urostomy.
 
@@ -312,6 +314,16 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 - **Pull sync:** the backend exposes a delta endpoint (`updated_since` cursor) so the mobile app can pull down out-of-band changes (e.g., a physician-set target range updated through a future portal) without re-fetching the full dataset.
 
 ### 4.6 Infrastructure & Hosting (AWS)
+*Amended in v2.8 ([ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md)). Production may instead run on one self-managed Linux host under Docker Compose, which replaces each service below:*
+- *Fargate becomes a Compose service.*
+- *RDS becomes PostgreSQL on the host, with ADR-0011's roles and nightly encrypted off-host backups in place of RDS backups and Multi-AZ.*
+- *S3 becomes MinIO on the host.*
+- *Cognito becomes Keycloak, with a `patient` realm and an `admin` realm. They are disjoint issuers with disjoint keys, and every admin account must use OTP.*
+- *Secrets Manager becomes root-only files generated on the host and passed to containers as Compose secrets. There is no KMS.*
+- *CloudFront becomes Caddy, with TLS 1.3 and HSTS.*
+
+*The admin API is restricted to an operator IP allowlist. The AWS architecture below remains the target for scale, and the move back to it when a provider relationship or availability demands it.*
+
 - **Compute:** the API runs as a containerized service on AWS Fargate (ECS) — avoids managing servers directly while suiting a stateful, always-on Node.js API better than a function-per-endpoint Lambda model would.
 - **Database:** Amazon RDS for PostgreSQL, Multi-AZ, sized to support the Section 5.3 uptime and RPO/RTO targets (Multi-AZ failover plus RDS automated backups).
 - **Object storage:** Amazon S3, server-side encrypted (SSE-KMS), for skin-condition photos and generated PDF exports; access via short-lived presigned URLs rather than public buckets.
@@ -330,10 +342,14 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
   - **Development** — on-premise, containerized, no AWS dependency (Section 4.9).
   - **Staging** — a separate AWS account mirroring production topology. Because development deliberately forgoes orchestration, TLS, and identity-provider parity, staging is the **parity gate**: it is the first environment where Fargate behavior, real Cognito, TLS, and KMS are exercised, and it must be designed against the deferred-risk list in `docs/deployment-development.md`.
   - **Production** — a separate AWS account, and the only environment permitted to hold real PHI.
+    *Amended in v2.8 ([ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md)): production may instead be one self-managed Linux host.*
+    - *A host's data classification, synthetic or real, is fixed when it is initialised and never changes.*
+    - *A synthetic host is never promoted to real.*
+    - *A real host is initialised only from an operator environment the development host has never had access to, and only once every item in `docs/compliance/real-data-readiness.md` is signed off.*
   Synthetic or de-identified data is used in development and staging. Development is not eligible for real PHI under any circumstance, including bug reproduction.
 
 ### 4.8 Observability & Monitoring
-- **Logging & metrics:** Amazon CloudWatch for backend application logs, infrastructure metrics, and alarms (feeding the Section 5.3 uptime target).
+- **Logging & metrics:** Amazon CloudWatch for backend application logs, infrastructure metrics, and alarms (feeding the Section 5.3 uptime target). *On the self-hosted shape (v2.8, [ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md)), an external uptime check on `/api/v1/health` and container log rotation on the host take CloudWatch's place. Application logs carry no PHI by construction, so log storage on the host is not a new PHI store.*
 - **Error tracking:** a cross-platform error-tracking tool (e.g. Sentry) across mobile, web, and backend, so client-side failures (including sync failures) are visible, not just backend errors.
 - **Audit log storage:** the Section 5.2 PHI audit log is written to its own append-only table/store, separate from general application logs, with restricted access consistent with least-privilege RBAC.
 
@@ -383,6 +399,7 @@ Carries forward and expands the v1.0 HIPAA baseline into a full compliance progr
 Concrete targets, to be revisited once actual infrastructure/hosting is selected in Phase 3.
 - **Backend/API Uptime:** Target 99.9% monthly uptime (~43 minutes of budgeted downtime/month).
 - **Backup & Disaster Recovery:** Automated daily backups of the central database; Recovery Point Objective (RPO) ≤ 24 hours; Recovery Time Objective (RTO) ≤ 4 hours for full service restoration.
+- *Note (v2.8, [ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md)): the self-hosted shape has one host and no failover, so the 99.9% uptime target is **at risk and is not claimed** there. The RPO and RTO still apply. They are met by nightly encrypted off-host backups and a restore that has been timed (readiness item RD-7).*
 - **Offline Sync Conflict Resolution:** Default rule is last-write-wins by timestamp. The losing version is retained in the Section 5.2 audit trail rather than silently discarded, so no data is truly lost even when a conflict is auto-resolved.
 - **Offline Data Durability:** Locally cached data must survive app restarts and OS-level background termination; sync resumes automatically without user intervention once connectivity returns.
 - **Graceful Degradation:** If the backend is unreachable, all local logging, history, and reminders functionality continues to work; only physician-view sharing and cross-device profile sync require connectivity.

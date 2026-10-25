@@ -38,6 +38,9 @@ Ranked by the product's own judgement, not a scored matrix.
 | 9 | **Development host compromise.** The self-hosted runner's `docker` group membership makes it total | Mitigated only by there being nothing valuable there. Synthetic data only, no production credential, ever |
 | 10 | **Third-party error tracking exfiltrating PHI** | Not yet a risk — no crash-reporting sink exists. Flagged ahead of P2.S2b (`docs/sync-contract.md` §10) |
 | 11 | **Staging parity.** Fargate orchestration, TLS, real Cognito and KMS are untested until staging exists | Open. `docs/deployment-development.md` lists what staging must cover |
+| 12 | **A self-hosted production host has no failover** (ADR-0022). Any host or provider failure is an outage, and recovery is a restore | Accepted. §5.3's uptime target is not claimed on this shape. RPO and RTO rest on off-host encrypted backups and a timed restore (`real-data-readiness.md` RD-7). The mobile client keeps logging offline, and `apps/web` does not |
+| 13 | **Self-operated controls** (ADR-0022): OS, Docker, PostgreSQL, Keycloak and Caddy patching, and Keycloak realm configuration, which used to be AWS's or Cognito's job | Open until D.S1 ships: unattended OS security upgrades, pinned images bumped by this project, and a token integration test for the guards' side of the realm configuration. A realm misconfiguration is not caught by that test, so it is a named pen-test target (RD-8) |
+| 14 | **Operator credentials.** The real host's SSH key, the release keystore (which can sign an "update" that inherits an installed patient's diary) and the backup decryption key | Mitigated by keeping them only in an operator environment the development host has never had access to (ADR-0022, RD-4). A synthetic host and a synthetic keystore are used until then, and a synthetic host is never promoted |
 
 ## The honest gaps
 

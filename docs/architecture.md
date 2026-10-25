@@ -19,6 +19,6 @@ High-level system architecture for the ostomy patient management app.
 ## Environments
 - **Development** — on-premise Docker Compose, no AWS dependency. See `deployment-development.md`.
 - **Staging** — AWS, mirrors production; the parity gate for everything development cannot exercise.
-- **Production** — AWS, the only environment permitted to hold real PHI.
+- **Production** — the only environment permitted to hold real PHI. It is either the AWS shape (SRS §4.6), or one self-managed Linux host under Docker Compose ([ADR-0022](../design-specs/decisions/0022-self-hosted-production-on-one-host.md)). A self-managed host is initialised as synthetic or real and never changes class. A real one needs every item in `compliance/real-data-readiness.md` signed off first.
 
 _Expand with diagrams and sync/data-flow details as the architecture solidifies._
