@@ -15,7 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-// P4.S6 (#168): shared by the two one-off database tasks. CommonJS because
+// P4.S6 (#168): shared by the two one-off database tasks, which the
+// self-hosted stack also runs (D.S1, `migrate-selfhost`). CommonJS because
 // it runs inside the API's `migrate-aws` image (infra/docker/api.Dockerfile),
 // whose /app is apps/api's CommonJS package, and resolves `pg` from there.
 'use strict';
@@ -36,8 +37,10 @@ function required(name) {
 /**
  * TLS for every connection, verified against the RDS CA bundle baked into the
  * image (`DB_SSL_CA_FILE`). Turning it off takes `DB_TLS=off`, said in so many
- * words, which only the local integration test does: a missing CA file must
- * fail, not quietly connect in the clear.
+ * words: a missing CA file must fail, not quietly connect in the clear. Two
+ * callers say it: the local integration test, and the self-hosted stack's
+ * `db-setup`, whose database is on an internal network on the same host
+ * (infra/selfhost/compose.yml).
  */
 function tlsOptions() {
   if (process.env.DB_TLS === 'off') return false;

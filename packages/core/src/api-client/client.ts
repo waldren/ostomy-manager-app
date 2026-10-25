@@ -213,6 +213,16 @@ export function createApiClient(options: ApiClientOptions) {
           path: `/api/v1/health`,
           requiresAuth: false,
         }),
+
+      /**
+       * Readiness: the database answers and both issuers publish keys. Unauthenticated.
+       */
+      ready: (): Promise<void> =>
+        request<void>({
+          method: 'GET',
+          path: `/api/v1/health/ready`,
+          requiresAuth: false,
+        }),
     },
 
     observations: {

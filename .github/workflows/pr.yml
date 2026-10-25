@@ -215,6 +215,27 @@ jobs:
             console.log(\"task scripts resolve pg\");
           "
 
+      # The self-hosted stack (ADR-0022, infra/selfhost) builds this target and
+      # nothing else here does, so a break would surface only on a host.
+      - name: Self-hosted stack — compose validates, and db-setup's scripts resolve
+        run: |
+          set -euo pipefail
+          secrets=$(mktemp -d)
+          bash infra/selfhost/bin/generate-secrets.sh "$secrets"
+          printf '%s\n' \
+            "OSTOMY_SECRETS_DIR=$secrets" \
+            'OSTOMY_DOMAIN=ostomy.test' \
+            'OSTOMY_AUTH_DOMAIN=auth.ostomy.test' \
+            'OSTOMY_ACME_EMAIL=ci@example.test' \
+            'OSTOMY_ADMIN_ALLOWED_IPS=203.0.113.7/32' > "$secrets/selfhost.env"
+          BUILD_COMMIT="$GITHUB_SHA" docker compose --env-file "$secrets/selfhost.env" \
+            -f infra/selfhost/compose.yml config --quiet
+          docker build -f infra/docker/api.Dockerfile --target migrate-selfhost -t ostomy/migrate:selfhost-ci .
+          docker run --rm --entrypoint node ostomy/migrate:selfhost-ci -e '
+            require("/app/db-tasks/db-common.cjs");
+            console.log("db-setup task scripts resolve pg");
+          '
+
       - name: Web image — serves the built SPA, not a placeholder
         run: |
           set -euo pipefail

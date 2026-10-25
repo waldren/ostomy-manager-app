@@ -115,9 +115,14 @@ function testConfig(): AppConfig {
  * Routes allowed to carry no guard at all. Adding an entry here is a
  * security decision, not a convenience — each one should be rare and say
  * why. `GET /api/v1/health` is a liveness probe with no dependency on
- * anything requiring authentication (see `health.controller.ts`).
+ * anything requiring authentication, and `GET /api/v1/health/ready` is what an
+ * external outage monitor polls; it answers ok/failed per dependency and
+ * nothing else (see `health.controller.ts`).
  */
-const PUBLIC_ROUTES: ReadonlySet<string> = new Set(['GET /api/v1/health']);
+const PUBLIC_ROUTES: ReadonlySet<string> = new Set([
+  'GET /api/v1/health',
+  'GET /api/v1/health/ready',
+]);
 
 interface DiscoveredRoute {
   key: string;

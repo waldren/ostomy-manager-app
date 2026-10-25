@@ -265,6 +265,24 @@ Steps 2 and 3 are the expensive ones. We would find out this was wrong at the fi
 - **The readiness checklist is the safety gate.** Its clinical items (#144) are patient-safety items, not compliance paperwork. A patient shown an unratified high-output warning is shown it as guidance.
 - **This is not a compliance determination.** Whether state law also applies (California's CMIA, Washington's My Health My Data Act, state breach statutes), whether the product meets the 2024 HBNR definition of a personal health record, and GDPR exposure are questions for counsel (RD-22).
 
+## Amendment 1 — what slice 2 measured and settled (2026-10-25, D.S1 slice 2)
+
+The decision stands. Slice 2 built the stack in `infra/selfhost/` and answered four things the decision left open.
+
+**A replayed refresh token ends the session, not only itself.** Item 5 asked for this to be measured rather than assumed. On Keycloak 26.7, with the committed realm, replaying a superseded refresh token is refused with `invalid_grant`. The newer token, which nobody replayed, is then refused too. A stolen refresh token used after the phone has rotated it signs the patient out, which is the safe direction. It also means two overlapping refreshes from one phone end a good session. `apps/mobile`'s `renewAccessToken` is single-flight for that reason, and must stay so. `apps/api/src/auth/keycloak-realm.integration.spec.ts` pins the behaviour, so a Keycloak upgrade that changes it fails a test.
+
+**Secrets reach each process through its own start command**, which is item 9's entrypoint route rather than `*_FILE` support in `apps/api`:
+- PostgreSQL reads its password file natively.
+- The API, the database setup and Keycloak read theirs in a shell line that exports the value and then `exec`s the process.
+
+No application code changed for this, and `docker inspect` shows the command, never a value. That was checked against a running stack.
+
+**MinIO is not in the stack.** Item 7 already kept its S3 port unrouted while nothing uses object storage. Nothing in the API uses object storage at all yet, so the service is left out rather than run unused, and MinIO's upstream no longer publishes the image the development stack pins. The API's object-storage settings are placeholders, as on the AWS spike. P5.S3 decides what stores objects on this host.
+
+**The app clients get `openid` and nothing else**, plus `offline_access` for the Android app. There is no `profile`, `email` or `roles` scope, so an access token carries no name, email or username, and `aud` is the API alone. Keycloak refuses a sign-in that asks for a scope its client does not have. So the self-hosted web build asks for `openid`, and slice 4's release build must ask for `openid offline_access`. The development `.env` asks for `profile` as well, and would fail at sign-in.
+
+The session lifetimes item 5 asked to be chosen deliberately are recorded, with their consequence for an offline phone, in `infra/selfhost/README.md`.
+
 ## Notes
 
 - **ADR-0022 was revised in place on the day it was accepted, 2026-10-25, and nothing had been built on it.** It merged (#174) before the blocking compliance review that #173 requires had run, so the review is treated as part of its acceptance rather than as a later change. The review found:

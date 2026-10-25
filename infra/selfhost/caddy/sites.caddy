@@ -1,0 +1,111 @@
+# What the internet can reach on this host, as an allowlist (ADR-0022 item 6).
+#
+# A path is forwarded only if a block below names it. Everything else is
+# answered here and never reaches a container. Adding a path is a security
+# decision. Add it to the allowlist test in the same change.
+#
+# There is no `log` directive, so no access log is written. One would record
+# every full URI, the OIDC code in `/?code=...` included, with the client's
+# address, and an address tied to this app is health information under the
+# FTC rule (ADR-0022 item 14).
+
+(tls13) {
+	tls {
+		# SRS §5.2. Android 7-9 have no TLS 1.3, which is why the app's
+		# minSdkVersion rises to 29 in D.S1 slice 4 (ADR-0022 item 7).
+		protocols tls1.3
+	}
+}
+
+(response_headers) {
+	# Applied on the way out (the `-` forces that), so a proxied response
+	# cannot override them.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+		-Via
+	}
+}
+
+# The app: the API's patient routes and the web SPA.
+{$OSTOMY_DOMAIN} {
+	import tls13
+	import response_headers
+
+	# The admin API: the operator's addresses only. An admin token with OTP is
+	# still required behind this; the allowlist is the network half of SRS
+	# §4.6's restricted admin hosting.
+	@admin_api path /api/v1/admin /api/v1/admin/*
+	handle @admin_api {
+		@operator remote_ip {$OSTOMY_ADMIN_ALLOWED_IPS}
+		handle @operator {
+			reverse_proxy {$OSTOMY_API_UPSTREAM}
+		}
+		handle {
+			respond 403
+		}
+	}
+
+	# Liveness reports nothing a patient needs; the outage monitor uses
+	# /api/v1/health/ready.
+	handle /api/v1/health {
+		respond 404
+	}
+
+	handle /api/v1/* {
+		reverse_proxy {$OSTOMY_API_UPSTREAM}
+	}
+
+	# Everything else is the SPA's, which serves its own index.html for any
+	# route it does not know.
+	handle {
+		reverse_proxy {$OSTOMY_WEB_UPSTREAM}
+	}
+}
+
+# Keycloak, on its own subdomain so an XSS in the SPA cannot drive its pages.
+{$OSTOMY_AUTH_DOMAIN} {
+	import tls13
+	import response_headers
+
+	# The patient realm's sign-in endpoints, and nothing else of it: not the
+	# account console, not the realm's admin endpoints.
+	@patient_realm path /realms/patient/protocol/openid-connect/* /realms/patient/login-actions/* /realms/patient/.well-known/*
+	handle @patient_realm {
+		reverse_proxy {$OSTOMY_KEYCLOAK_UPSTREAM}
+	}
+
+	# The admin realm's sign-in endpoints, for the operator's addresses only.
+	@admin_realm path /realms/admin/protocol/openid-connect/* /realms/admin/login-actions/* /realms/admin/.well-known/*
+	handle @admin_realm {
+		@operator remote_ip {$OSTOMY_ADMIN_ALLOWED_IPS}
+		handle @operator {
+			reverse_proxy {$OSTOMY_KEYCLOAK_UPSTREAM}
+		}
+		handle {
+			respond 403
+		}
+	}
+
+	# The login pages' stylesheets and scripts.
+	handle /resources/* {
+		reverse_proxy {$OSTOMY_KEYCLOAK_UPSTREAM}
+	}
+
+	# Refused: /admin/ (the console), /realms/master/, every other realm path,
+	# and anything not named above.
+	handle {
+		respond 404
+	}
+}
+
+# Keycloak's administration console, for the operator through an SSH tunnel:
+#
+#   ssh -L 8081:127.0.0.1:8081 <host>   then open http://localhost:8081/admin/
+#
+# compose.yml publishes this port on the host's loopback only.
+http://:8081 {
+	reverse_proxy {$OSTOMY_KEYCLOAK_UPSTREAM}
+}

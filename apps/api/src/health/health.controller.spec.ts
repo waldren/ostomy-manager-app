@@ -20,13 +20,18 @@ import { describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config/env.schema';
 
 import { HealthController } from './health.controller';
+import type { ReadinessService } from './readiness.service';
 
 function controllerFor(overrides: Partial<AppConfig> = {}): HealthController {
-  return new HealthController({
-    nodeEnv: 'development',
-    buildCommit: 'ea81a75',
-    ...overrides,
-  } as AppConfig);
+  return new HealthController(
+    {
+      nodeEnv: 'development',
+      buildCommit: 'ea81a75',
+      ...overrides,
+    } as AppConfig,
+    // Liveness never consults readiness; `readiness.service.spec.ts` covers it.
+    {} as ReadinessService,
+  );
 }
 
 describe('HealthController', () => {

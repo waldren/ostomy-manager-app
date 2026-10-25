@@ -15,11 +15,18 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { Controller, Get, Inject } from '@nestjs/common';
+import { Controller, Get, HttpStatus, Inject, Res } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { Response } from 'express';
 
 import { APP_CONFIG } from '../config/config.tokens';
 import type { AppConfig } from '../config/env.schema';
+import { ReadinessService, type Readiness } from './readiness.service';
+
+interface ReadinessResponse {
+  status: 'ready' | 'unready';
+  checks: Readiness['checks'];
+}
 
 interface HealthResponse {
   status: 'ok';
@@ -32,14 +39,13 @@ interface HealthResponse {
 }
 
 /**
- * Unauthenticated liveness check.
+ * Unauthenticated liveness (`/health`) and readiness (`/health/ready`).
  *
- * Deliberately reports nothing beyond "the process is accepting requests".
- * There is no database, no object storage, and no OIDC provider dependency
- * in this sprint (P1.S1) — claiming readiness for any of those would be
- * dishonest. Add a separate `/health/ready` endpoint once P1.S2/P1.S3 give
- * this process dependencies actually worth checking; do not expand this one
- * to guess at them.
+ * Liveness deliberately reports nothing beyond "the process is accepting
+ * requests", and container health checks use it: a readiness failure is a
+ * database or issuer outage, and restarting the API does not fix either.
+ * Readiness is what an outage monitor watches (ADR-0022 item 15); see
+ * `ReadinessService`.
  *
  * ## `buildCommit`, and why it is gated on the environment
  *
@@ -69,7 +75,10 @@ export class HealthController {
   // Explicit `@Inject()`, matching every other service in this app — see
   // `AuditService`'s constructor comment for why implicit type-based injection
   // resolves to `undefined` under this workspace's Vitest transform.
-  constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
+  constructor(
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(ReadinessService) private readonly readiness: ReadinessService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Liveness check. Always unauthenticated.' })
@@ -79,5 +88,20 @@ export class HealthController {
       timestamp: new Date().toISOString(),
       buildCommit: this.config.nodeEnv === 'development' ? (this.config.buildCommit ?? null) : null,
     };
+  }
+
+  /**
+   * 503 when any dependency is down, with which one, as ok/failed only. Written
+   * through `res` rather than thrown so the error sanitizer does not reduce the
+   * answer to a bare code: the monitor and the operator need to know which.
+   */
+  @Get('ready')
+  @ApiOperation({
+    summary: 'Readiness: the database answers and both issuers publish keys. Unauthenticated.',
+  })
+  async ready(@Res({ passthrough: true }) res: Response): Promise<ReadinessResponse> {
+    const { ready, checks } = await this.readiness.check();
+    res.status(ready ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE);
+    return { status: ready ? 'ready' : 'unready', checks };
   }
 }

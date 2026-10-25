@@ -9,4 +9,5 @@ Deployment configuration, cloud infrastructure, and CI/CD definitions.
   - `placeholder-pages/` — the static pages `web.Dockerfile`/`admin.Dockerfile` serve.
   - Reset script: `scripts/dev-reset.sh` (repo-root `scripts/`, not here, so it sits next to the other operational scripts).
 - **The P4.S6 staging/Cognito spike** (AWS, via CDK): `cdk/`, one stack that proves the OIDC claim mapping against real Cognito and the API under Fargate's health checks, then is destroyed. Not staging. See `cdk/README.md`; nothing in it is deployed unless someone runs `cdk deploy` by hand.
-- **Staging and production** (AWS, via CDK): not yet defined. See SRS §4.6–4.7.
+- **Self-hosted production** (one Linux host, Docker Compose, ADR-0022): `selfhost/`, the stack, its Caddy allowlist and the Keycloak realms (D.S1, #173). Synthetic hosts only until the deploy CLI, signed releases and the readiness checklist exist. See `selfhost/README.md`.
+- **Staging and production on AWS** (via CDK): not yet defined. See SRS §4.6–4.7.

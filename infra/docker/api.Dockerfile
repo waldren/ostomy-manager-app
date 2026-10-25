@@ -284,3 +284,15 @@ ADD --chmod=644 --checksum=sha256:90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e7
     https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /opt/rds-ca/global-bundle.pem
 USER app
 COPY --chown=app:app infra/cdk/tasks ./aws-tasks
+
+# --- migrate-selfhost -----------------------------------------------------------
+# The self-hosted stack's one-off `db-setup` service (ADR-0022,
+# infra/selfhost/compose.yml): the migrate stage plus the same two database
+# task scripts the AWS spike runs, so the ADR-0011 role shape is created by one
+# piece of code on both. No CA bundle: that database is on an internal Docker
+# network on the same host, and `db-setup` sets `DB_TLS=off` to say so.
+#
+# The scripts live under infra/cdk because the spike needed them first. When the
+# spike is torn down they move rather than go with it; this stage is why.
+FROM migrate AS migrate-selfhost
+COPY --chown=app:app infra/cdk/tasks ./db-tasks

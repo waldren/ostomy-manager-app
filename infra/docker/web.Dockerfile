@@ -108,6 +108,10 @@ FROM ${NGINX_IMAGE} AS runtime
 # not boot at all. (infra/docker/api.Dockerfile's healthcheck does use
 # `localhost` and does not hit this — Node's fetch tries both families.)
 #
+# `access_log off`: the access log records every full URI, and the OIDC
+# redirect lands on `/?code=...&state=...`. Behind the self-hosted Caddy every
+# request is the patient's (ADR-0022 item 14), and nothing here needs it.
+#
 # The SPA fallback below is load-bearing rather than tidiness. The app uses
 # react-router, and the OIDC redirect comes back to a path with a `?code=`
 # query — nginx's default would 404 any URL that is not a real file on disk,
@@ -116,7 +120,7 @@ FROM ${NGINX_IMAGE} AS runtime
 # error rather than silently serving index.html as JavaScript.
 RUN printf '%s\n' \
   'server {' \
-  '  listen 8080;' \
+  '  listen 8080;'   '  access_log off;' \
   '  root /usr/share/nginx/html;' \
   '  index index.html;' \
   '  location /assets/ { try_files $uri =404; }' \

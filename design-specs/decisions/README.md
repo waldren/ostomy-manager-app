@@ -40,7 +40,7 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0019](0019-clock-skew-allowance.md) | A synced operation's clientTimestamp may run five minutes ahead before it is refused | Accepted |
 | [0020](0020-android-only-v1.md) | Ship v1's mobile client on Android only; iOS is deferred, not dropped | Accepted |
 | [0021](0021-redirect-route-completes-oidc-flow.md) | The redirect route completes the OIDC code exchange; the PKCE verifier is stored without ADR-0015's biometric gate | Accepted |
-| [0022](0022-self-hosted-production-on-one-host.md) | Production may run on one self-managed Linux host, gated by a signed readiness checklist | Accepted |
+| [0022](0022-self-hosted-production-on-one-host.md) | Production may run on one self-managed Linux host, gated by a signed readiness checklist | Accepted (amended once) |
 
 **ADR-0012 completes ADR-0005** rather than superseding it. ADR-0005's decisions all stand; it simply had no source of truth for the entry measurement system, and ADR-0012 supplies one. ADR-0005 is not edited, per the immutability rule above.
 
