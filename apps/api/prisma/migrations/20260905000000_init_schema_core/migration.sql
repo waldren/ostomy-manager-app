@@ -555,7 +555,54 @@ $$;
 -- statement in this file decorative. Running this every deploy is
 -- idempotent and cheap; there is no correctness reason to skip it when the
 -- role was "just created" a few lines up.
-ALTER ROLE "ostomy_runtime" NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+--
+-- P4.S6 (#168): only a superuser may run it. PostgreSQL refuses any role
+-- without SUPERUSER that so much as NAMES the SUPERUSER, REPLICATION or
+-- BYPASSRLS attribute, even to turn it off (measured on 17), and a managed
+-- database's owner is not a superuser: on RDS it is a role the master user
+-- creates with CREATEROLE and CREATEDB (ADR-0011), and the master user
+-- itself is only a member of `rds_superuser`. Run unconditionally, this
+-- statement failed the first migration under such an owner. For it the
+-- attributes are ASSERTED instead: a role that already existed with any of
+-- them (or that this owner created with one, which CREATEROLE permits for
+-- the non-superuser three) refuses the migration loudly, which keeps B3's
+-- guarantee without a privilege the owner does not have.
+--
+-- Membership is refused in BOTH branches (#170 review). Attributes are not
+-- the whole story: a runtime role granted membership in the owner, in
+-- `rds_superuser` or in `pg_write_all_data` can SET ROLE into it and
+-- UPDATE/DELETE `audit_events`, and on PostgreSQL 16+ NOINHERIT no longer
+-- governs an existing grant. The boot-time privilege check
+-- (`has_table_privilege`) evaluates the role itself and does not see a
+-- SET-only path, so this is the place it is caught. The migration creates
+-- the role with no membership, so only a role provisioned out of band can
+-- trip it.
+--
+-- Edited in place because a fresh managed database never gets past this
+-- file. `prisma migrate deploy` and `migrate status` do not re-check an
+-- applied migration, so databases that already ran the original are
+-- unaffected; `prisma migrate dev` does, and asks to reset a database that
+-- ran it (infra/db/README.md says what to do).
+DO $$
+BEGIN
+  IF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+    ALTER ROLE "ostomy_runtime" NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+  ELSIF EXISTS (
+    SELECT 1 FROM pg_roles
+    WHERE rolname = 'ostomy_runtime'
+      AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolinherit OR rolreplication OR rolbypassrls)
+  ) THEN
+    RAISE EXCEPTION 'ostomy_runtime already exists with an attribute that defeats its grants (SUPERUSER, CREATEDB, CREATEROLE, INHERIT, REPLICATION or BYPASSRLS), and this owner is not a superuser so cannot remove it. Fix the role as a superuser, then re-run (ADR-0011).';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_auth_members m
+    JOIN pg_roles r ON r.oid = m.member
+    WHERE r.rolname = 'ostomy_runtime'
+  ) THEN
+    RAISE EXCEPTION 'ostomy_runtime is a member of another role, which can carry privileges its grants do not show (SET ROLE, or inherited ones). Revoke the membership, then re-run (ADR-0011).';
+  END IF;
+END
+$$;
 
 -- No password set above and none ever will be here — see this file's
 -- header comment. `db-roles` (infra/docker-compose.yml, now sequenced

@@ -244,4 +244,84 @@ describe('loadConfig — CORS_ALLOWED_ORIGINS', () => {
       ConfigValidationError,
     );
   });
+
+  /** P4.S6 (#168): what a Cognito access token needs, set for each pool on its own. */
+  describe('the audience claim and the token-kind claim', () => {
+    it('leaves all three unset by default, for both pools', () => {
+      const config = loadConfig(validEnv());
+
+      for (const mapping of [config.oidc.claimMapping, config.adminOidc.claimMapping]) {
+        expect(mapping.audienceClaim).toBeUndefined();
+        expect(mapping.tokenUseClaim).toBeUndefined();
+        expect(mapping.requiredTokenUse).toBeUndefined();
+      }
+    });
+
+    it('reads each pool from its own variables', () => {
+      const config = loadConfig({
+        ...validEnv(),
+        OIDC_AUDIENCE_CLAIM: 'client_id',
+        OIDC_REQUIRED_TOKEN_USE: 'access',
+        ADMIN_OIDC_AUDIENCE_CLAIM: 'aud',
+        ADMIN_OIDC_TOKEN_USE_CLAIM: 'kind',
+      });
+
+      expect(config.oidc.claimMapping).toMatchObject({
+        audienceClaim: 'client_id',
+        requiredTokenUse: 'access',
+      });
+      expect(config.oidc.claimMapping.tokenUseClaim).toBeUndefined();
+      expect(config.adminOidc.claimMapping.audienceClaim).toBe('aud');
+      expect(config.adminOidc.claimMapping.tokenUseClaim).toBe('kind');
+      expect(config.adminOidc.claimMapping.requiredTokenUse).toBeUndefined();
+
+      const swapped = loadConfig({
+        ...validEnv(),
+        ADMIN_OIDC_REQUIRED_TOKEN_USE: 'access',
+        OIDC_TOKEN_USE_CLAIM: 'kind',
+      });
+      expect(swapped.adminOidc.claimMapping.requiredTokenUse).toBe('access');
+      expect(swapped.oidc.claimMapping.requiredTokenUse).toBeUndefined();
+      expect(swapped.oidc.claimMapping.tokenUseClaim).toBe('kind');
+    });
+
+    // A stray space would otherwise boot cleanly and refuse every token,
+    // surfacing at the first request instead of at boot (#169 review).
+    it('trims a set value', () => {
+      const config = loadConfig({
+        ...validEnv(),
+        OIDC_REQUIRED_TOKEN_USE: 'access ',
+        ADMIN_OIDC_AUDIENCE_CLAIM: ' client_id',
+      });
+
+      expect(config.oidc.claimMapping.requiredTokenUse).toBe('access');
+      expect(config.adminOidc.claimMapping.audienceClaim).toBe('client_id');
+    });
+
+    it('treats an empty variable as unset, the way Compose and CDK write one', () => {
+      const config = loadConfig({
+        ...validEnv(),
+        OIDC_AUDIENCE_CLAIM: '',
+        OIDC_TOKEN_USE_CLAIM: '',
+        ADMIN_OIDC_REQUIRED_TOKEN_USE: '  ',
+      });
+
+      expect(config.oidc.claimMapping.tokenUseClaim).toBeUndefined();
+
+      expect(config.oidc.claimMapping.audienceClaim).toBeUndefined();
+      expect(config.adminOidc.claimMapping.requiredTokenUse).toBeUndefined();
+    });
+
+    it.each(['sub', 'azp', 'CLIENT_ID', 'client id'])(
+      'refuses to boot with audience claim %s',
+      (claim) => {
+        expect(() => loadConfig({ ...validEnv(), ADMIN_OIDC_AUDIENCE_CLAIM: claim })).toThrow(
+          ConfigValidationError,
+        );
+        expect(() => loadConfig({ ...validEnv(), OIDC_AUDIENCE_CLAIM: claim })).toThrow(
+          ConfigValidationError,
+        );
+      },
+    );
+  });
 });

@@ -29,7 +29,7 @@ Not everything is an ADR. Routine implementation choices belong in the code and 
 | [0008](0008-admin-config-api-before-console.md) | Build the admin configuration API at its final shape early; defer the admin console SPA to P8 | Accepted |
 | [0009](0009-synthetic-seed-data-generation.md) | Generate synthetic seed data in `packages/seed`, writing through Prisma but validating against `packages/core` first | Accepted |
 | [0010](0010-api-commonjs-module-system.md) | Build `apps/api` as CommonJS with `nodenext` resolution, against an ESM monorepo | Accepted |
-| [0011](0011-database-roles-and-audit-immutability.md) | Separate migration-owner and runtime database roles, and enforce audit immutability by grant | Accepted |
+| [0011](0011-database-roles-and-audit-immutability.md) | Separate migration-owner and runtime database roles, and enforce audit immutability by grant | Accepted (amended: the managed owner holds CREATEROLE and CREATEDB; the migration asserts the runtime role's attributes and refuses any membership) |
 | [0012](0012-entered-measurement-system-provenance.md) | Store the entered measurement system on every observation | Accepted |
 | [0013](0013-delta-cursor-visibility-mechanism.md) | Close the delta cursor's visibility gap by withholding the in-flight transaction window | Accepted |
 | [0014](0014-local-phi-encryption-and-device-ownership.md) | Encrypt the on-device clinical store, and bind it to one patient | Accepted |

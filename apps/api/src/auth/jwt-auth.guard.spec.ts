@@ -288,4 +288,164 @@ describe('JwtAuthGuard — patient OIDC authentication', () => {
       response: { code: AUTH_ERROR_CODE.TOKEN_EXPIRED },
     });
   });
+
+  /**
+   * P4.S6 (#168): tokens shaped exactly like Cognito's. Its ACCESS token names
+   * the app client in `client_id` and carries no `aud`; its ID token carries
+   * `aud` = the client id, `token_use: "id"`, and the user's email and phone
+   * number. Against the default settings the access token is refused and the
+   * ID token accepted, which is the wrong way round, and why these settings
+   * exist.
+   */
+  describe('a provider that names the client in client_id, as Cognito does', () => {
+    const SUBJECT = 'patient-123';
+
+    function cognitoConfig(overrides: Partial<AppConfig['oidc']['claimMapping']> = {}): AppConfig {
+      const config = makeConfig();
+      config.oidc.claimMapping = {
+        subjectClaim: 'sub',
+        audienceClaim: 'client_id',
+        requiredTokenUse: 'access',
+        ...overrides,
+      };
+      return config;
+    }
+
+    function accessToken(overrides: Record<string, unknown> = {}): Promise<string> {
+      return issuer.signPayload(ISSUER, {
+        sub: SUBJECT,
+        client_id: AUDIENCE,
+        token_use: 'access',
+        scope: 'openid',
+        auth_time: Math.floor(Date.now() / 1000),
+        username: SUBJECT,
+        ...overrides,
+      });
+    }
+
+    function idToken(): Promise<string> {
+      return issuer.signPayload(ISSUER, {
+        sub: SUBJECT,
+        aud: AUDIENCE,
+        token_use: 'id',
+        email: 'synthetic@example.test',
+        phone_number: '+15555550100',
+      });
+    }
+
+    async function refusal(config: AppConfig, token: string): Promise<unknown> {
+      const guard = makeGuard(config);
+      const context = createHttpExecutionContext(requestWithAuthHeader(`Bearer ${token}`));
+      return guard.canActivate(context).then(
+        () => 'accepted',
+        (error: { response?: { code?: string } }) => error.response?.code,
+      );
+    }
+
+    it('accepts an access token, and keeps only its subject', async () => {
+      const guard = makeGuard(cognitoConfig());
+      const request = requestWithAuthHeader(`Bearer ${await accessToken()}`) as unknown as {
+        patient?: unknown;
+      };
+
+      await expect(guard.canActivate(createHttpExecutionContext(request))).resolves.toBe(true);
+      expect(request.patient).toEqual({ id: SUBJECT });
+    });
+
+    it('refuses an ID token: no client_id, and the wrong token_use', async () => {
+      expect(await refusal(cognitoConfig(), await idToken())).toBe(
+        AUTH_ERROR_CODE.INVALID_AUDIENCE,
+      );
+      // Even read through `aud`, where the ID token's client check passes.
+      expect(await refusal(cognitoConfig({ audienceClaim: 'aud' }), await idToken())).toBe(
+        AUTH_ERROR_CODE.INVALID_TOKEN_USE,
+      );
+    });
+
+    it('refuses an access token for another app client', async () => {
+      expect(
+        await refusal(cognitoConfig(), await accessToken({ client_id: 'another-client' })),
+      ).toBe(AUTH_ERROR_CODE.INVALID_AUDIENCE);
+    });
+
+    it.each([
+      ['missing', undefined],
+      ['an array holding the client', [AUDIENCE]],
+      ['a number', 42],
+    ])('refuses a client_id that is %s', async (_name, clientId) => {
+      expect(await refusal(cognitoConfig(), await accessToken({ client_id: clientId }))).toBe(
+        AUTH_ERROR_CODE.INVALID_AUDIENCE,
+      );
+    });
+
+    it('refuses an access token with no token_use, or another one', async () => {
+      expect(await refusal(cognitoConfig(), await accessToken({ token_use: undefined }))).toBe(
+        AUTH_ERROR_CODE.INVALID_TOKEN_USE,
+      );
+      expect(await refusal(cognitoConfig(), await accessToken({ token_use: 'id' }))).toBe(
+        AUTH_ERROR_CODE.INVALID_TOKEN_USE,
+      );
+    });
+
+    it('still checks the issuer and the signature', async () => {
+      const unrelatedKey = await createTestOidcIssuer();
+      const unsigned = await unrelatedKey.signPayload(ISSUER, {
+        sub: SUBJECT,
+        client_id: AUDIENCE,
+        token_use: 'access',
+      });
+      expect(await refusal(cognitoConfig(), unsigned)).toBe(AUTH_ERROR_CODE.INVALID_SIGNATURE);
+
+      const otherIssuer = await issuer.signPayload('https://another-pool.test', {
+        sub: SUBJECT,
+        client_id: AUDIENCE,
+        token_use: 'access',
+      });
+      expect(await refusal(cognitoConfig(), otherIssuer)).toBe(AUTH_ERROR_CODE.INVALID_ISSUER);
+    });
+
+    it('refuses a token that names the client only in aud, once client_id is the setting', async () => {
+      const token = await issuer.sign({ issuer: ISSUER, audience: AUDIENCE, subject: SUBJECT });
+      expect(await refusal(cognitoConfig({ requiredTokenUse: undefined }), token)).toBe(
+        AUTH_ERROR_CODE.INVALID_AUDIENCE,
+      );
+    });
+
+    it('accepts an access token that names the client in aud when a token_use is required', async () => {
+      const token = await issuer.signPayload(ISSUER, {
+        sub: SUBJECT,
+        aud: AUDIENCE,
+        token_use: 'access',
+      });
+      expect(await refusal(cognitoConfig({ audienceClaim: 'aud' }), token)).toBe('accepted');
+    });
+
+    it('reads the token kind from the configured claim, and only from it', async () => {
+      const config = cognitoConfig({ tokenUseClaim: 'kind' });
+      expect(
+        await refusal(config, await accessToken({ token_use: undefined, kind: 'access' })),
+      ).toBe('accepted');
+      expect(await refusal(config, await accessToken({ kind: 'id' }))).toBe(
+        AUTH_ERROR_CODE.INVALID_TOKEN_USE,
+      );
+      expect(await refusal(config, await accessToken({ token_use: 'id', kind: 'access' }))).toBe(
+        'accepted',
+      );
+    });
+
+    // #169 review: the defaults must not be the settings that accept an ID
+    // token, so a token that DECLARES a kind other than access is refused
+    // with nothing configured. One that declares none is still accepted.
+    it('with the default settings, refuses an ID token, which declares itself one', async () => {
+      expect(await refusal(makeConfig(), await idToken())).toBe(AUTH_ERROR_CODE.INVALID_TOKEN_USE);
+      const undeclared = await issuer.signPayload(ISSUER, { sub: SUBJECT, aud: AUDIENCE });
+      expect(await refusal(makeConfig(), undeclared)).toBe('accepted');
+    });
+
+    it('with the default settings, refuses the access token (what the spike predicted)', async () => {
+      expect(await refusal(makeConfig(), await accessToken())).toBe(
+        AUTH_ERROR_CODE.INVALID_AUDIENCE,
+      );
+    });
+  });
 });
