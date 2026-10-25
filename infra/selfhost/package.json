@@ -1,0 +1,22 @@
+{
+  "name": "@ostomy/infra-selfhost",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "The self-hosted production stack (ADR-0022, D.S1): Compose, the Caddy allowlist and the Keycloak realms, with the tests that hold them to the ADR.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run test:unit && pnpm run test:integration",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "devDependencies": {
+    "@ostomy/config": "workspace:*",
+    "@types/node": "^24.13.3",
+    "testcontainers": "^12.1.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "yaml": "^2.9.0"
+  }
+}

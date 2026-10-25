@@ -15,7 +15,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-// P4.S6 (#168): shared by the two one-off database tasks. CommonJS because
+// P4.S6 (#168): shared by the two one-off database tasks, which the
+// self-hosted stack also runs (D.S1, `migrate-selfhost`). CommonJS because
 // it runs inside the API's `migrate-aws` image (infra/docker/api.Dockerfile),
 // whose /app is apps/api's CommonJS package, and resolves `pg` from there.
 'use strict';
@@ -36,8 +37,10 @@ function required(name) {
 /**
  * TLS for every connection, verified against the RDS CA bundle baked into the
  * image (`DB_SSL_CA_FILE`). Turning it off takes `DB_TLS=off`, said in so many
- * words, which only the local integration test does: a missing CA file must
- * fail, not quietly connect in the clear.
+ * words: a missing CA file must fail, not quietly connect in the clear. Two
+ * callers say it: the local integration test, and the self-hosted stack's
+ * `db-setup`, whose database is on an internal network on the same host
+ * (infra/selfhost/compose.yml).
  */
 function tlsOptions() {
   if (process.env.DB_TLS === 'off') return false;
@@ -71,17 +74,53 @@ function scramVerifierLiteral(client, password) {
   );
 }
 
-async function connect({ user, password, database }) {
-  const client = new Client({
-    host: required('DB_HOST'),
-    port: Number(process.env.DB_PORT ?? '5432'),
-    user,
-    password,
-    database,
-    ssl: tlsOptions(),
-  });
-  await client.connect();
-  return client;
+/**
+ * Failures that mean the server is not accepting connections YET: refused or
+ * reset at the socket, a name the network's resolver does not know yet, or
+ * PostgreSQL's own 57P03 ("the database system is starting up"). Anything
+ * else, a wrong password above all, fails at once: retrying it only delays
+ * the same answer.
+ */
+const NOT_YET = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  '57P03',
+]);
+
+/**
+ * Connects, retrying while the server is still starting. A healthcheck that
+ * passes is not proof a TCP connection will succeed a moment later (a
+ * PostgreSQL restarting after initdb, an RDS instance still coming up), and a
+ * failed one-off task stops the deploy (the API waits on it), so this task
+ * should not be the thing that loses that race.
+ */
+async function connect({ user, password, database }, { attempts = 30, delayMs = 1000 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    const client = new Client({
+      host: required('DB_HOST'),
+      port: Number(process.env.DB_PORT ?? '5432'),
+      user,
+      password,
+      database,
+      ssl: tlsOptions(),
+    });
+    try {
+      await client.connect();
+      return client;
+    } catch (error) {
+      // A `pg` Client cannot be connected twice, so each attempt is a new one.
+      await client.end().catch(() => {});
+      if (attempt >= attempts || !NOT_YET.has(error?.code)) {
+        throw error;
+      }
+      // The code only: never the error's message, which can name the host.
+      console.error(`database not accepting connections yet (${error.code}); retrying`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
 }
 
 /** Runs `main`, and exits non-zero with only the error's message, never a connection string. */

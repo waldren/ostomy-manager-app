@@ -1,0 +1,23 @@
+# Caddy's own logging, imported into the global block of both the host's
+# Caddyfile and the allowlist test's, so the test covers what the host runs
+# (ADR-0022 item 14).
+#
+# Having no `log` directive in sites.caddy turns off the access log only.
+# Caddy still logs every request a handler fails, a 502 from a restarting API
+# or Keycloak included, under `http.log.error`, and that entry carries the
+# request: the client's address, the full URI with its query string (the OIDC
+# `?code=` and `state`, a sync cursor), and the User-Agent. Every deploy and
+# every outage would write one per request in flight. An address tied to this
+# app is health information under the FTC rule.
+#
+# So the default logger excludes it, and `http.handlers.reverse_proxy` with it,
+# whose entries carry the same request. What remains is Caddy's startup,
+# certificate and configuration messages, which name no client. That an
+# upstream is down is the readiness endpoint's and slice 5's monitoring's to
+# report, not a log line per patient request.
+
+log default {
+	output stderr
+	format json
+	exclude http.log.error http.handlers.reverse_proxy
+}

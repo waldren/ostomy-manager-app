@@ -1,0 +1,390 @@
+# Self-hosted production stack: one Linux host, Docker Compose (ADR-0022).
+#
+# Read infra/selfhost/README.md first. In short:
+#
+#   - Only Caddy publishes a port to the internet: 80 (ACME and the redirect)
+#     and 443. It forwards an allowlist of paths (caddy/sites.caddy), never a
+#     denylist. Its third port, 8081, is bound to the host's loopback and is
+#     how the operator reaches Keycloak's administration console, through an
+#     SSH tunnel and nothing else.
+#   - Every other service sits on `internal` networks, which have no route
+#     off the host, so a compromised API or Keycloak cannot call out.
+#   - Secrets are files generated on the host by bin/generate-secrets.sh.
+#     None appears in this file, in an environment variable Compose sets, in
+#     a build argument, or in `docker inspect`: each service reads its own
+#     from /run/secrets at start, in its command.
+#   - A host is synthetic or real, decided when it is initialised and never
+#     changed (ADR-0022 item 1). Nothing in this file differs between the two.
+#     What differs is where the host is operated from, which release it runs,
+#     and whether docs/compliance/real-data-readiness.md is signed.
+#
+# Brought up from the repo root, with the host's own settings file:
+#
+#   docker compose --env-file /etc/ostomy/selfhost.env -f infra/selfhost/compose.yml up -d --build
+#
+# D.S1 slice 3's deploy CLI replaces that command, and pins the API and web
+# images by digest from a signed release tag. Until then this file builds
+# them from the checkout, which is acceptable on a synthetic host only.
+
+name: ostomy
+
+x-logging: &logging
+  # Bounded, so a full disk is not how this host fails. What is IN these logs
+  # is each service's own concern: the API logs no PHI by construction,
+  # Caddy writes no access log and no request-carrying error log
+  # (caddy/logging.caddy), PostgreSQL is set terse below, and each realm's
+  # `eventsListeners: []` keeps Keycloak's login events in its database and
+  # out of its log. Without that, the default `jboss-logging` listener writes
+  # every failed sign-in, username and address included, to stdout. Slice 5's
+  # admin sign-in alerting (RD-20) reads the database store, not this log.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-hardening: &hardening
+  logging: *logging
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+# PostgreSQL's own log must never carry a clinical value or a password.
+# `terse` drops a constraint violation's DETAIL line, which prints the row;
+# the rest are pinned to their defaults so turning one on is a reviewable
+# diff. The same settings as the AWS spike's parameter group (ADR-0022 item 10).
+x-postgres-command: &postgres-command
+  - postgres
+  - -c
+  - log_error_verbosity=terse
+  - -c
+  - log_statement=none
+  - -c
+  - log_min_duration_statement=-1
+  - -c
+  - log_parameter_max_length=0
+  - -c
+  - log_parameter_max_length_on_error=0
+
+networks:
+  # Caddy only: the published ports, and egress for Let's Encrypt.
+  edge: {}
+  # Caddy to the API, the web SPA and Keycloak, and the API to Keycloak's
+  # JWKS. No route off the host.
+  app:
+    internal: true
+  # The API and its one-off database setup, to the clinical database.
+  data:
+    internal: true
+  # Keycloak to its own database, which nothing else can reach.
+  idp-data:
+    internal: true
+
+volumes:
+  pgdata:
+  keycloak-pgdata:
+  caddy-data:
+  caddy-config:
+
+# Generated on the host by bin/generate-secrets.sh, in a directory only root
+# can enter. Compose bind-mounts each file into only the services that list
+# it, at /run/secrets/<name>.
+secrets:
+  postgres_superuser_password:
+    file: ${OSTOMY_SECRETS_DIR:?set in the host settings file}/postgres_superuser_password
+  db_owner_password:
+    file: ${OSTOMY_SECRETS_DIR:?set in the host settings file}/db_owner_password
+  db_runtime_password:
+    file: ${OSTOMY_SECRETS_DIR:?set in the host settings file}/db_runtime_password
+  keycloak_db_password:
+    file: ${OSTOMY_SECRETS_DIR:?set in the host settings file}/keycloak_db_password
+  keycloak_bootstrap_admin_password:
+    file: ${OSTOMY_SECRETS_DIR:?set in the host settings file}/keycloak_bootstrap_admin_password
+
+services:
+  caddy:
+    <<: *hardening
+    image: caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
+    environment:
+      OSTOMY_DOMAIN: ${OSTOMY_DOMAIN:?set in the host settings file}
+      OSTOMY_AUTH_DOMAIN: ${OSTOMY_AUTH_DOMAIN:?set in the host settings file}
+      OSTOMY_ACME_EMAIL: ${OSTOMY_ACME_EMAIL:?set in the host settings file}
+      # Space-separated addresses or CIDR ranges. Reaching /api/v1/admin/* or
+      # the admin realm takes one of these AND an admin token with OTP; this
+      # stands in for SRS §4.6's network-restricted admin hosting.
+      OSTOMY_ADMIN_ALLOWED_IPS: ${OSTOMY_ADMIN_ALLOWED_IPS:?set in the host settings file}
+      OSTOMY_API_UPSTREAM: api:3000
+      OSTOMY_WEB_UPSTREAM: web:8080
+      OSTOMY_KEYCLOAK_UPSTREAM: keycloak:8080
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
+      - ./caddy/logging.caddy:/etc/caddy/logging.caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      # TCP only: HTTP/3 is off in the Caddyfile, so UDP 443 stays closed.
+      - "80:80/tcp"
+      - "443:443/tcp"
+      # Keycloak's administration console, for an SSH tunnel from the
+      # operator environment. Loopback only; never reachable from outside.
+      - "127.0.0.1:8081:8081/tcp"
+    networks:
+      - edge
+      - app
+    depends_on:
+      api:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+  postgres:
+    <<: *hardening
+    image: postgres:17-alpine@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
+    command: *postgres-command
+    environment:
+      # The bootstrap superuser. It is used once per deploy, by `db-setup`,
+      # to create the migration owner, and by nothing that serves a request.
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+    secrets:
+      - postgres_superuser_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - data
+    healthcheck:
+      # Over TCP, never the socket. On first boot the image's entrypoint runs a
+      # temporary server for initdb that listens on the socket only, so a
+      # socket probe reports healthy before anything on the network can
+      # connect, and `db-setup` would fail its first deploy.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # One-off, every deploy: the ADR-0011 role shape, then migrations, then the
+  # runtime role's password. The same three steps, by the same scripts, as the
+  # AWS spike's two one-off tasks (infra/cdk/tasks). Safe to re-run; a re-run
+  # is how a rotated password reaches the database.
+  db-setup:
+    logging: *logging
+    security_opt:
+      - no-new-privileges:true
+    build:
+      context: ../..
+      dockerfile: infra/docker/api.Dockerfile
+      target: migrate-selfhost
+    image: ostomy/api-migrate:selfhost
+    environment:
+      DB_HOST: postgres
+      DB_NAME: ostomy
+      DB_MASTER_USER: postgres
+      DB_OWNER_ROLE: ostomy_owner
+      DB_RUNTIME_ROLE: ostomy_runtime
+      # The database is on an internal Docker network on the same host, with
+      # no route off it; there is no network path for TLS to protect.
+      DB_TLS: "off"
+    secrets:
+      - postgres_superuser_password
+      - db_owner_password
+      - db_runtime_password
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        DB_MASTER_PASSWORD="$$(cat /run/secrets/postgres_superuser_password)"
+        DB_OWNER_PASSWORD="$$(cat /run/secrets/db_owner_password)"
+        DB_RUNTIME_PASSWORD="$$(cat /run/secrets/db_runtime_password)"
+        export DB_MASTER_PASSWORD DB_OWNER_PASSWORD DB_RUNTIME_PASSWORD
+        node db-tasks/db-bootstrap.cjs
+        MIGRATION_DATABASE_URL="postgresql://$$DB_OWNER_ROLE:$$DB_OWNER_PASSWORD@$$DB_HOST:5432/$$DB_NAME"
+        export MIGRATION_DATABASE_URL
+        node node_modules/prisma/build/index.js migrate deploy
+        exec node db-tasks/runtime-password.cjs
+    networks:
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *hardening
+    build:
+      context: ../..
+      dockerfile: infra/docker/api.Dockerfile
+      target: runtime
+      args:
+        # Required: the image otherwise bakes an empty commit, which the API
+        # refuses at boot (load-config.spec.ts says why). Bring the stack up
+        # with BUILD_COMMIT=$(git rev-parse HEAD); slice 3's CLI passes the
+        # release tag's commit.
+        BUILD_COMMIT: ${BUILD_COMMIT:?set BUILD_COMMIT to the commit being built}
+    image: ostomy/api:selfhost
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      LOG_LEVEL: info
+      # The web SPA is served from the same origin as the API, so no browser
+      # origin needs cross-origin access.
+      CORS_ALLOWED_ORIGINS: ""
+      # The issuer is the public URL Keycloak puts in every token; the keys
+      # are fetched inside the host.
+      OIDC_ISSUER: https://${OSTOMY_AUTH_DOMAIN}/realms/patient
+      OIDC_JWKS_URI: http://keycloak:8080/realms/patient/protocol/openid-connect/certs
+      OIDC_AUDIENCE: ostomy-patient-app
+      OIDC_SUBJECT_CLAIM: sub
+      # Keycloak marks an access token `typ: Bearer` and an ID token `typ: ID`,
+      # and an ID token carries the client id as its audience. Requiring
+      # `Bearer` is what refuses one (ADR-0022 item 5).
+      OIDC_TOKEN_USE_CLAIM: typ
+      OIDC_REQUIRED_TOKEN_USE: Bearer
+      ADMIN_OIDC_ISSUER: https://${OSTOMY_AUTH_DOMAIN}/realms/admin
+      ADMIN_OIDC_JWKS_URI: http://keycloak:8080/realms/admin/protocol/openid-connect/certs
+      ADMIN_OIDC_AUDIENCE: ostomy-admin-console
+      ADMIN_OIDC_SUBJECT_CLAIM: sub
+      ADMIN_OIDC_TOKEN_USE_CLAIM: typ
+      ADMIN_OIDC_REQUIRED_TOKEN_USE: Bearer
+      # Nothing in the API uses object storage yet, and the configuration is
+      # required at boot. Placeholders until P5.S3 decides what stores
+      # objects on this host, as the AWS spike does (#168 finding 4).
+      OBJECT_STORAGE_ENDPOINT: http://object-storage.invalid
+      OBJECT_STORAGE_REGION: unused
+      OBJECT_STORAGE_ACCESS_KEY_ID: unused-until-p5s3
+      OBJECT_STORAGE_SECRET_ACCESS_KEY: unused-until-p5s3
+      OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+    secrets:
+      - db_runtime_password
+    # The DSN is assembled at start from the secret file, so it is in the
+    # process environment and nowhere `docker inspect` can show it.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        DATABASE_URL="postgresql://ostomy_runtime:$$(cat /run/secrets/db_runtime_password)@postgres:5432/ostomy"
+        export DATABASE_URL
+        exec node dist/main.js
+    networks:
+      - app
+      - data
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+    # The image's own HEALTHCHECK is liveness, deliberately: readiness fails
+    # on a database or Keycloak outage, which restarting the API cannot fix.
+    # The external monitor watches /api/v1/health/ready (ADR-0022 item 15).
+
+  web:
+    <<: *hardening
+    build:
+      context: ../..
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        VITE_API_BASE_URL: https://${OSTOMY_DOMAIN}
+        VITE_OIDC_ISSUER: https://${OSTOMY_AUTH_DOMAIN}/realms/patient
+        VITE_OIDC_CLIENT_ID: ostomy-web
+        VITE_OIDC_AUDIENCE: ostomy-patient-app
+        VITE_OIDC_REDIRECT_URI: https://${OSTOMY_DOMAIN}/
+        # The realm allows `openid` and nothing else for this client, and
+        # refuses a sign-in that asks for more (see the realm README).
+        VITE_OIDC_SCOPE: openid
+    image: ostomy/web:selfhost
+    networks:
+      - app
+
+  keycloak-db:
+    <<: *hardening
+    image: postgres:17-alpine@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
+    command: *postgres-command
+    environment:
+      POSTGRES_USER: keycloak
+      POSTGRES_DB: keycloak
+      POSTGRES_PASSWORD_FILE: /run/secrets/keycloak_db_password
+    secrets:
+      - keycloak_db_password
+    volumes:
+      - keycloak-pgdata:/var/lib/postgresql/data
+    networks:
+      - idp-data
+    healthcheck:
+      # Over TCP, never the socket. On first boot the image's entrypoint runs a
+      # temporary server for initdb that listens on the socket only, so a
+      # socket probe reports healthy before anything on the network can
+      # connect, and `db-setup` would fail its first deploy.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  keycloak:
+    <<: *hardening
+    image: quay.io/keycloak/keycloak:26.7@sha256:37dbaf6f0722c9ec246335f36e1ef8b2e6cb960f7c27e0d8c615121a3d475a85
+    # Keycloak reads its database password and its first administrator's
+    # password from the environment only, so they are read from the secret
+    # files here and exported into the process, where `docker inspect` does
+    # not reach.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        KC_DB_PASSWORD="$$(< /run/secrets/keycloak_db_password)"
+        KC_BOOTSTRAP_ADMIN_PASSWORD="$$(< /run/secrets/keycloak_bootstrap_admin_password)"
+        export KC_DB_PASSWORD KC_BOOTSTRAP_ADMIN_PASSWORD
+        exec /opt/keycloak/bin/kc.sh "$$@"
+      - kc.sh
+    # `--import-realm` creates each realm from keycloak/realms/ on first start
+    # and leaves an existing one alone. Changing a realm afterwards is not a
+    # matter of editing the file: see the realm README.
+    command: ["start", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      # Strict: the issuer and every link Keycloak writes use this, whatever
+      # Host header a request arrives with.
+      KC_HOSTNAME: https://${OSTOMY_AUTH_DOMAIN}
+      KC_HOSTNAME_STRICT: "true"
+      # The administration console, reached only through the SSH tunnel to
+      # Caddy's loopback port.
+      KC_HOSTNAME_ADMIN: http://localhost:8081
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      # Used once, to create the first administrator in the `master` realm.
+      # Slice 3's CLI replaces it with a named, OTP-enrolled administrator and
+      # deletes it (ADR-0022 item 5).
+      KC_BOOTSTRAP_ADMIN_USERNAME: bootstrap-admin
+      # Substituted into the realm files on import.
+      OSTOMY_WEB_ORIGIN: https://${OSTOMY_DOMAIN}
+      OSTOMY_ADMIN_ORIGIN: https://admin.${OSTOMY_DOMAIN}
+    secrets:
+      - keycloak_db_password
+      - keycloak_bootstrap_admin_password
+    volumes:
+      - ./keycloak/realms:/opt/keycloak/data/import:ro
+    networks:
+      - app
+      - idp-data
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    healthcheck:
+      # No curl in this image. The management port (9000) is never routed.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"UP"' <&3
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s

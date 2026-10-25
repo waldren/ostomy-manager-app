@@ -106,6 +106,21 @@ describe('HTTP surface — GET /api/v1/*', () => {
     expect(response.body).toMatchObject({ status: 'ok' });
   });
 
+  it('GET /api/v1/health/ready needs no authentication, and answers 503 naming each dependency that is down', async () => {
+    app = await bootTestApp();
+
+    // Nothing here is reachable: the test config points at no database and
+    // at issuers that do not resolve.
+    const response = await request(app.getHttpServer()).get('/api/v1/health/ready');
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      status: 'unready',
+      checks: { database: 'failed', patientIssuer: 'failed', adminIssuer: 'failed' },
+    });
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
   /**
    * #152: React Native's HTTP stack kept a plain-text disk cache of the
    * profile, ranges and sync delta pages, outside the encrypted store. Every

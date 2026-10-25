@@ -1,0 +1,25 @@
+# Global options for the self-hosted stack (ADR-0022 items 6 and 7).
+#
+# The sites, and every routing decision, are in sites.caddy, which the
+# allowlist test (src/caddy.integration.spec.ts) runs under its own global
+# block with a local certificate authority in place of Let's Encrypt. Keep
+# everything that matters to a request in sites.caddy, or the test stops
+# covering it.
+
+{
+	email {$OSTOMY_ACME_EMAIL}
+
+	# Caddy's admin API would let anything that reaches it reconfigure the
+	# proxy, allowlist included. Nothing here needs it.
+	admin off
+
+	servers {
+		# No HTTP/3: it listens on UDP 443, which the host does not publish.
+		protocols h1 h2
+	}
+
+	# No request-carrying error log. Shared with the allowlist test.
+	import /etc/caddy/logging.caddy
+}
+
+import /etc/caddy/sites.caddy
