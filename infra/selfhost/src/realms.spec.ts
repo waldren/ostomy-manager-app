@@ -49,6 +49,8 @@ interface Realm {
   passwordPolicy: string;
   revokeRefreshToken: boolean;
   refreshTokenMaxReuse: number;
+  eventsEnabled?: boolean;
+  eventsListeners?: string[];
   browserFlow?: string;
   clients: Client[];
   requiredActions?: { alias: string; enabled: boolean }[];
@@ -84,6 +86,15 @@ describe.each(Object.entries(realms))('the %s realm', (name, realm) => {
       refreshTokenMaxReuse: 0,
     });
     expect(realm.passwordPolicy).toMatch(/^length\(1[2-9]\)/);
+  });
+
+  // Keycloak's default `jboss-logging` listener writes every error event to
+  // stdout at WARN: a mistyped password puts the username as typed (often an
+  // email) and the client's address in the container log, outside ADR-0017's
+  // purge (ADR-0022 item 14). `eventsEnabled` keeps the database store; an
+  // empty listener list is what turns the log off. Absent, Keycloak adds it.
+  it('stores events in its database and writes none to the log', () => {
+    expect(realm).toMatchObject({ eventsEnabled: true, eventsListeners: [] });
   });
 
   it('lets no client it declares take a password grant, a service account or an implicit flow', () => {

@@ -34,6 +34,7 @@
   "revokeRefreshToken": true,
   "refreshTokenMaxReuse": 0,
   "eventsEnabled": true,
+  "eventsListeners": [],
   "eventsExpiration": 7776000,
   "adminEventsEnabled": true,
   "adminEventsDetailsEnabled": false,

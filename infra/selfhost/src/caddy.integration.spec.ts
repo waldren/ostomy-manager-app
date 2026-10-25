@@ -24,7 +24,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * got through and what it arrived as. Only the global block differs from the
  * host: a local certificate authority stands in for Let's Encrypt.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import path from 'node:path';
@@ -63,7 +63,7 @@ if (!dockerAvailable) {
 const APP = 'app.ostomy.test';
 const AUTH = 'auth.ostomy.test';
 
-/** The host's global block, minus ACME: a local CA, and the same protocols. */
+/** The host's global block, minus ACME: a local CA, the same protocols and logging. */
 const TEST_CADDYFILE = `{
 	local_certs
 	skip_install_trust
@@ -71,10 +71,18 @@ const TEST_CADDYFILE = `{
 	servers {
 		protocols h1 h2
 	}
+	import /etc/caddy/logging.caddy
 }
 
 import /etc/caddy/sites.caddy
 `;
+
+/**
+ * The same, without logging.caddy: the control that shows what Caddy writes
+ * by default, so the logging test's clean log is evidence and not an artefact
+ * of a request that never failed.
+ */
+const UNFILTERED_CADDYFILE = TEST_CADDYFILE.replace('\timport /etc/caddy/logging.caddy\n', '');
 
 const STUB_CADDYFILE = `{
 	admin off
@@ -154,20 +162,31 @@ class Proxy {
   }
 }
 
-async function startProxy(network: StartedNetwork, allowedIps: string): Promise<Proxy> {
+async function startProxy(
+  network: StartedNetwork,
+  allowedIps: string,
+  options: { upstreamHost?: string; caddyfile?: string } = {},
+): Promise<Proxy> {
+  const upstream = options.upstreamHost ?? 'stub';
   const container = await new GenericContainer(CADDY_IMAGE)
     .withNetwork(network)
     .withEnvironment({
       OSTOMY_DOMAIN: APP,
       OSTOMY_AUTH_DOMAIN: AUTH,
       OSTOMY_ADMIN_ALLOWED_IPS: allowedIps,
-      OSTOMY_API_UPSTREAM: 'stub:3000',
-      OSTOMY_WEB_UPSTREAM: 'stub:3001',
-      OSTOMY_KEYCLOAK_UPSTREAM: 'stub:3002',
+      OSTOMY_API_UPSTREAM: `${upstream}:3000`,
+      OSTOMY_WEB_UPSTREAM: `${upstream}:3001`,
+      OSTOMY_KEYCLOAK_UPSTREAM: `${upstream}:3002`,
     })
-    .withCopyContentToContainer([{ content: TEST_CADDYFILE, target: '/etc/caddy/Caddyfile' }])
+    .withCopyContentToContainer([
+      { content: options.caddyfile ?? TEST_CADDYFILE, target: '/etc/caddy/Caddyfile' },
+    ])
     .withCopyFilesToContainer([
       { source: path.join(SELFHOST_ROOT, 'caddy/sites.caddy'), target: '/etc/caddy/sites.caddy' },
+      {
+        source: path.join(SELFHOST_ROOT, 'caddy/logging.caddy'),
+        target: '/etc/caddy/logging.caddy',
+      },
     ])
     .withExposedPorts(80, 443, 8081)
     .withWaitStrategy(Wait.forLogMessage(/serving initial configuration/))
@@ -360,5 +379,66 @@ describe.skipIf(!dockerAvailable)('the Caddy allowlist', () => {
         body: 'keycloak /admin/master/console/',
       });
     });
+  });
+});
+
+/**
+ * ADR-0022 item 14. With no access log, a request that succeeds is written
+ * nowhere, but one a handler fails is written by `http.log.error` with its
+ * URI and the client's address. Every request in flight during a deploy or an
+ * outage fails that way. Both proxies here point at an upstream that does not
+ * exist, so every request is a 502: the control, with Caddy's default logging,
+ * shows the leak is real, and the host's configuration shows it is closed.
+ */
+describe.skipIf(!dockerAvailable)('Caddy’s log when an upstream is down', () => {
+  let network: StartedNetwork;
+  let unfiltered: Proxy;
+  let host: Proxy;
+  const marker = `m${Date.now().toString(36)}`;
+  const requests = [
+    [APP, `/?code=code-${marker}&state=state-${marker}`],
+    [APP, `/api/v1/sync/delta?since=cursor-${marker}`],
+    [AUTH, `/realms/patient/protocol/openid-connect/auth?login_hint=hint-${marker}`],
+  ] as const;
+
+  const containerLog = (proxy: Proxy): string => {
+    const result = spawnSync('docker', ['logs', proxy.container.getId()], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    return `${result.stdout}${result.stderr}`;
+  };
+
+  beforeAll(async () => {
+    network = await new Network().start();
+    [unfiltered, host] = await Promise.all([
+      startProxy(network, '203.0.113.7/32', {
+        upstreamHost: 'nowhere',
+        caddyfile: UNFILTERED_CADDYFILE,
+      }),
+      startProxy(network, '203.0.113.7/32', { upstreamHost: 'nowhere' }),
+    ]);
+    for (const proxy of [unfiltered, host]) {
+      for (const [requestHost, requestPath] of requests) {
+        expect((await proxy.get(requestHost, requestPath)).status).toBe(502);
+      }
+    }
+  });
+
+  afterAll(async () => {
+    await Promise.all([unfiltered?.container.stop(), host?.container.stop()]);
+    await network?.stop();
+  });
+
+  it('records each failed request’s URI and address under Caddy’s default logging (the control)', () => {
+    const log = containerLog(unfiltered);
+    expect(log).toContain(`cursor-${marker}`);
+    expect(log).toContain('"remote_ip"');
+  });
+
+  it('records neither under the host’s logging.caddy, and still logs its own startup', () => {
+    const log = containerLog(host);
+    expect(log).toContain('serving initial configuration');
+    expect(log).not.toContain(marker);
+    expect(log).not.toContain('"remote_ip"');
+    expect(log).not.toContain('"uri"');
   });
 });

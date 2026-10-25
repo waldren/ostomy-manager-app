@@ -185,4 +185,19 @@ describe('the Caddy configuration', () => {
     expect(code(caddyfile)).not.toMatch(/\blog\b/);
     expect(code(sites)).not.toMatch(/\blog\b/);
   });
+
+  // No access log does not stop `http.log.error` recording each failed
+  // request with its URI and client address; caddy.integration.spec.ts shows
+  // that it does, and that this exclusion stops it.
+  it('excludes the request-carrying error loggers from the default log, inside the global block', () => {
+    const logging = readFileSync(path.join(SELFHOST_ROOT, 'caddy/logging.caddy'), 'utf8');
+    expect(code(logging)).toMatch(
+      /^log default \{[^}]*^\s*exclude http\.log\.error http\.handlers\.reverse_proxy$[^}]*\}/ms,
+    );
+    const globalBlock = /^\{\n([\s\S]*?)^\}/m.exec(code(caddyfile))?.[1] ?? '';
+    expect(globalBlock).toMatch(/^\s*import \/etc\/caddy\/logging\.caddy$/m);
+    expect(compose.services.caddy!.volumes).toContain(
+      './caddy/logging.caddy:/etc/caddy/logging.caddy:ro',
+    );
+  });
 });

@@ -31,7 +31,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * the test and destroyed with the container.
  */
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 import { createRemoteJWKSet, decodeJwt, decodeProtectedHeader } from 'jose';
@@ -595,6 +595,49 @@ describe.skipIf(!dockerAvailable)('the committed Keycloak realms, against the AP
         edit: ['admin'],
       });
     }
+  });
+
+  // ADR-0022 item 14. Keycloak's default `jboss-logging` listener writes each
+  // failed sign-in, username as typed and client address included, to stdout,
+  // which is the container log. The realms turn it off with an empty listener
+  // list and keep the database store, so the event must be in one and not the
+  // other. Reading it back from the store first is what makes the log's
+  // silence mean something: it proves the failures were recorded at all.
+  it('records a failed sign-in in its database and writes nothing about it to the log', async () => {
+    const marker = base64url(randomBytes(9))
+      .toLowerCase()
+      .replaceAll(/[^a-z0-9]/g, 'x');
+    const knownUser = `log-probe-${marker}`;
+    const typedEmail = `typed-${marker}@example.test`;
+    await keycloak.createUser('patient', knownUser, [
+      { type: 'password', value: patientPassword, temporary: false },
+    ]);
+    for (const [username, password] of [
+      [knownUser, `wrong-${patientPassword}`],
+      [typedEmail, patientPassword],
+    ] as const) {
+      const { outcome } = await keycloak.signIn({
+        realm: 'patient',
+        clientId: 'ostomy-patient-app',
+        redirectUri: MOBILE_REDIRECT,
+        username,
+        password,
+      });
+      expect(outcome.kind).toBe('page');
+    }
+
+    const stored = await keycloak.admin<{ details?: { username?: string } }[]>(
+      'GET',
+      '/patient/events?type=LOGIN_ERROR&max=100',
+    );
+    const storedUsernames = stored.map((event) => event.details?.username);
+    expect(storedUsernames).toEqual(expect.arrayContaining([knownUser, typedEmail]));
+
+    const log = spawnSync('docker', ['logs', container.getId()], { encoding: 'utf8' });
+    expect(log.status).toBe(0);
+    const combined = `${log.stdout}${log.stderr}`;
+    expect(combined).not.toContain(marker);
+    expect(combined).not.toContain('LOGIN_ERROR');
   });
 
   describe('the admin realm', () => {

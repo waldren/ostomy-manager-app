@@ -7,7 +7,8 @@
 # There is no `log` directive, so no access log is written. One would record
 # every full URI, the OIDC code in `/?code=...` included, with the client's
 # address, and an address tied to this app is health information under the
-# FTC rule (ADR-0022 item 14).
+# FTC rule (ADR-0022 item 14). No access log is not the same as no request
+# log: logging.caddy turns off the error log that records a failed request.
 
 (tls13) {
 	tls {

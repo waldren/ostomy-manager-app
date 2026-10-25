@@ -31,6 +31,7 @@ export interface ComposeService {
   secrets?: string[];
   ports?: string[];
   networks?: string[];
+  volumes?: string[];
   command?: string[] | string;
   entrypoint?: string[] | string;
   logging?: { driver: string; options: Record<string, string> };

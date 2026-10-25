@@ -31,8 +31,12 @@ name: ostomy
 x-logging: &logging
   # Bounded, so a full disk is not how this host fails. What is IN these logs
   # is each service's own concern: the API logs no PHI by construction,
-  # Caddy's access log is off, PostgreSQL is set terse below, and Keycloak's
-  # event store is in its database rather than its log.
+  # Caddy writes no access log and no request-carrying error log
+  # (caddy/logging.caddy), PostgreSQL is set terse below, and each realm's
+  # `eventsListeners: []` keeps Keycloak's login events in its database and
+  # out of its log. Without that, the default `jboss-logging` listener writes
+  # every failed sign-in, username and address included, to stdout. Slice 5's
+  # admin sign-in alerting (RD-20) reads the database store, not this log.
   driver: json-file
   options:
     max-size: "10m"
@@ -114,6 +118,7 @@ services:
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/sites.caddy:/etc/caddy/sites.caddy:ro
+      - ./caddy/logging.caddy:/etc/caddy/logging.caddy:ro
       - caddy-data:/data
       - caddy-config:/config
     ports:
@@ -149,7 +154,11 @@ services:
     networks:
       - data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      # Over TCP, never the socket. On first boot the image's entrypoint runs a
+      # temporary server for initdb that listens on the socket only, so a
+      # socket probe reports healthy before anything on the network can
+      # connect, and `db-setup` would fail its first deploy.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -303,7 +312,11 @@ services:
     networks:
       - idp-data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      # Over TCP, never the socket. On first boot the image's entrypoint runs a
+      # temporary server for initdb that listens on the socket only, so a
+      # socket probe reports healthy before anything on the network can
+      # connect, and `db-setup` would fail its first deploy.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U keycloak -d keycloak"]
       interval: 5s
       timeout: 5s
       retries: 20

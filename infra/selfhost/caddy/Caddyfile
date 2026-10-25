@@ -17,6 +17,9 @@
 		# No HTTP/3: it listens on UDP 443, which the host does not publish.
 		protocols h1 h2
 	}
+
+	# No request-carrying error log. Shared with the allowlist test.
+	import /etc/caddy/logging.caddy
 }
 
 import /etc/caddy/sites.caddy
