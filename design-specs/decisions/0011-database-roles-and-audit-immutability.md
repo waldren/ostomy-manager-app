@@ -1,6 +1,6 @@
 # ADR-0011: Separate migration-owner and runtime database roles, and enforce audit immutability by grant
 
-- **Status:** Accepted — **narrowed by [ADR-0017](0017-phi-retention-deletion-and-the-audit-exception.md)**: the guarantee is now "no request handler can modify or delete an audit row", not "nothing can". A privileged purge job, running as the owner role and unreachable from request handling, deletes a patient's audit rows on account deletion. Do not describe the audit log as strictly immutable without that qualification.
+- **Status:** Accepted, **amended** (Amendment 1, P4.S6: the managed owner's attributes) — **narrowed by [ADR-0017](0017-phi-retention-deletion-and-the-audit-exception.md)**: the guarantee is now "no request handler can modify or delete an audit row", not "nothing can". A privileged purge job, running as the owner role and unreachable from request handling, deletes a patient's audit rows on account deletion. Do not describe the audit log as strictly immutable without that qualification.
 - **Date:** 2026-09-05
 - **Deciders:** Steven Waldren (accepted from P1.S2 compliance review)
 - **Related:** SRS_v2 §5.2, §4.8 · [ADR-0002](0002-testing-strategy.md) · [ADR-0008](0008-admin-config-api-before-console.md) · `docs/deployment-development.md`
@@ -74,3 +74,9 @@ This ADR exists because of a compliance finding, and it is the enforcement mecha
 Written at P1.S2, before any schema exists. Re-check at **P1.S5**, when the audit test is first written — that is the moment this decision is either load-bearing or was implemented wrongly.
 
 Worth adding later, not now: a `BEFORE UPDATE OR DELETE` trigger on `audit_events` as defence in depth, and a CI assertion that the runtime role holds no `UPDATE`/`DELETE` on the audit table.
+
+## Amendment 1 — what the managed-database owner is, and what the migration asserts (2026-10-24, P4.S6)
+
+The Decision section requires staging and production to "create a non-superuser owner role". P4.S6 (#168) settles what that role holds: **`CREATEROLE` and `CREATEDB`**, created by the RDS master user. `CREATEROLE` is needed because the first migration creates `ostomy_runtime`; on PostgreSQL 16+ such a role administers only the roles it created, which is what makes it acceptable. The master user itself remains not the owner.
+
+Under that owner the first migration could not run as written: a non-superuser may not name `SUPERUSER`, `REPLICATION` or `BYPASSRLS` in `ALTER ROLE`, even to turn it off. The migration now re-applies the six attributes only when the migrating owner is a superuser, and otherwise **asserts** them, refusing to continue if a pre-existing runtime role holds any. Under either owner it also refuses a runtime role that is a member of any other role, since a membership can carry `SET ROLE` into a role holding `UPDATE`/`DELETE` on `audit_events` that neither the role's own grants nor the boot-time privilege check shows. `apps/api/src/prisma/managed-owner.integration.spec.ts` runs every migration under exactly that owner, on a fresh cluster.
