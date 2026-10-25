@@ -65,7 +65,7 @@ Google Auto Backup belongs on the BAA-review list as **must be disabled**, not a
 - **Never commit a `.env`.** `.gitignore` covers it and `scripts/check-no-committed-env.sh` fails CI on a force-added one.
 - `.env.example` is the only committed environment file and contains **placeholders only** — the same check scans it against a fixed prefix list (AWS/GitHub/Slack/Stripe-shaped keys, a JWT, a PEM private-key header, credentials embedded in a URL). That catches those specific shapes, not a real password or any other credential outside the list — it is the fast, dependency-free layer described in the script's own header comment, not a substitute for review.
 - No production or staging credential is ever placed on the development host.
-- Runtime secrets come from the platform, never from source, never from a build argument, never baked into an image. On AWS that is Secrets Manager. On a self-hosted host (ADR-0022) they are generated on the host into root-only files and handed to containers as Compose secrets. They never leave the host, and no CLI prints them.
+- Runtime secrets come from the platform, never from source, never from a build argument, never baked into an image. On AWS that is Secrets Manager. On a self-hosted host (ADR-0022) they are generated on the host into root-only files and handed to containers as Compose secrets. They leave the host only inside encrypted backups (a Keycloak backup holds the realm signing keys and password hashes). No CLI prints them, and they never appear in `docker inspect`.
 - A leaked credential is rotated first and investigated second.
 
 ### Provider-agnostic auth and storage
@@ -81,7 +81,7 @@ The admin console has zero PHI access, and the boundary is enforced at the **ide
 
 Be precise about what enforces this, because a lint rule is easy to over-trust:
 
-- **Load-bearing:** the disjoint Cognito user pool (SRS §4.6), and — once `apps/admin` is scaffolded — its `package.json` dependency closure. pnpm's isolated `node_modules` makes an undeclared import fail at install, which no lint bypass defeats.
+- **Load-bearing:** the disjoint identity pool (SRS §4.6). On the self-hosted shape that is a separate Keycloak realm with its own issuer and keys (ADR-0022), which is **weaker** than a separate Cognito pool: one Keycloak process and database hold both realms, and its `master` realm can change either. Once `apps/admin` is scaffolded, its `package.json` dependency closure joins it. pnpm's isolated `node_modules` makes an undeclared import fail at install, which no lint bypass defeats.
 - **Secondary, fast feedback only:** a `no-restricted-syntax` allow-list in `packages/config/eslint` covering static, dynamic, and re-export forms of `@ostomy/*` specifiers from admin code (both `apps/admin` and `apps/api/src/admin`). It does **not** catch relative traversal out of the app, or a patient type laundered through an intermediate package's re-export. Closing those needs path resolution — `eslint-plugin-import`'s `no-restricted-paths` — which lands when `apps/admin` does.
 
 ### Dependencies
@@ -99,14 +99,19 @@ These are blocked on counsel or on an organizational decision, not on engineerin
 
 - **PHI retention period and deletion SLA.**
 - **Penetration-test cadence.**
-- **BAA execution.** Required *before any real PHI is stored*, and per SRS §4.6 it must cover RDS, S3, Fargate/ECS, Cognito, KMS and Secrets Manager specifically. That list is here because the person who adds a seventh AWS service is a developer.
+- **BAA execution.** **Not currently required** (ADR-0017; see the top of this file). It becomes required, before any PHI is stored under that relationship, the day a provider offers the app to their patients. Per SRS §4.6 it must cover RDS, S3, Fargate/ECS, Cognito, KMS and Secrets Manager specifically. That list is here because the person who adds a seventh AWS service is a developer.
   - **On the self-hosted shape** ([ADR-0022](../design-specs/decisions/0022-self-hosted-production-on-one-host.md)), the services in the PHI path are:
     - **the VPS provider:** disk, network and console access. Its name, encryption at rest, jurisdiction and breach-notification terms are recorded here before any real host exists (`compliance/real-data-readiness.md` RD-6);
     - **the off-host backup store:** it holds only ciphertext, and the key is never on the server or the development host;
     - **Let's Encrypt:** it sees hostnames, never PHI;
     - **the external uptime checker:** it sees `/api/v1/health` only.
 
-    Keycloak, PostgreSQL, MinIO and Caddy run on the host itself and add no third party. A transactional mail provider joins this list the day patient self-registration is turned on, because it would see patients' email addresses.
+    Keycloak, PostgreSQL, MinIO and Caddy run on the host itself and add no third party. They do add **stores of identifiable data**:
+    - Keycloak's database: the patient roster, and login events with IP addresses;
+    - Caddy's access log, which stays off or is filtered to drop query strings and truncate IPs;
+    - the backups.
+
+    Each is listed in `compliance/risk-analysis.md`. Every provider here gets written notice that we are a vendor of personal health records (16 CFR 318.3(b), RD-6). A transactional mail provider joins this list the day patient self-registration is turned on, because it would see patients' email addresses.
 
     **Provider:** _not chosen._
 - **Breach-notification procedure**, and a designated Security/Privacy Officer.

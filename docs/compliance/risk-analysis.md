@@ -20,6 +20,10 @@ A formal analysis under HIPAA §164.308(a)(1)(ii)(A) is **not currently required
 | S3 | Photos, PDF exports | SSE-KMS, presigned URLs. **Not yet built** |
 | In transit | Everything | TLS. **Not yet true in development** — the LAN stack is plain HTTP with synthetic data only |
 | `apps/web` | Nothing at rest | Online-only by decision; `sessionStorage` holds the OAuth session only |
+| Keycloak's database (self-hosted, ADR-0022) | The patient roster (email, name) and login events with IP addresses. Tied to this app, an identity is health information | On the host; never published. ADR-0017's purge must delete the user and their events (RD-3) |
+| Caddy and Keycloak logs (self-hosted) | IP addresses, usernames and URLs, if enabled | Caddy's access log off, or filtered to drop query strings and truncate IPs; Keycloak's event log treated as a PHI store with a defined retention |
+| Backups (self-hosted) | Everything in PostgreSQL and Keycloak, including realm signing keys and password hashes | Encrypted on the host to a key held only in the operator environment; append-only off-host store; retention to fit ADR-0017 (RD-3) |
+| The operator environment (self-hosted) | No PHI at rest, but every credential that reaches it | Not the development host; nothing synced between them; hardware-key MFA on every account (RD-4) |
 
 ## Known risks
 
@@ -40,7 +44,10 @@ Ranked by the product's own judgement, not a scored matrix.
 | 11 | **Staging parity.** Fargate orchestration, TLS, real Cognito and KMS are untested until staging exists | Open. `docs/deployment-development.md` lists what staging must cover |
 | 12 | **A self-hosted production host has no failover** (ADR-0022). Any host or provider failure is an outage, and recovery is a restore | Accepted. §5.3's uptime target is not claimed on this shape. RPO and RTO rest on off-host encrypted backups and a timed restore (`real-data-readiness.md` RD-7). The mobile client keeps logging offline, and `apps/web` does not |
 | 13 | **Self-operated controls** (ADR-0022): OS, Docker, PostgreSQL, Keycloak and Caddy patching, and Keycloak realm configuration, which used to be AWS's or Cognito's job | Open until D.S1 ships: unattended OS security upgrades, pinned images bumped by this project, and a token integration test for the guards' side of the realm configuration. A realm misconfiguration is not caught by that test, so it is a named pen-test target (RD-8) |
-| 14 | **Operator credentials.** The real host's SSH key, the release keystore (which can sign an "update" that inherits an installed patient's diary) and the backup decryption key | Mitigated by keeping them only in an operator environment the development host has never had access to (ADR-0022, RD-4). A synthetic host and a synthetic keystore are used until then, and a synthetic host is never promoted |
+| 14 | **Operator credentials.** The real host's SSH key, the tag-signing key, the release keystore (which can sign an "update" that inherits an installed patient's diary), the backup decryption key, and the provider, DNS and backup-store accounts | Mitigated by keeping them only in an operator environment the development host has never had administrative access to, with nothing synced between them (ADR-0022, RD-4). The keystore and backup key are escrowed offline. A synthetic host and a synthetic keystore are used until then, and a synthetic host is never promoted |
+| 15 | **The development host ships code to production.** It pushes to the repository every image and the APK are built from | Mitigated by deploying only release tags signed in the operator environment after a diff review, with images pinned by digest (ADR-0022 item 3, RD-15) |
+| 16 | **A restore loses and hides clinical data.** Sequences rewind below device cursors, phones never re-push entries they marked synced, and a restore can bring back a purged patient | Open. The sync contract needs a high-water mark, a server generation, and a `deletion_log` replay before real data (ADR-0022 item 11, RD-7) |
+| 17 | **The operator reads PHI outside the application's audit.** Root on the host bypasses every application control | Mitigated procedurally: a break-glass rule, and SSH and `auditd` session logs shipped off the host (RD-19). Not mitigable technically on one host |
 
 ## The honest gaps
 

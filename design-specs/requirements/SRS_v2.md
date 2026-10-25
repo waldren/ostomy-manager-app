@@ -26,11 +26,12 @@ Status: all six discussion phases complete.
 
 **v2.6 scope change (2026-09-19).** No new phase. v1's mobile client targets **Android only**; iOS is deferred. Recorded in [ADR-0020](../decisions/0020-android-only-v1.md).
 
+- `apps/mobile` had never been built for iOS — no build path existed, and the device-side security controls that platform would run (the SQLCipher config plugin, the keychain accessibility class, `biometryCurrentSet` invalidation) had therefore never compiled, let alone been verified. A platform claim nothing tests is the failure mode [ADR-0014](../decisions/0014-local-phi-encryption-and-device-ownership.md) and [ADR-0015](../decisions/0015-biometric-local-access.md) exist to prevent. Sections 2 and 4.2 are corrected; iPhone users reach the product through the browser SPA, which is online-only and holds no PHI at rest, so what is deferred is offline capture rather than access. This is a platform deferral, not a feature deferral, and it is deliberately **not** listed in Appendix A alongside urostomy.
+
 **v2.7 change (2026-10-07).** No new phase. Local unlock on mobile accepts **either the device passcode or a biometric, as peers** — a patient may decline biometrics entirely and use their passcode, or use the passcode on any single attempt when a finger will not read. Recorded in [ADR-0015](../decisions/0015-biometric-local-access.md) Amendment 2, which also removes the refresh token's `requireAuthentication` gating and explains what that gives up. The wording below said "biometric login" throughout, which is how the implementation came to exclude the passcode one layer down (#116).
 
 **v2.8 change (2026-10-25).** No new phase. Production may run on **one self-managed Linux host** under Docker Compose. That host uses Keycloak for identity, Caddy for TLS, secrets generated on the host, and encrypted off-host backups. AWS (§4.6) remains the architecture for scale, not a launch prerequisite. A host holds real data only if it was initialised for real data from an operator environment that is not the development host, and only after a signed readiness checklist (`docs/compliance/real-data-readiness.md`) is complete. Recorded in [ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md). §4.6, §4.7 and §4.8 are amended, and §5.3 carries a note.
 
-- `apps/mobile` had never been built for iOS — no build path existed, and the device-side security controls that platform would run (the SQLCipher config plugin, the keychain accessibility class, `biometryCurrentSet` invalidation) had therefore never compiled, let alone been verified. A platform claim nothing tests is the failure mode [ADR-0014](../decisions/0014-local-phi-encryption-and-device-ownership.md) and [ADR-0015](../decisions/0015-biometric-local-access.md) exist to prevent. Sections 2 and 4.2 are corrected; iPhone users reach the product through the browser SPA, which is online-only and holds no PHI at rest, so what is deferred is offline capture rather than access. This is a platform deferral, not a feature deferral, and it is deliberately **not** listed in Appendix A alongside urostomy.
 
 Sections below are updated as each phase is completed. Sections not yet revisited are carried forward from v1.0 unchanged and marked as such.
 
@@ -318,11 +319,18 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 - *Fargate becomes a Compose service.*
 - *RDS becomes PostgreSQL on the host, with ADR-0011's roles and nightly encrypted off-host backups in place of RDS backups and Multi-AZ.*
 - *S3 becomes MinIO on the host.*
-- *Cognito becomes Keycloak, with a `patient` realm and an `admin` realm. They are disjoint issuers with disjoint keys, and every admin account must use OTP.*
+- *Cognito becomes Keycloak, with a `patient` realm and an `admin` realm, served from its own `auth.` subdomain.*
+  - *The realms are disjoint issuers with disjoint keys.*
+  - *They are a weaker separation than two Cognito pools, because they share a process, a database and a `master` realm that controls both.*
+  - *OTP is required, never conditional, on every `admin` and `master` account.*
 - *Secrets Manager becomes root-only files generated on the host and passed to containers as Compose secrets. There is no KMS.*
 - *CloudFront becomes Caddy, with TLS 1.3 and HSTS.*
 
-*The admin API is restricted to an operator IP allowlist. The AWS architecture below remains the target for scale, and the move back to it when a provider relationship or availability demands it.*
+*Caddy forwards an allowlist of paths, and the admin API and the `admin` realm sit behind an operator IP allowlist. Backups go to an append-only store, and a restore advances sequences and replays `deletion_log` before serving traffic.*
+
+*A real host runs only releases tagged and signed in the operator environment. It accepts no patient account until the deploy CLI's `verify` has passed against it.*
+
+* The AWS architecture below remains the target for scale, and the move back to it when a provider relationship or availability demands it.*
 
 - **Compute:** the API runs as a containerized service on AWS Fargate (ECS) — avoids managing servers directly while suiting a stateful, always-on Node.js API better than a function-per-endpoint Lambda model would.
 - **Database:** Amazon RDS for PostgreSQL, Multi-AZ, sized to support the Section 5.3 uptime and RPO/RTO targets (Multi-AZ failover plus RDS automated backups).
@@ -336,6 +344,7 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
 - **BAA coverage — AMENDED by ADR-0017 (2026-09-13).** This clause assumed a HIPAA covered-entity or business-associate relationship. The product is **direct-to-patient**: patients sign up themselves, with no provider relationship, so the FTC Health Breach Notification Rule governs and no BAA is legally required (`docs/compliance/breach-notification.md`). An AWS BAA is therefore no longer a launch blocker. It becomes required — and this clause returns in full — the moment a clinic or provider offers the app to their patients, the likely route being §3.5 Epic 5's share link. The service enumeration above stays useful regardless: `docs/security-hipaa.md` keeps it as the list of services in the PHI path, and Apple iCloud Backup and Google Auto Backup are on it as **must be disabled**, since neither vendor will sign anything.
 
 ### 4.7 CI/CD & Environments
+- *Amended in v2.8 ([ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md)): the self-hosted shape is deployed by a CLI over SSH, from an operator environment, and only from release tags signed there. Images are pinned by digest and built from the tag.*
 - **CI/CD:** GitHub Actions (already scaffolded under `.github/workflows/`) — lint, type-check, and test on every pull request using GitHub-hosted runners; separate deploy workflows per app (`apps/mobile` via Expo/EAS Build, `apps/web` and `apps/api` via container/static-asset deploys to AWS). The development environment deploys via a **self-hosted runner** on the on-premise host (Section 4.9), which connects outbound to GitHub so the server needs no inbound network access.
 - **Infrastructure as code:** AWS CDK (TypeScript) — keeps infrastructure definitions in the same language as the rest of the monorepo.
 - **Environments:** three environments, of which only two are on AWS.
@@ -349,7 +358,9 @@ The following were discussed and deliberately excluded from v1/v2 scope, with ra
   Synthetic or de-identified data is used in development and staging. Development is not eligible for real PHI under any circumstance, including bug reproduction.
 
 ### 4.8 Observability & Monitoring
-- **Logging & metrics:** Amazon CloudWatch for backend application logs, infrastructure metrics, and alarms (feeding the Section 5.3 uptime target). *On the self-hosted shape (v2.8, [ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md)), an external uptime check on `/api/v1/health` and container log rotation on the host take CloudWatch's place. Application logs carry no PHI by construction, so log storage on the host is not a new PHI store.*
+- **Logging & metrics:** Amazon CloudWatch for backend application logs, infrastructure metrics, and alarms (feeding the Section 5.3 uptime target). *On the self-hosted shape (v2.8, [ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md)), an external uptime check on `/api/v1/health` and container log rotation on the host take CloudWatch's place. The external check targets a readiness endpoint that tests the database and the issuer, and it is joined by alerts on backup age, disk, certificate expiry and authentication events.*
+
+  *The API's logs carry no PHI by construction. Caddy's access log and Keycloak's event log would carry IP addresses, usernames and URLs, which tied to this app are identifiable health information. So the first stays off or is filtered, and the second is treated as a PHI store with a defined retention.*
 - **Error tracking:** a cross-platform error-tracking tool (e.g. Sentry) across mobile, web, and backend, so client-side failures (including sync failures) are visible, not just backend errors.
 - **Audit log storage:** the Section 5.2 PHI audit log is written to its own append-only table/store, separate from general application logs, with restricted access consistent with least-privilege RBAC.
 
@@ -392,6 +403,8 @@ Carries forward and expands the v1.0 HIPAA baseline into a full compliance progr
 - **Breach Notification Process — AMENDED by ADR-0017 (2026-09-13):** A documented incident-response and breach-notification procedure. Governed by the **FTC Health Breach Notification Rule (16 CFR Part 318)** rather than HIPAA's, while the product remains direct-to-patient — different clocks, different recipients, and no "low probability of compromise" exception. Written at `docs/compliance/breach-notification.md`. The Security/Privacy Officer role is kept voluntarily (FTC does not require one) because a procedure with no named decision-maker has nobody to start its clock.
 - **Periodic Penetration Testing & Vulnerability Scanning:** Third-party penetration testing at a defined cadence (e.g., annually and after major architecture changes), plus continuous automated dependency/vulnerability scanning in CI.
 - **Secrets & Key Management:** Managed secrets store (never committed to source control); defined encryption key rotation policy.
+  - *Note (v2.8, [ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md)): the self-hosted shape has **no managed secrets store and no KMS**. Secrets are root-only files generated on the host, rotated by a written procedure, and leave the host only inside encrypted backups. Encryption at rest relies on the provider's volume encryption, which cannot be verified. This is a weaker safeguard, accepted in that ADR.*
+  - *Whether password reset without SMTP meets the MFA requirement above is decided before real data, by readiness item RD-18, and is not assumed.*
 - **Administrative Configuration Audit (Phase 4):** All administration console changes to value sets, default range tables, and validation thresholds are logged with admin identity, timestamp, and before/after values in the same append-only audit store as PHI actions. These settings determine clinical thresholds and the terminology patients are shown, so they carry audit rigor equivalent to PHI edits despite containing no PHI themselves.
 - **Third-Party Terminology Compliance:** Confirm RxNorm and SNOMED CT usage (Sections 3.3, 4) complies with their respective license terms as part of legal review.
 
