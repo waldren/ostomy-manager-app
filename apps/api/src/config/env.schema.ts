@@ -57,10 +57,47 @@ const oidcSchema = z.object({
   audience: z.string().min(1, 'audience is required'),
   claimMapping: z.object({
     subjectClaim: z.string().min(1).default('sub'),
+    /**
+     * Which claim must equal `audience` (P4.S6, #168). Absent means `aud`, the
+     * RFC 9068 shape the development issuer mints. A Cognito ACCESS token
+     * carries no `aud` at all; it names its app client in `client_id`, so
+     * against Cognito this is `client_id`. A closed list rather than any
+     * string: a typo here must fail the boot, not quietly compare the client
+     * id against some other claim.
+     */
+    audienceClaim: z.enum(['aud', 'client_id']).optional(),
+    /**
+     * The claim in which a token says what kind of token it is. Absent means
+     * `DEFAULT_TOKEN_USE_CLAIM`, Cognito's name, because the check it feeds must refuse a Cognito
+     * ID token even where nobody configured anything (see `requiredTokenUse`).
+     * A provider that mints no such claim is unaffected: an absent claim is
+     * refused only when `requiredTokenUse` is set.
+     */
+    tokenUseClaim: z.string().min(1).optional(),
+    /**
+     * When set, `tokenUseClaim` must be present and equal it. When unset, the
+     * claim is still checked whenever a token carries it, against
+     * `DEFAULT_ACCESS_TOKEN_USE`. That half is not optional: a Cognito ID
+     * token carries `aud` = the app client id plus the patient's email and
+     * phone number, so under the default `audienceClaim` it would otherwise be
+     * accepted as an access credential (#169 review). Against Cognito set
+     * `access`, so a token with no such claim is refused as well.
+     */
+    requiredTokenUse: z.string().min(1).optional(),
   }),
 });
 
 export type OidcConfig = z.infer<typeof oidcSchema>;
+
+/**
+ * The `tokenUseClaim` value a token that declares its kind must carry when
+ * `requiredTokenUse` is unset. Anything else it declares (Cognito: `id`) is
+ * not an access credential.
+ */
+export const DEFAULT_ACCESS_TOKEN_USE = 'access';
+
+/** The claim `tokenUseClaim` names when unset. */
+export const DEFAULT_TOKEN_USE_CLAIM = 'token_use';
 
 const booleanFromString = z.enum(['true', 'false']).transform((value) => value === 'true');
 
