@@ -55,14 +55,17 @@ Google Auto Backup belongs on the BAA-review list as **must be disabled**, not a
 - Development and staging use **synthetic or de-identified data only** — not temporarily, and not to reproduce a bug.
 - Test fixtures and seed scenarios are generated, never sampled from a real dataset. Names, dates of birth, and identifiers are fabricated. See [ADR-0009](../design-specs/decisions/0009-synthetic-seed-data-generation.md).
 - The shared development host is LAN-only, plain HTTP, and its CI runner is in the `docker` group — meaning a host compromise there is total. The only defence that holds is that there is nothing valuable on it. Keep it that way.
-- Production is the only environment permitted to hold real PHI, and only after the pre-launch gate.
+- Production is the only environment permitted to hold real PHI, and only after the pre-launch gate. On the self-hosted shape ([ADR-0022](../design-specs/decisions/0022-self-hosted-production-on-one-host.md)) that gate is mechanical:
+  - the deploy CLI refuses to initialise a real-data host while any item in `compliance/real-data-readiness.md` is unsigned;
+  - a synthetic host is never promoted to real;
+  - a real host's SSH key, release keystore and backup decryption key live only in an operator environment the development host has never had access to.
 
 ### Secrets
 
 - **Never commit a `.env`.** `.gitignore` covers it and `scripts/check-no-committed-env.sh` fails CI on a force-added one.
 - `.env.example` is the only committed environment file and contains **placeholders only** — the same check scans it against a fixed prefix list (AWS/GitHub/Slack/Stripe-shaped keys, a JWT, a PEM private-key header, credentials embedded in a URL). That catches those specific shapes, not a real password or any other credential outside the list — it is the fast, dependency-free layer described in the script's own header comment, not a substitute for review.
 - No production or staging credential is ever placed on the development host.
-- Runtime secrets come from the platform (AWS Secrets Manager in deployed environments), never from source, never from a build argument, never baked into an image.
+- Runtime secrets come from the platform, never from source, never from a build argument, never baked into an image. On AWS that is Secrets Manager. On a self-hosted host (ADR-0022) they are generated on the host into root-only files and handed to containers as Compose secrets. They never leave the host, and no CLI prints them.
 - A leaked credential is rotated first and investigated second.
 
 ### Provider-agnostic auth and storage
@@ -97,12 +100,25 @@ These are blocked on counsel or on an organizational decision, not on engineerin
 - **PHI retention period and deletion SLA.**
 - **Penetration-test cadence.**
 - **BAA execution.** Required *before any real PHI is stored*, and per SRS §4.6 it must cover RDS, S3, Fargate/ECS, Cognito, KMS and Secrets Manager specifically. That list is here because the person who adds a seventh AWS service is a developer.
+  - **On the self-hosted shape** ([ADR-0022](../design-specs/decisions/0022-self-hosted-production-on-one-host.md)), the services in the PHI path are:
+    - **the VPS provider:** disk, network and console access. Its name, encryption at rest, jurisdiction and breach-notification terms are recorded here before any real host exists (`compliance/real-data-readiness.md` RD-6);
+    - **the off-host backup store:** it holds only ciphertext, and the key is never on the server or the development host;
+    - **Let's Encrypt:** it sees hostnames, never PHI;
+    - **the external uptime checker:** it sees `/api/v1/health` only.
+
+    Keycloak, PostgreSQL, MinIO and Caddy run on the host itself and add no third party. A transactional mail provider joins this list the day patient self-registration is turned on, because it would see patients' email addresses.
+
+    **Provider:** _not chosen._
 - **Breach-notification procedure**, and a designated Security/Privacy Officer.
 - **Risk analysis** (45 CFR §164.308(a)(1)(ii)(A)) and **workforce security-awareness training** (§164.308(a)(5)) — required administrative safeguards, and organizational deliverables rather than engineering ones.
 - **RxNorm and SNOMED CT licence terms.** SRS §5.2 lists this for legal review. SNOMED is the one that gates code: the `Observation.method` "Estimation technique" code is still unresolved in `design-specs/data-model/fhir-rxnorm-integration.md`, and nobody should treat the affiliate-licence question as settled.
 
 ### TLS
 
-SRS §5.2 requires TLS 1.3+ for PHI in transit, and that is a target, not a control that exists yet. The development host is plain HTTP by design and LAN-only; TLS is first exercised at staging (P9), which is also where the rest of the deferred parity risks land.
+SRS §5.2 requires TLS 1.3+ for PHI in transit, and that is a target, not a control that exists yet. The development host is plain HTTP by design and LAN-only.
+
+TLS is first exercised by whichever of these comes first:
+- **a self-hosted synthetic host** (ADR-0022): Caddy with TLS 1.3 only and HSTS. Android 7–9 have no TLS 1.3 by default, which is why the release build's `minSdkVersion` goes to 29;
+- **staging** (P9), which is also where the rest of the AWS parity risks land.
 
 See also `design-specs/compliance/` for the product/compliance-level documentation.

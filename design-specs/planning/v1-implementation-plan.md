@@ -1,6 +1,6 @@
 # v1 Implementation Plan — Ostomy Patient Management Application
 
-Status: active (revision 2, 2026-09-19 · §2, §4.1 and §4.2 reconciled 2026-09-26) · Derived from `design-specs/requirements/SRS_v2.md` (v2.6) and the twenty-one accepted ADRs in `design-specs/decisions/`
+Status: active (revision 2, 2026-09-19 · §2, §4.1 and §4.2 reconciled 2026-09-26) · Derived from `design-specs/requirements/SRS_v2.md` (v2.8) and the twenty-two accepted ADRs in `design-specs/decisions/`
 
 **Revision 2 exists because revision 1 stopped describing the repository.** Its "current state" section described a scaffolding-only repo that has since shipped P0, P1, P2 and half of P3; its decision table still listed items that are now accepted ADRs; and roughly a third of the merged commits since Gate B was written belong to no sprint in it. This revision re-baselines against what is actually built, folds the unowned work into named sprints and a tracked debt lane, and records four decisions taken on 2026-09-19 (§3.2).
 
@@ -38,11 +38,11 @@ Sequence the remaining work from today's repository through complete v1, as boun
 | **P3** — entry types + config | **Complete** | P3.S1 fluid intake and meals (PRs A–E); P3.S1b Daily Net Fluid Balance on web; P3.S2 voided urine — the colour scale, colour-without-volume, and its exclusion from the balance (#64); P3.S3 the admin config API at final shape and `scripts/admin-config.mjs` (#88, #91, #96, #99); P3.S4 Quick-Add widgets; P3.S5 four further seed scenarios |
 | **P4** — onboarding, preferences, ranges | **S1–S5 done; S6 built, not yet run** | P4.S1 onboarding in three fields (#122); P4.S2 suggested ranges, never a threshold until confirmed (#130); P4.S3 preferences, every edit through sync, Quick-Add keep/remove and the text-scaling audit (#139); P4.S4 units switch re-rendering without rewriting (#154); P4.S5 the §5.1 performance spike (#158), with baseline numbers and proposed targets in `docs/performance/p4-s5-baseline.md`; P4.S6's code, stack and runbook (#168: #169–#171 and the runbook PR), with the AWS run itself waiting on the maintainer. S7 and Gate C not started |
 
-Twenty-one ADRs accepted (ADR-0001 to ADR-0021) — ADR-0020 Android-only v1, ADR-0021 the redirect route completing the OIDC exchange, and **ADR-0015 amended twice**: at #74 for a device with no biometric enrolled, and at #116 making the device passcode a **peer** of the biometric rather than a fallback, which removes the refresh token's `requireAuthentication` gating. The second amendment changes the decision rather than extending it; SRS is at **v2.7** for the same change. `docs/sync-contract.md` is normative and governs its implementations.
+Twenty-one ADRs accepted (ADR-0001 to ADR-0021) — ADR-0020 Android-only v1, ADR-0021 the redirect route completing the OIDC exchange, and **ADR-0015 amended twice**: at #74 for a device with no biometric enrolled, and at #116 making the device passcode a **peer** of the biometric rather than a fallback, which removes the refresh token's `requireAuthentication` gating. The second amendment changes the decision rather than extending it; That second amendment took SRS to **v2.7**. **ADR-0022** (2026-10-25) allows production on one self-managed Linux host, gated by a signed readiness checklist, and took SRS to **v2.8**. `docs/sync-contract.md` is normative and governs its implementations.
 
 ### 2.2 What is not built, and is scheduled
 
-The P4.S6 run (the stack is built and asserted; nothing is deployed) · P4.S7, and all of P5–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**).
+The P4.S6 run (the stack is built and asserted; nothing is deployed) · P4.S7, and all of P5–P9 · `apps/admin` (no directory) · `packages/core/src/fhir` · the FHIR export module · the ADR-0017 deletion and purge job (**new sprint this revision — §4.5**) · D.S1, self-hosted production (§4.6, off-plan, #173).
 
 ### 2.3 What is not built, and was owned by nobody until this revision
 
@@ -235,6 +235,19 @@ P6 (weight and composite hydration status), P7 (resting heart rate, concordance,
 3. **P9.S5** is re-derived from `docs/compliance/breach-notification.md`. Under the FTC rule this product is neither a covered entity nor a business associate, so "BAA execution" is not a gating artifact in the form revision 1 assumed. The technical safeguards still stand as a voluntary standard, and the framing changes the moment a provider offers the app to their patients — the likely route being P5.S6's share link.
 
 Gates D (four signals live), E (a threshold change governs the next entry with no release) and F (production eligible) are unchanged.
+
+### 4.6 Phase D — self-hosted production (off-plan, claimed 2026-10-25)
+
+| Sprint | Size | Owner | Goal |
+| ------ | ---- | ----- | ---- |
+| **D.S1** _in progress (#173)_ | L | `devops-deployment-engineer` + main session | **Production on one self-managed Linux host** ([ADR-0022](../decisions/0022-self-hosted-production-on-one-host.md)), in five slices:<br>1. the ADR and the readiness checklist;<br>2. the Compose stack (`infra/selfhost/`: Caddy, Keycloak, PostgreSQL, MinIO, the API and web), with a Keycloak token integration test;<br>3. the deploy CLI;<br>4. the signed Android release build;<br>5. backups, restore and the runbook |
+
+> **D.S1 does not make anything production-eligible by itself.** A real-data host can be initialised only once every row of `docs/compliance/real-data-readiness.md` is signed. Several rows are other sprints' exit criteria:
+> - RD-1 is #144;
+> - RD-2 is #39, which a synthetic self-hosted host finally makes runnable on hardware;
+> - RD-3 is P5.S7.
+>
+> Gate F's meaning is unchanged for the AWS shape. For the self-hosted shape, the checklist **is** Gate F, enforced by the CLI instead of by review.
 
 ---
 
