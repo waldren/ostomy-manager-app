@@ -43,10 +43,11 @@ WORKDIR /workspace
 # lockfile or a workspace's package.json actually changes — source changes
 # below never bust it.
 #
-# Every workspace with a package.json must be listed here explicitly (a
-# workspace with only a README stub has none yet and is intentionally
-# omitted). Add a line here when a new workspace is scaffolded, or
-# `pnpm install --frozen-lockfile` fails against the lockfile.
+# Every workspace this image's graph needs (apps/api and what it depends
+# on) must be listed here explicitly, or `pnpm install --frozen-lockfile`
+# fails against the lockfile. Workspaces the API does not depend on
+# (apps/web, apps/mobile, infra/cdk) are left out and the install still
+# succeeds; add a line when apps/api gains a workspace dependency.
 #
 # `packages/ui` is deliberately absent: `apps/api` does not depend on it.
 # Only what this image's workspace graph actually needs belongs here.
@@ -245,3 +246,41 @@ COPY --from=build --chown=app:app /workspace/apps/api/prisma.config.ts ./prisma.
 USER app
 ENV NODE_ENV=production
 CMD ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
+
+# --- runtime-aws / migrate-aws --------------------------------------------------
+# The P4.S6 staging/Cognito spike's images (#168, infra/cdk). Each is the stage
+# above plus the RDS CA bundle, because every connection to RDS verifies its
+# certificate and Node does not trust the RDS CA on its own: `pg` reads
+# `sslmode=require` as verify-full, so without the bundle the API cannot
+# connect at all. Separate targets so the development images, which never
+# talk to RDS, are unchanged and need no network fetch to build.
+#
+# The directory is created first, as root and 755, on purpose. `ADD --chmod`
+# applies its mode to the parent directories it creates as well, and this base
+# image has no /etc/ssl: adding straight to /etc/ssl/rds produced a 644
+# /etc/ssl that nothing could enter, so OpenSSL failed to read its config and
+# node refused to start a single TLS connection, including the API's fetch of
+# Cognito's JWKS. Found by running the image against a TLS-only Postgres.
+#
+# The bundle is pinned by digest: it is the trust root for every database
+# connection, so whatever that URL served at build time would otherwise be
+# trusted, and two builds could trust different CAs. When AWS publishes a new
+# bundle the build fails here; refresh the digest (both stages) with
+#   curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem | sha256sum
+# after checking the change against AWS's announcement.
+FROM runtime AS runtime-aws
+USER root
+RUN mkdir -p /opt/rds-ca && chmod 755 /opt/rds-ca
+ADD --chmod=644 --checksum=sha256:90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b \
+    https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /opt/rds-ca/global-bundle.pem
+USER app
+
+# Also the two one-off database tasks' scripts (infra/cdk/tasks): CommonJS,
+# resolving `pg` from this image's /app/node_modules.
+FROM migrate AS migrate-aws
+USER root
+RUN mkdir -p /opt/rds-ca && chmod 755 /opt/rds-ca
+ADD --chmod=644 --checksum=sha256:90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b \
+    https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /opt/rds-ca/global-bundle.pem
+USER app
+COPY --chown=app:app infra/cdk/tasks ./aws-tasks

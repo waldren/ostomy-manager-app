@@ -26,3 +26,9 @@ openapi.json
 .env
 .env.*
 !.env.example
+
+# The CDK app's synth output (infra/cdk): the image build context is the repo
+# root, so without this a build stages the previous synth's assets into the
+# next one. Agent worktrees, likewise.
+**/cdk.out
+.claude

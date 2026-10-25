@@ -140,6 +140,8 @@ export default [
       // gitignored — but ESLint walks the filesystem, not git.
       'apps/mobile/android/**',
       'apps/mobile/ios/**',
+      // `cdk synth` output, which stages copies of the repo's source.
+      '**/cdk.out/**',
     ],
   },
 
@@ -290,11 +292,19 @@ export default [
   // application source. AWS CDK (TypeScript) lands in infra/ per CLAUDE.md,
   // and ESLint 9 lints only .js/.mjs/.cjs unless TS files are named.
   {
-    files: ['infra/**/*.{ts,js,mjs}', 'scripts/**/*.{ts,js,mjs}', '*.{ts,js,mjs}'],
+    files: ['infra/**/*.{ts,js,mjs,cjs}', 'scripts/**/*.{ts,js,mjs}', '*.{ts,js,mjs}'],
     rules: {
       'ostomy/agpl-header': 'off',
       // Operational output is the point of a script.
       'no-console': ['warn', { allow: ['log', 'warn', 'error'] }],
+    },
+  },
+  // The one-off database tasks run inside the API's CommonJS image (P4.S6).
+  {
+    files: ['infra/**/*.cjs'],
+    languageOptions: { sourceType: 'commonjs' },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
 

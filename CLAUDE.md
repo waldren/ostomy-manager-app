@@ -182,6 +182,8 @@ Nothing on this host may ever hold real PHI or a production credential — not t
 
 Staging is the parity gate. Fargate orchestration, TLS, real Cognito, and KMS are untested until staging exists; `docs/deployment-development.md` lists the deferred risks that staging must cover.
 
+**`infra/cdk` is a throwaway spike, not staging** (P4.S6, #168). One stack, `OstomyStagingSpike`, which `pnpm verify` synthesises and asserts on and **nothing deploys**: no AWS resource exists until the maintainer says "deploy". It is synthetic-data-only and destroyed after the run, and its README lists the settings that are fine for that and block real data (plain HTTP behind CloudFront, Cognito MFA off, and more). Two things there are easy to undo. **The first deploy runs with zero API tasks**: the database has no roles until the two one-off tasks run, and with one task the circuit breaker fails the create and rolls back the whole stack, database included. And **the task scripts send a SCRAM verifier, never a password**, because a failing `ALTER ROLE` is logged with its statement text. Its integration suite needs Docker, and refuses to skip when `CI` is set.
+
 ## Licensing
 
 AGPL-3.0-or-later. New source files in `apps/` and `packages/` get the license header from `docs/license-header.md` (a `/* ... */` block at the top for TS/JS).

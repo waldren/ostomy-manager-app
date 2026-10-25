@@ -8,4 +8,5 @@ Deployment configuration, cloud infrastructure, and CI/CD definitions.
   - `db/` — `bootstrap-roles.sql`, the migration-owner/runtime-role split the `db-roles` service applies; see `infra/db/README.md` for why it is not (only) a `docker-entrypoint-initdb.d` script.
   - `placeholder-pages/` — the static pages `web.Dockerfile`/`admin.Dockerfile` serve.
   - Reset script: `scripts/dev-reset.sh` (repo-root `scripts/`, not here, so it sits next to the other operational scripts).
+- **The P4.S6 staging/Cognito spike** (AWS, via CDK): `cdk/`, one stack that proves the OIDC claim mapping against real Cognito and the API under Fargate's health checks, then is destroyed. Not staging. See `cdk/README.md`; nothing in it is deployed unless someone runs `cdk deploy` by hand.
 - **Staging and production** (AWS, via CDK): not yet defined. See SRS §4.6–4.7.

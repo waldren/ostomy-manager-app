@@ -190,6 +190,31 @@ jobs:
             console.log('api image: boot graph resolves, @ostomy/core modules loaded: ' + core.length);
           "
 
+      # The P4.S6 spike's images (infra/cdk, #168) are built by `cdk deploy`
+      # and by nothing else, so a break here would otherwise surface only in
+      # an AWS account. One already did, on the desk: `ADD --chmod` gave a
+      # newly created /etc/ssl mode 644, and node then refused to start at
+      # all ("OpenSSL configuration error"), as the image's own user.
+      - name: AWS images — node starts, trusts the RDS CA, and the task scripts resolve
+        run: |
+          set -euo pipefail
+          docker build -f infra/docker/api.Dockerfile --target runtime-aws -t ostomy/api:aws-ci .
+          docker build -f infra/docker/api.Dockerfile --target migrate-aws -t ostomy/migrate:aws-ci .
+          check='
+            const fs = require("fs");
+            const tls = require("tls");
+            const pem = fs.readFileSync("/opt/rds-ca/global-bundle.pem", "utf8");
+            const count = (pem.match(/BEGIN CERTIFICATE/g) || []).length;
+            if (count === 0) { console.error("The RDS CA bundle is empty."); process.exit(1); }
+            tls.createSecureContext({ ca: pem });
+            console.log("RDS CA bundle loaded: " + count + " certificates");
+          '
+          docker run --rm --entrypoint node ostomy/api:aws-ci -e "$check"
+          docker run --rm --entrypoint node ostomy/migrate:aws-ci -e "$check
+            require(\"/app/aws-tasks/db-common.cjs\");
+            console.log(\"task scripts resolve pg\");
+          "
+
       - name: Web image — serves the built SPA, not a placeholder
         run: |
           set -euo pipefail

@@ -39,3 +39,6 @@ design-specs/
 # developer who has built the app once can never get a clean `pnpm format`.
 apps/mobile/android/
 apps/mobile/ios/
+
+# `cdk synth` output (infra/cdk), which stages copies of the repo source.
+**/cdk.out/
