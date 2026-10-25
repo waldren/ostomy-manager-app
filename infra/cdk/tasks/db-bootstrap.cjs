@@ -26,7 +26,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // membership is a privilege nobody needs.
 'use strict';
 
-const { connect, required, run } = require('./db-common.cjs');
+const { connect, required, run, scramVerifierLiteral } = require('./db-common.cjs');
 
 run(async () => {
   const masterUser = required('DB_MASTER_USER');
@@ -41,7 +41,7 @@ run(async () => {
   });
   try {
     const role = master.escapeIdentifier(ownerRole);
-    const password = master.escapeLiteral(ownerPassword);
+    const password = scramVerifierLiteral(master, ownerPassword);
     const { rowCount } = await master.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [
       ownerRole,
     ]);

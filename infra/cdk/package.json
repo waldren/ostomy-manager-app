@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "AGPL-3.0-or-later",
-  "description": "The P4.S6 staging/Cognito spike stack (#168). Synthesised and asserted in pnpm verify; deployed only by hand, per docs/deployment-staging-spike.md.",
+  "description": "The P4.S6 staging/Cognito spike stack (#168). Synthesised and asserted in pnpm verify; deployed only by hand, in the order infra/cdk/README.md gives.",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",

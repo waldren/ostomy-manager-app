@@ -24,7 +24,7 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { API_PORT, HEALTH_PATH, SpikeStack } from './spike-stack';
+import { API_PORT, HEALTH_PATH, RDS_CA_BUNDLE, SpikeStack } from './spike-stack';
 
 interface Resource {
   Type: string;
@@ -38,11 +38,7 @@ let resources: Record<string, Resource>;
 
 beforeAll(() => {
   const app = new App();
-  const stack = new SpikeStack(app, 'Spike', {
-    apiImage: ecs.ContainerImage.fromRegistry('example.invalid/api:test'),
-    migrateImage: ecs.ContainerImage.fromRegistry('example.invalid/migrate:test'),
-    buildCommit: 'abc123',
-  });
+  const stack = new SpikeStack(app, 'Spike', { ...images, buildCommit: 'abc123' });
   template = Template.fromStack(stack);
   resources = (template.toJSON() as { Resources: Record<string, Resource> }).Resources;
 });
@@ -56,6 +52,11 @@ function only(type: string): [string, Resource] {
   expect(found).toHaveLength(1);
   return found[0] as [string, Resource];
 }
+
+const images = {
+  apiImage: ecs.ContainerImage.fromRegistry('example.invalid/api:test'),
+  migrateImage: ecs.ContainerImage.fromRegistry('example.invalid/migrate:test'),
+};
 
 /** The logical id a `{ Ref }` or `{ Fn::GetAtt }` points at, if it is one. */
 function referenced(value: unknown): string | undefined {
@@ -80,10 +81,31 @@ function referencesIn(value: unknown): Set<string> {
   return found;
 }
 
-function containerOf(taskLogicalIdPrefix: string): Record<string, unknown> {
-  const [, task] = ofType('AWS::ECS::TaskDefinition').find(([id]) =>
+/**
+ * A string value as text, with each `{ Ref }` written `${id}`: a plain
+ * string as is, an `Fn::Join` joined. Anything else is a test failure.
+ */
+function rendered(value: unknown): string {
+  if (typeof value === 'string') return value;
+  const id = referenced(value);
+  if (id !== undefined) return `\${${id}}`;
+  const join = (value as Record<string, unknown> | null)?.['Fn::Join'];
+  if (Array.isArray(join) && typeof join[0] === 'string' && Array.isArray(join[1])) {
+    return (join[1] as unknown[]).map(rendered).join(join[0]);
+  }
+  throw new Error(`cannot render ${JSON.stringify(value)}`);
+}
+
+function taskOf(taskLogicalIdPrefix: string): Resource {
+  const found = ofType('AWS::ECS::TaskDefinition').filter(([id]) =>
     id.startsWith(taskLogicalIdPrefix),
-  ) as [string, Resource];
+  );
+  expect(found, `task definition ${taskLogicalIdPrefix}*`).toHaveLength(1);
+  return (found[0] as [string, Resource])[1];
+}
+
+function containerOf(taskLogicalIdPrefix: string): Record<string, unknown> {
+  const task = taskOf(taskLogicalIdPrefix);
   const containers = task.Properties?.ContainerDefinitions as Record<string, unknown>[];
   expect(containers).toHaveLength(1);
   return containers[0] as Record<string, unknown>;
@@ -151,9 +173,16 @@ describe('the database is never public', () => {
     expect(resources[dbGroup]?.Properties?.SecurityGroupIngress).toBeUndefined();
   });
 
-  it('forces TLS and keeps row values out of its error log', () => {
+  it('forces TLS, and keeps row values and statements out of its log', () => {
     template.hasResourceProperties('AWS::RDS::DBParameterGroup', {
-      Parameters: { 'rds.force_ssl': '1', log_error_verbosity: 'terse' },
+      Parameters: {
+        'rds.force_ssl': '1',
+        log_error_verbosity: 'terse',
+        log_statement: 'none',
+        log_min_duration_statement: '-1',
+        log_parameter_max_length: '0',
+        log_parameter_max_length_on_error: '0',
+      },
     });
   });
 });
@@ -164,7 +193,12 @@ describe('the load balancer is reachable only through CloudFront', () => {
       Scheme: 'internal',
     });
     const [, alb] = only('AWS::ElasticLoadBalancingV2::LoadBalancer');
-    for (const subnet of referencesIn(alb.Properties?.Subnets)) expect(subnet).toMatch(/isolated/i);
+    const subnets = referencesIn(alb.Properties?.Subnets);
+    expect(subnets.size).toBeGreaterThan(0);
+    for (const subnet of subnets) {
+      expect(subnet).toMatch(/isolated/i);
+      expect(routesOf(subnet), `routes for ${subnet}`).toHaveLength(0);
+    }
   });
 
   it('opens nothing to the internet, anywhere in the stack', () => {
@@ -247,10 +281,16 @@ describe('the token settings (#169) for both pools', () => {
     const env = environmentOf(containerOf('ApiTask'));
     const patientPool = logicalIdStartingWith('AWS::Cognito::UserPool', 'PatientPool');
     const adminPool = logicalIdStartingWith('AWS::Cognito::UserPool', 'AdminPool');
-    expect(referencesIn(env.OIDC_ISSUER)).toEqual(new Set([patientPool]));
-    expect(referencesIn(env.OIDC_JWKS_URI)).toEqual(new Set([patientPool]));
-    expect(referencesIn(env.ADMIN_OIDC_ISSUER)).toEqual(new Set([adminPool]));
-    expect(referencesIn(env.ADMIN_OIDC_JWKS_URI)).toEqual(new Set([adminPool]));
+    // The exact form: the API refuses to boot on an issuer that is not a URL,
+    // and the `iss` comparison is exact, so a trailing slash rejects every token.
+    for (const [prefix, pool] of [
+      ['', patientPool],
+      ['ADMIN_', adminPool],
+    ] as const) {
+      const issuer = `https://cognito-idp.\${AWS::Region}.amazonaws.com/\${${pool}}`;
+      expect(rendered(env[`${prefix}OIDC_ISSUER`])).toBe(issuer);
+      expect(rendered(env[`${prefix}OIDC_JWKS_URI`])).toBe(`${issuer}/.well-known/jwks.json`);
+    }
     expect(referenced(env.OIDC_AUDIENCE)).toMatch(/^PatientPoolPatientClient/);
     expect(referenced(env.ADMIN_OIDC_AUDIENCE)).toMatch(/^AdminPoolAdminClient/);
   });
@@ -292,36 +332,94 @@ describe('the API container', () => {
   // the image (#168): the stack used to default it to ''.
   it('is stamped with the commit, never an empty one', () => {
     expect(environmentOf(containerOf('ApiTask')).BUILD_COMMIT).toBe('abc123');
-    expect(
-      () =>
-        new SpikeStack(new App(), 'Empty', {
-          apiImage: ecs.ContainerImage.fromRegistry('example.invalid/api:test'),
-          migrateImage: ecs.ContainerImage.fromRegistry('example.invalid/migrate:test'),
-          buildCommit: ' ',
-        }),
-    ).toThrow(/buildCommit/);
+    expect(() => new SpikeStack(new App(), 'Empty', { ...images, buildCommit: ' ' })).toThrow(
+      /buildCommit/,
+    );
   });
 
   it('runs an init process, so SIGTERM reaches node', () => {
     expect(containerOf('ApiTask').LinuxParameters).toMatchObject({ InitProcessEnabled: true });
   });
 
-  it('can read only its own secret: not the master’s, not the owner’s', () => {
-    const [, apiTask] = ofType('AWS::ECS::TaskDefinition').find(([id]) =>
-      id.startsWith('ApiTask'),
-    ) as [string, Resource];
-    const executionRole = referenced(apiTask.Properties?.ExecutionRoleArn) as string;
-    const policies = ofType('AWS::IAM::Policy').filter(([, policy]) =>
-      referencesIn(policy.Properties?.Roles).has(executionRole),
+  it('sends no task definition a DB_TLS setting: TLS is never off in AWS', () => {
+    for (const task of ['ApiTask', 'DbBootstrapTask', 'DbMigrateTask']) {
+      expect(environmentOf(containerOf(task)).DB_TLS, task).toBeUndefined();
+    }
+  });
+});
+
+describe('the one-off database tasks', () => {
+  it('verify the server against the RDS CA bundle, in both drivers', () => {
+    for (const task of ['DbBootstrapTask', 'DbMigrateTask']) {
+      expect(environmentOf(containerOf(task)).DB_SSL_CA_FILE, task).toBe(RDS_CA_BUNDLE);
+    }
+    // Prisma's schema engine: `sslcert` is the CA, `sslaccept=strict` verifies it.
+    const command = JSON.stringify(containerOf('DbMigrateTask').Command);
+    expect(command).toContain(`sslcert=${RDS_CA_BUNDLE}&sslaccept=strict`);
+    expect(command).not.toContain('accept_invalid_certs');
+  });
+});
+
+describe('least privilege', () => {
+  /** Every secret a role's policies name; the master secret is an attachment. */
+  function secretsReadBy(role: string): string[] {
+    const secretTypes = [
+      'AWS::SecretsManager::Secret',
+      'AWS::SecretsManager::SecretTargetAttachment',
+    ];
+    return [
+      ...new Set(
+        ofType('AWS::IAM::Policy')
+          .filter(([, policy]) => referencesIn(policy.Properties?.Roles).has(role))
+          .flatMap(([, policy]) => [...referencesIn(policy.Properties?.PolicyDocument)])
+          .filter((id) => secretTypes.includes(resources[id]?.Type ?? '')),
+      ),
+    ].sort();
+  }
+  const secret = (prefix: string) => logicalIdStartingWith('AWS::SecretsManager::Secret', prefix);
+
+  it('lets each task’s execution role read exactly the secrets its container is given', () => {
+    const master = logicalIdStartingWith(
+      'AWS::SecretsManager::SecretTargetAttachment',
+      'DatabaseSecretAttachment',
     );
-    const secretsRead = new Set(
-      policies
-        .flatMap(([, policy]) => [...referencesIn(policy.Properties?.PolicyDocument)])
-        .filter((id) => resources[id]?.Type === 'AWS::SecretsManager::Secret'),
+    const expected: Record<string, string[]> = {
+      ApiTask: [secret('DbRuntimePassword')],
+      DbBootstrapTask: [master, secret('DbOwnerPassword')],
+      DbMigrateTask: [secret('DbOwnerPassword'), secret('DbRuntimePassword')],
+    };
+    for (const [task, secrets] of Object.entries(expected)) {
+      const role = referenced(taskOf(task).Properties?.ExecutionRoleArn) as string;
+      expect(secretsReadBy(role), task).toEqual([...secrets].sort());
+    }
+  });
+
+  // The task role is what the running process holds. A grant here would let
+  // the API fetch the master password itself (ADR-0011).
+  it('gives no task role any policy at all', () => {
+    for (const task of ['ApiTask', 'DbBootstrapTask', 'DbMigrateTask']) {
+      const role = referenced(taskOf(task).Properties?.TaskRoleArn) as string;
+      expect(role, task).toBeDefined();
+      const attached = ofType('AWS::IAM::Policy').filter(([, policy]) =>
+        referencesIn(policy.Properties?.Roles).has(role),
+      );
+      expect(attached, task).toHaveLength(0);
+      expect(resources[role]?.Properties?.ManagedPolicyArns, task).toBeUndefined();
+      expect(resources[role]?.Properties?.Policies, task).toBeUndefined();
+    }
+  });
+});
+
+// The first deploy must start with no API task: the database has no roles
+// until the one-off tasks run, and CloudFormation waiting on a service that
+// cannot stabilise rolls back the whole stack, database included.
+describe('the API service', () => {
+  it('starts with no task unless asked for one', () => {
+    template.hasResourceProperties('AWS::ECS::Service', { DesiredCount: 0 });
+    const scaled = Template.fromStack(
+      new SpikeStack(new App(), 'Scaled', { ...images, buildCommit: 'abc123', apiDesiredCount: 1 }),
     );
-    expect([...secretsRead]).toEqual([
-      logicalIdStartingWith('AWS::SecretsManager::Secret', 'DbRuntimePassword'),
-    ]);
+    scaled.hasResourceProperties('AWS::ECS::Service', { DesiredCount: 1 });
   });
 });
 
@@ -339,6 +437,26 @@ describe('logs', () => {
 });
 
 describe('teardown removes everything', () => {
+  // Exactly Delete on everything that holds state: an RDS instance with no
+  // DeletionPolicy at all is snapshotted on delete, and the snapshot outlives
+  // the stack.
+  it('deletes every stateful resource outright', () => {
+    const stateful = [
+      'AWS::RDS::DBInstance',
+      'AWS::SecretsManager::Secret',
+      'AWS::Cognito::UserPool',
+      'AWS::Logs::LogGroup',
+    ];
+    for (const type of stateful) {
+      const found = ofType(type);
+      expect(found.length, type).toBeGreaterThan(0);
+      for (const [id, resource] of found) {
+        expect(resource.DeletionPolicy, id).toBe('Delete');
+        expect(resource.UpdateReplacePolicy, id).toBe('Delete');
+      }
+    }
+  });
+
   it('retains and snapshots nothing', () => {
     for (const [id, resource] of Object.entries(resources)) {
       expect(['Retain', 'Snapshot', 'RetainExceptOnCreate'], id).not.toContain(

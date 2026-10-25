@@ -24,8 +24,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  *
  * Synthetic data only, like every non-production environment (CLAUDE.md):
  * the stack is tagged `data-classification: synthetic-only` and nothing here
- * may ever hold a real patient's data. `docs/deployment-staging-spike.md` is
- * the runbook.
+ * may ever hold a real patient's data. `docs/deployment-staging-spike.md`
+ * (P4.S6 slice 4) is the runbook; until it exists, `infra/cdk/README.md`
+ * says what the deploy order is.
  *
  * The images are props so the assertion tests can synthesise the stack
  * without building them; `bin/app.ts` passes the real ones.
@@ -55,6 +56,15 @@ export interface SpikeStackProps extends StackProps {
    * whoever reads the task definition.)
    */
   readonly buildCommit: string;
+  /**
+   * The API service's task count. Defaults to 0, and the first deploy must
+   * use 0: the database has no owner, no `ostomy` database and no runtime
+   * role until the two one-off tasks have run, so an API task cannot start.
+   * CloudFormation waits for the service to stabilise, and with 1 the circuit
+   * breaker fails the create and rolls back the whole stack, database
+   * included. Deploy, run the tasks, then deploy again with 1.
+   */
+  readonly apiDesiredCount?: number;
 }
 
 export const DB_NAME = 'ostomy';
@@ -148,6 +158,14 @@ export class SpikeStack extends Stack {
         // DETAIL line prints the offending row's values, which are clinical
         // values once real data exists. Terse drops DETAIL.
         log_error_verbosity: 'terse',
+        // Pinned rather than left to the engine defaults they equal, so
+        // turning one on is a reviewable diff. A logged statement would carry
+        // `ALTER ROLE ... PASSWORD` if the tasks sent cleartext (they send a
+        // SCRAM verifier), and a bound parameter is a clinical value.
+        log_statement: 'none',
+        log_min_duration_statement: '-1',
+        log_parameter_max_length: '0',
+        log_parameter_max_length_on_error: '0',
       },
     });
     const database = new rds.DatabaseInstance(this, 'Database', {
@@ -178,6 +196,15 @@ export class SpikeStack extends Stack {
     // would otherwise pass the guard (#169 review). USER_PASSWORD_AUTH is on
     // only so the runbook can mint a token from the CLI; the real clients
     // use authorization code + PKCE, which is P9's to configure.
+    //
+    // SPIKE-ONLY, each a blocker before real patients: MFA is off (SRS §4.6
+    // makes it mandatory for every admin account), account recovery is NONE
+    // (there is no reset flow yet), USER_PASSWORD_AUTH is enabled, and
+    // threat protection and deletion protection are off.
+    //
+    // The issuer is spelled out rather than taken from `userPoolProviderUrl`,
+    // so its form (scheme included, no trailing slash) is visible here and
+    // asserted by a test: the API refuses to boot on a malformed issuer.
     const identity = (id: string, name: string) => {
       const pool = new cognito.UserPool(this, `${id}Pool`, {
         userPoolName: `ostomy-spike-${name}`,
@@ -199,7 +226,8 @@ export class SpikeStack extends Stack {
         idTokenValidity: Duration.minutes(60),
         refreshTokenValidity: Duration.days(1),
       });
-      return { pool, client, issuer: pool.userPoolProviderUrl };
+      const issuer = `https://cognito-idp.${this.region}.amazonaws.com/${pool.userPoolId}`;
+      return { pool, client, issuer };
     };
     const patient = identity('Patient', 'patient');
     const admin = identity('Admin', 'admin');
@@ -285,7 +313,7 @@ export class SpikeStack extends Stack {
     const service = new ecs.FargateService(this, 'ApiService', {
       cluster,
       taskDefinition: apiTask,
-      desiredCount: 1,
+      desiredCount: props.apiDesiredCount ?? 0,
       minHealthyPercent: 100,
       maxHealthyPercent: 200,
       assignPublicIp: true,
@@ -342,7 +370,11 @@ export class SpikeStack extends Stack {
     // ---- Load balancer and TLS --------------------------------------------
     // The ALB is INTERNAL. CloudFront reaches it through a VPC origin, over
     // AWS's network, so the ALB has no public address to protect and no
-    // CloudFront IP list to maintain. TLS terminates at CloudFront on its
+    // CloudFront IP list to maintain. Its security group admits the VPC's CIDR
+    // rather than the VPC origin's own security group, which CloudFront
+    // creates only after the origin exists and so cannot be named here. The
+    // hops behind CloudFront (to the ALB, and the ALB to the task) are plain
+    // HTTP inside the VPC: fine for synthetic data, a blocker before PHI. TLS terminates at CloudFront on its
     // default *.cloudfront.net certificate: the spike owns no domain.
     const alb = new elbv2.ApplicationLoadBalancer(this, 'Alb', {
       vpc,

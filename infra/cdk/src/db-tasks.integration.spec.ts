@@ -37,7 +37,9 @@ const TASKS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '
 const MASTER = { user: 'ostomy_master', password: 'master-test-only-password' };
 const OWNER_ROLE = 'ostomy_owner';
 const OWNER_PASSWORD = 'owner-test-only-password';
+const ROTATED_OWNER_PASSWORD = 'owner-rotated-test-only-password';
 const RUNTIME_ROLE = 'ostomy_runtime';
+const RUNTIME_PASSWORD = 'runtime-test-only-password';
 const DB_NAME = 'ostomy';
 
 function isDockerAvailable(): boolean {
@@ -72,6 +74,9 @@ describe.skipIf(!dockerAvailable)('the one-off database tasks (P4.S6, #168)', ()
       .withDatabase('postgres')
       .withUsername('bootstrap_superuser')
       .withPassword('bootstrap-test-only-password')
+      // Every statement to the server log, the worst a later operator could
+      // configure, so a test below can show no password ever reaches it.
+      .withCommand(['postgres', '-c', 'log_statement=all'])
       .start();
     await query({ user: 'bootstrap_superuser', password: 'bootstrap-test-only-password' }, [
       `CREATE ROLE ${MASTER.user} LOGIN PASSWORD '${MASTER.password}' CREATEROLE CREATEDB`,
@@ -153,7 +158,7 @@ describe.skipIf(!dockerAvailable)('the one-off database tasks (P4.S6, #168)', ()
   });
 
   it('db-bootstrap: a re-run succeeds and rotates the owner password', async () => {
-    const rotated = 'owner-rotated-test-only-password';
+    const rotated = ROTATED_OWNER_PASSWORD;
     const { status, output } = runTask(
       'db-bootstrap.cjs',
       bootstrapEnv({ DB_OWNER_PASSWORD: rotated }),
@@ -178,7 +183,7 @@ describe.skipIf(!dockerAvailable)('the one-off database tasks (P4.S6, #168)', ()
       ],
       DB_NAME,
     );
-    const runtimePassword = 'runtime-test-only-password';
+    const runtimePassword = RUNTIME_PASSWORD;
 
     const { status, output } = runTask('runtime-password.cjs', {
       DB_OWNER_ROLE: OWNER_ROLE,
@@ -205,6 +210,33 @@ describe.skipIf(!dockerAvailable)('the one-off database tasks (P4.S6, #168)', ()
     });
     expect(status).toBe(1);
     expect(output).toContain('DB_SSL_CA_FILE is required');
+  });
+
+  it('sends a SCRAM verifier, so no password reaches the server log even with log_statement=all', () => {
+    // Every task above has run by now, so their statements are in the log.
+    const { stdout, stderr } = spawnSync('docker', ['logs', container.getId()], {
+      encoding: 'utf8',
+    });
+    const log = `${stdout}${stderr}`;
+    // The statements were logged at all, or the absence below proves nothing.
+    expect(log).toMatch(
+      /ROLE "?ostomy_owner"? WITH LOGIN CREATEROLE CREATEDB PASSWORD 'SCRAM-SHA-256\$/,
+    );
+    expect(log).toMatch(/ROLE "?ostomy_runtime"? WITH LOGIN PASSWORD 'SCRAM-SHA-256\$/);
+    for (const password of [OWNER_PASSWORD, ROTATED_OWNER_PASSWORD, RUNTIME_PASSWORD]) {
+      expect(log).not.toContain(password);
+    }
+  });
+
+  it('refuses a password a SCRAM verifier cannot represent as given, without echoing it', () => {
+    const spaced = 'has a space in it';
+    const { status, output } = runTask(
+      'db-bootstrap.cjs',
+      bootstrapEnv({ DB_OWNER_PASSWORD: spaced }),
+    );
+    expect(status).toBe(1);
+    expect(output).toContain('printable ASCII');
+    expect(output).not.toContain(spaced);
   });
 
   it('never prints a password when it fails', () => {

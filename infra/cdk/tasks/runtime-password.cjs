@@ -22,7 +22,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 // `db-roles` service. Safe to re-run; a re-run is how the password rotates.
 'use strict';
 
-const { connect, required, run } = require('./db-common.cjs');
+const { connect, required, run, scramVerifierLiteral } = require('./db-common.cjs');
 
 run(async () => {
   const runtimeRole = required('DB_RUNTIME_ROLE');
@@ -33,7 +33,8 @@ run(async () => {
   });
   try {
     await owner.query(
-      `ALTER ROLE ${owner.escapeIdentifier(runtimeRole)} WITH LOGIN PASSWORD ${owner.escapeLiteral(
+      `ALTER ROLE ${owner.escapeIdentifier(runtimeRole)} WITH LOGIN PASSWORD ${scramVerifierLiteral(
+        owner,
         required('DB_RUNTIME_PASSWORD'),
       )}`,
     );

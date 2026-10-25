@@ -19,11 +19,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * The CDK app for the P4.S6 spike (#168). `pnpm --filter @ostomy/infra-cdk
  * cdk deploy` builds both images from infra/docker/api.Dockerfile's `-aws`
  * targets and deploys `OstomyStagingSpike` to the account and region the AWS
- * CLI is configured for. Run it only as docs/deployment-staging-spike.md says.
+ * CLI is configured for. Run it only as docs/deployment-staging-spike.md
+ * (P4.S6 slice 4) says; until then, infra/cdk/README.md has the order.
  *
  * The images are stamped with the checkout's commit (`git rev-parse HEAD`),
  * or with `-c buildCommit=<sha>`. A synth with neither fails: the API refuses
- * to start with an empty BUILD_COMMIT.
+ * to start with an empty BUILD_COMMIT. A checkout with uncommitted changes is
+ * refused too, unless the commit is given explicitly: HEAD would name code
+ * that is not what the images contain, and #76 is what that costs.
+ *
+ * `-c apiDesiredCount=1` scales the API up. It defaults to 0, which the first
+ * deploy must use (SpikeStackProps.apiDesiredCount says why).
  */
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -38,12 +44,21 @@ import { SpikeStack } from '../src/spike-stack';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 const app = new App();
-function headCommit(): string {
+function git(...args: string[]): string | undefined {
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' }).trim();
   } catch {
-    return '';
+    return undefined;
   }
+}
+function headCommit(): string {
+  const head = git('rev-parse', 'HEAD') ?? '';
+  if (head !== '' && git('status', '--porcelain') !== '') {
+    throw new Error(
+      'The checkout has uncommitted changes, so HEAD does not name what the images would contain. Commit them, or pass -c buildCommit=<sha> deliberately.',
+    );
+  }
+  return head;
 }
 const fromContext: unknown = app.node.tryGetContext('buildCommit');
 const commit =
@@ -75,6 +90,12 @@ const image = (target: 'runtime-aws' | 'migrate-aws') =>
     ],
   });
 
+const desired: unknown = app.node.tryGetContext('apiDesiredCount');
+const apiDesiredCount = desired === undefined ? 0 : Number(desired);
+if (!Number.isInteger(apiDesiredCount) || apiDesiredCount < 0 || apiDesiredCount > 1) {
+  throw new Error('apiDesiredCount must be 0 or 1.');
+}
+
 const account = process.env.CDK_DEFAULT_ACCOUNT;
 const region = process.env.CDK_DEFAULT_REGION;
 
@@ -84,4 +105,5 @@ new SpikeStack(app, 'OstomyStagingSpike', {
   apiImage: image('runtime-aws'),
   migrateImage: image('migrate-aws'),
   buildCommit: commit,
+  apiDesiredCount,
 });
