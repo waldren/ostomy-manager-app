@@ -24,9 +24,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  *
  * Synthetic data only, like every non-production environment (CLAUDE.md):
  * the stack is tagged `data-classification: synthetic-only` and nothing here
- * may ever hold a real patient's data. `docs/deployment-staging-spike.md`
- * (P4.S6 slice 4) is the runbook; until it exists, `infra/cdk/README.md`
- * says what the deploy order is.
+ * may ever hold a real patient's data. `docs/deployment-staging-spike.md` is
+ * the runbook.
  *
  * The images are props so the assertion tests can synthesise the stack
  * without building them; `bin/app.ts` passes the real ones.

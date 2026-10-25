@@ -19,8 +19,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * The CDK app for the P4.S6 spike (#168). `pnpm --filter @ostomy/infra-cdk
  * cdk deploy` builds both images from infra/docker/api.Dockerfile's `-aws`
  * targets and deploys `OstomyStagingSpike` to the account and region the AWS
- * CLI is configured for. Run it only as docs/deployment-staging-spike.md
- * (P4.S6 slice 4) says; until then, infra/cdk/README.md has the order.
+ * CLI is configured for. Run it only as docs/deployment-staging-spike.md says.
  *
  * The images are stamped with the checkout's commit (`git rev-parse HEAD`),
  * or with `-c buildCommit=<sha>`. A synth with neither fails: the API refuses

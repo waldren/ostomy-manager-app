@@ -40,12 +40,12 @@ pnpm --filter @ostomy/infra-cdk test:integration  # the task scripts against Pos
 pnpm --filter @ostomy/infra-cdk synth             # the real app: stages both image contexts into cdk.out
 ```
 
-The full runbook, `docs/deployment-staging-spike.md`, is P4.S6 slice 4 and does not exist yet. Until it does, the order is what matters:
+**Deploy only by following [`docs/deployment-staging-spike.md`](../../docs/deployment-staging-spike.md)**. That runbook covers the prerequisites, every command, the two proofs, the results table, teardown and cost. The order is the part that cannot be improvised:
 
 1. **`cdk deploy`** with the default `apiDesiredCount=0`. The database has no owner, no `ostomy` database and no runtime role yet, so an API task could not start. CloudFormation waits for the service to stabilise, and with one task the circuit breaker would fail the create and roll back the whole stack, database included.
 2. **Run `DbBootstrapTask`, then `DbMigrateTask`**, with `aws ecs run-task` in the `TaskSubnetIds` output's subnets, with the `DbTaskSecurityGroupId` security group and `assignPublicIp=ENABLED`. With no NAT, a task without a public IP cannot pull its image or read its secrets.
 3. **`cdk deploy -c apiDesiredCount=1`.**
-4. **`cdk destroy`**, then clean up what it leaves (below).
+4. **`cdk destroy`** the same day, then check what it leaves (below; the runbook has the commands).
 
 The images are stamped with the checkout's `git rev-parse HEAD`, because the API refuses to start with an empty `BUILD_COMMIT`. A checkout with uncommitted changes is refused, since HEAD would not name what the images contain; `-c buildCommit=<sha>` overrides that deliberately.
 
