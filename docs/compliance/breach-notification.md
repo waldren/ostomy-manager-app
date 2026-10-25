@@ -37,7 +37,7 @@ Record the discovery timestamp immediately and in writing, before doing anything
 | **Affected individuals** | Without unreasonable delay, and **no later than 60 calendar days** after discovery |
 | **The FTC** | If **500 or more** individuals: **no later than 60 calendar days** after discovery. Fewer than 500: log it and file annually, within 60 days of the calendar year's end |
 | **Media** | If **500 or more residents of one state or territory**: prominent media notice there, on the same 60-day clock |
-| **Third-party service providers** | If a provider to *us* discovers a breach, they must notify us; if we act as a provider to another service, we must notify them |
+| **Third-party service providers** | If a provider to *us* discovers a breach, they must notify us; if we act as a provider to another service, we must notify them. We must also tell each of our providers that we are a vendor of personal health records (16 CFR 318.3(b); the term is defined in 318.2). On the self-hosted shape that means the VPS provider and the off-host backup store (ADR-0022, RD-6) |
 
 "Without unreasonable delay" is the operative standard. Sixty days is a ceiling, not a target, and taking all of it without cause is itself a finding.
 
@@ -60,7 +60,7 @@ A lost or stolen patient phone is the incident this product is most likely to ha
 1. **Establish whether the local store was encrypted.** ADR-0014 encrypts it with SQLCipher, keyed from `expo-secure-store` and bound to the device. Confirm the build the patient was running actually had it — an older build predating that ADR did not.
 2. **Establish whether the key could travel with the file.** The key is stored `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`, which the keychain does not migrate on backup restore. A backup restored onto another device yields an undecryptable file.
 3. **Check the backup path for the platform in question.** v1 ships Android only ([ADR-0020](../../design-specs/decisions/0020-android-only-v1.md)) with `allowBackup: false`, so the database does not enter Google backup — confirm that on the build the patient was running rather than assuming it. The iCloud exposure this step used to describe was removed with the iOS platform, not mitigated; if iOS is ever reinstated, it returns with it.
-4. **Revoke.** Revoke the refresh token at the issuer. Note that biometric enrolment change already invalidates it (ADR-0015), and that a *live* coerced unlock is not addressed by any control.
+4. **Revoke.** End the patient's sessions at the issuer (a Keycloak session logout on the self-hosted shape), which invalidates the refresh token. A biometric enrolment change **no longer** invalidates it (ADR-0015 Amendment 2). An access token already issued stays valid until it expires, because the API has no revocation check. A *live* coerced unlock is not addressed by any control.
 5. **Assess and record.** Encrypted, key non-migrating, no evidence of decryption → document the reasoning and why no notice is required. Anything else → assume acquisition and start the 60-day clock.
 
 ## Roles
