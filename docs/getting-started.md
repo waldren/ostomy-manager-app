@@ -17,7 +17,7 @@ pnpm install
 
 ## Repo layout
 
-A pnpm-workspace monorepo (`apps/*` for mobile, web, API and the admin console; `packages/*` for shared code). See the root `README.md` for the full layout and `docs/architecture.md` for how the pieces fit together.
+A pnpm-workspace monorepo (`apps/*` for mobile, web, API and the admin console; `packages/*` for shared code; `infra/cdk` for the P4.S6 staging/Cognito spike's CDK stack, which `pnpm verify` synthesises and asserts but never deploys, see `infra/cdk/README.md`). See the root `README.md` for the full layout and `docs/architecture.md` for how the pieces fit together.
 
 `packages/config` holds the shared TypeScript, ESLint and Prettier configuration that every other workspace extends. There is deliberately **no task runner** — plain pnpm scripts only, see [ADR-0003](../design-specs/decisions/0003-monorepo-task-tooling.md).
 

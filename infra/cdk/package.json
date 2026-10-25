@@ -1,0 +1,33 @@
+{
+  "name": "@ostomy/infra-cdk",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "The P4.S6 staging/Cognito spike stack (#168). Synthesised and asserted in pnpm verify; deployed only by hand, per docs/deployment-staging-spike.md.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "pnpm run test:unit && pnpm run test:integration",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "synth": "cdk synth",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@ostomy/config": "workspace:*",
+    "@testcontainers/postgresql": "^12.1.0",
+    "@types/node": "^24.13.3",
+    "@types/pg": "^8.23.1",
+    "aws-cdk": "^2.1146.1",
+    "pg": "^8.23.0",
+    "testcontainers": "^12.1.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.274.0",
+    "constructs": "^10.8.1"
+  }
+}

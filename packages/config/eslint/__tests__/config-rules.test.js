@@ -243,4 +243,18 @@ describe('no-console in shipped code', () => {
     const ids = await ruleIdsFor(`console.error('failed');`, 'scripts/probe.mjs');
     expect(ids).not.toContain('no-console');
   });
+
+  // P4.S6: the one-off database tasks' operational output is their log in
+  // CloudWatch, and they run in the API's CommonJS image.
+  it('permits console.error and require() in infra/ CommonJS task scripts', async () => {
+    const ids = await ruleIdsFor(
+      `'use strict';
+const { Client } = require('pg');
+console.error('failed', Client);`,
+      'infra/cdk/tasks/probe.cjs',
+    );
+    expect(ids).not.toContain('no-console');
+    expect(ids).not.toContain('@typescript-eslint/no-require-imports');
+    expect(ids).not.toContain('no-undef');
+  });
 });

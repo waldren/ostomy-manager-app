@@ -245,3 +245,32 @@ COPY --from=build --chown=app:app /workspace/apps/api/prisma.config.ts ./prisma.
 USER app
 ENV NODE_ENV=production
 CMD ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
+
+# --- runtime-aws / migrate-aws --------------------------------------------------
+# The P4.S6 staging/Cognito spike's images (#168, infra/cdk). Each is the stage
+# above plus the RDS CA bundle, because every connection to RDS verifies its
+# certificate and Node does not trust the RDS CA on its own: `pg` reads
+# `sslmode=require` as verify-full, so without the bundle the API cannot
+# connect at all. Separate targets so the development images, which never
+# talk to RDS, are unchanged and need no network fetch to build.
+#
+# The directory is created first, as root and 755, on purpose. `ADD --chmod`
+# applies its mode to the parent directories it creates as well, and this base
+# image has no /etc/ssl: adding straight to /etc/ssl/rds produced a 644
+# /etc/ssl that nothing could enter, so OpenSSL failed to read its config and
+# node refused to start a single TLS connection, including the API's fetch of
+# Cognito's JWKS. Found by running the image against a TLS-only Postgres.
+FROM runtime AS runtime-aws
+USER root
+RUN mkdir -p /opt/rds-ca && chmod 755 /opt/rds-ca
+ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /opt/rds-ca/global-bundle.pem
+USER app
+
+# Also the two one-off database tasks' scripts (infra/cdk/tasks): CommonJS,
+# resolving `pg` from this image's /app/node_modules.
+FROM migrate AS migrate-aws
+USER root
+RUN mkdir -p /opt/rds-ca && chmod 755 /opt/rds-ca
+ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /opt/rds-ca/global-bundle.pem
+USER app
+COPY --chown=app:app infra/cdk/tasks ./aws-tasks
