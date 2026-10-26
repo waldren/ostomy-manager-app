@@ -22,9 +22,11 @@
 #
 #   docker compose --env-file /etc/ostomy/selfhost.env -f infra/selfhost/compose.yml up -d --build
 #
-# D.S1 slice 3's deploy CLI replaces that command, and pins the API and web
-# images by digest from a signed release tag. Until then this file builds
-# them from the checkout, which is acceptable on a synthetic host only.
+# That is for a synthetic host only. The deploy CLI (cli/, `pnpm host`) is
+# how a host is run: it builds the API, migration and web images in the
+# operator environment from a release (for a real host, a signed tag), ships
+# them over SSH, and runs this file with a generated override that drops every
+# `build:` and pins each service to the image it built (ADR-0022 item 3).
 
 name: ostomy
 
@@ -176,6 +178,11 @@ services:
       context: ../..
       dockerfile: infra/docker/api.Dockerfile
       target: migrate-selfhost
+      args:
+        # Base images by digest, so a release builds the same layers wherever
+        # and whenever it is built (ADR-0022 item 3). The tag must match the
+        # Dockerfile's default; compose.spec.ts checks it.
+        NODE_IMAGE: node:24.14.0-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8
     image: ostomy/api-migrate:selfhost
     environment:
       DB_HOST: postgres
@@ -217,6 +224,7 @@ services:
       dockerfile: infra/docker/api.Dockerfile
       target: runtime
       args:
+        NODE_IMAGE: node:24.14.0-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8
         # Required: the image otherwise bakes an empty commit, which the API
         # refuses at boot (load-config.spec.ts says why). Bring the stack up
         # with BUILD_COMMIT=$(git rev-parse HEAD); slice 3's CLI passes the
@@ -285,6 +293,8 @@ services:
       context: ../..
       dockerfile: infra/docker/web.Dockerfile
       args:
+        NODE_IMAGE: node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
+        NGINX_IMAGE: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
         VITE_API_BASE_URL: https://${OSTOMY_DOMAIN}
         VITE_OIDC_ISSUER: https://${OSTOMY_AUTH_DOMAIN}/realms/patient
         VITE_OIDC_CLIENT_ID: ostomy-web

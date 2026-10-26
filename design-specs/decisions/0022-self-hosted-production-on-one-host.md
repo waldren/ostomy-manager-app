@@ -283,6 +283,27 @@ No application code changed for this, and `docker inspect` shows the command, ne
 
 The session lifetimes item 5 asked to be chosen deliberately are recorded, with their consequence for an offline phone, in `infra/selfhost/README.md`.
 
+## Amendment 2 — how releases reach a host (2026-10-25, D.S1 slice 3a)
+
+The decision stands. Item 3 allowed two build routes and left the signature format open. Slice 3a chose, with the maintainer, and built the deploy CLI (`infra/selfhost/cli`, `pnpm host`) around the choices.
+
+**Images are built in the operator environment and shipped over SSH.** Item 3's first route. `deploy` runs `docker compose build` in a clean worktree of the release, so `compose.yml` stays the one definition of each image. It streams the images to the host with `docker save | docker load`, and pins each service to the image ID just built through a generated override. It then refuses unless the running containers are those images. No registry and no CI system sits in the path, so neither joins the supply chain. "Pinned by digest" here means pinned by **image ID**: there is no registry digest without a registry. Every base image the build pulls is pinned by digest in `compose.yml`, so one tag builds the same layers wherever and whenever it is built.
+
+**Release tags are signed with SSH keys.** The CLI accepts only an annotated tag whose signature is an SSH signature, checked by `git verify-tag` against an allowed-signers file it refuses to read from inside the repository. Three further refusals came from building it:
+- **An OpenPGP-signed tag is refused.** git would check one against whatever gpg keyring the machine holds, which is not the allowed-signers file. The tag must carry exactly one signature block, an SSH one, ending the object. git takes the format from the last block, so a message quoting an SSH header ahead of an OpenPGP block would otherwise pass. `verify-tag` is also run with no OpenPGP or X.509 program it could fall back on.
+- **A tag ref that points at a signed tag object naming a different release is refused.** The name inside the signed object is the one that counts.
+- **For a real host, the CLI must run from a clean checkout of the release tag itself.** Otherwise the code that decides whether the gates pass would be whatever the development host last pushed, which is item 3's concern applied to the tool itself.
+
+**A host's classification is recorded once, before any other change.** Every refusal happens before anything on the host is touched: signature, checklist, freshness, operating system, and an sshd that would not read the hardening. A run that fails partway can be resumed only under the same classification.
+
+**SSH is admitted from the operator's addresses only (`--ssh-from`), and from nowhere else.** That is what keeps items 4 and 7's "only ports 80 and 443 open" true: the internet sees 80 and 443. `verify`'s external port scan must therefore run from an address outside `--ssh-from`, or it will find SSH too. `init` refuses, before changing anything, unless the address the operator's own session arrives from is in the list, since the firewall would otherwise shut them out, with the provider's console the only way back. The addresses are held to the admin allowlist's rule: public, and no wider than /16 (IPv4) or /32 (IPv6).
+
+**The CLI's SSH connections cannot be loosened by the operator's ssh_config.** Each one is run with strict host-key checking, and no agent, X11 or port forwarding. A forwarded agent would let a host the development host has had root on use every key the agent holds, the release-signing key included.
+
+**The admin allowlist refuses non-public addresses.** Slice 2's review found that behind Docker an IPv6 client can arrive from a private bridge address, so a private range in the allowlist would admit any IPv6 client. `init` refuses private, loopback, link-local, documentation and reserved ranges, and anything wider than /16 (IPv4) or /32 (IPv6).
+
+`verify` (item 4) and the Keycloak realm apply and `master` hardening (item 5) are slices 3b and 3c.
+
 ## Notes
 
 - **ADR-0022 was revised in place on the day it was accepted, 2026-10-25, and nothing had been built on it.** It merged (#174) before the blocking compliance review that #173 requires had run, so the review is treated as part of its acceptance rather than as a later change. The review found:
