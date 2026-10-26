@@ -40,6 +40,7 @@ import {
   composeIsRecentEnough,
   configureScript,
   hardenScript,
+  installedCommitScript,
   installStackScript,
   loadImagesScript,
   logsScript,
@@ -92,7 +93,8 @@ describe('every generated script parses', () => {
     ['harden', hardenScript(['8.8.8.8', '2001:4860::/32'])],
     ['classify', classifyScript('real')],
     ['configure', configureScript('OSTOMY_DOMAIN=x\n', '#!/usr/bin/env bash\necho "it\'s $1"\n')],
-    ['install', installStackScript('v1.0.0', releaseOverride('v1.0.0'))],
+    ['install', installStackScript('v1.0.0', COMMIT, releaseOverride('v1.0.0'))],
+    ['installed commit', installedCommitScript('v1.0.0')],
     ['load', loadImagesScript(IDS, 'v1.0.0')],
     ['up', upScript('v1.0.0', COMMIT)],
     ['running images', runningImagesScript('v1.0.0', COMMIT)],
@@ -181,6 +183,13 @@ describe('the hardening script', () => {
       [...order.map((line) => script.indexOf(line))].sort((a, b) => a - b),
     );
     expect(script.indexOf('ufw --force reset')).toBeGreaterThan(-1);
+  });
+
+  // With IPV6=no, ufw leaves IPv6 unfiltered and SSH open to the world over it.
+  it('turns on ufw’s IPv6 filtering before building the firewall', () => {
+    expect(script).toContain("sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw");
+    expect(script.indexOf("grep -qx 'IPV6=yes'")).toBeGreaterThan(-1);
+    expect(script.indexOf("grep -qx 'IPV6=yes'")).toBeLessThan(script.indexOf('ufw --force reset'));
   });
 
   it.each([[[]], [["8.8.8.8'; reboot; '"]], [['8.8.8.8 1.1.1.1']]])(
@@ -285,13 +294,73 @@ describe('the hardening script', () => {
   });
 });
 
+/**
+ * A release name names one commit. Replacing a release's directory under
+ * running containers leaves their bind mounts on the deleted files, so a
+ * changed Caddyfile or realm file would silently not apply (PR #177 review).
+ */
+describe('installing a release’s stack files, run', () => {
+  const OTHER = 'd'.repeat(40);
+
+  function install(root: string, commit: string) {
+    const dir = path.join(root, 'releases');
+    const archive = path.join(root, 'stack.tar');
+    if (!existsSync(archive)) {
+      const src = path.join(root, 'src');
+      mkdirSync(path.join(src, 'infra/selfhost'), { recursive: true });
+      writeFileSync(path.join(src, 'infra/selfhost/compose.yml'), 'name: ostomy\n');
+      const made = bash(`tar -c -f ${shq(posix(archive))} -C ${shq(posix(src))} infra`);
+      if (made.status !== 0) throw new Error(made.stderr);
+    }
+    const script = installStackScript('v1.0.0', commit, releaseOverride('v1.0.0')).replaceAll(
+      '/opt/ostomy/releases',
+      posix(dir),
+    );
+    const result = spawnSync(BASH, ['-c', `${script}`], {
+      input: readFileSync(archive),
+      encoding: 'utf8',
+    });
+    return { result, release: path.join(dir, 'v1.0.0') };
+  }
+
+  it('installs a release once, recording its commit', () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'ostomy-install-')));
+    const { result, release } = install(root, COMMIT);
+    expect(result.stderr).toBe('');
+    expect(result.stdout.trim()).toBe('installed');
+    expect(readFileSync(path.join(release, '.release-commit'), 'utf8')).toBe(`${COMMIT}\n`);
+    expect(existsSync(path.join(release, 'infra/selfhost/compose.yml'))).toBe(true);
+    expect(existsSync(path.join(release, 'release.override.yml'))).toBe(true);
+  });
+
+  it('keeps an install of the same commit as it is, reading the whole archive', () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'ostomy-install-')));
+    install(root, COMMIT);
+    const { result } = install(root, COMMIT);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('kept');
+  });
+
+  it('refuses the same release name from another commit', () => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'ostomy-install-')));
+    install(root, COMMIT);
+    const { result, release } = install(root, OTHER);
+    expect(result.status).toBe(72);
+    expect(result.stderr).toContain(`already installed from another commit: ${COMMIT}`);
+    expect(readFileSync(path.join(release, '.release-commit'), 'utf8')).toBe(`${COMMIT}\n`);
+  });
+});
+
 describe('bringing a release up', () => {
-  // caddy, both PostgreSQL and Keycloak exist on a fresh host only if Compose
-  // pulls them; `--pull never` failed every first init (PR #177 review).
-  it('pulls the digest-pinned images a fresh host lacks, and builds nothing', () => {
+  // caddy, both PostgreSQL and Keycloak exist on a fresh host only once
+  // pulled. Nothing else is pulled: `up --pull never` overrides every
+  // service's pull_policy, so a missing built image fails the start instead
+  // of being fetched from a Docker Hub namespace this project does not own.
+  it('pulls the registry images by name, then starts with pulling off, building nothing', () => {
     const up = upScript('v1.0.0', COMMIT);
-    expect(up).toContain(' up --detach --no-build --pull missing ');
-    expect(up).not.toContain('--pull never');
+    expect(up).toMatch(/ pull --quiet caddy postgres keycloak-db keycloak\n/);
+    expect(up).toContain(' up --detach --no-build --pull never ');
+    expect(up.indexOf(' pull --quiet ')).toBeLessThan(up.indexOf(' up --detach '));
   });
 
   it('interpolates only image IDs of the expected shape into the load check', () => {

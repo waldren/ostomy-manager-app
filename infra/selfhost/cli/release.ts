@@ -47,6 +47,9 @@ const NO_OTHER_SIGNATURE_PROGRAMS = [
   `gpg.openpgp.program=${NO_SUCH_PROGRAM}`,
   '-c',
   `gpg.x509.program=${NO_SUCH_PROGRAM}`,
+  // And the SSH verifier is ssh-keygen, whatever a global or repo config says.
+  '-c',
+  'gpg.ssh.program=ssh-keygen',
 ];
 
 const RELEASE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -111,11 +114,13 @@ export async function verifySignedTag(
   // bypassed by a message quoting one with an OpenPGP block after it (PR #177
   // review). Exactly one block, SSH, ending the object, is accepted, and
   // verify-tag below is given no OpenPGP or X.509 program to fall back on.
-  const blocks = [...object.matchAll(/^-----BEGIN ([A-Z0-9 ]+)-----\r?$/gm)].map((m) => m[1]);
+  // Blocks are found by prefix, as git finds them: a header with anything
+  // after its dashes is still a block to git.
+  const begins = object.split('\n').filter((line) => line.startsWith('-----BEGIN '));
   if (
-    blocks.length !== 1 ||
-    blocks[0] !== 'SSH SIGNATURE' ||
-    !/^-----END SSH SIGNATURE-----\r?\n?$/m.test(object.slice(object.lastIndexOf('-----END ')))
+    begins.length !== 1 ||
+    begins[0]!.replace(/\r$/, '') !== '-----BEGIN SSH SIGNATURE-----' ||
+    !object.replace(/\r?\n$/, '').endsWith('\n-----END SSH SIGNATURE-----')
   ) {
     throw new Refusal(
       `${tag} is not signed with an SSH key alone (\`git tag -s\` with gpg.format=ssh)`,

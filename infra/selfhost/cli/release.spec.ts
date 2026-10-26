@@ -63,7 +63,36 @@ describe('signed release tags', () => {
   // git picks the signature format from the last block in the object. A
   // message quoting an SSH block, followed by an OpenPGP one, must not pass as
   // SSH-signed and then be verified against this machine's gpg keyring.
-  it('refuses a tag whose last signature block is not SSH, whatever its message quotes', async () => {
+  // git finds a block by its prefix, so a trailing space after the dashes
+  // still names an OpenPGP block to git; and nothing may follow the SSH block.
+  it.each([
+    [
+      'an OpenPGP block after a quoted SSH one',
+      [
+        '-----BEGIN SSH SIGNATURE-----',
+        '-----END SSH SIGNATURE-----',
+        '-----BEGIN PGP SIGNATURE-----',
+        '',
+        'AAAA',
+        '-----END PGP SIGNATURE-----',
+      ],
+    ],
+    [
+      'an OpenPGP header with a trailing space',
+      [
+        '-----BEGIN SSH SIGNATURE-----',
+        '-----END SSH SIGNATURE-----',
+        '-----BEGIN PGP SIGNATURE----- ',
+        '',
+        'AAAA',
+        '-----END PGP SIGNATURE-----',
+      ],
+    ],
+    [
+      'text after the SSH block',
+      ['-----BEGIN SSH SIGNATURE-----', 'AAAA', '-----END SSH SIGNATURE-----', 'trailing text'],
+    ],
+  ])('refuses a tag with %s', async (_name, lines) => {
     const object = [
       `object ${released}`,
       'type commit',
@@ -71,12 +100,7 @@ describe('signed release tags', () => {
       'tagger Test Operator <operator@example.test> 1700000000 +0000',
       '',
       'release',
-      '-----BEGIN SSH SIGNATURE-----',
-      '-----END SSH SIGNATURE-----',
-      '-----BEGIN PGP SIGNATURE-----',
-      '',
-      'AAAA',
-      '-----END PGP SIGNATURE-----',
+      ...lines,
       '',
     ].join('\n');
     const id = execFileSync('git', ['-C', repo, 'mktag'], {

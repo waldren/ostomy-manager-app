@@ -45,6 +45,10 @@ describe('the SSH connection', () => {
         '  LocalCommand echo leaked',
         '  LocalForward 9000 127.0.0.1:9000',
         '  BatchMode no',
+        '  ControlMaster auto',
+        '  ControlPath ~/.ssh/cm-%C',
+        '  RequestTTY force',
+        '  UpdateHostKeys yes',
         '',
       ].join('\n'),
     );
@@ -63,9 +67,14 @@ describe('the SSH connection', () => {
       'permitlocalcommand no',
       'clearallforwardings yes',
       'connecttimeout 15',
+      'controlmaster false',
+      'requesttty false',
+      'updatehostkeys false',
     ]) {
       expect(effective).toContain(line);
     }
+    // `ControlPath none` is printed as no control path at all.
+    expect(effective.filter((line) => line.startsWith('controlpath '))).toEqual([]);
   });
 
   it('puts every option before the destination, and refuses a destination that reads as an option', () => {

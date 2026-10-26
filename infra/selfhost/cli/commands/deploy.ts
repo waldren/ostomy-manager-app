@@ -23,6 +23,7 @@ import { Refusal } from '../errors.ts';
 import {
   BUILT,
   composeIsRecentEnough,
+  installedCommitScript,
   installStackScript,
   loadImagesScript,
   MIN_COMPOSE_VERSION,
@@ -106,6 +107,23 @@ export async function deployRelease(
   const { release, found, settings } = options;
   const platform = platformFor(found.arch);
 
+  // A release name names one commit: a tag moved since it was deployed is
+  // refused before any image is shipped, since loading would retag images
+  // the running stack was started from.
+  const installed = (
+    await execOrRefuse(
+      ctx.remote,
+      installedCommitScript(release.name),
+      'checking for an earlier install of this release',
+    )
+  ).trim();
+  if (installed !== '' && installed !== release.commit) {
+    throw new Refusal(
+      `${release.name} is already installed on this host from commit ${installed.slice(0, 12)}, ` +
+        `not ${release.commit.slice(0, 12)}. A release name names one commit: tag a new release.`,
+    );
+  }
+
   ctx.log(`building ${release.name} (${release.commit.slice(0, 12)}) for ${platform}`);
   const images = await withWorktree(ctx.repo, release.commit, (worktree) =>
     ctx.buildImages({ worktree, settings, commit: release.commit, platform, name: release.name }),
@@ -120,7 +138,7 @@ export async function deployRelease(
   await refuseOnFailure(
     ctx.remote.execFrom(
       stackArchive(ctx.repo, release.commit),
-      installStackScript(release.name, releaseOverride(release.name)),
+      installStackScript(release.name, release.commit, releaseOverride(release.name)),
     ),
     'installing the stack',
   );

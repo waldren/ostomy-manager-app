@@ -21,6 +21,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * this machine. What runs on the host is a different matter: see `shq`.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { constants } from 'node:os';
 
 import { Unreachable } from './errors.ts';
 
@@ -121,12 +122,15 @@ export function pipe(
         child.stdout!.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
       child.stderr!.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
       child.on('close', (code, signal) => {
-        results[key] = { code: code ?? (signal ? 128 : 1), stdout, stderr };
+        results[key] = { code: exitCode(code, signal), stdout, stderr };
         if (key === 'consumer' && !results.producer) {
-          // Nothing reads the producer's output any more: drain and stop it.
+          // Nothing reads the producer's output any more: drain it, so it
+          // can never block on a full pipe. Stop it only if the consumer
+          // failed: after a consumer that succeeded, the producer has
+          // normally finished and only its own exit is still to arrive.
           from.stdout!.unpipe();
           from.stdout!.resume();
-          from.kill();
+          if (results.consumer!.code !== 0) from.kill();
         }
         if (results.producer && results.consumer && !failed) {
           resolve({ producer: results.producer, consumer: results.consumer });
@@ -136,6 +140,12 @@ export function pipe(
     collect(from, 'producer', false);
     collect(to, 'consumer', true);
   });
+}
+
+/** A child's exit as a shell reports it: its code, or 128 plus the signal that ended it. */
+function exitCode(code: number | null, signal: NodeJS.Signals | null): number {
+  if (code !== null) return code;
+  return signal ? 128 + (constants.signals[signal] ?? 0) : 1;
 }
 
 /**

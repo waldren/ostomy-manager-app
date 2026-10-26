@@ -123,4 +123,26 @@ describe('a checklist this cannot read fails closed', () => {
     expect(moved).not.toBe(signed);
     expect(() => requireAllSigned(moved, 'v1.0.0')).toThrow(/outside the one table[\s\S]*RD-7/);
   });
+
+  // GitHub renders each of these as a row of the table above it, so each
+  // must be read as one rather than skipped.
+  it.each([
+    ['with no leading pipe', (row: string) => row.replace(/^\| /, '')],
+    ['with its ID in bold', (row: string) => row.replace('| RD-7 |', '| **RD-7** |')],
+    ['with its ID in code', (row: string) => row.replace('| RD-7 |', '| `RD-7` |')],
+  ])('refuses a row moved outside the table %s', (_name, reshape) => {
+    const signed = withSignOff((id) => (id === 'RD-7' ? '—' : 'Pat Officer, 2026-11-01'));
+    const rd7 = /^\| RD-7 \|.*$/m.exec(signed)![0];
+    const moved = signed
+      .replace(`${rd7}\n`, '')
+      .replace(/^(\| RD-24 \|.*)$/m, (row) => `${row}\n\n${reshape(rd7)}`);
+    expect(() => requireAllSigned(moved, 'v1.0.0')).toThrow(/outside the one table/);
+  });
+
+  // The gate reads the tag, which never has to pass CI's own check of this.
+  it('refuses a checklist with an unsigned row deleted', () => {
+    const signed = withSignOff((id) => (id === 'RD-7' ? '—' : 'Pat Officer, 2026-11-01'));
+    const deleted = signed.replace(/^\| RD-7 \|.*\n/m, '');
+    expect(() => requireAllSigned(deleted, 'v1.0.0')).toThrow(/expected RD-7 where RD-8 is/);
+  });
 });

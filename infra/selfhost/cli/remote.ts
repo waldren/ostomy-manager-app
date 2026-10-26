@@ -69,6 +69,13 @@ export const SSH_OPTIONS: readonly string[] = [
   'ForwardX11=no',
   'ClearAllForwardings=yes',
   'PermitLocalCommand=no',
+  // Never ride a shared connection the operator's own ssh opened, whose
+  // host key was checked under whatever options that ssh had.
+  'ControlMaster=no',
+  'ControlPath=none',
+  // A pty would interpret bytes in the `docker save` stream and corrupt it.
+  'RequestTTY=no',
+  'UpdateHostKeys=no',
   'ConnectTimeout=15',
   'ServerAliveInterval=15',
   'ServerAliveCountMax=4',
@@ -112,12 +119,17 @@ export class SshRemote implements Remote {
 
   async execFrom(producer: Command, script: string): Promise<ProcessResult> {
     const { producer: from, consumer } = await pipe(producer, this.command(script));
+    // The host's answer first: when ssh drops or the script refuses, the
+    // producer's failure is a consequence (it lost its reader), and the
+    // operator needs the cause.
+    const answer = this.checked(consumer);
+    if (answer.code !== 0) return answer;
     if (from.code !== 0) {
       throw new Refusal(
         `\`${producer.command}\` failed (exit ${from.code}):\n${from.stderr.trim()}`,
       );
     }
-    return this.checked(consumer);
+    return answer;
   }
 
   /** ssh exits 255 for its own failures: unreachable, refused, unknown key. */

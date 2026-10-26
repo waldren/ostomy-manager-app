@@ -179,9 +179,10 @@ export function platformFor(arch: string): string {
  * only. Idempotent: every step is safe to repeat, and the firewall is rebuilt
  * from nothing each time, so a narrowed `--ssh-from` removes the old rules.
  *
- * `init` checks the OS, the sshd include and that this session's own address
- * is in `sshFrom` before anything on the host changes; the same checks here
- * are the second line.
+ * `init` checks the OS, the sshd include, the SSH port and that this
+ * session's own address is in `sshFrom` before anything on the host changes.
+ * The first three are repeated here as a second line; the address check is
+ * not, since BlockList matching lives on the operator's side.
  */
 export function hardenScript(sshFrom: readonly string[]): string {
   if (sshFrom.length === 0) throw new Error('no address may reach SSH');
@@ -268,6 +269,16 @@ systemctl enable --now docker
 # verify's external port scan is what proves the result, not this.
 # SSH is not open to the internet at all: only the operator's addresses reach
 # it (ADR-0022 items 4 and 7).
+# ufw filters IPv6 only with IPV6=yes. Some cloud images ship it off, which
+# would leave SSH open to the whole internet over IPv6.
+if grep -q '^IPV6=' /etc/default/ufw; then
+  sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
+else
+  echo 'IPV6=yes' >>/etc/default/ufw
+fi
+if ! grep -qx 'IPV6=yes' /etc/default/ufw; then
+  echo "could not turn on ufw's IPv6 filtering" >&2; exit 73
+fi
 ufw --force reset >/dev/null
 ufw default deny incoming
 ufw default allow outgoing
@@ -287,7 +298,7 @@ previous="$(mktemp)"
 if [ -f "$dropin" ]; then cp -p "$dropin" "$previous"; had_previous=yes; else had_previous=no; fi
 ${writeFile(sshdDropIn, sshd, '0644')}
 if ! sshd -t; then
-  if [ "$had_previous" = yes ]; then mv -f "$previous" "$dropin"; else rm -f "$dropin"; fi
+  if [ "$had_previous" = yes ]; then mv -f "$previous" "$dropin"; else rm -f "$dropin" "$previous"; fi
   echo "sshd refused the hardened configuration, which was rolled back" >&2; exit 69
 fi
 rm -f "$previous"
@@ -348,18 +359,49 @@ export function releaseDir(name: string): string {
   return `${RELEASES_DIR}/${checkReleaseName(name)}`;
 }
 
-/** Unpacks the stack files from stdin (a `git archive` tar) into the release's directory. */
-export function installStackScript(name: string, override: string): string {
+/** The commit a release name was installed from, recorded in its directory. */
+export function releaseCommitPath(name: string): string {
+  return `${releaseDir(name)}/.release-commit`;
+}
+
+/** Prints the commit `name` was installed from, or nothing if it never was. */
+export function installedCommitScript(name: string): string {
+  return `${PRELUDE}cat ${shq(releaseCommitPath(name))} 2>/dev/null || true\n`;
+}
+
+/**
+ * Unpacks the stack files from stdin (a `git archive` tar) into the release's
+ * directory.
+ *
+ * A release name names one commit. Running containers hold bind mounts into
+ * this directory, and replacing it under them leaves a changed Caddyfile or
+ * realm file silently unapplied (PR #177 review), so a name already installed
+ * is kept as it is, and refused if it was installed from another commit.
+ * `deploy` checks that first, before shipping any images; this is the second line.
+ */
+export function installStackScript(name: string, commit: string, override: string): string {
+  if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`not a commit: ${commit}`);
   const dir = releaseDir(name);
   return `${PRELUDE}
 install -d -m 0755 ${shq(RELEASES_DIR)}
+if [ -d ${shq(dir)} ]; then
+  installed="$(cat ${shq(releaseCommitPath(name))} 2>/dev/null || true)"
+  if [ "$installed" != ${shq(commit)} ]; then
+    echo ${shq(`release ${name} is already installed from another commit:`)} "\${installed:-unknown}" >&2; exit 72
+  fi
+  # The same commit, already in place: read the archive and leave it be.
+  cat >/dev/null
+  echo kept
+  exit 0
+fi
 staging=${shq(`${dir}.staging`)}
 rm -rf "$staging"
 mkdir -p "$staging"
 tar -x -C "$staging" --no-same-owner
 ${writeFile(`${dir}.staging/release.override.yml`, override, '0644')}
-rm -rf ${shq(dir)}
+${writeFile(`${dir}.staging/.release-commit`, `${commit}\n`, '0444')}
 mv "$staging" ${shq(dir)}
+echo installed
 `;
 }
 
@@ -396,18 +438,24 @@ function compose(name: string, commit: string): string {
   ].join(' ');
 }
 
+/** The services that run an image from a registry, pinned by digest in compose.yml. */
+export const PULLED = SERVICES.filter((service) => !(service in BUILT));
+
 /**
- * Brings the release up, then prints `service=imageId` for each built service.
+ * Pulls the registry images, brings the release up, then prints
+ * `service=imageId` for each built service.
  *
- * `--pull missing`, not `never`: caddy, both PostgreSQL and Keycloak come from
- * their registries, pinned by digest in compose.yml, and on a fresh host they
- * exist nowhere else. The built images carry `pull_policy: never` in the
- * override and are already loaded, so nothing pulls them.
+ * Caddy, both PostgreSQL and Keycloak exist on a fresh host only once pulled,
+ * so they are pulled by name. `up` then runs with `--pull never`, which
+ * overrides every service's own `pull_policy`: a built image missing at that
+ * point fails the start rather than being fetched from Docker Hub, where the
+ * `ostomy` namespace is not this project's (PR #177 review).
  */
 export function upScript(name: string, commit: string): string {
   const services = Object.keys(BUILT) as BuiltService[];
   return `${PRELUDE}
-${compose(name, commit)} up --detach --no-build --pull missing --remove-orphans --wait --wait-timeout 900
+${compose(name, commit)} pull --quiet ${PULLED.join(' ')}
+${compose(name, commit)} up --detach --no-build --pull never --remove-orphans --wait --wait-timeout 900
 ${runningImagesBody(name, commit, services)}
 `;
 }

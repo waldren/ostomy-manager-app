@@ -74,6 +74,8 @@ interface HostState {
   compose: string;
   running: ImageIds;
   os: string;
+  /** The commit the release name being deployed was installed from, if ever. */
+  installedCommit: string;
   /** The address the operator's SSH session arrives from. */
   sshClient: string;
   sshdInclude: boolean;
@@ -85,6 +87,7 @@ function steps(remote: FakeRemote): string[] {
     if (producer?.args.includes('save')) return 'load';
     if (producer?.args.includes('archive')) return 'install';
     if (script.includes('echo "os=$ID"')) return 'probe';
+    if (script.includes('/.release-commit')) return 'check release';
     if (script.includes('set -C;')) return 'classify';
     if (script.includes('ufw --force enable')) return 'harden';
     if (script.includes('generator=')) return 'configure';
@@ -114,6 +117,9 @@ function fakeHost(state: HostState): FakeRemote {
       return {};
     })
     .on(/cat '\/etc\/ostomy\/selfhost\.env'/, { stdout: renderSettings(SETTINGS) })
+    .on(/\/\.release-commit' 2>\/dev\/null \|\| true/, () => ({
+      stdout: state.installedCommit === '' ? '' : `${state.installedCommit}\n`,
+    }))
     .on(/ up --detach/, () => ({
       stdout: Object.entries(state.running)
         .map(([service, id]) => `${service}=${id}`)
@@ -147,6 +153,7 @@ describe('init and deploy', () => {
       compose: '',
       running: { ...IMAGES },
       os: 'debian',
+      installedCommit: '',
       sshClient: '8.8.8.8',
       sshdInclude: true,
     };
@@ -178,6 +185,7 @@ describe('init and deploy', () => {
         'harden',
         'configure',
         'probe',
+        'check release',
         'load',
         'install',
         'up',
@@ -345,7 +353,32 @@ describe('init and deploy', () => {
 
     it('builds, ships, runs and records the release', async () => {
       await deployCommand(ctx, { ref: 'main', allowedSigners: undefined });
-      expect(steps(remote)).toEqual(['probe', 'read settings', 'load', 'install', 'up', 'record']);
+      expect(steps(remote)).toEqual([
+        'probe',
+        'read settings',
+        'check release',
+        'load',
+        'install',
+        'up',
+        'record',
+      ]);
+    });
+
+    // Loading would retag the images the running stack was started from.
+    it('refuses a release name installed from another commit, before building or shipping', async () => {
+      state.installedCommit = 'd'.repeat(40);
+      await expect(deployCommand(ctx, { ref: 'main', allowedSigners: undefined })).rejects.toThrow(
+        /already installed on this host from commit dddddddddddd/,
+      );
+      expect(steps(remote)).toEqual(['probe', 'read settings', 'check release']);
+      expect(built).toEqual([]);
+    });
+
+    it('redeploys a release name installed from the same commit', async () => {
+      state.installedCommit = release;
+      await expect(
+        deployCommand(ctx, { ref: 'main', allowedSigners: undefined }),
+      ).resolves.toMatchObject({ commit: release });
     });
 
     it('refuses a host that was never initialised', async () => {

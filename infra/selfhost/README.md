@@ -79,7 +79,7 @@ Every refusal happens before anything on the host changes, including an unsuppor
 1. **Records the classification** (`/etc/ostomy/classification`), once. A host is never re-classified, and a synthetic host is never promoted to real (ADR-0022 item 1). An `init` that fails partway can be re-run under the same classification only. A real host must also be fresh: no `/etc/ostomy` and none of the stack's volumes.
 2. **Hardens the host:**
    - Docker from Docker's own apt repository, its key file checked to hold exactly one key, with the published fingerprint;
-   - `ufw`, rebuilt from nothing on every run, admitting SSH from `--ssh-from` alone and 80 and 443 from anywhere: the internet sees 80 and 443 only (ADR-0022 items 4 and 7);
+   - `ufw`, rebuilt from nothing on every run, with IPv6 filtering turned on, admitting SSH from `--ssh-from` alone and 80 and 443 from anywhere: the internet sees 80 and 443 only, over IPv4 and IPv6 (ADR-0022 items 4 and 7);
    - unattended security upgrades;
    - SSH by key only, with no agent, X11, tunnel or remote forwarding. A drop-in sshd rejects is rolled back, a reload that fails fails the step, and `sshd -T` checks what sshd will actually enforce, not what the file says.
 3. **Writes `/etc/ostomy/selfhost.env`** and **generates the secrets on the host** with the release's own `bin/generate-secrets.sh`. No secret is ever on the operator's machine.
@@ -95,7 +95,9 @@ Every refusal happens before anything on the host changes, including an unsuppor
 2. **Builds** the API, migration and web images in a clean worktree of the release, with `docker compose build`, for the host's architecture. compose.yml stays the one definition of how each image is built, and every base image is pinned by digest there.
 3. **Ships** them with `docker save | ssh ... docker load`, and refuses unless each loaded tag is the image ID just built. No registry sits between the build and the host.
 4. **Installs** the release's stack files under `/opt/ostomy/releases/<release>/`, with a generated `release.override.yml` that removes every `build:` and pins each service to its release tag.
-5. **Starts** the stack (`up --wait`), and refuses unless each running container is exactly the image built. Caddy, both PostgreSQL and Keycloak are pulled from their registries on first use, pinned by digest in compose.yml; the built images are never pulled.
+5. **Starts** the stack (`up --wait`), and refuses unless each running container is exactly the image built. Caddy, both PostgreSQL and Keycloak are pulled by name first, pinned by digest in compose.yml. `up` then runs with pulling off, so a built image that is missing fails the start rather than being fetched from Docker Hub.
+
+**A release name names one commit.** Redeploying a name already installed from the same commit is fine. A name installed from another commit, such as a moved tag, is refused before anything is built or shipped. Running containers hold bind mounts into a release's directory, so replacing its files would leave a changed Caddyfile or realm file silently unapplied.
 6. **Records** the release in `/etc/ostomy/release.json`, then checks `https://<domain>/api/v1/health/ready` from outside the host.
 
 The host needs Docker Compose 2.24.4 or later (for `!reset`), and the tool refuses an older one.

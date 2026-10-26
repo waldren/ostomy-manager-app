@@ -42,7 +42,11 @@ export interface ReadinessRow {
 
 const HEADER = /^\|\s*ID\s*\|\s*Item\s*\|\s*Evidence required\s*\|\s*Signed off\s*\|\s*$/;
 const ROW = /^\|\s*(RD-\d+)\s*\|/;
-const ROW_ANYWHERE = /^\s*\|\s*RD-\d+/;
+/**
+ * A readiness row however it is written: with or without a leading pipe
+ * (GitHub renders both as a table row) and with its ID bold or in code.
+ */
+const ROW_ANYWHERE = /^\s*\|?\s*[*`_]*RD-\d+\b[*`_]*\s*\|/;
 
 /** `Name, YYYY-MM-DD`, with a date that exists. Nothing else counts. */
 export function isSignature(cell: string): boolean {
@@ -107,6 +111,16 @@ export function parseReadiness(markdown: string): ReadinessRow[] {
     throw new Refusal(
       `${READINESS_PATH}: readiness rows outside the one table, which this does not read:\n` +
         outside.map((line) => `  ${line.trim().slice(0, 80)}`).join('\n'),
+    );
+  }
+  // A row is removed only by an ADR (ADR-0022 item 1), and the gate reads the
+  // tag, which never has to pass CI. So deleting an unsigned row from a tag
+  // must fail here, not pass. An ADR that retires a row changes this check.
+  const gap = rows.findIndex((row, index) => row.id !== `RD-${index + 1}`);
+  if (gap !== -1) {
+    throw new Refusal(
+      `${READINESS_PATH}: expected RD-${gap + 1} where ${rows[gap]!.id} is. ` +
+        'Rows are numbered from RD-1 with no gaps, and one is removed only by an ADR.',
     );
   }
   return rows;
