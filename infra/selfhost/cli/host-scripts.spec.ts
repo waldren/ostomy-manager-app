@@ -24,6 +24,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -88,7 +89,7 @@ const IDS = {
 describe('every generated script parses', () => {
   it.each([
     ['probe', probeScript()],
-    ['harden', hardenScript()],
+    ['harden', hardenScript(['8.8.8.8', '2001:4860::/32'])],
     ['classify', classifyScript('real')],
     ['configure', configureScript('OSTOMY_DOMAIN=x\n', '#!/usr/bin/env bash\necho "it\'s $1"\n')],
     ['install', installStackScript('v1.0.0', releaseOverride('v1.0.0'))],
@@ -165,19 +166,104 @@ describe('shq', () => {
 });
 
 describe('the hardening script', () => {
-  const script = hardenScript();
+  const script = hardenScript(['8.8.8.8', '2001:4860::/32']);
 
-  it('allows only the SSH port in use, 80 and 443, and rate-limits SSH', () => {
+  // ADR-0022 items 4 and 7: the internet sees 80 and 443, and nothing else.
+  it('opens SSH to the operator’s addresses alone, and 80 and 443 to everyone, from a reset firewall', () => {
     expect(script.match(/^ufw (allow|limit) .*$/gm)).toEqual([
-      'ufw limit "$ssh_port/tcp"',
+      `ufw allow proto tcp from '8.8.8.8' to any port "$ssh_port"`,
+      `ufw allow proto tcp from '2001:4860::/32' to any port "$ssh_port"`,
       'ufw allow 80/tcp',
       'ufw allow 443/tcp',
     ]);
-    expect(script).toContain('ufw default deny incoming');
+    const order = ['ufw --force reset', 'ufw default deny incoming', 'ufw --force enable'];
+    expect(order.map((line) => script.indexOf(line))).toEqual(
+      [...order.map((line) => script.indexOf(line))].sort((a, b) => a - b),
+    );
+    expect(script.indexOf('ufw --force reset')).toBeGreaterThan(-1);
   });
 
-  it('checks Docker’s apt key against the published fingerprint', () => {
+  it.each([[[]], [["8.8.8.8'; reboot; '"]], [['8.8.8.8 1.1.1.1']]])(
+    'refuses SSH addresses %j',
+    (sshFrom) => {
+      expect(() => hardenScript(sshFrom)).toThrow();
+    },
+  );
+
+  it('checks Docker’s apt key against the published fingerprint, and that it is the only key', () => {
     expect(script).toContain("'9DC858229FC7DD38854AE2D88D81803C0EBFCD88'");
+    expect(script).toContain('[ "$keys" != 1 ]');
+  });
+
+  it('waits for apt rather than failing on cloud-init’s lock', () => {
+    expect(script).toContain('DPkg::Lock::Timeout=600');
+    expect(script).not.toMatch(/^apt-get /m);
+  });
+
+  /**
+   * The sshd steps run here against a stand-in `sshd` and `systemctl`: a
+   * drop-in sshd rejects must be put back, or the next restart leaves the
+   * host unreachable, and a reload that fails must fail the step, since
+   * `sshd -T` reports what a new sshd would load, not what is running.
+   */
+  describe('the sshd step, run', () => {
+    const sshdStep = script.slice(script.indexOf('install -d -m 0755 /etc/ssh/sshd_config.d'));
+
+    function runStep(options: { sshdTest: number; reload: number; previous?: string }) {
+      const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'ostomy-sshd-')));
+      const bin = path.join(root, 'bin');
+      const etc = path.join(root, 'etc');
+      const dropIn = path.join(etc, 'sshd_config.d/00-ostomy-hardening.conf');
+      mkdirSync(bin);
+      mkdirSync(path.dirname(dropIn), { recursive: true });
+      if (options.previous !== undefined) writeFileSync(dropIn, options.previous);
+      const tool = (name: string, body: string) => {
+        writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`);
+        chmodSync(path.join(bin, name), 0o755);
+      };
+      const enforced = [
+        'passwordauthentication no',
+        'kbdinteractiveauthentication no',
+        'permitrootlogin without-password',
+        'authenticationmethods publickey',
+        'x11forwarding no',
+        'allowagentforwarding no',
+        'allowtcpforwarding local',
+        'allowstreamlocalforwarding no',
+        'permittunnel no',
+      ].join('\\n');
+      tool('sshd', `if [ "$1" = -t ]; then exit ${options.sshdTest}; fi\nprintf '${enforced}\\n'`);
+      tool('systemctl', `exit ${options.reload}`);
+      const result = bash(`set -euo pipefail\n${sshdStep.replaceAll('/etc/ssh', posix(etc))}`, {
+        env: { ...process.env, PATH: `${posix(bin)}:/usr/bin:/bin` },
+      });
+      return { result, dropIn };
+    }
+
+    it('installs the drop-in when sshd accepts it and reloads', () => {
+      const { result, dropIn } = runStep({ sshdTest: 0, reload: 0 });
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(readFileSync(dropIn, 'utf8')).toContain('PasswordAuthentication no');
+    });
+
+    it('removes a new drop-in sshd rejects', () => {
+      const { result, dropIn } = runStep({ sshdTest: 1, reload: 0 });
+      expect(result.status).toBe(69);
+      expect(existsSync(dropIn)).toBe(false);
+    });
+
+    it('puts back the previous drop-in when sshd rejects the new one', () => {
+      const { result, dropIn } = runStep({ sshdTest: 1, reload: 0, previous: '# earlier\n' });
+      expect(result.status).toBe(69);
+      expect(readFileSync(dropIn, 'utf8')).toBe('# earlier\n');
+    });
+
+    it('fails when sshd cannot be reloaded', () => {
+      const { result } = runStep({ sshdTest: 0, reload: 1 });
+      expect(result.status).toBe(69);
+      expect(result.stderr).toContain('not in force');
+    });
   });
 
   it('turns off every non-key SSH login, and checks what sshd will actually enforce', () => {
@@ -199,6 +285,22 @@ describe('the hardening script', () => {
   });
 });
 
+describe('bringing a release up', () => {
+  // caddy, both PostgreSQL and Keycloak exist on a fresh host only if Compose
+  // pulls them; `--pull never` failed every first init (PR #177 review).
+  it('pulls the digest-pinned images a fresh host lacks, and builds nothing', () => {
+    const up = upScript('v1.0.0', COMMIT);
+    expect(up).toContain(' up --detach --no-build --pull missing ');
+    expect(up).not.toContain('--pull never');
+  });
+
+  it('interpolates only image IDs of the expected shape into the load check', () => {
+    expect(() => loadImagesScript({ ...IDS, api: 'sha256:abc"; reboot; "' }, 'v1.0.0')).toThrow(
+      /not an image ID/,
+    );
+  });
+});
+
 describe('logs', () => {
   it('refuses a service the stack does not have, or an unbounded tail', () => {
     expect(() => logsScript('v1.0.0', COMMIT, 'api; rm -rf /' as Service, 10)).toThrow();
@@ -217,9 +319,13 @@ describe('parseProbe and the version gates', () => {
   it('reads a probe', () => {
     expect(
       parseProbe(
-        'os=debian\ncodename=bookworm\narch=x86_64\nclassification=real\ndeployed=no\netc=yes\ncompose=v2.29.1\nvolumes=0\n',
+        'os=debian\ncodename=bookworm\narch=x86_64\nclassification=real\ndeployed=no\netc=yes\ncompose=v2.29.1\nvolumes=0\n' +
+          'ssh_client=2001:4860::1\nssh_port=2222\nsshd_include=yes\n',
       ),
     ).toEqual({
+      sshClient: '2001:4860::1',
+      sshPort: '2222',
+      sshdInclude: true,
       os: 'debian',
       codename: 'bookworm',
       arch: 'x86_64',

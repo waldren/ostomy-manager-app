@@ -20,6 +20,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * runs only a tag signed by a key the operator environment lists, and only
  * from a checkout of that tag.
  */
+import { execFileSync } from 'node:child_process';
 import { copyFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -57,6 +58,35 @@ describe('signed release tags', () => {
     ['--upload-pack=x', /not a release tag name/],
   ])('refuses %s', async (tag, message) => {
     await expect(verifySignedTag(repo, tag, operator.allowedSigners)).rejects.toThrow(message);
+  });
+
+  // git picks the signature format from the last block in the object. A
+  // message quoting an SSH block, followed by an OpenPGP one, must not pass as
+  // SSH-signed and then be verified against this machine's gpg keyring.
+  it('refuses a tag whose last signature block is not SSH, whatever its message quotes', async () => {
+    const object = [
+      `object ${released}`,
+      'type commit',
+      'tag v1.0.0-pgp',
+      'tagger Test Operator <operator@example.test> 1700000000 +0000',
+      '',
+      'release',
+      '-----BEGIN SSH SIGNATURE-----',
+      '-----END SSH SIGNATURE-----',
+      '-----BEGIN PGP SIGNATURE-----',
+      '',
+      'AAAA',
+      '-----END PGP SIGNATURE-----',
+      '',
+    ].join('\n');
+    const id = execFileSync('git', ['-C', repo, 'mktag'], {
+      input: object,
+      encoding: 'utf8',
+    }).trim();
+    git(repo, 'update-ref', 'refs/tags/v1.0.0-pgp', id);
+    await expect(verifySignedTag(repo, 'v1.0.0-pgp', operator.allowedSigners)).rejects.toThrow(
+      /not signed with an SSH key alone/,
+    );
   });
 
   it('refuses a ref renamed to point at another release’s signed tag object', async () => {

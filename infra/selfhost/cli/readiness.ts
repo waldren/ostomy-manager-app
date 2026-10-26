@@ -42,6 +42,7 @@ export interface ReadinessRow {
 
 const HEADER = /^\|\s*ID\s*\|\s*Item\s*\|\s*Evidence required\s*\|\s*Signed off\s*\|\s*$/;
 const ROW = /^\|\s*(RD-\d+)\s*\|/;
+const ROW_ANYWHERE = /^\s*\|\s*RD-\d+/;
 
 /** `Name, YYYY-MM-DD`, with a date that exists. Nothing else counts. */
 export function isSignature(cell: string): boolean {
@@ -78,8 +79,12 @@ export function parseReadiness(markdown: string): ReadinessRow[] {
   const rows: ReadinessRow[] = [];
   const seen = new Set<string>();
   // The header, then the separator, then rows until the table ends.
-  for (const line of lines.slice(headerAt + 2)) {
-    if (!line.trim().startsWith('|')) break;
+  let end = lines.length;
+  for (const [offset, line] of lines.slice(headerAt + 2).entries()) {
+    if (!line.trim().startsWith('|')) {
+      end = headerAt + 2 + offset;
+      break;
+    }
     const match = ROW.exec(line);
     const row = cells(line);
     if (!match || row.length !== 4) {
@@ -93,6 +98,17 @@ export function parseReadiness(markdown: string): ReadinessRow[] {
     rows.push({ id, summary, signedOff, signed: isSignature(signedOff) });
   }
   if (rows.length === 0) throw new Refusal(`${READINESS_PATH}: the readiness table has no rows`);
+  // A table split by a blank line or a heading would otherwise end the parse
+  // early, and every row after the split would go unchecked: fail open.
+  const outside = [...lines.slice(0, headerAt), ...lines.slice(end)].filter((line) =>
+    ROW_ANYWHERE.test(line),
+  );
+  if (outside.length > 0) {
+    throw new Refusal(
+      `${READINESS_PATH}: readiness rows outside the one table, which this does not read:\n` +
+        outside.map((line) => `  ${line.trim().slice(0, 80)}`).join('\n'),
+    );
+  }
   return rows;
 }
 

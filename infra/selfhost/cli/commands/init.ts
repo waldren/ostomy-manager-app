@@ -25,8 +25,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * classification is then written before any other change, so a run that
  * fails halfway can be resumed only under the same classification.
  */
+import { BlockList, isIP } from 'node:net';
+
 import { Refusal } from '../errors.ts';
-import { classifyScript, configureScript, hardenScript, type Probe } from '../host-scripts.ts';
+import {
+  classifyScript,
+  configureScript,
+  hardenScript,
+  SUPPORTED_OS,
+  type Probe,
+} from '../host-scripts.ts';
 import { READINESS_PATH, requireAllSigned } from '../readiness.ts';
 import { execOrRefuse } from '../remote.ts';
 import { readAtCommit } from '../release.ts';
@@ -64,6 +72,45 @@ export function checkInitAllowed(found: Probe, classification: Classification): 
   }
 }
 
+/**
+ * What the hardening needs from the host, checked before the classification
+ * is written, so a host that cannot be hardened is refused untouched rather
+ * than left classified and half-configured (PR #177 review).
+ *
+ * The SSH check is the one that matters most: the firewall admits SSH from
+ * `--ssh-from` only, so an operator connecting from anywhere else would shut
+ * themselves out, with the provider's console as the only way back.
+ */
+export function checkHostPreflight(found: Probe, settings: HostSettings): void {
+  if (!(SUPPORTED_OS as readonly string[]).includes(found.os)) {
+    throw new Refusal(`this host runs ${found.os || 'an unknown OS'}: Debian or Ubuntu only`);
+  }
+  if (!found.sshdInclude) {
+    throw new Refusal(
+      "this host's /etc/ssh/sshd_config does not include sshd_config.d/*.conf, so the SSH hardening would not be read",
+    );
+  }
+  if (!/^\d+$/.test(found.sshPort)) {
+    throw new Refusal('cannot tell which port this SSH session uses (SSH_CONNECTION is unset)');
+  }
+  const family = isIP(found.sshClient);
+  if (family === 0) {
+    throw new Refusal('cannot tell which address this SSH session comes from');
+  }
+  const allowed = new BlockList();
+  for (const entry of settings.sshAllowedIps) {
+    const [address, prefix] = entry.split('/');
+    const type = isIP(address!) === 4 ? 'ipv4' : 'ipv6';
+    allowed.addSubnet(address!, Number(prefix ?? (type === 'ipv4' ? 32 : 128)), type);
+  }
+  if (!allowed.check(found.sshClient, family === 4 ? 'ipv4' : 'ipv6')) {
+    throw new Refusal(
+      `this machine reaches the host from ${found.sshClient}, which --ssh-from does not include. ` +
+        'The firewall admits SSH from those addresses only, so this would lock you out.',
+    );
+  }
+}
+
 export async function initCommand(
   ctx: Context,
   options: {
@@ -76,6 +123,7 @@ export async function initCommand(
   const settings = checkSettings(options.settings);
   const found = await probe(ctx);
   checkInitAllowed(found, options.classification);
+  checkHostPreflight(found, settings);
 
   const release = await releaseFor(
     ctx,
@@ -99,8 +147,10 @@ export async function initCommand(
     classifyScript(options.classification),
     'recording the classification',
   );
-  ctx.log('hardening the host: Docker, firewall, unattended upgrades, SSH by key only');
-  await execOrRefuse(ctx.remote, hardenScript(), 'hardening the host');
+  ctx.log(
+    'hardening the host: Docker, firewall (SSH from --ssh-from only), unattended upgrades, SSH by key only',
+  );
+  await execOrRefuse(ctx.remote, hardenScript(settings.sshAllowedIps), 'hardening the host');
   ctx.log('writing the host settings and generating secrets on the host');
   await execOrRefuse(
     ctx.remote,

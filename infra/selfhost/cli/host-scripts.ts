@@ -65,6 +65,15 @@ export type BuiltService = keyof typeof BUILT;
 
 const PRELUDE = 'set -euo pipefail\numask 022\n';
 
+/** sshd_config including the drop-in directory the hardening writes to. */
+const SSHD_INCLUDE_PATTERN = '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\\.d/\\*\\.conf';
+
+/** The operating systems the hardening script supports. */
+export const SUPPORTED_OS = ['debian', 'ubuntu'] as const;
+
+/** A Docker image ID, the only shape interpolated into a host script as one. */
+export const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
+
 /** Writes `content` to `path` atomically, with `mode`. */
 export function writeFile(path: string, content: string, mode: string): string {
   const encoded = Buffer.from(content, 'utf8').toString('base64');
@@ -89,6 +98,11 @@ echo "arch=$(uname -m)"
 if [ -f ${shq(CLASSIFICATION_PATH)} ]; then echo "classification=$(head -n 1 ${shq(CLASSIFICATION_PATH)})"; else echo "classification="; fi
 if [ -f ${shq(RELEASE_RECORD_PATH)} ]; then echo "deployed=yes"; else echo "deployed=no"; fi
 if [ -d ${shq(OSTOMY_ETC)} ]; then echo "etc=yes"; else echo "etc=no"; fi
+# Where this session comes from and in on, so init can refuse a firewall
+# that would shut the operator out before it changes anything.
+echo "ssh_client=$(printf '%s' "\${SSH_CONNECTION:-}" | awk '{print $1}')"
+echo "ssh_port=$(printf '%s' "\${SSH_CONNECTION:-}" | awk '{print $4}')"
+if grep -Eq ${shq(SSHD_INCLUDE_PATTERN)} /etc/ssh/sshd_config 2>/dev/null; then echo "sshd_include=yes"; else echo "sshd_include=no"; fi
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   echo "compose=$(docker compose version --short)"
   echo "volumes=$(docker volume ls -q --filter label=com.docker.compose.project=${COMPOSE_PROJECT} | wc -l)"
@@ -108,6 +122,11 @@ export interface Probe {
   etc: boolean;
   compose: string;
   volumes: number;
+  /** The address this SSH session arrives from, as the host sees it. */
+  sshClient: string;
+  sshPort: string;
+  /** Whether sshd_config reads the drop-in the hardening writes. */
+  sshdInclude: boolean;
 }
 
 export function parseProbe(stdout: string): Probe {
@@ -130,6 +149,9 @@ export function parseProbe(stdout: string): Probe {
     etc: get('etc') === 'yes',
     compose: get('compose').replace(/^v/, ''),
     volumes: Number(get('volumes') || '0'),
+    sshClient: get('ssh_client'),
+    sshPort: get('ssh_port'),
+    sshdInclude: get('sshd_include') === 'yes',
   };
 }
 
@@ -152,10 +174,20 @@ export function platformFor(arch: string): string {
 /**
  * Hardening and Docker (ADR-0022 item 9's host, #173 exit criterion 4):
  * Docker from its own apt repository with the key checked, a firewall
- * allowing SSH, 80 and 443, unattended security upgrades, and SSH by key only.
- * Idempotent: every step is safe to repeat.
+ * admitting SSH from the operator's addresses only and 80 and 443 from
+ * anywhere (items 4 and 7), unattended security upgrades, and SSH by key
+ * only. Idempotent: every step is safe to repeat, and the firewall is rebuilt
+ * from nothing each time, so a narrowed `--ssh-from` removes the old rules.
+ *
+ * `init` checks the OS, the sshd include and that this session's own address
+ * is in `sshFrom` before anything on the host changes; the same checks here
+ * are the second line.
  */
-export function hardenScript(): string {
+export function hardenScript(sshFrom: readonly string[]): string {
+  if (sshFrom.length === 0) throw new Error('no address may reach SSH');
+  for (const entry of sshFrom) {
+    if (!/^[0-9A-Fa-f.:]+(\/\d{1,3})?$/.test(entry)) throw new Error(`not an address: ${entry}`);
+  }
   const sshd = [
     '# Written by ostomy-host init (ADR-0022, D.S1 slice 3).',
     '# sshd keeps the first value it reads for a keyword, and this file sorts',
@@ -169,53 +201,77 @@ export function hardenScript(): string {
     'AllowAgentForwarding no',
     // `-L` only: the Keycloak console tunnel. No remote forwards.
     'AllowTcpForwarding local',
+    'AllowStreamLocalForwarding no',
+    'PermitTunnel no',
     '',
   ].join('\n');
+  const enforced = [
+    'passwordauthentication no',
+    'kbdinteractiveauthentication no',
+    'permitrootlogin without-password',
+    'authenticationmethods publickey',
+    'x11forwarding no',
+    'allowagentforwarding no',
+    'allowtcpforwarding local',
+    'allowstreamlocalforwarding no',
+    'permittunnel no',
+  ];
   const autoUpgrades = [
     'APT::Periodic::Update-Package-Lists "1";',
     'APT::Periodic::Unattended-Upgrade "1";',
     '',
   ].join('\n');
+  const sshdDropIn = '/etc/ssh/sshd_config.d/00-ostomy-hardening.conf';
   return `${PRELUDE}
 export DEBIAN_FRONTEND=noninteractive
 . /etc/os-release
-case "$ID" in debian|ubuntu) ;; *) echo "unsupported OS: $ID (Debian or Ubuntu only)" >&2; exit 64 ;; esac
+case "$ID" in ${SUPPORTED_OS.join('|')}) ;; *) echo "unsupported OS: $ID (Debian or Ubuntu only)" >&2; exit 64 ;; esac
 
-# The port this session came in on, so the firewall never closes it.
+# The port this session came in on.
 ssh_port="$(printf '%s' "\${SSH_CONNECTION:-}" | awk '{print $4}')"
 case "$ssh_port" in ''|*[!0-9]*) echo "cannot tell which port this SSH session uses" >&2; exit 65 ;; esac
 
 # The drop-in below is read only if sshd_config includes its directory.
-if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\\.d/\\*\\.conf' /etc/ssh/sshd_config; then
+if ! grep -Eq ${shq(SSHD_INCLUDE_PATTERN)} /etc/ssh/sshd_config; then
   echo "/etc/ssh/sshd_config does not include sshd_config.d/*.conf" >&2; exit 66
 fi
 
-apt-get update -q
-apt-get install -y -q --no-install-recommends ca-certificates curl gnupg ufw unattended-upgrades openssl
+# A fresh VPS is often still running cloud-init's own apt when SSH opens.
+if command -v cloud-init >/dev/null 2>&1; then cloud-init status --wait >/dev/null 2>&1 || true; fi
+apt_get() { apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+
+apt_get update -q
+apt_get install -y -q --no-install-recommends ca-certificates curl gnupg ufw unattended-upgrades openssl
 
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
   install -m 0755 -d /etc/apt/keyrings
   key="$(mktemp)"
   curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o "$key"
+  # Exactly one key, and it is Docker's: a second key in the file would be
+  # trusted for the repository too.
+  keys="$(gpg --show-keys --with-colons "$key" | grep -c '^pub:' || true)"
   fpr="$(gpg --show-keys --with-colons "$key" | awk -F: '/^fpr:/ { print $10; exit }')"
-  if [ "$fpr" != ${shq(DOCKER_APT_KEY_FINGERPRINT)} ]; then
-    echo "Docker's apt key has fingerprint $fpr, not the published ${DOCKER_APT_KEY_FINGERPRINT}" >&2; exit 67
+  if [ "$keys" != 1 ] || [ "$fpr" != ${shq(DOCKER_APT_KEY_FINGERPRINT)} ]; then
+    echo "Docker's apt key file holds $keys key(s), first fingerprint $fpr; expected only ${DOCKER_APT_KEY_FINGERPRINT}" >&2; exit 67
   fi
   install -m 0644 "$key" /etc/apt/keyrings/docker.asc
   rm -f "$key"
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" \\
     >/etc/apt/sources.list.d/docker.list
-  apt-get update -q
-  apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  apt_get update -q
+  apt_get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
 systemctl enable --now docker
 
 # Docker's published ports bypass ufw (they go through Docker's own chains),
 # which is why compose.yml publishes 80 and 443 only, and 8081 on loopback:
 # verify's external port scan is what proves the result, not this.
+# SSH is not open to the internet at all: only the operator's addresses reach
+# it (ADR-0022 items 4 and 7).
+ufw --force reset >/dev/null
 ufw default deny incoming
 ufw default allow outgoing
-ufw limit "$ssh_port/tcp"
+${sshFrom.map((entry) => `ufw allow proto tcp from ${shq(entry)} to any port "$ssh_port"`).join('\n')}
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw --force enable
@@ -223,12 +279,25 @@ ufw --force enable
 ${writeFile('/etc/apt/apt.conf.d/20auto-upgrades', autoUpgrades, '0644')}
 systemctl enable --now unattended-upgrades
 
-${writeFile('/etc/ssh/sshd_config.d/00-ostomy-hardening.conf', sshd, '0644')}
-sshd -t
-systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
-# What sshd will do, after every include, not what the file says.
+# A drop-in sshd rejects is put back as it was, or the next sshd restart
+# fails and the host is unreachable.
+install -d -m 0755 /etc/ssh/sshd_config.d
+dropin=${shq(sshdDropIn)}
+previous="$(mktemp)"
+if [ -f "$dropin" ]; then cp -p "$dropin" "$previous"; had_previous=yes; else had_previous=no; fi
+${writeFile(sshdDropIn, sshd, '0644')}
+if ! sshd -t; then
+  if [ "$had_previous" = yes ]; then mv -f "$previous" "$dropin"; else rm -f "$dropin"; fi
+  echo "sshd refused the hardened configuration, which was rolled back" >&2; exit 69
+fi
+rm -f "$previous"
+# sshd -T reports what a new sshd would load, not what the running one
+# enforces, so a reload that fails must fail here.
+if ! systemctl reload ssh 2>/dev/null && ! systemctl reload sshd 2>/dev/null; then
+  echo "could not reload sshd, so the hardened configuration is not in force" >&2; exit 69
+fi
 effective="$(sshd -T)"
-for want in 'passwordauthentication no' 'kbdinteractiveauthentication no' 'permitrootlogin without-password' 'authenticationmethods publickey'; do
+for want in ${enforced.map(shq).join(' ')}; do
   if ! printf '%s\\n' "$effective" | grep -qx "$want"; then
     echo "sshd is not enforcing: $want" >&2; exit 68
   fi
@@ -299,9 +368,11 @@ export function loadImagesScript(expected: Record<BuiltService, string>, name: s
   const checks = (Object.keys(BUILT) as BuiltService[])
     .map((service) => {
       const tag = `${BUILT[service]}:${checkReleaseName(name)}`;
+      const id = expected[service];
+      if (!IMAGE_ID.test(id)) throw new Error(`not an image ID: ${JSON.stringify(id)}`);
       return [
         `got="$(docker image inspect --format '{{.Id}}' ${shq(tag)})"`,
-        `if [ "$got" != ${shq(expected[service])} ]; then echo ${shq(`${tag} loaded as`)} "$got, expected ${expected[service]}" >&2; exit 71; fi`,
+        `if [ "$got" != ${shq(id)} ]; then echo ${shq(`${tag} loaded as`)} "$got," ${shq(`expected ${id}`)} >&2; exit 71; fi`,
       ].join('\n');
     })
     .join('\n');
@@ -325,11 +396,18 @@ function compose(name: string, commit: string): string {
   ].join(' ');
 }
 
-/** Brings the release up, then prints `service=imageId` for each built service. */
+/**
+ * Brings the release up, then prints `service=imageId` for each built service.
+ *
+ * `--pull missing`, not `never`: caddy, both PostgreSQL and Keycloak come from
+ * their registries, pinned by digest in compose.yml, and on a fresh host they
+ * exist nowhere else. The built images carry `pull_policy: never` in the
+ * override and are already loaded, so nothing pulls them.
+ */
 export function upScript(name: string, commit: string): string {
   const services = Object.keys(BUILT) as BuiltService[];
   return `${PRELUDE}
-${compose(name, commit)} up --detach --no-build --pull never --remove-orphans --wait --wait-timeout 900
+${compose(name, commit)} up --detach --no-build --pull missing --remove-orphans --wait --wait-timeout 900
 ${runningImagesBody(name, commit, services)}
 `;
 }

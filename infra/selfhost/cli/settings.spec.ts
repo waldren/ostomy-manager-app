@@ -35,6 +35,7 @@ const valid: HostSettings = {
   authDomain: 'auth.diary.example.org',
   acmeEmail: 'operator@example.org',
   adminAllowedIps: ['8.8.4.4'],
+  sshAllowedIps: ['8.8.8.8'],
 };
 
 describe('the admin allowlist takes public addresses only', () => {
@@ -89,6 +90,9 @@ describe('the host settings', () => {
     ['the same name for both', { authDomain: 'diary.example.org' }],
     ['a malformed email', { acmeEmail: 'operator' }],
     ['no admin address', { adminAllowedIps: [] }],
+    ['no SSH address', { sshAllowedIps: [] }],
+    ['a private SSH address', { sshAllowedIps: ['192.168.1.10'] }],
+    ['an SSH range wider than one network', { sshAllowedIps: ['8.0.0.0/8'] }],
     ['a newline smuggled into a value', { acmeEmail: 'a@example.org\nOSTOMY_DOMAIN=evil.example' }],
   ])('refuses %s', (_name, change) => {
     expect(() => checkSettings({ ...valid, ...change })).toThrow();
@@ -97,6 +101,16 @@ describe('the host settings', () => {
   it('round-trips through the file Compose reads', () => {
     const settings = { ...valid, adminAllowedIps: ['8.8.4.4', '2001:4860::/32'] };
     expect(parseSettings(renderSettings(settings))).toEqual(settings);
+  });
+
+  // deploy builds the web image from these; a hand-edited file must not
+  // reach a build unchecked.
+  it('refuses a settings file edited on the host into something init would refuse', () => {
+    const edited = renderSettings(valid).replace(
+      'OSTOMY_DOMAIN=diary.example.org',
+      'OSTOMY_DOMAIN=Evil Example',
+    );
+    expect(() => parseSettings(edited)).toThrow(/not a lower-case DNS name/);
   });
 
   // Each `${NAME:?...}` compose.yml requires must come from the settings file,

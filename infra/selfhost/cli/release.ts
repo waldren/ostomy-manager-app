@@ -38,6 +38,17 @@ export interface Release {
   signedTag?: string;
 }
 
+/** Points git's OpenPGP and X.509 verifiers at a program that does not exist. */
+const NO_SUCH_PROGRAM = 'ostomy-host-accepts-ssh-signatures-only';
+const NO_OTHER_SIGNATURE_PROGRAMS = [
+  '-c',
+  `gpg.program=${NO_SUCH_PROGRAM}`,
+  '-c',
+  `gpg.openpgp.program=${NO_SUCH_PROGRAM}`,
+  '-c',
+  `gpg.x509.program=${NO_SUCH_PROGRAM}`,
+];
+
 const RELEASE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 async function git(repo: string, args: readonly string[]): Promise<string> {
@@ -93,11 +104,22 @@ export async function verifySignedTag(
     );
   }
   const object = await git(repo, ['cat-file', 'tag', ref]);
-  // git would also accept an OpenPGP signature, checked against whatever gpg
-  // keyring this machine has. Only an SSH signature is checked against the
-  // allowed-signers file, so only an SSH signature is accepted.
-  if (!object.includes('-----BEGIN SSH SIGNATURE-----')) {
-    throw new Refusal(`${tag} is not signed with an SSH key (\`git tag -s\` with gpg.format=ssh)`);
+  // git would also accept an OpenPGP or X.509 signature, checked against
+  // whatever keyring this machine has; only an SSH signature is checked
+  // against the allowed-signers file. git reads the format from the LAST
+  // signature block, so a check for the SSH header anywhere in the object is
+  // bypassed by a message quoting one with an OpenPGP block after it (PR #177
+  // review). Exactly one block, SSH, ending the object, is accepted, and
+  // verify-tag below is given no OpenPGP or X.509 program to fall back on.
+  const blocks = [...object.matchAll(/^-----BEGIN ([A-Z0-9 ]+)-----\r?$/gm)].map((m) => m[1]);
+  if (
+    blocks.length !== 1 ||
+    blocks[0] !== 'SSH SIGNATURE' ||
+    !/^-----END SSH SIGNATURE-----\r?\n?$/m.test(object.slice(object.lastIndexOf('-----END ')))
+  ) {
+    throw new Refusal(
+      `${tag} is not signed with an SSH key alone (\`git tag -s\` with gpg.format=ssh)`,
+    );
   }
   // A ref can be made to point at another tag's object, signed and genuine,
   // under a new name. The name inside the signed object is the one that counts.
@@ -114,6 +136,7 @@ export async function verifySignedTag(
       repo,
       '-c',
       `gpg.ssh.allowedSignersFile=${signers}`,
+      ...NO_OTHER_SIGNATURE_PROGRAMS,
       'verify-tag',
       '--end-of-options',
       ref,

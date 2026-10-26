@@ -33,6 +33,11 @@ export interface HostSettings {
   acmeEmail: string;
   /** Addresses or CIDR ranges that may reach the admin API and admin realm. */
   adminAllowedIps: string[];
+  /**
+   * Addresses or CIDR ranges that may reach SSH: the operator's own. The
+   * internet sees 80 and 443 only (ADR-0022 items 4 and 7).
+   */
+  sshAllowedIps: string[];
 }
 
 const HOSTNAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
@@ -81,20 +86,28 @@ const MIN_PREFIX = { ipv4: 16, ipv6: 32 } as const;
 
 /** Refuses an allowlist entry that is not a public address or range. */
 export function checkAdminAllowEntry(entry: string): string {
+  return checkOperatorAddress(entry, '--admin-ip');
+}
+
+/**
+ * Refuses an operator address, given to `flag`, that is not a public address
+ * or range no wider than an operator's own network.
+ */
+export function checkOperatorAddress(entry: string, flag: string): string {
   const [address, prefixText, extra] = entry.split('/');
   const family = isIP(address ?? '');
   if (extra !== undefined || family === 0) {
-    throw new Refusal(`--admin-ip ${entry}: not an IP address or CIDR range`);
+    throw new Refusal(`${flag} ${entry}: not an IP address or CIDR range`);
   }
   const type = family === 4 ? 'ipv4' : 'ipv6';
   const max = family === 4 ? 32 : 128;
   const prefix = prefixText === undefined ? max : Number(prefixText);
   if (!/^\d+$/.test(prefixText ?? String(max)) || prefix > max) {
-    throw new Refusal(`--admin-ip ${entry}: not a valid prefix length`);
+    throw new Refusal(`${flag} ${entry}: not a valid prefix length`);
   }
   if (prefix < MIN_PREFIX[type]) {
     throw new Refusal(
-      `--admin-ip ${entry}: wider than /${MIN_PREFIX[type]}. The allowlist is the operator's own address, not a provider's network.`,
+      `${flag} ${entry}: wider than /${MIN_PREFIX[type]}. The allowlist is the operator's own address, not a provider's network.`,
     );
   }
   const given = new BlockList();
@@ -106,7 +119,7 @@ export function checkAdminAllowEntry(entry: string): string {
     // Either range containing the other's base address means they overlap.
     if (block.check(address!, type) || given.check(base, blockType)) {
       throw new Refusal(
-        `--admin-ip ${entry}: overlaps ${base}/${bits}, which is not a public address. ` +
+        `${flag} ${entry}: overlaps ${base}/${bits}, which is not a public address. ` +
           'Behind Docker, an IPv6 client can arrive from a private bridge address, so a private ' +
           'range here would admit clients you did not intend (see infra/selfhost/README.md).',
       );
@@ -133,7 +146,14 @@ export function checkSettings(settings: HostSettings): HostSettings {
   if (settings.adminAllowedIps.length === 0) {
     throw new Refusal('at least one --admin-ip is required');
   }
-  return { ...settings, adminAllowedIps: settings.adminAllowedIps.map(checkAdminAllowEntry) };
+  if (settings.sshAllowedIps.length === 0) {
+    throw new Refusal('at least one --ssh-from is required: SSH is closed to every other address');
+  }
+  return {
+    ...settings,
+    adminAllowedIps: settings.adminAllowedIps.map(checkAdminAllowEntry),
+    sshAllowedIps: settings.sshAllowedIps.map((entry) => checkOperatorAddress(entry, '--ssh-from')),
+  };
 }
 
 /** The settings file. Every value was checked to an alphabet with no quoting needs. */
@@ -147,11 +167,17 @@ export function renderSettings(settings: HostSettings): string {
     `OSTOMY_AUTH_DOMAIN=${checked.authDomain}`,
     `OSTOMY_ACME_EMAIL=${checked.acmeEmail}`,
     `OSTOMY_ADMIN_ALLOWED_IPS=${checked.adminAllowedIps.join(' ')}`,
+    '# Not read by Compose: the firewall admits SSH from these only (init).',
+    `OSTOMY_SSH_ALLOWED_IPS=${checked.sshAllowedIps.join(' ')}`,
     '',
   ].join('\n');
 }
 
-/** Reads a settings file back, as Compose would. */
+/**
+ * Reads a settings file back, as Compose would, and checks it as `init` did:
+ * `deploy` bakes these domains into the web image, so a hand-edited file
+ * must not reach a build unchecked.
+ */
 export function parseSettings(text: string): HostSettings {
   const values = new Map<string, string>();
   for (const line of text.split(/\r?\n/)) {
@@ -167,10 +193,11 @@ export function parseSettings(text: string): HostSettings {
       throw new Refusal(`${SETTINGS_PATH}: ${key} is missing`);
     return value;
   };
-  return {
+  return checkSettings({
     domain: required('OSTOMY_DOMAIN'),
     authDomain: required('OSTOMY_AUTH_DOMAIN'),
     acmeEmail: required('OSTOMY_ACME_EMAIL'),
     adminAllowedIps: required('OSTOMY_ADMIN_ALLOWED_IPS').split(/\s+/),
-  };
+    sshAllowedIps: required('OSTOMY_SSH_ALLOWED_IPS').split(/\s+/),
+  });
 }

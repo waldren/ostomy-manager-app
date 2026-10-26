@@ -20,7 +20,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
  * shell, so no value the operator types is ever parsed as shell syntax on
  * this machine. What runs on the host is a different matter: see `shq`.
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 import { Unreachable } from './errors.ts';
 
@@ -72,12 +72,24 @@ export function run(
 /**
  * Runs `producer`, feeding its stdout into `consumer`'s stdin, as
  * `producer | consumer` would without a shell. Both must succeed.
+ *
+ * Either side ending early ends the other. Without that, a consumer that
+ * exits mid-transfer (ssh losing the network) leaves the producer blocked on
+ * a full pipe, and the promise never settles (PR #177 review).
  */
 export function pipe(
   producer: Command,
   consumer: Command,
 ): Promise<{ producer: ProcessResult; consumer: ProcessResult }> {
   return new Promise((resolve, reject) => {
+    let failed = false;
+    const children: ChildProcess[] = [];
+    const fail = (error: Error) => {
+      if (failed) return;
+      failed = true;
+      for (const child of children) child.kill();
+      reject(error);
+    };
     const spawnOne = ({ command, args, cwd, env }: Command, stdin: 'ignore' | 'pipe') => {
       const child = spawn(command, args, {
         cwd,
@@ -85,8 +97,9 @@ export function pipe(
         stdio: [stdin, 'pipe', 'pipe'],
         windowsHide: true,
       });
+      children.push(child);
       child.on('error', (error: NodeJS.ErrnoException) =>
-        reject(
+        fail(
           error.code === 'ENOENT'
             ? new Unreachable(`\`${command}\` is not installed or not on PATH`)
             : error,
@@ -97,24 +110,25 @@ export function pipe(
     const from = spawnOne(producer, 'ignore');
     const to = spawnOne(consumer, 'pipe');
     from.stdout!.pipe(to.stdin!);
-    // The consumer exiting early must not leave the producer blocked on a
-    // full pipe, nor raise EPIPE as an unhandled error.
+    // EPIPE when the consumer has gone; its exit code reports the failure.
     to.stdin!.on('error', () => {});
 
     const results: { producer?: ProcessResult; consumer?: ProcessResult } = {};
-    const collect = (
-      child: ReturnType<typeof spawnOne>,
-      key: 'producer' | 'consumer',
-      captureStdout: boolean,
-    ) => {
+    const collect = (child: ChildProcess, key: 'producer' | 'consumer', captureStdout: boolean) => {
       let stdout = '';
       let stderr = '';
       if (captureStdout)
         child.stdout!.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
       child.stderr!.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
-      child.on('close', (code) => {
-        results[key] = { code: code ?? 1, stdout, stderr };
-        if (results.producer && results.consumer) {
+      child.on('close', (code, signal) => {
+        results[key] = { code: code ?? (signal ? 128 : 1), stdout, stderr };
+        if (key === 'consumer' && !results.producer) {
+          // Nothing reads the producer's output any more: drain and stop it.
+          from.stdout!.unpipe();
+          from.stdout!.resume();
+          from.kill();
+        }
+        if (results.producer && results.consumer && !failed) {
           resolve({ producer: results.producer, consumer: results.consumer });
         }
       });

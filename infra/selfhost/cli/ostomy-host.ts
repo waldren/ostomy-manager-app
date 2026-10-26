@@ -42,8 +42,11 @@ const USAGE = `ostomy-host <command> --host <ssh destination> [options]
   init    --classification synthetic|real --release <ref>
           --domain <name> --auth-domain <name> --acme-email <address>
           --admin-ip <address or range> [--admin-ip ...]
+          --ssh-from <address or range> [--ssh-from ...]
           [--allowed-signers <file>]
       Classify, harden and configure a fresh host, then deploy <ref>.
+      SSH is then open to the --ssh-from addresses only, which must include
+      the address this machine connects from.
       A real host needs a tag signed in the operator environment, checked
       against --allowed-signers, with every readiness item signed in it.
 
@@ -78,6 +81,7 @@ async function main(argv: string[]): Promise<number> {
       'auth-domain': { type: 'string' },
       'acme-email': { type: 'string' },
       'admin-ip': { type: 'string', multiple: true },
+      'ssh-from': { type: 'string', multiple: true },
       'allowed-signers': { type: 'string' },
       tail: { type: 'string', default: '200' },
       help: { type: 'boolean', short: 'h' },
@@ -115,6 +119,7 @@ async function main(argv: string[]): Promise<number> {
           authDomain: required(values, 'auth-domain'),
           acmeEmail: required(values, 'acme-email'),
           adminAllowedIps: values['admin-ip'] ?? [],
+          sshAllowedIps: values['ssh-from'] ?? [],
         },
         allowedSigners,
       });

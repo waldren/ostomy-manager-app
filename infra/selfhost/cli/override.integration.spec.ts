@@ -58,6 +58,7 @@ describe.skipIf(!available)('the release override, as Compose merges it', () => 
       authDomain: 'auth.diary.example.org',
       acmeEmail: 'operator@example.org',
       adminAllowedIps: ['8.8.4.4'],
+      sshAllowedIps: ['8.8.8.8'],
     };
     const result = spawnSync(
       'docker',

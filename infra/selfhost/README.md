@@ -52,33 +52,36 @@ operator ──ssh -L 8081──▶ caddy:8081 (host loopback) ──▶ keycloa
 ```sh
 pnpm host init   --host ops@203.0.113.5 --classification synthetic --release main \
                  --domain diary.example.org --auth-domain auth.diary.example.org \
-                 --acme-email operator@example.org --admin-ip 198.51.100.7
+                 --acme-email operator@example.org --admin-ip 198.51.100.7 \
+                 --ssh-from 198.51.100.7
 pnpm host deploy --host ops@203.0.113.5 --release main
 pnpm host status --host ops@203.0.113.5
 pnpm host logs   --host ops@203.0.113.5 api --tail 100
 ```
 
-(The addresses above are documentation examples; `--admin-ip` refuses them, as it refuses any non-public address.)
+(The addresses above are documentation examples; `--admin-ip` and `--ssh-from` refuse them, as they refuse any non-public address.)
 
 Exit status: `0` done, `1` refused (a gate said no, or the input was wrong), `2` unreachable, `3` an unexpected failure.
 
 ### Before the first `init`
 
 - **A fresh Debian 12 or Ubuntu 22.04/24.04 VPS**, reached as root or as a user with passwordless sudo, by SSH key.
-- **The host key in `known_hosts`, checked by hand.** The tool runs ssh with `BatchMode=yes`, so an unknown host key stops it rather than being trusted on first use. Connect once with plain `ssh`, and compare the fingerprint with the one in the provider's console.
+- **The host key in `known_hosts`, checked by hand.** The tool runs ssh with `BatchMode=yes` and `StrictHostKeyChecking=yes`, whatever your ssh_config says, so an unknown host key stops it rather than being trusted on first use. Connect once with plain `ssh`, and compare the fingerprint with the one in the provider's console.
+- **A fixed public address to connect from**, given as `--ssh-from` (more than one is fine). Afterwards the firewall admits SSH from those addresses only. `init` refuses unless the address your session arrives from is among them, but if your address later changes, the way back in is the provider's web console.
+- **The release-signing key never in the agent you connect with.** The tool forwards no agent, but a plain `ssh` you type yourself might, and a synthetic host is one the development host has had root on.
 - **DNS for both names pointing at the host**, or Let's Encrypt cannot issue and the first deploy's readiness check fails.
 - **Docker and Compose in the operator environment.** The images are built there.
 
 ### What `init` does
 
-Every refusal happens before anything on the host changes. Then, in this order:
+Every refusal happens before anything on the host changes, including an unsupported OS, an sshd that would not read the hardening, and an operator address outside `--ssh-from`. Then, in this order:
 
 1. **Records the classification** (`/etc/ostomy/classification`), once. A host is never re-classified, and a synthetic host is never promoted to real (ADR-0022 item 1). An `init` that fails partway can be re-run under the same classification only. A real host must also be fresh: no `/etc/ostomy` and none of the stack's volumes.
 2. **Hardens the host:**
-   - Docker from Docker's own apt repository, its signing key checked against the published fingerprint;
-   - `ufw` allowing the SSH port in use (rate-limited), 80 and 443, and nothing else;
+   - Docker from Docker's own apt repository, its key file checked to hold exactly one key, with the published fingerprint;
+   - `ufw`, rebuilt from nothing on every run, admitting SSH from `--ssh-from` alone and 80 and 443 from anywhere: the internet sees 80 and 443 only (ADR-0022 items 4 and 7);
    - unattended security upgrades;
-   - SSH by key only, checked with `sshd -T` against what sshd will actually enforce, not what the file says.
+   - SSH by key only, with no agent, X11, tunnel or remote forwarding. A drop-in sshd rejects is rolled back, a reload that fails fails the step, and `sshd -T` checks what sshd will actually enforce, not what the file says.
 3. **Writes `/etc/ostomy/selfhost.env`** and **generates the secrets on the host** with the release's own `bin/generate-secrets.sh`. No secret is ever on the operator's machine.
 4. **Deploys the release**, as `deploy` does.
 
@@ -92,7 +95,7 @@ Every refusal happens before anything on the host changes. Then, in this order:
 2. **Builds** the API, migration and web images in a clean worktree of the release, with `docker compose build`, for the host's architecture. compose.yml stays the one definition of how each image is built, and every base image is pinned by digest there.
 3. **Ships** them with `docker save | ssh ... docker load`, and refuses unless each loaded tag is the image ID just built. No registry sits between the build and the host.
 4. **Installs** the release's stack files under `/opt/ostomy/releases/<release>/`, with a generated `release.override.yml` that removes every `build:` and pins each service to its release tag.
-5. **Starts** the stack (`up --wait`), and refuses unless each running container is exactly the image built.
+5. **Starts** the stack (`up --wait`), and refuses unless each running container is exactly the image built. Caddy, both PostgreSQL and Keycloak are pulled from their registries on first use, pinned by digest in compose.yml; the built images are never pulled.
 6. **Records** the release in `/etc/ostomy/release.json`, then checks `https://<domain>/api/v1/health/ready` from outside the host.
 
 The host needs Docker Compose 2.24.4 or later (for `!reset`), and the tool refuses an older one.
@@ -107,6 +110,8 @@ The host needs Docker Compose 2.24.4 or later (for `!reset`), and the tool refus
 | real | **only an annotated tag signed with an SSH key** listed in `--allowed-signers` (or `$OSTOMY_ALLOWED_SIGNERS`). The tool must also be run **from a clean checkout of that tag**, so the code deciding whether the gates pass is the reviewed, signed code. |
 
 The allowed-signers file lists the operator environment's tag-signing key, and lives in the operator environment. **The tool refuses one inside the repository**, which the development host can write. A tag signed with an OpenPGP key is refused too: only an SSH signature is checked against that file. So is a tag ref pointing at a signed tag object that names a different release.
+
+**The clean-checkout check guards against accidents, not an adversary.** It runs inside the tool it is checking, so a tampered tool would simply skip it. What protects a real host is the order you work in. Fetch the tag, run `git verify-tag` against your allowed-signers file yourself, then check it out and `pnpm install`. Only after that do you run the tool. The operator environment never runs code from an unsigned ref.
 
 In the operator environment, after reviewing the diff since the previous release tag:
 

@@ -44,18 +44,35 @@ export async function execOrRefuse(remote: Remote, script: string, what: string)
   return result.stdout;
 }
 
-// BatchMode: never prompt. A password prompt would mean the host still takes
-// passwords, and an unknown host key must stop the tool rather than be
-// accepted on first use: the operator checks the fingerprint against the
-// provider's console once, by hand (see README).
-const SSH_OPTIONS = [
-  '-o',
+/**
+ * Every connection's options, set here so the operator's ssh_config cannot
+ * loosen them (PR #177 compliance review). Command-line options win over
+ * ssh_config.
+ *
+ * - `BatchMode`: never prompt. A password prompt would mean the host still
+ *   takes passwords.
+ * - `StrictHostKeyChecking=yes`: an unknown or changed host key stops the
+ *   tool. A config saying `accept-new` would otherwise trust whatever answers
+ *   first; the operator checks the fingerprint against the provider's console
+ *   once, by hand (README).
+ * - No agent, X11 or port forwarding, and no local command: a synthetic host
+ *   is one the development host has had root on, and a forwarded agent
+ *   would let it use every key the agent holds, the release-signing key
+ *   included, for as long as the session lasts.
+ * - `ConnectTimeout`: a dropped connection reports unreachable promptly
+ *   instead of waiting out the operating system's TCP timeout.
+ */
+export const SSH_OPTIONS: readonly string[] = [
   'BatchMode=yes',
-  '-o',
+  'StrictHostKeyChecking=yes',
+  'ForwardAgent=no',
+  'ForwardX11=no',
+  'ClearAllForwardings=yes',
+  'PermitLocalCommand=no',
+  'ConnectTimeout=15',
   'ServerAliveInterval=15',
-  '-o',
   'ServerAliveCountMax=4',
-];
+].flatMap((option) => ['-o', option]);
 
 /**
  * The command the host's login shell receives. As root it runs the script
@@ -70,6 +87,10 @@ export function remoteCommand(script: string): string {
   return `sh -c ${shq(wrapper)} ostomy-host ${shq(script)}`;
 }
 
+export function sshCommand(target: string, script: string): Command {
+  return { command: 'ssh', args: [...SSH_OPTIONS, '--', target, remoteCommand(script)] };
+}
+
 export class SshRemote implements Remote {
   readonly target: string;
 
@@ -82,7 +103,7 @@ export class SshRemote implements Remote {
   }
 
   private command(script: string): Command {
-    return { command: 'ssh', args: [...SSH_OPTIONS, '--', this.target, remoteCommand(script)] };
+    return sshCommand(this.target, script);
   }
 
   async exec(script: string): Promise<ProcessResult> {

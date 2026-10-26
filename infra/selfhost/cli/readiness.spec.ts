@@ -105,4 +105,22 @@ describe('a checklist this cannot read fails closed', () => {
   ])('%s', (_name, markdown) => {
     expect(() => requireAllSigned(markdown, 'v1.0.0')).toThrow();
   });
+
+  // A blank line ends a Markdown table. Read naively, every row after it
+  // would go unchecked, and the gate would pass with RD-7 unsigned.
+  it.each([
+    ['a blank line', '\n'],
+    [
+      'a heading',
+      '\n## More\n\n| ID | Item | Evidence required | Signed off |\n|---|---|---|---|\n',
+    ],
+  ])('refuses rows split from the table by %s', (_name, split) => {
+    const signed = withSignOff((id) => (id === 'RD-7' ? '—' : 'Pat Officer, 2026-11-01'));
+    const rd7 = /^\| RD-7 \|.*$/m.exec(signed)![0];
+    const moved = signed
+      .replace(`${rd7}\n`, '')
+      .replace(/^(\| RD-24 \|.*)$/m, (row) => `${row}\n${split}${rd7}`);
+    expect(moved).not.toBe(signed);
+    expect(() => requireAllSigned(moved, 'v1.0.0')).toThrow(/outside the one table[\s\S]*RD-7/);
+  });
 });

@@ -58,6 +58,7 @@ const SETTINGS: HostSettings = {
   authDomain: 'auth.diary.example.org',
   acmeEmail: 'operator@example.org',
   adminAllowedIps: ['8.8.4.4'],
+  sshAllowedIps: ['8.8.8.0/24'],
 };
 const IMAGES: ImageIds = {
   'db-setup': `sha256:${'1'.repeat(64)}`,
@@ -72,6 +73,10 @@ interface HostState {
   volumes: number;
   compose: string;
   running: ImageIds;
+  os: string;
+  /** The address the operator's SSH session arrives from. */
+  sshClient: string;
+  sshdInclude: boolean;
 }
 
 /** What each script sent was for, in order, by the step it performs. */
@@ -94,9 +99,10 @@ function fakeHost(state: HostState): FakeRemote {
   return new FakeRemote()
     .on(/echo "os=\$ID"/, () => ({
       stdout:
-        `os=debian\ncodename=bookworm\narch=x86_64\nclassification=${state.classification}\n` +
+        `os=${state.os}\ncodename=bookworm\narch=x86_64\nclassification=${state.classification}\n` +
         `deployed=${state.deployed ? 'yes' : 'no'}\netc=${state.etc ? 'yes' : 'no'}\n` +
-        `compose=${state.compose}\nvolumes=${state.volumes}\n`,
+        `compose=${state.compose}\nvolumes=${state.volumes}\n` +
+        `ssh_client=${state.sshClient}\nssh_port=22\nsshd_include=${state.sshdInclude ? 'yes' : 'no'}\n`,
     }))
     .on(/set -C;/, (script) => {
       state.classification = /printf '%s\\n' '(\w+)'/.exec(script)![1]!;
@@ -140,6 +146,9 @@ describe('init and deploy', () => {
       volumes: 0,
       compose: '',
       running: { ...IMAGES },
+      os: 'debian',
+      sshClient: '8.8.8.8',
+      sshdInclude: true,
     };
     remote = fakeHost(state);
     built = [];
@@ -289,6 +298,32 @@ describe('init and deploy', () => {
       state.deployed = true;
       await expect(init('synthetic', 'main')).rejects.toThrow(/use `deploy`/);
       expect(steps(remote)).toEqual(['probe']);
+    });
+
+    // The firewall admits SSH from --ssh-from only. An operator outside it
+    // would lose the host, so this is refused before the host is touched.
+    it.each([
+      [
+        'an operator address --ssh-from leaves out',
+        { sshClient: '9.9.9.9' },
+        /9\.9\.9\.9.*lock you out/,
+      ],
+      ['an unsupported OS', { os: 'alpine' }, /Debian or Ubuntu only/],
+      ['an sshd that would not read the hardening', { sshdInclude: false }, /sshd_config\.d/],
+    ] as const)('refuses %s before classifying anything', async (_name, change, message) => {
+      Object.assign(state, change);
+      await expect(init('synthetic', 'main')).rejects.toThrow(message);
+      expect(steps(remote)).toEqual(['probe']);
+    });
+
+    it('opens SSH to the --ssh-from addresses alone', async () => {
+      await init('synthetic', 'main');
+      const harden = remote.sent.find(({ script }) => script.includes('ufw --force enable'))!;
+      expect(harden.script.match(/^ufw allow .*$/gm)).toEqual([
+        `ufw allow proto tcp from '8.8.8.0/24' to any port "$ssh_port"`,
+        'ufw allow 80/tcp',
+        'ufw allow 443/tcp',
+      ]);
     });
 
     it('resumes an interrupted init under the same classification', async () => {
