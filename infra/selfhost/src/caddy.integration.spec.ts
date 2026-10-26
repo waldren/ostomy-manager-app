@@ -114,11 +114,14 @@ function collect(res: IncomingMessage, resolve: (answer: Answer) => void): void 
 }
 
 class Proxy {
-  constructor(
-    readonly container: StartedTestContainer,
-    /** The root of the proxy's own local CA, trusted for this client only. */
-    private readonly ca: string,
-  ) {}
+  readonly container: StartedTestContainer;
+  /** The root of the proxy's own local CA, trusted for this client only. */
+  private readonly ca: string;
+
+  constructor(container: StartedTestContainer, ca: string) {
+    this.container = container;
+    this.ca = ca;
+  }
 
   get(
     host: string,

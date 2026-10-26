@@ -69,6 +69,31 @@ describe('compose.yml', () => {
     }
   });
 
+  // A release is built in the operator environment (ADR-0022 item 3). A base
+  // image named by tag alone would build whatever the registry serves that
+  // day, so the same signed tag could produce different images. Each is
+  // pinned here, and must name the tag its Dockerfile defaults to, so a
+  // Dockerfile bump without a new digest fails here rather than drifting.
+  it('builds every image from base images pinned by digest, matching each Dockerfile’s default', () => {
+    const built = services.filter(([, service]) => service.build !== undefined);
+    expect(built.map(([name]) => name).sort()).toEqual(['api', 'db-setup', 'web']);
+    for (const [name, service] of built) {
+      const build = service.build as { dockerfile: string; args?: Record<string, string> };
+      const dockerfile = readFileSync(path.join(SELFHOST_ROOT, '../..', build.dockerfile), 'utf8');
+      const baseArgs = [...dockerfile.matchAll(/^ARG ([A-Z_]+_IMAGE)=(\S+)$/gm)];
+      expect(baseArgs.length).toBeGreaterThan(0);
+      for (const [, arg, defaultTag] of baseArgs) {
+        expect({ name, arg, value: build.args?.[arg!] }).toEqual({
+          name,
+          arg,
+          value: expect.stringMatching(
+            new RegExp(`^${defaultTag!.replaceAll('.', '\\.')}@sha256:[0-9a-f]{64}$`),
+          ),
+        });
+      }
+    }
+  });
+
   it('runs the same Keycloak image as the API’s realm test', () => {
     const realmTest = readFileSync(
       path.join(SELFHOST_ROOT, '../../apps/api/src/auth/keycloak-realm.integration.spec.ts'),

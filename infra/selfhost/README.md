@@ -1,9 +1,9 @@
 # Self-hosted production stack
 
-One Linux host running Docker Compose, under [ADR-0022](../../design-specs/decisions/0022-self-hosted-production-on-one-host.md). This is D.S1 slice 2 (#173). It contains the stack, its proxy allowlist, the identity realms, and the tests that hold them to the ADR.
+One Linux host running Docker Compose, under [ADR-0022](../../design-specs/decisions/0022-self-hosted-production-on-one-host.md). This is D.S1 (#173): the stack, its proxy allowlist and identity realms (slice 2), the deploy CLI that operates a host (slice 3a), and the tests that hold each to the ADR.
 
 **Nothing here may hold real patient data yet.** A real host is initialised only:
-- by slice 3's deploy CLI;
+- by the deploy CLI, run in the operator environment;
 - from a release tag signed in the operator environment;
 - after every row of [`docs/compliance/real-data-readiness.md`](../../docs/compliance/real-data-readiness.md) is signed;
 - and it takes no patient account until `verify` passes against it.
@@ -19,8 +19,9 @@ Until then, everything below is for a **synthetic** host. A synthetic host is ne
 | `caddy/sites.caddy` | Every routing decision: the allowlist. |
 | `keycloak/realms/` | The `patient` and `admin` realms, imported on Keycloak's first start. |
 | `bin/generate-secrets.sh` | Generates the stack's secrets on the host. |
-| `selfhost.env.example` | The host's own settings. Holds no secret. |
-| `src/` | The tests (see [Tests](#tests)). |
+| `selfhost.env.example` | The host's own settings. Holds no secret. `init` writes the real file. |
+| `cli/` | `ostomy-host`, the deploy CLI (`pnpm host`). See [Operating a host](#operating-a-host). |
+| `src/` | The stack's tests (see [Tests](#tests)). |
 
 ## The services
 
@@ -44,19 +45,98 @@ operator ──ssh -L 8081──▶ caddy:8081 (host loopback) ──▶ keycloa
 - **`keycloak-db` is a separate PostgreSQL server.** Nothing but Keycloak can reach it, and a Keycloak compromise does not reach the clinical database's network.
 - **There is no object store.** Nothing uses one yet. P5.S3 decides what stores objects here (ADR-0022 Amendment 1).
 
-## Bringing up a synthetic host by hand
+## Operating a host
 
-Slice 3's CLI replaces this. Until then, on a synthetic VPS with Docker installed, from a checkout of the repo:
+`ostomy-host` (`pnpm host <command>`, from the repository root) initialises, deploys and inspects a host over SSH. It runs as TypeScript under Node 24, with no build step.
+
+```sh
+pnpm host init   --host ops@203.0.113.5 --classification synthetic --release main \
+                 --domain diary.example.org --auth-domain auth.diary.example.org \
+                 --acme-email operator@example.org --admin-ip 198.51.100.7
+pnpm host deploy --host ops@203.0.113.5 --release main
+pnpm host status --host ops@203.0.113.5
+pnpm host logs   --host ops@203.0.113.5 api --tail 100
+```
+
+(The addresses above are documentation examples; `--admin-ip` refuses them, as it refuses any non-public address.)
+
+Exit status: `0` done, `1` refused (a gate said no, or the input was wrong), `2` unreachable, `3` an unexpected failure.
+
+### Before the first `init`
+
+- **A fresh Debian 12 or Ubuntu 22.04/24.04 VPS**, reached as root or as a user with passwordless sudo, by SSH key.
+- **The host key in `known_hosts`, checked by hand.** The tool runs ssh with `BatchMode=yes`, so an unknown host key stops it rather than being trusted on first use. Connect once with plain `ssh`, and compare the fingerprint with the one in the provider's console.
+- **DNS for both names pointing at the host**, or Let's Encrypt cannot issue and the first deploy's readiness check fails.
+- **Docker and Compose in the operator environment.** The images are built there.
+
+### What `init` does
+
+Every refusal happens before anything on the host changes. Then, in this order:
+
+1. **Records the classification** (`/etc/ostomy/classification`), once. A host is never re-classified, and a synthetic host is never promoted to real (ADR-0022 item 1). An `init` that fails partway can be re-run under the same classification only. A real host must also be fresh: no `/etc/ostomy` and none of the stack's volumes.
+2. **Hardens the host:**
+   - Docker from Docker's own apt repository, its signing key checked against the published fingerprint;
+   - `ufw` allowing the SSH port in use (rate-limited), 80 and 443, and nothing else;
+   - unattended security upgrades;
+   - SSH by key only, checked with `sshd -T` against what sshd will actually enforce, not what the file says.
+3. **Writes `/etc/ostomy/selfhost.env`** and **generates the secrets on the host** with the release's own `bin/generate-secrets.sh`. No secret is ever on the operator's machine.
+4. **Deploys the release**, as `deploy` does.
+
+**The admin allowlist takes public addresses only.** `--admin-ip` refuses private, loopback, link-local, documentation and reserved ranges in both families, and anything wider than /16 (IPv4) or /32 (IPv6). Behind Docker, an IPv6 client can arrive from the bridge gateway, a private 172.x address. A /32 then fails closed, but allowing a private range "to fix it" would admit every IPv6 client on the internet to the admin surface.
+
+**Docker's own packages are not upgraded automatically.** Unattended upgrades cover the distribution's security updates; Docker comes from Docker's repository. Updating it is the operator's job.
+
+### What `deploy` does
+
+1. **Resolves the release** (see below), in this checkout.
+2. **Builds** the API, migration and web images in a clean worktree of the release, with `docker compose build`, for the host's architecture. compose.yml stays the one definition of how each image is built, and every base image is pinned by digest there.
+3. **Ships** them with `docker save | ssh ... docker load`, and refuses unless each loaded tag is the image ID just built. No registry sits between the build and the host.
+4. **Installs** the release's stack files under `/opt/ostomy/releases/<release>/`, with a generated `release.override.yml` that removes every `build:` and pins each service to its release tag.
+5. **Starts** the stack (`up --wait`), and refuses unless each running container is exactly the image built.
+6. **Records** the release in `/etc/ostomy/release.json`, then checks `https://<domain>/api/v1/health/ready` from outside the host.
+
+The host needs Docker Compose 2.24.4 or later (for `!reset`), and the tool refuses an older one.
+
+**Migrations run while the previous release is still serving**, and nothing takes a backup first. A migration that drops or renames a column breaks the old API until the new one is up. Until slice 5 adds a backup before every migration, a release must keep its migrations additive (expand, then contract in a later release).
+
+### Releases, and signing one
+
+| Host | `--release` takes |
+|---|---|
+| synthetic | any commit, tag or branch. The host records it as `commit-<12 hex>`, or as the tag if it is a signed tag that verifies. |
+| real | **only an annotated tag signed with an SSH key** listed in `--allowed-signers` (or `$OSTOMY_ALLOWED_SIGNERS`). The tool must also be run **from a clean checkout of that tag**, so the code deciding whether the gates pass is the reviewed, signed code. |
+
+The allowed-signers file lists the operator environment's tag-signing key, and lives in the operator environment. **The tool refuses one inside the repository**, which the development host can write. A tag signed with an OpenPGP key is refused too: only an SSH signature is checked against that file. So is a tag ref pointing at a signed tag object that names a different release.
+
+In the operator environment, after reviewing the diff since the previous release tag:
+
+```sh
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/ostomy-release-signing.pub   # ideally an ed25519-sk hardware key
+git tag -s v1.0.0 -m "Release v1.0.0"
+git switch --detach v1.0.0
+pnpm host init --classification real --release v1.0.0 \
+  --allowed-signers ~/.config/ostomy-host/allowed_signers ...
+```
+
+An allowed-signers line looks like `release@example.org namespaces="git" ssh-ed25519 AAAA...`.
+
+**`init --classification real` also reads `docs/compliance/real-data-readiness.md` from the tag**, and refuses, naming each row, unless every row carries a `Name, YYYY-MM-DD` sign-off. Today every row is unsigned, so it refuses.
+
+### Not yet in the tool
+
+Slice 3b adds `verify`, which checks a host from outside (ADR-0022 item 4). Slice 3c adds the Keycloak realm apply, the `master` realm's OTP and bootstrap-administrator replacement, and account creation, which waits on `verify`. Until 3c, a realm-file edit reaches an existing host only by resetting a synthetic one.
+
+### By hand, without the tool
+
+For a throwaway synthetic host only, from a checkout on the host:
 
 ```sh
 sudo infra/selfhost/bin/generate-secrets.sh /etc/ostomy/secrets
 sudo cp infra/selfhost/selfhost.env.example /etc/ostomy/selfhost.env   # then edit it
 sudo BUILD_COMMIT="$(git rev-parse HEAD)" \
   docker compose --env-file /etc/ostomy/selfhost.env -f infra/selfhost/compose.yml up -d --build --wait
-curl -s https://<OSTOMY_DOMAIN>/api/v1/health/ready
 ```
-
-DNS for both names must point at the host before the first `up`, or Let's Encrypt cannot issue.
 
 `BUILD_COMMIT` is required. Without it the image bakes an empty commit, which the API refuses at boot.
 
@@ -97,7 +177,7 @@ The files are mode 0444 inside a 0700 directory. Compose bind-mounts them into c
 
 ## The Keycloak realms
 
-`--import-realm` creates each realm from its file on Keycloak's **first** start, and leaves an existing realm alone. Editing a file therefore changes nothing on a host that already has the realm. Slice 3's `verify` diffs a running realm against these files (RD-16). Until it exists, a synthetic host is reset by removing its `keycloak-pgdata` volume.
+`--import-realm` creates each realm from its file on Keycloak's **first** start, and leaves an existing realm alone. Editing a file therefore changes nothing on a host that already has the realm. Slice 3b's `verify` will diff a running realm against these files (RD-16), and slice 3c applies a changed one. Until then, a synthetic host is reset by removing its `keycloak-pgdata` volume.
 
 `${OSTOMY_WEB_ORIGIN}` and `${OSTOMY_ADMIN_ORIGIN}` in the files are substituted from Keycloak's environment on import.
 
@@ -128,7 +208,7 @@ Item 5 asks for these to be chosen rather than inherited.
 
 The web SPA's 30-minute idle timeout is SRS §5.2's server-side session timeout.
 
-These are the officer's numbers to change (RD-5). Changing one is an edit to the realm file and, on a running host, slice 3's realm apply.
+These are the officer's numbers to change (RD-5). Changing one is an edit to the realm file and, on a running host, slice 3c's realm apply.
 
 ### Patient realm
 
@@ -145,11 +225,11 @@ These are the officer's numbers to change (RD-5). Changing one is an edit to the
 
 - **One public client, `ostomy-admin-console`, PKCE `S256`.** It redirects to `${OSTOMY_ADMIN_ORIGIN}/`. `apps/admin` does not exist yet, so nothing is served there.
 - **Sign-in is a password and a one-time code, both required.** The realm's browser flow is its own (`admin browser`). Keycloak's default makes OTP *conditional*, which lets an account with no OTP sign in with its password alone.
-- **OTP enrolment at sign-in is off** (`CONFIGURE_TOTP` is disabled). An account with no OTP credential is refused outright, rather than asked to enrol by whoever first holds its password. Administrators are created with OTP already enrolled by the operator (slice 3).
+- **OTP enrolment at sign-in is off** (`CONFIGURE_TOTP` is disabled). An account with no OTP credential is refused outright, rather than asked to enrol by whoever first holds its password. Administrators are created with OTP already enrolled by the operator (slice 3c).
 
 ### Not done here
 
-These are slice 3's, because they are operations on a running Keycloak, not realm files:
+These are slice 3c's, because they are operations on a running Keycloak, not realm files:
 - the `master` realm's OTP requirement;
 - replacing the bootstrap administrator with a named, OTP-enrolled one, and deleting the bootstrap account (RD-11).
 
@@ -158,27 +238,34 @@ These are slice 3's, because they are operations on a running Keycloak, not real
 - **`pnpm --filter @ostomy/infra-selfhost test:unit`** needs no Docker. It runs:
   - `compose.spec.ts`: ports, networks, secrets, digests, log settings and the API's claim mapping;
   - `realms.spec.ts`: the realm files read as data;
-  - `generate-secrets.spec.ts`: the secrets script.
-- **`pnpm --filter @ostomy/infra-selfhost test:integration`** runs `caddy.integration.spec.ts`. It starts the pinned Caddy image with `sites.caddy` unchanged, and asserts:
-  - every forwarded path and every refused one;
-  - the allowlist, with alternative spellings of admin paths;
-  - TLS 1.2 refused, HSTS sent, and the HTTP redirect.
+  - `generate-secrets.spec.ts`: the secrets script;
+  - the CLI's own tests in `cli/`, which need git, `ssh-keygen` and bash but no Docker and no host:
+    - `release.spec.ts`: signed tags against real git and real SSH signatures: a stranger's key, an unsigned or lightweight tag, a renamed tag ref and an allowed-signers file inside the repository are each refused;
+    - `readiness.spec.ts`: the real-data gate, against the committed checklist itself;
+    - `host-scripts.spec.ts`: every script that runs as root on the host, through a real bash;
+    - `commands.spec.ts`: `init` and `deploy` against a fake host, asserting each refusal happens before anything on the host changes;
+    - `settings.spec.ts`: the admin allowlist's public-only rule, and that the settings file supplies everything compose.yml requires.
+- **`pnpm --filter @ostomy/infra-selfhost test:integration`** runs:
+  - `caddy.integration.spec.ts`, which starts the pinned Caddy image with `sites.caddy` unchanged, and asserts:
+    - every forwarded path and every refused one;
+    - the allowlist, with alternative spellings of admin paths;
+    - TLS 1.2 refused, HSTS sent, and the HTTP redirect;
+    - no request's URI or address in Caddy's log when an upstream is down;
+  - `cli/override.integration.spec.ts`, which has Compose itself merge the release override and checks nothing is left to build.
+
+**Nothing in CI runs `init` or `deploy` against a host.** The scripts are run through bash and the commands against a fake host, which proves their logic and their ordering, not that a Debian VPS accepts them. A synthetic host is the first place they run end to end.
 - **`apps/api/src/auth/keycloak-realm.integration.spec.ts`** imports these realm files into the pinned Keycloak image. It signs in through the browser flow and hands the tokens to the API's real guards.
 
 The integration suites skip without Docker, and refuse to skip when `CI` is set.
 
 ## What later slices add
 
-- **Slice 3:**
-  - the deploy CLI;
-  - signed release tags and digest-pinned API and web images;
-  - `init --classification`, gated on the readiness checklist;
-  - `verify`;
-  - realm apply and `master` hardening.
+- **Slice 3b:** `verify`, from outside the host: TLS, an external port scan, every refused path, the admin allowlist, ADR-0011's grants, PostgreSQL's log settings, an OTP-less admin refused, and each realm against its file.
+- **Slice 3c:** the realm apply, the `master` realm's OTP and bootstrap-administrator replacement, and account creation gated on `verify`.
 - **Slice 4:**
   - the signed Android release build, with `minSdkVersion` 29 and the scopes above;
   - a minimum client version.
 - **Slice 5:**
-  - encrypted off-host backups and a restore that converges with phones;
+  - encrypted off-host backups, a backup before every migration, and a restore that converges with phones;
   - monitoring of `/api/v1/health/ready`;
   - the runbook.

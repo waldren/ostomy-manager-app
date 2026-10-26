@@ -3,7 +3,12 @@
   "extends": "@ostomy/config/tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2022"],
-    "types": ["node"]
+    "types": ["node"],
+    // The CLI (cli/) runs as TypeScript under Node 24's type stripping, with
+    // no build step: imports name their `.ts` files, and only syntax Node can
+    // erase is allowed (no enums, namespaces or parameter properties).
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
   },
-  "include": ["src/**/*.ts", "vitest.config.ts", "vitest.integration.config.ts"]
+  "include": ["src/**/*.ts", "cli/**/*.ts", "vitest.config.ts", "vitest.integration.config.ts"]
 }
